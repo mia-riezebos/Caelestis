@@ -186,7 +186,7 @@ let panelHost: HTMLElement | null = null
 let allianceStage: HTMLElement | null = null
 const allianceDrawerInset = new AllianceDrawerInset()
 const panelOpenListeners = new Set<() => void>()
-const treeVisibleListeners = new Set<() => void>()
+const worldTreeVisibleListeners = new Set<() => void>()
 
 const currentView = (): PanelView => panelSessions.view()
 const panelOpen = (): boolean => panelSessions.isOpen()
@@ -743,10 +743,12 @@ const appearanceModel = (): AppearanceEditorModel => {
       }),
     ),
     onlySelectedColour: panelSurface.kind === 'world' && state.onlySelectedColour,
+    showOnlySelectedColour: panelSurface.kind === 'world',
     paintOpen: panelSurface.kind === 'world' && isPaintOpen(),
     ...(selectedColourName === undefined ? {} : { selectedColourName }),
-    markerBudget: state.markerBudget,
-    markerBudgetOptions: MARKER_BUDGET_OPTIONS,
+    ...(panelSurface.kind === 'world'
+      ? { markerBudget: state.markerBudget, markerBudgetOptions: MARKER_BUDGET_OPTIONS }
+      : {}),
   }
 }
 
@@ -1000,8 +1002,8 @@ const showView = (view: PanelView): void => {
   }
   panel.model = panelModel(currentPanelWidth(panel))
   syncProfileTimer()
-  if (panelOpen() && view === 'tree') {
-    for (const listener of treeVisibleListeners) listener()
+  if (panelSessions.isWorldTreeVisible()) {
+    for (const listener of worldTreeVisibleListeners) listener()
   }
   log('install', `panel view: ${view}`)
 }
@@ -1087,16 +1089,16 @@ const selectAlliancePanelSurface = (active: ActiveAllianceSurface | null): void 
 
 export const isPanelOpen = (): boolean => panelOpen()
 
-export const isTemplateTreeVisible = (): boolean => panelOpen() && currentView() === 'tree'
+export const isWorldTemplateTreeVisible = (): boolean => panelSessions.isWorldTreeVisible()
 
 export const onPanelOpen = (listener: () => void): (() => void) => {
   panelOpenListeners.add(listener)
   return () => panelOpenListeners.delete(listener)
 }
 
-export const onTemplateTreeVisible = (listener: () => void): (() => void) => {
-  treeVisibleListeners.add(listener)
-  return () => treeVisibleListeners.delete(listener)
+export const onWorldTemplateTreeVisible = (listener: () => void): (() => void) => {
+  worldTreeVisibleListeners.add(listener)
+  return () => worldTreeVisibleListeners.delete(listener)
 }
 
 const RAIL_ID = 'caelestis-rail'

@@ -150,9 +150,12 @@ const reconcile = (): void => {
       // wins, the native canvas can still have the previous asset's dimensions and must not select
       // the previous manifest for the new editor.
       const canvasKind = assetKindFromCanvas(frame)
-      if (pendingDraft !== null && canvasKind === pendingDraft.previousKind) {
-        publish(null)
-        return
+      if (pendingDraft !== null) {
+        if (canvasKind === pendingDraft.previousKind) {
+          publish(null)
+          return
+        }
+        if (canvasKind !== null) pendingDraft = null
       }
       // Wplace may reuse a cached draft without issuing the metadata request after a late dev
       // injection. The two asset canvases have fixed, disjoint dimensions, so their native
@@ -205,6 +208,7 @@ const observeMemberAlliance = (response: Response, sequence: number): void => {
       const previous = memberAllianceId
       memberAllianceId = nextAllianceId
       draft = null
+      pendingDraft = null
       if (headquarters?.allianceId === previous) headquarters = null
     }
     queueReconcile()
@@ -244,15 +248,7 @@ const observeDraft = (
   requestedDraftId: number,
   requestAllianceEpoch: number,
 ): void => {
-  const finish = (): void => {
-    if (pendingDraft?.sequence !== sequence) return
-    pendingDraft = null
-    queueReconcile()
-  }
-  if (!response.ok) {
-    finish()
-    return
-  }
+  if (!response.ok) return
   try {
     void response
       .clone()
@@ -276,11 +272,12 @@ const observeDraft = (
         if (kind === null) return
         acceptedDraftSequence = sequence
         draft = { id: requestedDraftId, kind }
+        if (pendingDraft?.sequence === sequence) pendingDraft = null
+        queueReconcile()
       })
       .catch(() => {})
-      .finally(finish)
   } catch {
-    finish()
+    // Failed validation deliberately leaves the previous asset kind suppressed.
   }
 }
 

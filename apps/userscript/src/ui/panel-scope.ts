@@ -40,6 +40,12 @@ export class PanelSessions {
     if (scope === 'alliance' && view === 'settings') return
     this.sessions[scope].view = view
   }
+
+  isWorldTreeVisible(): boolean {
+    return (
+      this.selected === 'world' && this.sessions.world.open && this.sessions.world.view === 'tree'
+    )
+  }
 }
 
 export const panelScopeForSurface = (surface: TemplateSurface): PanelScope =>

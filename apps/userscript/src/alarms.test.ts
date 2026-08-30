@@ -26,8 +26,8 @@ vi.mock('./telemetry.js', () => ({
   },
 }))
 vi.mock('./ui/panel.js', () => ({
-  isTemplateTreeVisible: () => harness.treeVisible,
-  onTemplateTreeVisible: (listener: () => void) => {
+  isWorldTemplateTreeVisible: () => harness.treeVisible,
+  onWorldTemplateTreeVisible: (listener: () => void) => {
     harness.treeListener = listener
     return vi.fn()
   },

@@ -31,6 +31,20 @@ describe('scoped panel sessions', () => {
     expect(sessions.view()).toBe('appearance')
   })
 
+  it('reports only the open world tree as globally visible', () => {
+    const sessions = new PanelSessions()
+    sessions.setOpen(true)
+    expect(sessions.isWorldTreeVisible()).toBe(true)
+
+    sessions.select('alliance')
+    sessions.setOpen(true)
+    expect(sessions.isWorldTreeVisible()).toBe(false)
+
+    sessions.select('world')
+    sessions.setView('appearance')
+    expect(sessions.isWorldTreeVisible()).toBe(false)
+  })
+
   it('names every alliance drawer for its exact artboard', () => {
     expect(alliancePanelTitle({ kind: 'alliance-headquarters', allianceId: 1 })).toBe(
       'Headquarters overlays',
