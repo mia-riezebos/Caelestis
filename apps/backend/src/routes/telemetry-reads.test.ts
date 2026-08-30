@@ -18,6 +18,8 @@ import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
 import type { ContributionDelta } from '../ports/index.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
+import { decodedPixelCache } from '../telemetry/decoded-pixel-cache.js'
+import { mismatchArtifactKey } from '../telemetry/derived-classification.js'
 import { selectTelemetryHistoryResolution, selectTileHistoryResolution } from './telemetry.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
@@ -137,7 +139,10 @@ const contribution = (overrides: Partial<ContributionDelta>): ContributionDelta 
 })
 
 describe('telemetry read routes', () => {
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    decodedPixelCache.clear()
+    vi.restoreAllMocks()
+  })
 
   it('selects the coarsest retained tier that still yields about 200 points', () => {
     const now = seconds(2_000_000_000)
@@ -228,11 +233,11 @@ describe('telemetry read routes', () => {
   })
 
   it('serves the server-classified mismatch mask for one visible template tile', async () => {
-    const { app } = await harness()
+    const { app, blobs, sql } = await harness()
     const templateId = await createPublishedTemplate(app)
     const reportToken = await mintToken(app, 'report')
     const readToken = await mintToken(app, 'read')
-    await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    const canvasHash = await uploadCanvasTile(app, reportToken, 1_750_032_000)
     const manifestResponse = await app.request('/manifest?season=0', {
       headers: bearer(readToken),
     })
@@ -241,6 +246,35 @@ describe('telemetry read routes', () => {
     }
     const version = manifest.templates.find((template) => template.id === templateId)?.version
     expect(version).toBeDefined()
+    if (version === undefined) throw new Error('template version missing')
+    const artifactKey = mismatchArtifactKey({
+      templateId,
+      versionId: version,
+      tile: { x: 0, y: 0 },
+      canvasHash,
+    })
+    await expect(blobs.get('derived', artifactKey)).resolves.not.toBeNull()
+    await expect(sql.readTemplateStatuses(0, false)).resolves.toEqual([
+      expect.objectContaining({
+        templateId,
+        correct: 1,
+        blank: 1,
+        wrong: 1,
+        colours: [
+          { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+          { index: 1, correct: 0, wrong: 0, blank: 1, total: 1 },
+          { index: 2, correct: 0, wrong: 1, blank: 0, total: 1 },
+        ],
+      }),
+    ])
+
+    // Simulate isolate loss and unavailable raw inputs. Normal reads still use the immutable
+    // artifact produced by the same ingestion pass as the progress and colour totals above.
+    decodedPixelCache.clear()
+    const chunks = await blobs.list('chunks', { limit: 10 })
+    await blobs.delete('chunks', chunks.keys)
+    const tileObject = await sql.readTileBlob(canvasHash)
+    if (tileObject !== null) await blobs.delete('tiles', [tileObject.blobKey])
 
     const response = await app.request(
       `/telemetry/templates/${templateId}/versions/${version}/tiles/0/0/mismatches?season=0`,
@@ -256,6 +290,35 @@ describe('telemetry read routes', () => {
     expect(mask && mismatchClassAt(mask, 0, 0)).toBe(MATCH)
     expect(mask && mismatchClassAt(mask, 1, 0)).toBe(BLANK)
     expect(mask && mismatchClassAt(mask, 2, 0)).toBe(WRONG)
+  })
+
+  it('rebuilds and persists a missing derived mismatch artifact from authoritative raw inputs', async () => {
+    const { app, blobs } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const readToken = await mintToken(app, 'read')
+    const canvasHash = await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    const manifest = (await (
+      await app.request('/manifest?season=0', { headers: bearer(readToken) })
+    ).json()) as { templates: readonly { id: string; version: string }[] }
+    const versionId = manifest.templates.find((template) => template.id === templateId)?.version
+    if (versionId === undefined) throw new Error('template version missing')
+    const artifactKey = mismatchArtifactKey({
+      templateId,
+      versionId,
+      tile: { x: 0, y: 0 },
+      canvasHash,
+    })
+    await blobs.delete('derived', [artifactKey])
+    decodedPixelCache.clear()
+
+    const response = await app.request(
+      `/telemetry/templates/${templateId}/versions/${versionId}/tiles/0/0/mismatches?season=0`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(blobs.get('derived', artifactKey)).resolves.not.toBeNull()
   })
 
   it('serves folded pace history over a half-open range', async () => {

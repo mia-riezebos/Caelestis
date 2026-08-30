@@ -360,6 +360,58 @@ describe('telemetry routes', () => {
     expect(consoleError).toHaveBeenCalledWith(projectionError)
   })
 
+  it('publishes an accepted revision before non-fatal derived artifact writes', async () => {
+    const order: string[] = []
+    const applyCommittedChange = vi.fn(async () => {
+      order.push('projection')
+      return null
+    })
+    const { app, blobs, sql } = await harness({
+      applyCommittedChange,
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+    })
+    await createPublishedTemplate(app)
+    applyCommittedChange.mockClear()
+    const originalPut = blobs.put.bind(blobs)
+    const artifactError = new Error('derived R2 unavailable')
+    blobs.put = async (namespace, key, bytes) => {
+      if (namespace === 'derived') {
+        order.push('artifact')
+        throw artifactError
+      }
+      return originalPut(namespace, key, bytes)
+    }
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(Math.floor(Date.now() / 1_000)),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+
+    expect(uploaded.status).toBe(200)
+    expect(order.at(-1)).toBe('artifact')
+    expect(order.slice(0, -1)).not.toHaveLength(0)
+    expect(order.slice(0, -1).every((step) => step === 'projection')).toBe(true)
+    await expect(sql.readTemplateStatuses(0, false)).resolves.toHaveLength(1)
+    expect(consoleError).toHaveBeenCalledWith(
+      'failed to persist derived mismatch artifact',
+      artifactError,
+    )
+  })
+
   it('repairs accepted uploads and known offers before a later history fold can fail', async () => {
     const applyCommittedChange = vi.fn(async () => null)
     const { app, sql } = await harness({
