@@ -1,10 +1,10 @@
 import { DurableObject } from 'cloudflare:workers'
-import { millis, seconds } from '@caelestis/shared'
+import { millis } from '@caelestis/shared'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
+import { runAlarmWatcherCycle } from './alarm-watcher-cycle.js'
 import type { Ports } from './ports/index.js'
-import { fetchAlarmFollowUps } from './telemetry/fetcher.js'
 
 /** Owns the delayed ten-minute verification without competing with TelemetryShard's flush alarm. */
 export class AlarmWatcher extends DurableObject<Env> {
@@ -31,10 +31,6 @@ export class AlarmWatcher extends DurableObject<Env> {
 
   override async alarm(): Promise<void> {
     const now = millis(Date.now())
-    const probes = await this.ports.sql.listDueAlarmProbes(now)
-    await fetchAlarmFollowUps(this.ports, probes, {
-      now: seconds(Math.floor(now / 1_000)),
-    })
-    await this.schedule()
+    await runAlarmWatcherCycle(this.ports, this.ctx.storage, now)
   }
 }

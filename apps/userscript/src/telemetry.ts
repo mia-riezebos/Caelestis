@@ -600,8 +600,6 @@ export const serverAlarmFor = (
     !isCurrentServerConnection(snapshot.server) ||
     known.contents !== snapshot.contents ||
     current === undefined ||
-    !current.published ||
-    !template.published ||
     !alarmEnabled(server, current)
   )
     return null

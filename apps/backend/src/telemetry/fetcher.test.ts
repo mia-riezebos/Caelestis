@@ -7,7 +7,7 @@ import {
   TRANSPARENT_INDEX,
   tileKey,
 } from '@caelestis/shared'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -155,6 +155,54 @@ describe('the 6-hour tile fetcher', () => {
     }
   }, 20_000)
 
+  it('rotates the budget onto stale tiles and evaluates a template larger than one batch', async () => {
+    const { ports, sql } = harness()
+    const tiles = [
+      { x: 10, y: 10 },
+      { x: 11, y: 10 },
+      { x: 12, y: 10 },
+    ]
+    const chunkIndices = new Uint8Array(TILE_SIZE).fill(TRANSPARENT_INDEX)
+    chunkIndices[0] = 1
+    const chunk = await encodeIndexedPng(TILE_SIZE, 1, chunkIndices)
+    const chunkHash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', chunkHash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('wide-watched', tiles),
+      totalPixels: 3,
+      bbox: {
+        minX: 10 * TILE_SIZE,
+        minY: 10 * TILE_SIZE,
+        maxX: 13 * TILE_SIZE,
+        maxY: 10 * TILE_SIZE + 1,
+      },
+      chunks: tiles.map((tile) => ({ tileX: tile.x, tileY: tile.y, hash: chunkHash })),
+    })
+    const indices = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+    indices[0] = 1
+    const canvas = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
+    const fetchImpl = (async () => new Response(canvas.slice())) as typeof fetch
+    const evaluate = vi.spyOn(sql, 'evaluateTemplateAlarm')
+
+    await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl, maxTiles: 2 })
+    expect(evaluate).not.toHaveBeenCalled()
+
+    await fetchCanvasTiles(ports, {
+      season: 0,
+      now: seconds(NOW + 6 * 60 * 60),
+      fetchImpl,
+      maxTiles: 2,
+    })
+    expect(await sql.readTemplateStatuses(0, true)).toEqual([
+      expect.objectContaining({ templateId: 'wide-watched', total: 3, correct: 3 }),
+    ])
+    expect(evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: 'wide-watched', total: 3, correct: 3 }),
+      { kind: 'scan' },
+      expect.any(String),
+    )
+  }, 20_000)
+
   it('opens on a six-hour regression and promotes only after a worsening follow-up', async () => {
     const { ports, sql } = harness()
     const chunk = await encodeIndexedPng(20, 1, new Uint8Array(20).fill(1))
@@ -203,10 +251,83 @@ describe('the 6-hour tile fetcher', () => {
       {
         evaluated: 1,
         failed: 0,
+        pending: 0,
       },
     )
     await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
       expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 11 }),
+    ])
+  }, 20_000)
+
+  it('continues a large follow-up across bounded batches before promoting it', async () => {
+    const { ports, sql } = harness()
+    const tiles = [
+      { x: 20, y: 20 },
+      { x: 21, y: 20 },
+    ]
+    const chunkIndices = new Uint8Array(TILE_SIZE).fill(TRANSPARENT_INDEX)
+    chunkIndices.fill(1, 0, 10)
+    const chunk = await encodeIndexedPng(TILE_SIZE, 1, chunkIndices)
+    const chunkHash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', chunkHash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('wide-follow-up', tiles),
+      totalPixels: 20,
+      bbox: {
+        minX: 20 * TILE_SIZE,
+        minY: 20 * TILE_SIZE,
+        maxX: 22 * TILE_SIZE,
+        maxY: 20 * TILE_SIZE + 1,
+      },
+      chunks: tiles.map((tile) => ({ tileX: tile.x, tileY: tile.y, hash: chunkHash })),
+    })
+    const painted = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+    painted.fill(1, 0, 10)
+    const paintedCanvas = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, painted)
+    const paintedFetch = (async () => new Response(paintedCanvas.slice())) as typeof fetch
+    await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl: paintedFetch, maxTiles: 1 })
+    await fetchCanvasTiles(ports, {
+      season: 0,
+      now: seconds(NOW + 6 * 60 * 60),
+      fetchImpl: paintedFetch,
+      maxTiles: 1,
+    })
+
+    const scanAt = millis((NOW + 12 * 60 * 60) * 1_000)
+    const opened = await sql.evaluateTemplateAlarm(
+      {
+        templateId: 'wide-follow-up',
+        versionId: 'wide-follow-up-version',
+        total: 20,
+        correct: 10,
+        observedAt: scanAt,
+      },
+      { kind: 'scan' },
+      'alarm-wide',
+    )
+    expect(opened.scheduleFollowUp).toBe(true)
+    const dueAt = millis(scanAt + 10 * 60 * 1_000)
+    const probes = await sql.listDueAlarmProbes(dueAt)
+    const blank = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+    const blankCanvas = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, blank)
+    const blankFetch = (async () => new Response(blankCanvas.slice())) as typeof fetch
+
+    await expect(
+      fetchAlarmFollowUps(ports, probes, {
+        now: seconds(dueAt / 1_000),
+        fetchImpl: blankFetch,
+        maxTiles: 1,
+      }),
+    ).resolves.toEqual({ evaluated: 0, failed: 0, pending: 1 })
+    await expect(
+      fetchAlarmFollowUps(ports, probes, {
+        now: seconds(dueAt / 1_000 + 1),
+        fetchImpl: blankFetch,
+        maxTiles: 1,
+      }),
+    ).resolves.toEqual({ evaluated: 1, failed: 0, pending: 0 })
+    await expect(sql.readActiveAlarms(0, true)).resolves.toEqual([
+      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 20 }),
     ])
   }, 20_000)
 

@@ -624,6 +624,11 @@ export interface ManifestTileRecord {
   readonly hash: string
 }
 
+/** A current template tile plus the age of the classification used by alarm evaluation. */
+export interface AlarmTileRecord extends ManifestTileRecord {
+  readonly observedAt: Millis | null
+}
+
 /** One current template chunk affected by a canvas tile observation or paint event. */
 export interface TelemetryTarget extends ManifestTileRecord {
   readonly bbox: PixelBounds
@@ -919,6 +924,9 @@ export interface SqlStore {
     scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]>
+
+  /** Current template tiles ordered by callers for bounded, freshness-aware alarm scans. */
+  listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]>
 
   listTelemetryTargets(
     season: number,

@@ -18,6 +18,7 @@ import {
   type AlarmEvaluationPhase,
   type AlarmPolicyResult,
   type AlarmProbe,
+  type AlarmTileRecord,
   assertValidAccessToken,
   assertValidBuckets,
   assertValidContributionQuery,
@@ -628,6 +629,17 @@ export class MemorySqlStore implements SqlStore {
       )
     }
     return records
+  }
+
+  async listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]> {
+    const tiles = await this.listManifestTiles(season, true)
+    return tiles.map((tile) => ({
+      ...tile,
+      observedAt:
+        this.templateTileStatuses.get(
+          `${tile.templateId}\u0000${tile.versionId}\u0000${tileKey({ x: tile.tileX, y: tile.tileY })}`,
+        )?.observedAt ?? null,
+    }))
   }
 
   async listTelemetryTargets(

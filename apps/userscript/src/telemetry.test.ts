@@ -89,7 +89,7 @@ afterEach(() => {
 })
 
 describe('server telemetry client', () => {
-  it('admits alarms only for current published templates whose visibility chain is enabled', async () => {
+  it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -127,6 +127,10 @@ describe('server telemetry client', () => {
     harness.serverContents?.(server, { nodes: [], templates: [{ ...template }] })
     expect(serverAlarmFor(server, template)).toBeNull()
     await vi.waitFor(() => expect(serverAlarmFor(server, template)?.id).toBeDefined())
+
+    const unpublished = { ...template, published: false }
+    harness.serverContents?.(server, { nodes: [], templates: [unpublished] })
+    await vi.waitFor(() => expect(serverAlarmFor(server, unpublished)?.id).toBeDefined())
 
     harness.state = {
       ...harness.state,

@@ -51,6 +51,7 @@ import {
   type AlarmEvaluationPhase,
   type AlarmPolicyResult,
   type AlarmProbe,
+  type AlarmTileRecord,
   assertValidBuckets,
   assertValidContributionQuery,
   assertValidPublishedFilter,
@@ -1093,6 +1094,37 @@ export class D1SqlStore implements SqlStore {
         ),
       )
       .where(includeUnpublished ? scoped : and(scoped, isNotNull(templates.publishedAt)))
+  }
+
+  async listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]> {
+    return this.database
+      .select({
+        templateId: templates.id,
+        versionId: templateVersions.id,
+        tileX: versionTiles.tileX,
+        tileY: versionTiles.tileY,
+        hash: versionTiles.hash,
+        observedAt: templateTileStatuses.observedAtMs,
+      })
+      .from(versionTiles)
+      .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
+      .innerJoin(
+        templates,
+        and(
+          eq(templates.id, templateVersions.templateId),
+          eq(templates.currentVersionId, templateVersions.id),
+        ),
+      )
+      .leftJoin(
+        templateTileStatuses,
+        and(
+          eq(templateTileStatuses.templateId, templates.id),
+          eq(templateTileStatuses.versionId, templateVersions.id),
+          eq(templateTileStatuses.tileX, versionTiles.tileX),
+          eq(templateTileStatuses.tileY, versionTiles.tileY),
+        ),
+      )
+      .where(eq(templates.season, season))
   }
 
   async listTelemetryTargets(
