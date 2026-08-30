@@ -99,7 +99,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.route('/admin/templates', createTemplateRoutes(ports, auth))
   app.route('/chunks', createChunkRoutes(ports, auth))
   app.route('/tiles', createTileRoutes(ports, auth))
-  app.route('/telemetry', createTelemetryRoutes(ports, auth, { currentSeason }))
+  app.route('/telemetry', createTelemetryRoutes(runtime, auth, { currentSeason }))
 
   return app
 }
