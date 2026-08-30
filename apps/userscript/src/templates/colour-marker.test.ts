@@ -3,13 +3,13 @@ import { colourMarksIn } from './colour-marker.js'
 import { packMismatchMark } from './mismatch-marks.js'
 
 describe('selected-colour marker coordinates', () => {
-  it('marks only selected pixels that are unpainted or mismatched', () => {
+  it('marks only the selected template colour from unpainted pixels', () => {
     const first = packMismatchMark(1, 0, 4)
     const second = packMismatchMark(3, 0, 4)
     const selected = [first, second]
-    const disagreements = new Uint32Array([first, packMismatchMark(2, 0, 3), second])
+    const unpainted = new Uint32Array([first, packMismatchMark(2, 0, 3), second])
 
-    expect([...colourMarksIn(disagreements, 4)]).toEqual(selected)
+    expect([...colourMarksIn(unpainted, 4)]).toEqual(selected)
   })
 
   it('retains every selected-colour answer without an entry cap', () => {

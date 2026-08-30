@@ -15,14 +15,18 @@ const fixture = vi.hoisted(() => ({
     otherOpacity: 1,
   },
   marks: new Uint32Array(0),
+  unpainted: new Uint32Array(0),
   mismatchesIn: vi.fn(),
   disagreementsIn: vi.fn(),
+  unpaintedIn: vi.fn(),
+  colourMarksIn: vi.fn((marks: Uint32Array) => marks),
   progressIn: vi.fn(() => true),
   markerBudget: 16_384,
   moving: false,
   quad: { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 },
   paintOpen: false,
   selected: null as number | null,
+  selectedFade: vi.fn((_id: string, target: number) => ({ value: target, done: true })),
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
@@ -40,7 +44,7 @@ vi.mock('../templates/appearance.js', () => ({
   isColourHidden: () => false,
   toRgbUnit: () => [1, 0, 1],
 }))
-vi.mock('../templates/colour-marker.js', () => ({ colourMarksIn: (marks: Uint32Array) => marks }))
+vi.mock('../templates/colour-marker.js', () => ({ colourMarksIn: fixture.colourMarksIn }))
 vi.mock('../templates/local-store.js', () => ({
   appearanceOf: () => fixture.appearance,
   displayTemplates: () => [
@@ -59,6 +63,7 @@ vi.mock('../templates/mismatch.js', () => ({
   pixelAccounting: {
     read: () => ({
       ensure: fixture.progressIn,
+      unpainted: fixture.unpaintedIn,
       tile: () => {
         const disagreements = fixture.disagreementsIn()
         const markers = fixture.mismatchesIn()
@@ -68,7 +73,7 @@ vi.mock('../templates/mismatch.js', () => ({
               disagreements,
               markers,
               mismatched: markers,
-              unpainted: new Uint32Array(0),
+              unpainted: fixture.unpainted,
             }
       },
     }),
@@ -90,6 +95,10 @@ vi.mock('../wplace-paint.js', () => ({
 vi.mock('./fade.js', () => ({
   markerFades: {
     advance: (_id: string, target: number) => ({ value: target, done: true }),
+    prune: vi.fn(),
+  },
+  selectedColourMarkerFades: {
+    advance: fixture.selectedFade,
     prune: vi.fn(),
   },
   templateFades: {
@@ -144,7 +153,7 @@ const context = (): WebGL2RenderingContext => {
     bufferData: vi.fn(),
     vertexAttribIPointer: vi.fn(),
     useProgram: vi.fn(),
-    getUniformLocation: vi.fn(() => ({})),
+    getUniformLocation: vi.fn((_program: unknown, name: string) => name),
     uniform2f: vi.fn(),
     uniform1f: vi.fn(),
     uniform1ui: vi.fn(),
@@ -178,14 +187,21 @@ describe('marker work selection', () => {
     fixture.appearance.markMismatch = false
     fixture.appearance.markSelectedColour = false
     fixture.marks = new Uint32Array(0)
+    fixture.unpainted = new Uint32Array(0)
     fixture.mismatchesIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
+    fixture.unpaintedIn.mockReset().mockImplementation(() => fixture.unpainted)
+    fixture.colourMarksIn.mockReset().mockImplementation((marks: Uint32Array) => marks)
     fixture.progressIn.mockReset().mockReturnValue(true)
     fixture.markerBudget = 16_384
     fixture.moving = false
     fixture.quad = { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 }
     fixture.paintOpen = false
     fixture.selected = null
+    fixture.selectedFade.mockReset().mockImplementation((_id: string, target: number) => ({
+      value: target,
+      done: true,
+    }))
   })
 
   it('does not calculate mismatch answers for a template whose markers are disabled', async () => {
@@ -318,15 +334,76 @@ describe('marker work selection', () => {
     fixture.paintOpen = true
     fixture.selected = 1
     fixture.marks = new Uint32Array(1_000)
+    fixture.unpainted = fixture.marks
     const gl = context()
     const { markerLayer } = await import('./markers.js')
     markerLayer.onAdd(null, gl)
 
     markerLayer.render(gl)
 
-    expect(fixture.disagreementsIn).toHaveBeenCalledOnce()
+    expect(fixture.unpaintedIn).toHaveBeenCalledOnce()
+    expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 1)
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
     expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.1)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('does not turn wrong-colour mismatches into selected-colour markers', async () => {
+    fixture.appearance.markSelectedColour = true
+    fixture.paintOpen = true
+    fixture.selected = 1
+    fixture.marks = new Uint32Array([packMismatchMark(1, 1, 1)])
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 1)
+    expect(gl.drawArrays).not.toHaveBeenCalled()
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('draws selected-colour markers without waiting for full mismatch accounting', async () => {
+    fixture.appearance.markSelectedColour = true
+    fixture.paintOpen = true
+    fixture.selected = 1
+    fixture.unpainted = new Uint32Array([packMismatchMark(1, 1, 1)])
+    fixture.disagreementsIn.mockReturnValue(null)
+    fixture.mismatchesIn.mockReturnValue(null)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.unpainted.length)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('cross-fades the outgoing and incoming selected colours', async () => {
+    fixture.appearance.markSelectedColour = true
+    fixture.paintOpen = true
+    fixture.selected = 1
+    fixture.unpainted = new Uint32Array([packMismatchMark(1, 1, 1), packMismatchMark(2, 1, 2)])
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+    markerLayer.render(gl)
+
+    fixture.selected = 2
+    fixture.selectedFade.mockImplementation((id: string, target: number) => ({
+      value: id === '1' || id === '2' ? 0.5 : target,
+      done: false,
+    }))
+    fixture.colourMarksIn.mockClear()
+    markerLayer.render(gl)
+
+    expect(fixture.selectedFade).toHaveBeenCalledWith('1', 0, expect.any(Number))
+    expect(fixture.selectedFade).toHaveBeenCalledWith('2', 1, expect.any(Number))
+    expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 1)
+    expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 2)
+    expect(gl.uniform1f).toHaveBeenCalledWith('u_fade', 0.5)
     markerLayer.onRemove(null, gl)
   })
 })

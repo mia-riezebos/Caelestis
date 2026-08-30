@@ -134,6 +134,14 @@ export const templateFades = ramps()
 export const markerFades = ramps({ startAt: 'target' })
 
 /**
+ * The selected-colour guide's palette-index cross-fades.
+ *
+ * This is separate from `markerFades`: that ramp owns the settings toggle, while these ramps let
+ * the old selected colour leave as the new one arrives without changing the toggle's timing.
+ */
+export const selectedColourMarkerFades = ramps()
+
+/**
  * One ramp per template per palette entry, keyed `<template id>:<index>`.
  *
  * A hidden colour is alpha 0 in the 64×1 palette texture, so fading one is a 256-byte upload rather

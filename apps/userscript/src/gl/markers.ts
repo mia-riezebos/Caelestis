@@ -22,7 +22,7 @@ import {
   type TileQuad,
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
-import { markerFades, templateFades } from './fade.js'
+import { markerFades, selectedColourMarkerFades, templateFades } from './fade.js'
 import {
   batchMarkerWork,
   beginMarkerBatchFrame,
@@ -37,6 +37,9 @@ import {
 } from './marker-density.js'
 
 export { markerBatchMemoryBytes, markerDensityMemoryBytes }
+
+const selectedMarkerColours = new Set<number>()
+let latestSelectedMarkerColour: number | null = null
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -440,10 +443,26 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const now = performance.now()
   let animating = false
   const selected = isPaintOpen() ? (selectedColour() ?? -1) : -1
+  if (selected >= 0 && selected !== latestSelectedMarkerColour) {
+    selectedMarkerColours.add(selected)
+    latestSelectedMarkerColour = selected
+  }
+  const selectedColourKeys = new Set<string>()
+  const selectedColourFades: { index: number; fade: number }[] = []
+  for (const index of [...selectedMarkerColours]) {
+    const key = String(index)
+    const target = index === latestSelectedMarkerColour ? 1 : 0
+    const fade = selectedColourMarkerFades.advance(key, target, now)
+    if (!fade.done) animating = true
+    if (target > 0 || fade.value > 0 || !fade.done) selectedColourKeys.add(key)
+    if (fade.value > 0) selectedColourFades.push({ index, fade: fade.value })
+    if (target === 0 && fade.done) selectedMarkerColours.delete(index)
+  }
+  selectedColourMarkerFades.prune(selectedColourKeys)
   const wanted: {
     template: PlacedTemplate
     mismatchFade: number
-    selectedFade: number
+    selectedFades: readonly { index: number; fade: number }[]
   }[] = []
   const progressOnly: PlacedTemplate[] = []
   const markerKeys = new Set<string>()
@@ -473,16 +492,22 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     )
     if (!templateFade.done) animating = true
     const mismatchFade = mismatch.value * templateFade.value
-    const selectedFade = selectedMarker.value * templateFade.value
+    const selectedFades = selectedColourFades
+      .filter(({ index }) => !isColourHidden(appearance, index))
+      .map(({ index, fade }) => ({
+        index,
+        fade: fade * selectedMarker.value * templateFade.value,
+      }))
+    const hasSelectedFade = selectedFades.some(({ fade }) => fade > 0)
     if (
       template.serverUrl === undefined &&
       isTemplateVisible(template) &&
       mismatchFade === 0 &&
-      selectedFade === 0
+      !hasSelectedFade
     )
       progressOnly.push(template)
-    if (mismatchFade > 0 || selectedFade > 0) {
-      wanted.push({ template, mismatchFade, selectedFade })
+    if (mismatchFade > 0 || hasSelectedFade) {
+      wanted.push({ template, mismatchFade, selectedFades })
     }
   }
   markerFades.prune(markerKeys)
@@ -527,7 +552,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const renderBudget = markerBudget
   const profiling = isProfileEnabled()
   const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
-  for (const { template, mismatchFade, selectedFade } of wanted) {
+  for (const { template, mismatchFade, selectedFades } of wanted) {
     const accounting = pixelAccounting.read(template)
     const appearance = appearanceOf(template)
     const mismatchStyle: MarkerStyle = {
@@ -553,24 +578,28 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     }
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
-      const tileAccounting = accounting.tile(tile.tile)
-      if (tileAccounting === null) {
-        deferred = true
-        continue
-      }
-      if (selectedFade > 0 && selected >= 0) {
-        const marks = colourMarksIn(tileAccounting.disagreements, selected)
-        if (marks.length > 0) {
-          selectedWork.push({
-            tile,
-            marks,
-            style: selectedStyle,
-            fade: selectedFade,
-          })
+      if (selectedFades.length > 0) {
+        const unpainted = accounting.unpainted(tile.tile)
+        if (unpainted === null) deferred = true
+        else {
+          for (const selectedFade of selectedFades) {
+            if (selectedFade.fade <= 0) continue
+            const marks = colourMarksIn(unpainted, selectedFade.index)
+            if (marks.length > 0) {
+              selectedWork.push({
+                tile,
+                marks,
+                style: selectedStyle,
+                fade: selectedFade.fade,
+              })
+            }
+          }
         }
       }
       if (mismatchFade > 0) {
-        if (tileAccounting.markers.length > 0) {
+        const tileAccounting = accounting.tile(tile.tile)
+        if (tileAccounting === null) deferred = true
+        else if (tileAccounting.markers.length > 0) {
           mismatchWork.push({
             tile,
             marks: tileAccounting.markers,
@@ -701,6 +730,9 @@ export const markerLayer = {
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
     releaseMarkers(gl)
+    selectedMarkerColours.clear()
+    latestSelectedMarkerColour = null
+    selectedColourMarkerFades.prune(new Set())
   },
 
   render(gl: WebGL2RenderingContext): void {

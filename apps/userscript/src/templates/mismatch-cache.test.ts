@@ -256,6 +256,75 @@ describe('visible mismatch answer retention', () => {
     )
   })
 
+  it('lets an unpainted-only worker answer land before scheduling wrong-colour accounting', async () => {
+    const selected = template(211)
+    harness.templates = [selected]
+    harness.pixels[0] = 255
+    harness.workerAvailable = true
+    let finishUnpainted: ((outcome: ScanOutcome) => void) | undefined
+    let finishWrong: ((outcome: ScanOutcome) => void) | undefined
+    const unpaintedOutcome: ScanOutcome = {
+      wrong: new Uint32Array(0),
+      unpainted: new Uint32Array([0]),
+      asserted: 1,
+      completed: 0,
+      mismatched: 0,
+      progressUnpainted: 1,
+      progressAsserted: 1,
+      progressByColour: new Uint32Array([0, 0, 0, 1]),
+    }
+    const wrongOutcome: ScanOutcome = {
+      ...unpaintedOutcome,
+      wrong: new Uint32Array(0),
+      unpainted: new Uint32Array(0),
+    }
+    harness.workerScan
+      .mockReturnValueOnce(
+        new Promise<ScanOutcome>((resolve) => {
+          finishUnpainted = resolve
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<ScanOutcome>((resolve) => {
+          finishWrong = resolve
+        }),
+      )
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn, unpaintedIn } = await import(
+      './mismatch.js'
+    )
+
+    beginMismatchFrame()
+    expect(unpaintedIn(selected, { x: 0, y: 0 })).toBeNull()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toBeNull()
+    endMismatchFrame()
+    expect(harness.workerScan).toHaveBeenCalledOnce()
+    expect(harness.workerScan.mock.calls[0]?.[0]).toMatchObject({
+      collectWrong: false,
+      collectUnpainted: true,
+    })
+
+    finishUnpainted?.(unpaintedOutcome)
+    await vi.waitFor(() => {
+      beginMismatchFrame()
+      expect(unpaintedIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+      expect(mismatchesIn(selected, { x: 0, y: 0 })).toBeNull()
+      endMismatchFrame()
+      expect(harness.workerScan).toHaveBeenCalledTimes(2)
+    })
+    expect(harness.workerScan.mock.calls[1]?.[0]).toMatchObject({
+      collectWrong: true,
+      collectUnpainted: false,
+    })
+
+    finishWrong?.(wrongOutcome)
+    await vi.waitFor(() => {
+      beginMismatchFrame()
+      expect(unpaintedIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+      expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(0)
+      endMismatchFrame()
+    })
+  })
+
   it('resumes an unavailable outline scan when captured tile pixels arrive', async () => {
     const selected = template(206)
     harness.templates = [selected]
