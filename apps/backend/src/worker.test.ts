@@ -42,8 +42,11 @@ const env = () => {
     TELEMETRY: { getByName: () => ({}) },
     STATUS_READ_MODEL: {
       getByName: () => ({
-        readManifestProjection: (input: ManifestProjectionInput) =>
-          statusReadModel.readManifestProjection(input),
+        readManifestProjectionMeasured: async (input: ManifestProjectionInput) => ({
+          success: true as const,
+          value: await statusReadModel.readManifestProjection?.(input),
+          usage: { rowsRead: 0, rowsWritten: 0, measuredQueries: 0, unmeasuredQueries: 0 },
+        }),
       }),
     },
     ALARM_WATCHER: { getByName: () => ({ schedule: async () => undefined }) },
