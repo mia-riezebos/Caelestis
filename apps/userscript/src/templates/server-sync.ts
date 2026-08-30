@@ -14,6 +14,7 @@ import {
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
 import { observedUserscriptRequest } from '../server-observability.js'
+import { registerServerSyncResource } from '../server-sync-coordinator.js'
 import { serverEndpoint } from '../server-url.js'
 import {
   activeServerToken,
@@ -646,36 +647,22 @@ export const syncServerTemplates = async (
   }
 }
 
-/** How often to ask a server whether anything changed. */
-const POLL_MS = 60_000
-let timer: ReturnType<typeof setInterval> | null = null
-
-const syncAll = (metadata: SyncRequestMetadata): void => {
-  for (const server of getState().servers)
-    void syncServerTemplates(server, undefined, undefined, WORLD_TEMPLATE_SURFACE, metadata)
-}
-
 /**
  * Keep every connected server's templates on the canvas.
  *
- * Polled rather than pushed, because there is nothing to push over: a server is a plain HTTP host
- * with no socket. A minute is chosen against what changes — someone publishing a template or
- * uploading new artwork — rather than against paint activity, which this does not track.
+ * The shared coordinator owns fallback timing and calls this module for manifest work. Keeping the
+ * resource registration here means the template reconciler has no knowledge of browser lifecycle
+ * or of the status resource that shares its schedule.
  */
 export const installServerSync = (): void => {
-  syncAll({ mode: 'recovery', reason: 'connect' })
-  if (timer !== null) clearInterval(timer)
-  timer = setInterval(() => syncAll({ mode: 'compatibility-poll', reason: 'interval' }), POLL_MS)
+  registerServerSyncResource('manifest', async (server, metadata) => {
+    await syncServerTemplates(server, undefined, undefined, WORLD_TEMPLATE_SURFACE, metadata)
+    // Successful manifests announce their revision through onServerContents. Keeping that single
+    // response path avoids manufacturing a second snapshot or hash here.
+    return null
+  })
   /**
-   * And whenever the set of servers changes.
-   *
-   * Polling alone was not enough, and in the ordinary case it was not enough by a whole minute:
-   * nothing is connected when this installs — the stored servers are loaded later, by the panel —
-   * so the first sweep finds nothing and the first real one is a poll away. Connecting a server and
-   * watching an empty map for up to sixty seconds reads as broken.
-   *
-   * Cheap to over-call. A server whose templates are all at versions we hold does no work beyond one
-   * manifest fetch, which is the same request the tree makes anyway.
+   * End obsolete chunk generations here; the coordinator independently starts the replacement.
    */
   onStateChange(() => {
     const connected = getState().servers.filter((server) => server.status === 'connected')
@@ -692,8 +679,8 @@ export const installServerSync = (): void => {
       }
     }
     lastConnected = connected
-    syncAll({ mode: 'recovery', reason: 'state-change' })
   })
+  lastConnected = getState().servers.filter((server) => server.status === 'connected')
 }
 
 /** Which servers were connected last time state changed, so an unrelated setting does not resync. */
