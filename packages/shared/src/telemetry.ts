@@ -78,6 +78,21 @@ export interface TileOffer {
 export interface TileOfferResponse {
   /** Tiles the server does not already have and wants the bytes for. */
   readonly wanted: readonly TileKey[]
+  /** Authoritative progress replacements produced while accepting already-held tile bytes. */
+  readonly status?: StatusDelta
+}
+
+/** Ordered replacements for the templates changed between two materialized status revisions. */
+export interface StatusDelta {
+  readonly baseRevision: number
+  readonly revision: number
+  readonly templates: readonly TemplateStatus[]
+  readonly removedTemplateIds: readonly string[]
+}
+
+/** Successful tile uploads carry their authoritative progress change instead of requiring a read. */
+export interface TileUploadResponse {
+  readonly status?: StatusDelta
 }
 
 /** One reporter offering the template-covered tiles it has just fetched from wplace. */

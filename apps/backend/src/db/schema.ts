@@ -43,6 +43,7 @@ export const statusReadModelRevisions = sqliteTable(
     revision: integer('revision').notNull(),
     publicFingerprint: text('public_fingerprint').notNull(),
     adminFingerprint: text('admin_fingerprint').notNull(),
+    fingerprintsDirty: integer('fingerprints_dirty', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     check(
@@ -52,7 +53,9 @@ export const statusReadModelRevisions = sqliteTable(
         AND length(${table.publicFingerprint}) = 64
         AND ${table.publicFingerprint} NOT GLOB '*[^0-9a-f]*'
         AND length(${table.adminFingerprint}) = 64
-        AND ${table.adminFingerprint} NOT GLOB '*[^0-9a-f]*'`,
+        AND ${table.adminFingerprint} NOT GLOB '*[^0-9a-f]*'
+        AND typeof(${table.fingerprintsDirty}) = 'integer'
+        AND ${table.fingerprintsDirty} IN (0, 1)`,
     ),
   ],
 )

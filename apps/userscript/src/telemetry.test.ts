@@ -45,6 +45,17 @@ vi.mock('./state.js', () => ({
   },
 }))
 vi.mock('./server-sync-coordinator.js', () => ({
+  applyServerSyncDelta: (
+    _server: unknown,
+    _scope: string,
+    _resource: string,
+    _baseRevision: string,
+    _revision: string,
+    apply: () => void,
+  ) => {
+    apply()
+    return 'applied'
+  },
   registerServerSyncResource: (resource: {
     id: string
     refresh: (server: unknown, reason: 'connect' | 'manifest-applied') => Promise<unknown>
@@ -313,7 +324,7 @@ describe('server telemetry client', () => {
     ])
   })
 
-  it('refreshes progress when an offer records a blob the server already has', async () => {
+  it('applies offered progress without another status read', async () => {
     let offered = false
     let statusReadsAfterOffer = 0
     const requests: string[] = []
@@ -323,24 +334,30 @@ describe('server telemetry client', () => {
         const url = String(input)
         requests.push(url)
         if (url.includes('/telemetry/status')) {
-          if (!offered) return Response.json({ templates: [] })
+          if (!offered) return Response.json({ revision: 1, templates: [] })
           statusReadsAfterOffer += 1
-          return Response.json({
-            templates: [
-              {
-                templateId: template.id,
-                correct: 1,
-                wrong: 1,
-                blank: 1,
-                total: 3,
-                observedAt: 1_000,
-              },
-            ],
-          })
+          return Response.json({ revision: 2, templates: [] })
         }
         if (url.endsWith('/telemetry/tiles/offers')) {
           offered = true
-          return Response.json({ wanted: [] })
+          return Response.json({
+            wanted: [],
+            status: {
+              baseRevision: 1,
+              revision: 2,
+              templates: [
+                {
+                  templateId: template.id,
+                  correct: 1,
+                  wrong: 1,
+                  blank: 1,
+                  total: 3,
+                  observedAt: 1_000,
+                },
+              ],
+              removedTemplateIds: [],
+            },
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -351,7 +368,8 @@ describe('server telemetry client', () => {
 
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
 
-    await vi.waitFor(() => expect(statusReadsAfterOffer).toBe(1))
+    await vi.waitFor(() => expect(serverProgressFor(server, template)).not.toBeNull())
+    expect(statusReadsAfterOffer).toBe(0)
     expect(requests.some((url) => url.includes('/telemetry/tiles/1/2/'))).toBe(false)
     expect(serverProgressFor(server, template)).toEqual({
       completed: 1,

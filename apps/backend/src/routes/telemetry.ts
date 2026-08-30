@@ -417,7 +417,8 @@ export const createTelemetryRoutes = (
         alreadyKnown: result.alreadyKnown,
         rejected: result.rejected,
       })
-      return c.json({ wanted: result.wanted })
+      const status = result.projection?.[caller.scope === 'admin' ? 'admin' : 'public']
+      return c.json({ wanted: result.wanted, ...(status === undefined ? {} : { status }) })
     })
   })
 
@@ -466,7 +467,10 @@ export const createTelemetryRoutes = (
         },
         bytes,
       ),
-      () => c.body(null, 204),
+      (projection) => {
+        const status = projection?.[caller.scope === 'admin' ? 'admin' : 'public']
+        return c.json(status === undefined ? {} : { status })
+      },
     )
   })
 

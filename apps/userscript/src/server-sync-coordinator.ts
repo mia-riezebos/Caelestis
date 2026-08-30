@@ -228,6 +228,38 @@ export const applyServerSyncRevision = (
   armTimer()
 }
 
+export type ServerSyncDeltaOutcome = 'applied' | 'duplicate' | 'reconcile' | 'stale-connection'
+
+/**
+ * Apply one ordered authoritative delta. Exact base matching makes duplicate, stale, and
+ * out-of-order mutation responses harmless; a gap schedules one bounded reconciliation.
+ */
+export const applyServerSyncDelta = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+  baseRevision: string,
+  revision: string,
+  apply: () => void,
+): ServerSyncDeltaOutcome => {
+  if (!isCurrentServerConnection(server)) return 'stale-connection'
+  const current = schedules.get(scheduleKey(server, scope, resource))?.revision
+  if (current === revision) return 'duplicate'
+  if (current === undefined || current !== baseRevision) {
+    requestServerSync('revision-gap', resource, server)
+    return 'reconcile'
+  }
+  try {
+    apply()
+  } catch {
+    requestServerSync('revision-gap', resource, server)
+    return 'reconcile'
+  }
+  applyResult(server, scope, resource, { status: 'changed', revision })
+  armTimer()
+  return 'applied'
+}
+
 const recover = (reason: 'focus' | 'online'): void => {
   if (activeDocument()) requestServerSync(reason)
   else clearTimer()
