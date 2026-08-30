@@ -11,6 +11,7 @@ const DAYS_PER_MONTH = 30
 export const FREE_TIER_LIMITS = {
   workerRequestsPerDay: 100_000,
   durableObjectRequestsPerDay: 100_000,
+  d1RowsReadPerDay: 5_000_000,
   d1RowsWrittenPerDay: 100_000,
   d1StorageBytes: 5_000_000_000,
   r2StorageBytes: 10_000_000_000,
@@ -54,6 +55,10 @@ export interface CapacityInputs {
   readonly historyDays: number
   /** Calibrate this from D1 database size divided by retained logical rows. */
   readonly d1BytesPerLogicalRow: number
+  /** D1 bills every row scanned by a status query. Calibrate this from D1 Insights. */
+  readonly d1RowsReadPerStatusRequest: number
+  /** Manifest, dashboard, and other queries outside the telemetry request model. */
+  readonly otherD1RowsReadPerDay: number
   readonly otherWorkerRequestsPerDay: number
 }
 
@@ -72,6 +77,7 @@ export interface CapacityEstimate {
     readonly workerRequests: number
     readonly durableObjectRequests: number
     readonly durableObjectAlarmRequests: number
+    readonly d1RowsRead: number
     readonly d1LogicalRowMutations: number
     /** Conservative ceiling that counts every applicable table and index mutation. */
     readonly d1RowsWrittenUpperBound: number
@@ -95,6 +101,7 @@ export interface CapacityEstimate {
   readonly utilization: {
     readonly workerRequests: number
     readonly durableObjectRequests: number
+    readonly d1RowsRead: number
     readonly d1RowsWritten: number
     readonly d1Storage: number
     readonly r2ClassAOperations: number
@@ -194,6 +201,8 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
   const serverOnlyTileObservations = Math.max(0, newTileVersions - tileUploadRequests)
   const tileObservations = tileOffers + serverOnlyTileObservations
   const statusPollRequests = activeUserHours * (3_600 / inputs.statusPollIntervalSeconds)
+  const d1RowsRead =
+    statusPollRequests * inputs.d1RowsReadPerStatusRequest + inputs.otherD1RowsReadPerDay
 
   const paintTemplateTouches = classifiedPaintEvents * inputs.averageTemplatesPerPaint
   const paintTileTouches = classifiedPaintEvents * inputs.averageTilesPerPaint
@@ -284,12 +293,21 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
     FREE_TIER_LIMITS.workerRequestsPerDay - fixedWorkerRequests,
     FREE_TIER_LIMITS.durableObjectRequestsPerDay - durableObjectAlarmRequests,
   )
-  const minimumPaintBatchWindowSecondsForFreeTier = minimumBatchWindow(
-    paintEvents,
-    paintRatePerUserSecond,
-    inputs.maxPaintEventsPerReport,
-    maximumPaintRequests,
-  )
+  const nonBatchableLimitExceeded =
+    d1RowsRead > FREE_TIER_LIMITS.d1RowsReadPerDay ||
+    d1RowsWrittenUpperBound > FREE_TIER_LIMITS.d1RowsWrittenPerDay ||
+    d1Bytes > FREE_TIER_LIMITS.d1StorageBytes ||
+    r2ClassAOperations > FREE_TIER_LIMITS.r2ClassAPerMonth / DAYS_PER_MONTH ||
+    r2ClassBOperations > FREE_TIER_LIMITS.r2ClassBPerMonth / DAYS_PER_MONTH ||
+    r2Bytes > FREE_TIER_LIMITS.r2StorageBytes
+  const minimumPaintBatchWindowSecondsForFreeTier = nonBatchableLimitExceeded
+    ? null
+    : minimumBatchWindow(
+        paintEvents,
+        paintRatePerUserSecond,
+        inputs.maxPaintEventsPerReport,
+        maximumPaintRequests,
+      )
 
   const singleShardPeakRequestsPerSecond =
     inputs.activeUsers *
@@ -302,6 +320,7 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
   const utilizationWithoutFirstLimit = {
     workerRequests: workerRequests / FREE_TIER_LIMITS.workerRequestsPerDay,
     durableObjectRequests: durableObjectRequests / FREE_TIER_LIMITS.durableObjectRequestsPerDay,
+    d1RowsRead: d1RowsRead / FREE_TIER_LIMITS.d1RowsReadPerDay,
     d1RowsWritten: d1RowsWrittenUpperBound / FREE_TIER_LIMITS.d1RowsWrittenPerDay,
     d1Storage: d1Bytes / FREE_TIER_LIMITS.d1StorageBytes,
     r2ClassAOperations: r2ClassAOperations / (FREE_TIER_LIMITS.r2ClassAPerMonth / DAYS_PER_MONTH),
@@ -331,6 +350,7 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
       workerRequests,
       durableObjectRequests,
       durableObjectAlarmRequests,
+      d1RowsRead,
       d1LogicalRowMutations,
       d1RowsWrittenUpperBound,
       r2ClassAOperations,

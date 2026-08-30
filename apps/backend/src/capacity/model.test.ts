@@ -17,6 +17,8 @@ const inputs = (patch: Partial<CapacityInputs> = {}): CapacityInputs => ({
   averageTileBytes: 100_000,
   historyDays: 30,
   d1BytesPerLogicalRow: 200,
+  d1RowsReadPerStatusRequest: 100,
+  otherD1RowsReadPerDay: 0,
   otherWorkerRequestsPerDay: 0,
   ...patch,
 })
@@ -32,7 +34,7 @@ describe('capacity model', () => {
     expect(estimate.traffic.statusPollRequests).toBe(4_800)
   })
 
-  it('shows that status polling nearly exhausts Workers Free for 100 eight-hour clients', () => {
+  it('shows that status polling exhausts D1 reads before Workers for 100 eight-hour clients', () => {
     const estimate = estimateCapacity(
       inputs({
         activeUsers: 100,
@@ -45,7 +47,8 @@ describe('capacity model', () => {
 
     expect(estimate.traffic.statusPollRequests).toBe(96_000)
     expect(estimate.daily.workerRequests).toBe(104_000)
-    expect(estimate.utilization.firstLimit).toBe('workerRequests')
+    expect(estimate.daily.d1RowsRead).toBe(9_600_000)
+    expect(estimate.utilization.firstLimit).toBe('d1RowsRead')
     expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBeNull()
   })
 
@@ -54,15 +57,34 @@ describe('capacity model', () => {
       inputs({
         activeUsers: 100,
         activeHoursPerUser: 4,
-        paintEventsPerUserHour: 200,
+        paintEventsPerUserHour: 25,
         tileFetchesPerUserHour: 0,
         tileVersionsPerCoveredTileDay: 0,
         maxPaintEventsPerReport: 64,
+        statusPollIntervalSeconds: 300,
+        otherWorkerRequestsPerDay: 90_000,
       }),
     )
 
-    expect(estimate.daily.workerRequests).toBe(128_000)
-    expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBeCloseTo(9.692, 3)
+    expect(estimate.daily.workerRequests).toBe(104_800)
+    expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBeCloseTo(132.923, 3)
+  })
+
+  it('does not prescribe paint batching for a D1 read overage', () => {
+    const estimate = estimateCapacity(
+      inputs({
+        activeUsers: 1,
+        activeHoursPerUser: 1,
+        paintEventsPerUserHour: 0,
+        tileFetchesPerUserHour: 0,
+        tileVersionsPerCoveredTileDay: 0,
+        d1RowsReadPerStatusRequest: 50_000,
+      }),
+    )
+
+    expect(estimate.daily.workerRequests).toBe(120)
+    expect(estimate.daily.d1RowsRead).toBe(6_000_000)
+    expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBeNull()
   })
 
   it('keeps R2 tile blobs cumulative when SQL history compacts', () => {

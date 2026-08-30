@@ -13,8 +13,9 @@ The runtime decision commits to "free-tier viable for small alliances", which is
 number is measured rather than asserted. Produce a model, then check it against real traffic once
 something runs.
 
-Verified plan limits are recorded in `11-runtime-and-storage-platform`. The binding one is **100k
-rows written/day** on both D1 and DO, and **100k DO requests/day**.
+The original plan limits drifted after the platform and implementation changed. The current model
+uses the limits verified in the Cloudflare documentation and calibrates query costs against D1
+Insights rather than assuming that request count is a proxy for database work.
 
 ### Model to build
 
@@ -22,17 +23,18 @@ Inputs: active users, templates, tiles covered, paint rate per user, pan/fetch r
 
 Outputs, per day:
 
-- **D1 rows written** — 1m telemetry rows (only for buckets with activity), paint-event aggregate
-  rows `(username, template, minute)`, tile-history rows, compaction writes.
-- **DO requests** — paint reports and tile offers, after client-side batching.
+- **D1 rows read and written** — status-query scans, 1m telemetry rows (only for buckets with
+  activity), paint-event aggregate rows `(username, template, minute)`, tile-history rows, and
+  compaction writes.
+- **DO requests** — paint reports and alarm invocations. Tile offers no longer touch the Durable
+  Object.
 - **R2 storage and Class A/B operations** — chunks are tiny and static; the tile store is the real
   consumer at 70–125 KB per distinct tile version.
 - **D1 storage** — ~2k time-series rows per template steady-state, plus tile history rows.
 
 ### Questions the model must answer
 
-- With `shardStrategy: 'single'`, how many active users before 100k DO requests/day is hit? This is
-  probably the first wall, since it scales with people rather than templates.
+- With `shardStrategy: 'single'`, how many active users fit before a current free-tier quota is hit?
 - How much does client-side batching actually buy — what batch window turns a 100-user alliance from
   over-budget to under?
 - What does the tile store cost per day for an alliance covering N tiles, at the observed 70–125 KB
@@ -49,13 +51,13 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
 
 ## Acceptance criteria
 
-- [ ] A tested model accepts active users, templates, covered tiles, paint traffic, tile-fetch
+- [x] A tested model accepts active users, templates, covered tiles, paint traffic, tile-fetch
       traffic, active time, batching, tile size, and tile-change rate.
-- [ ] The model reports daily Worker and Durable Object requests, D1 logical writes, D1 retained
-      rows, and R2 operations and storage growth.
-- [ ] The model reflects the current telemetry route, single-shard counter store, decay ladders,
+- [x] The model reports daily Worker and Durable Object requests, D1 reads and logical writes, D1
+      retained rows, and R2 operations and storage growth.
+- [x] The model reflects the current telemetry route, single-shard counter store, decay ladders,
       250 ms tile-offer batching, and lack of physical tile-blob GC.
-- [ ] A repeatable read-only command compares a production window with the corresponding model
+- [x] A repeatable read-only command compares a production window with the corresponding model
       inputs and Cloudflare usage metrics.
 - [ ] The README gives one measured free-tier scenario, the first limit it reaches, and the first
       knob to turn.
@@ -64,7 +66,7 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
 
 - [x] Reconcile the capacity contract with the current telemetry pipeline and Cloudflare limits.
 - [x] Implement and test the capacity model for Workers, Durable Objects, D1, and R2.
-- [ ] Add a repeatable live measurement command and compare a production window with the model.
+- [x] Add a repeatable live measurement command and compare a production window with the model.
 - [ ] Document the measured ceiling and first knob in the README, then run repository validation.
 
 ## Notes
@@ -86,8 +88,20 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
   lifetime cost of each decay-ladder row. Live analytics supplies the actual billed count.
 - Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 7
   tests; backend, shared, and userscript type checks passed after building workspace outputs.
+- `pnpm capacity:observe` uses read-only D1 SQL, D1 Insights, and Cloudflare GraphQL analytics. Its
+  2026-08-30 production window measured 20,779 Worker requests, 58 Durable Object invocations,
+  7,319,387 D1 rows read, 14,719 D1 rows written, 136 R2 Class A operations, 15,474 R2 Class B
+  operations, and 71.4 MB of R2 payload storage.
+- The calibrated model estimated 9,126 telemetry Worker requests, 52 Durable Object invocations,
+  7,027,389 D1 rows read, a 13,744-row conservative D1 write ceiling, 135 R2 Class A operations,
+  3,346 modeled R2 Class B operations, and 59.4 MB of tile payload storage. The residual Worker and
+  R2 read traffic comes from manifest, dashboard, and other paths outside the telemetry model.
+- D1 reads are the first wall: D1 Insights measured 7,027,389 rows, or 141% of the 5 million rows
+  read/day Free allowance. The 8,378 status calls scanned about 520 rows each and accounted for
+  4,356,332 of those rows. Paint batching cannot reduce that fixed query traffic.
 - Limit sources, checked 2026-08-30:
   - https://developers.cloudflare.com/workers/platform/limits/
   - https://developers.cloudflare.com/durable-objects/platform/pricing/
   - https://developers.cloudflare.com/d1/platform/pricing/
+  - https://developers.cloudflare.com/d1/observability/metrics-analytics/
   - https://developers.cloudflare.com/r2/pricing/
