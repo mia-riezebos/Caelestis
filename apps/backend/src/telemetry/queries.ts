@@ -15,8 +15,9 @@ import {
   tileKey,
 } from '@caelestis/shared'
 import { Effect } from 'effect'
+import { recordCacheOutcome } from '../metrics/request-metrics.js'
 import { LADDER_RESOLUTIONS, TILE_HISTORY_RESOLUTIONS } from '../ports/index.js'
-import { SqlStoreService } from '../runtime/backend-runtime.js'
+import { SqlStoreService, StatusReadModelService } from '../runtime/backend-runtime.js'
 import { SqlStoreReadError } from '../runtime/errors.js'
 
 interface HistoryTier {
@@ -197,13 +198,14 @@ export const readAlarms = (
 export const readStatus = (
   season: number,
   includeUnpublished: boolean,
-): Effect.Effect<StatusResponse, SqlStoreReadError, SqlStoreService> =>
+): Effect.Effect<StatusResponse, SqlStoreReadError, StatusReadModelService> =>
   Effect.gen(function* () {
-    const sql = yield* SqlStoreService
-    const templates = yield* sqlRead('readTemplateStatuses', () =>
-      sql.readTemplateStatuses(season, includeUnpublished),
+    const readModel = yield* StatusReadModelService
+    const read = yield* sqlRead('reconcileStatusSnapshot', () =>
+      readModel.reconcileSnapshot(season, includeUnpublished ? 'admin' : 'public'),
     )
-    return { templates }
+    recordCacheOutcome(read.cacheOutcome)
+    return read.snapshot
   })
 
 export const readHistory = (input: {

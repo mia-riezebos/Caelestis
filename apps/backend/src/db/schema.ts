@@ -35,6 +35,28 @@ export const serverSettings = sqliteTable(
   (table) => [check('server_settings_single_row_check', sql`${table.id} = 1`)],
 )
 
+/** D1-owned rebuild metadata keeps season revisions monotonic if a projection object is lost. */
+export const statusReadModelRevisions = sqliteTable(
+  'status_read_model_revisions',
+  {
+    season: integer('season').primaryKey(),
+    revision: integer('revision').notNull(),
+    publicFingerprint: text('public_fingerprint').notNull(),
+    adminFingerprint: text('admin_fingerprint').notNull(),
+  },
+  (table) => [
+    check(
+      'status_read_model_revisions_values_check',
+      sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0
+        AND typeof(${table.revision}) = 'integer' AND ${table.revision} > 0
+        AND length(${table.publicFingerprint}) = 64
+        AND ${table.publicFingerprint} NOT GLOB '*[^0-9a-f]*'
+        AND length(${table.adminFingerprint}) = 64
+        AND ${table.adminFingerprint} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
 export const nodes = sqliteTable(
   'nodes',
   {

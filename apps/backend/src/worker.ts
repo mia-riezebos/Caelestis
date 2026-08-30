@@ -1,5 +1,6 @@
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
+import { DurableObjectStatusReadModel } from './adapters/cloudflare/do-status-read-model.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { type App, createApp } from './app.js'
 import { instrumentD1, measureRequest } from './metrics/request-metrics.js'
@@ -8,6 +9,7 @@ import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
 export { AlarmWatcher } from './alarm-watcher.js'
+export { StatusReadModelObject } from './status-read-model-object.js'
 export { TelemetryShard } from './telemetry-shard.js'
 
 /**
@@ -50,6 +52,15 @@ const tileBlobGcMode = (value: string | undefined): TileBlobGcMode => {
 
 /** One prepared Hono/Effect runtime per Worker environment object, released with that environment. */
 const preparedApps = new WeakMap<Env, App>()
+const preparedStatusReadModels = new WeakMap<Env, DurableObjectStatusReadModel>()
+
+const statusReadModelFor = (env: Env): DurableObjectStatusReadModel => {
+  const prepared = preparedStatusReadModels.get(env)
+  if (prepared !== undefined) return prepared
+  const created = new DurableObjectStatusReadModel(env.STATUS_READ_MODEL)
+  preparedStatusReadModels.set(env, created)
+  return created
+}
 
 const appFor = (env: Env): App => {
   const prepared = preparedApps.get(env)
@@ -59,6 +70,7 @@ const appFor = (env: Env): App => {
     new R2BlobStore(env.BLOBS),
     new D1SqlStore(instrumentD1(env.DB)),
     new DurableObjectCounterStore(env.TELEMETRY),
+    statusReadModelFor(env),
   )
   const app = createApp(context, {
     bootstrapAdminToken: env.ADMIN_TOKEN,
@@ -104,6 +116,7 @@ export default {
       blobs: new R2BlobStore(env.BLOBS),
       sql: new D1SqlStore(instrumentD1(env.DB)),
       counters: new DurableObjectCounterStore(env.TELEMETRY),
+      statusReadModel: statusReadModelFor(env),
     }
     const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
     ctx.waitUntil(

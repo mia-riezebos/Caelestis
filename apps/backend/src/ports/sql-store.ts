@@ -1009,6 +1009,13 @@ export interface SqlStore {
     options?: { readonly serverOwnedOnly?: boolean },
   ): Promise<readonly TemplateStatus[]>
 
+  /** Atomically retain or advance the revision for these exact authorization-scoped projections. */
+  commitStatusProjectionRevision(
+    season: number,
+    publicFingerprint: string,
+    adminFingerprint: string,
+  ): Promise<number>
+
   /** Atomically evaluate and persist one complete template snapshot. */
   evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,

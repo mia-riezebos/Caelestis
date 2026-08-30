@@ -5,6 +5,7 @@ import {
   BlobStoreService,
   CounterStoreService,
   SqlStoreService,
+  StatusReadModelService,
 } from './runtime/backend-runtime.js'
 import {
   ALARM_FOLLOW_UP_RETRY_MILLISECONDS,
@@ -38,10 +39,11 @@ export const runAlarmWatcherCycle = async (
       const blobs = yield* BlobStoreService
       const counters = yield* CounterStoreService
       const sql = yield* SqlStoreService
+      const statusReadModel = yield* StatusReadModelService
       yield* Effect.promise(async () => {
         try {
           const probes = await sql.listDueAlarmProbes(now)
-          const report = await runFollowUps({ blobs, counters, sql }, probes, {
+          const report = await runFollowUps({ blobs, counters, sql, statusReadModel }, probes, {
             now: seconds(Math.floor(now / 1_000)),
           })
           const decidedAt = clock()

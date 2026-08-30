@@ -7,13 +7,18 @@ import {
   TemplateIdentityError,
   TemplateNotFoundError,
 } from '../ports/index.js'
-import { BlobStoreService, SqlStoreService } from '../runtime/backend-runtime.js'
+import {
+  BlobStoreService,
+  SqlStoreService,
+  StatusReadModelService,
+} from '../runtime/backend-runtime.js'
 import {
   BackendStorageError,
   RequestValidationError,
   ResourceConflictError,
   ResourceNotFoundError,
 } from '../runtime/errors.js'
+import { repairCommittedStatusProjection } from '../status-read-model/port.js'
 import { readTileBlob } from '../telemetry/tile-blobs.js'
 import { type StoredTemplate, StoreTemplateError, storeTemplate } from './store.js'
 
@@ -111,10 +116,15 @@ export const replaceTemplateVersion = (input: {
   readonly originX: unknown
   readonly originY: unknown
   readonly png: Uint8Array
-}): Effect.Effect<StoredTemplate, TemplateError, BlobStoreService | SqlStoreService> =>
+}): Effect.Effect<
+  StoredTemplate,
+  TemplateError,
+  BlobStoreService | SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
     const existing = yield* Effect.tryPromise({
       try: () => sql.readTemplate(input.templateId),
       catch: (cause) => new BackendStorageError({ operation: 'readTemplate', cause }),
@@ -135,7 +145,7 @@ export const replaceTemplateVersion = (input: {
       )
     }
 
-    return yield* Effect.tryPromise({
+    const stored = yield* Effect.tryPromise({
       try: () =>
         storeTemplate(blobs, sql, {
           templateId: input.templateId,
@@ -151,6 +161,8 @@ export const replaceTemplateVersion = (input: {
         }),
       catch: (cause) => templateFailure('replaceTemplateVersion', cause),
     })
+    yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
+    return stored
   })
 
 export interface PatchTemplateInput {
@@ -164,15 +176,23 @@ export interface PatchTemplateInput {
 
 export const patchTemplate = (
   input: PatchTemplateInput,
-): Effect.Effect<Record<string, unknown>, TemplateError, SqlStoreService> =>
+): Effect.Effect<
+  Record<string, unknown>,
+  TemplateError,
+  SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
+    const existing = yield* Effect.tryPromise({
+      try: () => sql.readTemplate(input.templateId),
+      catch: (cause) => new BackendStorageError({ operation: 'readTemplate', cause }),
+    })
+    if (existing === null) {
+      return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
+    }
     if (input.timelapseFrozen === false && input.finished !== false) {
-      const current = yield* Effect.tryPromise({
-        try: () => sql.readTemplate(input.templateId),
-        catch: (cause) => new BackendStorageError({ operation: 'readTemplate', cause }),
-      })
-      if (current?.finished === true) {
+      if (existing.finished === true) {
         return yield* Effect.fail(
           new RequestValidationError({
             message: 'reopen the template before thawing its timelapse',
@@ -215,6 +235,10 @@ export const patchTemplate = (
       )
     }
 
+    if (input.published !== undefined) {
+      yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
+    }
+
     return {
       id: input.templateId,
       ...(input.name === undefined ? {} : { name: input.name }),
@@ -238,15 +262,26 @@ export const deleteTemplate = (
 ): Effect.Effect<
   void,
   ResourceNotFoundError | ResourceConflictError | BackendStorageError,
-  SqlStoreService
+  SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
+    const existing = yield* Effect.tryPromise({
+      try: () => sql.readTemplate(templateId),
+      catch: (cause) => new BackendStorageError({ operation: 'readTemplate', cause }),
+    })
+    if (existing === null) {
+      return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
+    }
     const deleted = yield* Effect.tryPromise({
       try: () => sql.deleteTemplate(templateId, expected),
       catch: (cause) => new BackendStorageError({ operation: 'deleteTemplate', cause }),
     })
-    if (deleted) return
+    if (deleted) {
+      yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
+      return
+    }
     const current = yield* Effect.tryPromise({
       try: () => sql.readTemplate(templateId),
       catch: (cause) => new BackendStorageError({ operation: 'readTemplate', cause }),
