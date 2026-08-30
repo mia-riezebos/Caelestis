@@ -559,6 +559,12 @@ describe('template placement controls', () => {
     } as unknown as Event)
     keydown({
       key: 'Enter',
+      target: { tagName: 'CAELESTIS-SETTINGS' },
+      composedPath: () => [{ tagName: 'INPUT' }, { tagName: 'CAELESTIS-SETTINGS' }],
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+    keydown({
+      key: 'Enter',
       target: { tagName: 'BUTTON' },
       preventDefault: vi.fn(),
     } as unknown as Event)

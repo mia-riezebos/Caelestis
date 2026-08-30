@@ -276,9 +276,13 @@ const isPageControl = (target: EventTarget | null): boolean => {
   )
 }
 
+const isPageControlEvent = (event: Event): boolean =>
+  isPageControl(event.target) ||
+  event.composedPath?.().some((target) => isPageControl(target)) === true
+
 const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
-  if (isPageControl(event.target)) return
+  if (isPageControlEvent(event)) return
   const delta =
     event.key === 'ArrowLeft'
       ? { x: -1, y: 0 }
