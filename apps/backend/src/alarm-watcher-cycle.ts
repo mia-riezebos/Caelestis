@@ -7,7 +7,6 @@ export const ALARM_BATCH_DELAY_MILLISECONDS = 1_000
 
 interface AlarmStorage {
   setAlarm(scheduledTime: number | Date): Promise<void>
-  deleteAlarm(): Promise<void>
 }
 
 type FollowUpRunner = typeof fetchAlarmFollowUps
@@ -32,7 +31,8 @@ export const runAlarmWatcherCycle = async (
     }
     const dueAt = await ports.sql.nextAlarmProbeAt()
     if (dueAt === null) {
-      await storage.deleteAlarm()
+      // A concurrent schedule may have installed a replacement wakeup after this D1 read. The
+      // currently firing alarm is already consumed, so leaving storage untouched is race-safe.
       return
     }
     await storage.setAlarm(

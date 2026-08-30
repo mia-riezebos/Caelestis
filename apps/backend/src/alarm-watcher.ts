@@ -23,7 +23,8 @@ export class AlarmWatcher extends DurableObject<Env> {
   async schedule(): Promise<void> {
     const dueAt = await this.ports.sql.nextAlarmProbeAt()
     if (dueAt === null) {
-      await this.ctx.storage.deleteAlarm()
+      // Do not delete here: a concurrent schedule may have installed a wakeup after the D1 read.
+      // A stale alarm can safely wake once and reconcile an empty queue.
       return
     }
     await this.ctx.storage.setAlarm(dueAt)
