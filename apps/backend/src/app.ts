@@ -2,6 +2,7 @@ import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import type { SyncRequestMetrics } from './observability/sync-metrics.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
@@ -25,6 +26,7 @@ export interface AppOptions {
   readonly serverDescription?: string | undefined
   readonly openAccess?: boolean | undefined
   readonly currentSeason?: number | undefined
+  readonly requestMetrics?: Pick<SyncRequestMetrics, 'recordTileOffer'> | undefined
 }
 
 export const createApp = (runtime: BackendRuntime, options: AppOptions = {}) => {
@@ -91,7 +93,15 @@ export const createApp = (runtime: BackendRuntime, options: AppOptions = {}) => 
   app.route('/admin/templates', createTemplateRoutes(runtime))
   app.route('/chunks', createChunkRoutes(runtime))
   app.route('/tiles', createTileRoutes(runtime))
-  app.route('/telemetry', createTelemetryRoutes(runtime, { currentSeason }))
+  app.route(
+    '/telemetry',
+    createTelemetryRoutes(runtime, {
+      currentSeason,
+      ...(options.requestMetrics === undefined
+        ? {}
+        : { recordTileOffer: (outcome) => options.requestMetrics?.recordTileOffer(outcome) }),
+    }),
+  )
 
   return app
 }
