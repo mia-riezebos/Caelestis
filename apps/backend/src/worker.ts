@@ -2,6 +2,7 @@ import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { type App, createApp } from './app.js'
+import { instrumentD1, measureRequest } from './metrics/request-metrics.js'
 import { makeBackendContext } from './runtime/backend-runtime.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
@@ -56,7 +57,7 @@ const appFor = (env: Env): App => {
 
   const context = makeBackendContext(
     new R2BlobStore(env.BLOBS),
-    new D1SqlStore(env.DB),
+    new D1SqlStore(instrumentD1(env.DB)),
     new DurableObjectCounterStore(env.TELEMETRY),
   )
   const app = createApp(context, {
@@ -80,16 +81,28 @@ export default {
     }
 
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
-    if (mountedRequest === null) return new Response('Not Found', { status: 404 })
+    if (mountedRequest === null) {
+      return measureRequest(
+        env.REQUEST_METRICS,
+        request,
+        'other',
+        async () => new Response('Not Found', { status: 404 }),
+      )
+    }
 
-    return appFor(env).fetch(mountedRequest)
+    return measureRequest(
+      env.REQUEST_METRICS,
+      mountedRequest,
+      new URL(mountedRequest.url).pathname,
+      async () => appFor(env).fetch(mountedRequest),
+    )
   },
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
   async scheduled(_controller, env, ctx): Promise<void> {
     const stores = {
       blobs: new R2BlobStore(env.BLOBS),
-      sql: new D1SqlStore(env.DB),
+      sql: new D1SqlStore(instrumentD1(env.DB)),
       counters: new DurableObjectCounterStore(env.TELEMETRY),
     }
     const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)

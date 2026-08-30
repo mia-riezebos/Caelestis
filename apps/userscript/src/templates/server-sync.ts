@@ -1,6 +1,7 @@
 import {
   PALETTE_RGB,
   quantiseToPalette,
+  type ReconciliationReason,
   sameTemplateSurface,
   sha256Hex,
   type TemplateSurface,
@@ -10,6 +11,7 @@ import {
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
+import { userscriptClientHeaders } from '../client-metrics.js'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
 import { serverEndpoint } from '../server-url.js'
@@ -129,8 +131,11 @@ export const fetchChunkWithinBudget = async (
     const response = await fetch(serverEndpoint(server.url, `/chunks/${hash}`), {
       headers:
         activeServerToken(server) === null
-          ? {}
-          : { authorization: `Bearer ${activeServerToken(server)}` },
+          ? userscriptClientHeaders()
+          : {
+              ...userscriptClientHeaders(),
+              authorization: `Bearer ${activeServerToken(server)}`,
+            },
       signal: AbortSignal.any([generationSignal, AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS)]),
     })
     if (!response.ok) return null
@@ -410,6 +415,7 @@ const syncServerTemplatesOnce = async (
   known?: readonly ServerTemplate[],
   snapshotCurrent: () => boolean = () => true,
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  reason: ReconciliationReason = 'unknown',
 ): Promise<void> => {
   const connectionCurrent = (): boolean => isCurrentServerConnection(server)
   if (server.status !== 'connected' || !connectionCurrent() || !snapshotCurrent()) return
@@ -422,7 +428,7 @@ const syncServerTemplatesOnce = async (
     snapshotCurrent()
   let available = known ?? null
   if (known === undefined) {
-    const contents = await listServerContents(server, signal)
+    const contents = await listServerContents(server, signal, reason)
     if (!current()) return
     if (contents !== null) {
       snapshotCurrent = () => isLatestServerContents(server.url, contents)
@@ -556,6 +562,7 @@ interface PendingServerSync {
   readonly surface: TemplateSurface
   readonly known?: readonly ServerTemplate[]
   readonly snapshotCurrent?: () => boolean
+  readonly reason: ReconciliationReason
 }
 
 /** The newest request per server. Slow downloads must never make minute polls pile up behind them. */
@@ -583,6 +590,7 @@ const ensureServerSyncRun = (key: string): Promise<void> => {
         requested.known,
         requested.snapshotCurrent,
         requested.surface,
+        requested.reason,
       )
     }
   })()
@@ -605,6 +613,7 @@ export const syncServerTemplates = async (
   known?: readonly ServerTemplate[],
   snapshotCurrent?: () => boolean,
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  reason: ReconciliationReason = 'unknown',
 ): Promise<void> => {
   // Immutable state rows may change cosmetic server metadata in place. Credentials, deployment,
   // season, scope, and connectivity define the lifetime that is allowed to continue this work.
@@ -619,6 +628,7 @@ export const syncServerTemplates = async (
     pendingServerSyncs.set(key, {
       server,
       surface,
+      reason,
       known: pending.known,
       ...(pending.snapshotCurrent === undefined
         ? {}
@@ -628,6 +638,7 @@ export const syncServerTemplates = async (
     pendingServerSyncs.set(key, {
       server,
       surface,
+      reason,
       ...(known === undefined ? {} : { known }),
       ...(snapshotCurrent === undefined ? {} : { snapshotCurrent }),
     })
@@ -641,8 +652,10 @@ export const syncServerTemplates = async (
 const POLL_MS = 60_000
 let timer: ReturnType<typeof setInterval> | null = null
 
-const syncAll = (): void => {
-  for (const server of getState().servers) void syncServerTemplates(server)
+const syncAll = (reason: ReconciliationReason): void => {
+  for (const server of getState().servers) {
+    void syncServerTemplates(server, undefined, undefined, WORLD_TEMPLATE_SURFACE, reason)
+  }
 }
 
 /**
@@ -653,9 +666,9 @@ const syncAll = (): void => {
  * uploading new artwork — rather than against paint activity, which this does not track.
  */
 export const installServerSync = (): void => {
-  syncAll()
+  syncAll('connect')
   if (timer !== null) clearInterval(timer)
-  timer = setInterval(syncAll, POLL_MS)
+  timer = setInterval(() => syncAll('interval'), POLL_MS)
   /**
    * And whenever the set of servers changes.
    *
@@ -682,7 +695,7 @@ export const installServerSync = (): void => {
       }
     }
     lastConnected = connected
-    syncAll()
+    syncAll('state-change')
   })
 }
 
