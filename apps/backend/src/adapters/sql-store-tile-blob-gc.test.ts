@@ -127,6 +127,24 @@ describe.each(adapters)('$name tile blob lifecycle contract', ({ make }) => {
     })
   })
 
+  it('reuses one unfenced generation across duplicate upload reservations', async () => {
+    const firstBlobKey = `${HASH}/01890f3a-6b7c-7def-8123-456789abcdef`
+    const duplicateBlobKey = `${HASH}/01890f3a-6b7c-7def-8123-456789abcdee`
+
+    await expect(
+      store.reserveTileBlobUpload(HASH, firstBlobKey, 'first', millis(1_000), millis(3_000)),
+    ).resolves.toMatchObject({ blobKey: firstBlobKey })
+    await expect(
+      store.reserveTileBlobUpload(
+        HASH,
+        duplicateBlobKey,
+        'duplicate',
+        millis(1_100),
+        millis(3_100),
+      ),
+    ).resolves.toMatchObject({ blobKey: firstBlobKey })
+  })
+
   it('persists the bounded R2 scan cursor and completed sweeps', async () => {
     await expect(store.readTileBlobScanState()).resolves.toEqual({ completedSweeps: 0 })
     await store.writeTileBlobScanState('cursor-1')

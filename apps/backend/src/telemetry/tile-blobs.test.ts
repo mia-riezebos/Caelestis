@@ -120,6 +120,13 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
   })
 
+  it('reuses an existing generation for duplicate uploads', async () => {
+    const first = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
+    const duplicate = await reserveTileBlobUpload(harness.ports, HASH, millis(2_100))
+
+    expect(duplicate.blobKey).toBe(first.blobKey)
+  })
+
   it('keeps dry-run bounded, resumable and unable to delete', async () => {
     const hashes = Array.from({ length: TILE_BLOB_GC_SCAN_LIMIT + 2 }, (_, index) =>
       index.toString(16).padStart(64, '0'),

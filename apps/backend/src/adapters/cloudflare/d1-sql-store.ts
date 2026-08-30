@@ -1249,27 +1249,46 @@ export class D1SqlStore implements SqlStore {
            WHERE NOT EXISTS (
              SELECT 1 FROM tile_blob_objects
              WHERE sha256 = ? AND state = 'deleting'
+           ) AND NOT EXISTS (
+             SELECT 1 FROM tile_blob_objects
+             WHERE sha256 = ? AND state IN ('active', 'candidate', 'uploading')
            )
            ON CONFLICT(blob_key) DO NOTHING`,
         )
-        .bind(blobKey, hash, now, hash),
+        .bind(blobKey, hash, now, hash, hash),
       this.client
         .prepare(
           `INSERT INTO tile_blob_reservations (id, sha256, blob_key, expires_at_ms)
-           SELECT ?, ?, ?, ?
-           WHERE EXISTS (
-             SELECT 1 FROM tile_blob_objects
-             WHERE blob_key = ? AND sha256 = ? AND state IN ('uploading', 'active')
-           ) AND NOT EXISTS (
-             SELECT 1 FROM tile_blob_objects
-             WHERE sha256 = ? AND state = 'deleting'
-           )
+           SELECT ?, object.sha256, object.blob_key, ?
+           FROM tile_blob_objects AS object
+           WHERE object.sha256 = ?
+             AND object.state IN ('active', 'candidate', 'uploading')
+             AND NOT EXISTS (
+               SELECT 1 FROM tile_blob_objects AS deleting
+               WHERE deleting.sha256 = object.sha256 AND deleting.state = 'deleting'
+             )
+           ORDER BY CASE object.state WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
+             object.blob_key
+           LIMIT 1
            ON CONFLICT(id) DO NOTHING`,
         )
-        .bind(reservationId, hash, blobKey, expiresAt, blobKey, hash, hash),
+        .bind(reservationId, expiresAt, hash),
     ])
     if (Number(results[2]?.meta.changes) === 0) return null
-    return { id: reservationId, hash, blobKey, expiresAt }
+    const row = await this.client
+      .prepare(
+        'SELECT id, sha256, blob_key, expires_at_ms FROM tile_blob_reservations WHERE id = ?',
+      )
+      .bind(reservationId)
+      .first<{ id: string; sha256: string; blob_key: string; expires_at_ms: number }>()
+    return row === null
+      ? null
+      : {
+          id: row.id,
+          hash: row.sha256,
+          blobKey: row.blob_key,
+          expiresAt: row.expires_at_ms as Millis,
+        }
   }
 
   async commitTileBlobReservation(

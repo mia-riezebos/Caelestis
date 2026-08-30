@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "7bce512f-5e46-44b7-9a11-3fe88f5b16b4",
+  "id": "6d20f854-ccbc-4c5f-93db-30e151d4640b",
   "prevId": "b0df26f8-7a9a-454d-9b2c-ef73b6d0eb20",
   "tables": {
     "access_tokens": {
@@ -137,7 +137,15 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "canvas_tiles_sha256_idx": {
+          "name": "canvas_tiles_sha256_idx",
+          "columns": [
+            "sha256"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "canvas_tiles_season_tile_x_tile_y_pk": {
@@ -1028,7 +1036,7 @@
         },
         "tile_blob_objects_key_check": {
           "name": "tile_blob_objects_key_check",
-          "value": "\"tile_blob_objects\".\"blob_key\" = \"tile_blob_objects\".\"sha256\" OR \"tile_blob_objects\".\"blob_key\" GLOB (\"tile_blob_objects\".\"sha256\" || '/*')"
+          "value": "\"tile_blob_objects\".\"blob_key\" = \"tile_blob_objects\".\"sha256\" OR substr(\"tile_blob_objects\".\"blob_key\", 1, length(\"tile_blob_objects\".\"sha256\") + 1) = \"tile_blob_objects\".\"sha256\" || '/'"
         },
         "tile_blob_objects_state_check": {
           "name": "tile_blob_objects_state_check",
@@ -1166,7 +1174,15 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "tile_history_sha256_idx": {
+          "name": "tile_history_sha256_idx",
+          "columns": [
+            "sha256"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "tile_history_season_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_user_id_pk": {

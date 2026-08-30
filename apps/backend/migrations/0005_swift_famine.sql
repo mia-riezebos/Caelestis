@@ -16,7 +16,7 @@ CREATE TABLE `tile_blob_objects` (
 	`reclaimed_at_ms` integer,
 	CONSTRAINT "tile_blob_objects_sha256_check" CHECK(typeof("tile_blob_objects"."sha256") = 'text' AND length("tile_blob_objects"."sha256") = 64
         AND "tile_blob_objects"."sha256" NOT GLOB '*[^0-9a-f]*'),
-	CONSTRAINT "tile_blob_objects_key_check" CHECK("tile_blob_objects"."blob_key" = "tile_blob_objects"."sha256" OR "tile_blob_objects"."blob_key" GLOB ("tile_blob_objects"."sha256" || '/*')),
+	CONSTRAINT "tile_blob_objects_key_check" CHECK("tile_blob_objects"."blob_key" = "tile_blob_objects"."sha256" OR substr("tile_blob_objects"."blob_key", 1, length("tile_blob_objects"."sha256") + 1) = "tile_blob_objects"."sha256" || '/'),
 	CONSTRAINT "tile_blob_objects_state_check" CHECK("tile_blob_objects"."state" IN ('uploading', 'active', 'candidate', 'deleting', 'deleted')),
 	CONSTRAINT "tile_blob_objects_attempts_check" CHECK(typeof("tile_blob_objects"."delete_attempts") = 'integer' AND "tile_blob_objects"."delete_attempts" >= 0)
 );
@@ -32,4 +32,6 @@ CREATE TABLE `tile_blob_reservations` (
         AND "tile_blob_reservations"."sha256" NOT GLOB '*[^0-9a-f]*')
 );
 --> statement-breakpoint
-CREATE INDEX `tile_blob_reservations_hash_expiry_idx` ON `tile_blob_reservations` (`sha256`,`expires_at_ms`);
+CREATE INDEX `tile_blob_reservations_hash_expiry_idx` ON `tile_blob_reservations` (`sha256`,`expires_at_ms`);--> statement-breakpoint
+CREATE INDEX `canvas_tiles_sha256_idx` ON `canvas_tiles` (`sha256`);--> statement-breakpoint
+CREATE INDEX `tile_history_sha256_idx` ON `tile_history` (`sha256`);

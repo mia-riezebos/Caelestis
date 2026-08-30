@@ -507,6 +507,7 @@ export const tileHistory = sqliteTable(
         table.reportedByUserId,
       ],
     }),
+    index('tile_history_sha256_idx').on(table.sha256),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
     check(
       'tile_history_season_check',
@@ -563,6 +564,7 @@ export const canvasTiles = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.season, table.tileX, table.tileY] }),
+    index('canvas_tiles_sha256_idx').on(table.sha256),
     check(
       'canvas_tiles_season_check',
       sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0`,
@@ -610,7 +612,7 @@ export const tileBlobObjects = sqliteTable(
     ),
     check(
       'tile_blob_objects_key_check',
-      sql`${table.blobKey} = ${table.sha256} OR ${table.blobKey} GLOB (${table.sha256} || '/*')`,
+      sql`${table.blobKey} = ${table.sha256} OR substr(${table.blobKey}, 1, length(${table.sha256}) + 1) = ${table.sha256} || '/'`,
     ),
     check(
       'tile_blob_objects_state_check',

@@ -750,18 +750,35 @@ export class MemorySqlStore implements SqlStore {
     ) {
       return null
     }
-    const held = this.tileBlobObjects.get(blobKey)
-    if (held !== undefined && (held.hash !== hash || held.state === 'deleting')) return null
-    this.tileBlobObjects.set(blobKey, {
-      blobKey,
-      hash,
-      state: 'uploading',
-      discoveredAt: held?.discoveredAt ?? now,
-      deleteStartedAt: null,
-      deleteAttempts: held?.deleteAttempts ?? 0,
-      reclaimedAt: null,
-    })
-    const reservation = { id: reservationId, hash, blobKey, expiresAt }
+    const existing = [...this.tileBlobObjects.values()]
+      .filter(
+        (object) =>
+          object.hash === hash &&
+          (object.state === 'active' ||
+            object.state === 'candidate' ||
+            object.state === 'uploading'),
+      )
+      .sort(
+        (left, right) =>
+          ['active', 'candidate', 'uploading'].indexOf(left.state) -
+            ['active', 'candidate', 'uploading'].indexOf(right.state) ||
+          left.blobKey.localeCompare(right.blobKey),
+      )[0]
+    const selectedBlobKey = existing?.blobKey ?? blobKey
+    if (existing === undefined) {
+      const held = this.tileBlobObjects.get(blobKey)
+      if (held !== undefined) return null
+      this.tileBlobObjects.set(blobKey, {
+        blobKey,
+        hash,
+        state: 'uploading',
+        discoveredAt: now,
+        deleteStartedAt: null,
+        deleteAttempts: 0,
+        reclaimedAt: null,
+      })
+    }
+    const reservation = { id: reservationId, hash, blobKey: selectedBlobKey, expiresAt }
     this.tileBlobReservations.set(reservationId, reservation)
     return { ...reservation }
   }

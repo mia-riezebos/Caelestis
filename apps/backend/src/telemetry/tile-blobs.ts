@@ -104,7 +104,7 @@ const recoverDeletingHash = async (
   return true
 }
 
-/** Reserve a never-reused key, recovering any interrupted older deletion once if needed. */
+/** Reserve an unfenced generation, recovering any interrupted older deletion once if needed. */
 export const reserveTileBlobUpload = async (
   ports: Pick<Ports, 'blobs' | 'sql'>,
   hash: string,
