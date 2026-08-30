@@ -228,6 +228,24 @@ describe('server sync coordinator', () => {
     expect(status).toHaveBeenCalledTimes(2)
   })
 
+  it('refreshes once when a visible online window regains focus', async () => {
+    const manifest = vi.fn(async () => null)
+    const status = vi.fn(async () => 'status-v1')
+    const coordinator = await import('./server-sync-coordinator.js')
+    coordinator.registerServerSyncResource('manifest', manifest)
+    coordinator.registerServerSyncResource('status', status)
+    coordinator.installServerSyncCoordinator()
+    await flush()
+
+    window.dispatchEvent(new Event('focus'))
+    await flush()
+
+    expect(manifest).toHaveBeenCalledTimes(2)
+    expect(status).toHaveBeenCalledTimes(2)
+    expect(manifest).toHaveBeenLastCalledWith(server, { mode: 'recovery', reason: 'focus' })
+    expect(status).toHaveBeenLastCalledWith(server, { mode: 'recovery', reason: 'focus' })
+  })
+
   it('treats a new season or scope as a new connection lifetime', async () => {
     let release: (() => void) | undefined
     const manifest = vi.fn(

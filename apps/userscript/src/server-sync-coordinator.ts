@@ -1,4 +1,4 @@
-import type { SyncRequestMetadata } from '@caelestis/shared'
+import { SERVER_SYNC_FALLBACK_MIN_MS, type SyncRequestMetadata } from '@caelestis/shared'
 import { warn } from './debug.js'
 import {
   type ConnectedServer,
@@ -16,7 +16,6 @@ export type ServerSyncRefresh = (
   metadata: SyncRequestMetadata,
 ) => Promise<string | null>
 
-const FALLBACK_MIN_MS = 5 * 60_000
 const CHANGED_RECHECK_MS = 60_000
 const MAX_JITTER_MS = 30_000
 
@@ -112,7 +111,7 @@ const scheduleFallback = (
   changed: boolean,
 ): void => {
   if (connections.get(state.server.url) !== state) return
-  const base = changed ? CHANGED_RECHECK_MS : FALLBACK_MIN_MS
+  const base = changed ? CHANGED_RECHECK_MS : SERVER_SYNC_FALLBACK_MIN_MS
   resourceStateFor(state, resource).nextAt =
     Date.now() + base + Math.floor(Math.random() * (MAX_JITTER_MS + 1))
   scheduleTimer()
@@ -227,8 +226,8 @@ export const requestServerSyncAfterCurrent = async (
 
 const manifestRevision = (contents: ServerContents): string => JSON.stringify(contents)
 
-const recover = (reason: 'visibility' | 'online'): void => {
-  if (!active() || !suspended) return
+const refreshActive = (reason: 'focus' | 'visibility' | 'online'): void => {
+  if (!active()) return
   suspended = false
   for (const server of connectedServers()) {
     void requestServerSyncAfterCurrent(server, [...refreshers.keys()], {
@@ -236,6 +235,11 @@ const recover = (reason: 'visibility' | 'online'): void => {
       reason,
     })
   }
+}
+
+const recover = (reason: 'visibility' | 'online'): void => {
+  if (!active() || !suspended) return
+  refreshActive(reason)
 }
 
 export const installServerSyncCoordinator = (): void => {
@@ -277,6 +281,7 @@ export const installServerSyncCoordinator = (): void => {
       scheduleTimer()
     })
     window.addEventListener('online', () => recover('online'))
+    window.addEventListener('focus', () => refreshActive('focus'))
   }
   if (!active()) {
     suspended = true
