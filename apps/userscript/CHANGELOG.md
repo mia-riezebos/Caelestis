@@ -1,5 +1,12 @@
 # @caelestis/userscript
 
+## 0.5.4
+
+### Patch Changes
+
+- 3c4a43d: Show selected-colour markers only on unpainted pixels of the exact template colour.
+- db71801: Cross-fade selected-colour markers when the active Wplace paint colour changes.
+
 ## 0.5.3
 
 ### Patch Changes
