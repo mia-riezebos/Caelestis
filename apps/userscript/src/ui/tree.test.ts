@@ -338,25 +338,27 @@ describe('tree identity and ordering', () => {
 
   it('bypasses the connect-time probe snapshot for a forced admin refresh', async () => {
     const info = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(JSON.stringify(info), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            version: 'v1',
-            season: 0,
-            server: info,
-            nodes: [],
-            templates: [],
-            tiles: [],
-          }),
-          { status: 200 },
-        ),
-      )
-      .mockResolvedValueOnce(new Response(null, { status: 200 }))
-      .mockResolvedValueOnce(manifest(info))
-    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(info), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              version: 'v1',
+              season: 0,
+              server: info,
+              nodes: [],
+              templates: [],
+              tiles: [],
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(manifest(info)),
+    )
     const connected = await probeServer('https://example.com', null)
     setState({ servers: [connected] })
 
@@ -365,12 +367,10 @@ describe('tree identity and ordering', () => {
     )
 
     expect(fetch).toHaveBeenCalledTimes(4)
-    const forcedRefreshUrl = new URL(String(fetchMock.mock.lastCall?.[0]))
-    expect(forcedRefreshUrl.origin + forcedRefreshUrl.pathname).toBe(
-      'https://example.com/backend/manifest',
+    expect(fetch).toHaveBeenLastCalledWith(
+      'https://example.com/backend/manifest?season=0',
+      expect.any(Object),
     )
-    expect(forcedRefreshUrl.searchParams.get('season')).toBe('0')
-    expect(forcedRefreshUrl.searchParams.get('__caelestis_client')).toBe('userscript')
     expect(peekProbedNodes(connected)).toBeUndefined()
   })
 

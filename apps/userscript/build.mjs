@@ -38,7 +38,6 @@ const options = {
   bundle: true,
   format: 'iife',
   target: 'es2022',
-  define: { __CAELESTIS_VERSION__: JSON.stringify(pkg.version) },
   banner: { js: metadata },
   legalComments: 'none',
   // Keep watch output readable for browser debugging. Release builds should not make every user

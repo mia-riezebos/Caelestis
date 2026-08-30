@@ -52,11 +52,7 @@ jobs:
         run: pnpm --dir apps/backend exec wrangler d1 migrations apply DB --remote
 
       - name: Deploy backend
-        run: |
-          userscript_build_id="$(node -p "require('./apps/userscript/package.json').version")"
-          pnpm --dir apps/backend exec wrangler deploy \
-            --var "USERSCRIPT_BUILD_ID:$userscript_build_id" \
-            --var "FRONTEND_BUILD_ID:$GITHUB_SHA"
+        run: pnpm --dir apps/backend exec wrangler deploy
 
       - name: Deploy frontend
         run: pnpm --dir apps/frontend exec wrangler deploy

@@ -1,7 +1,5 @@
 import { type Millis, millis } from '@caelestis/shared'
-import type { BlobStore, SqlStore, TileBlobObject, TileBlobReservation } from '../ports/index.js'
-
-type TileBlobStores = { readonly blobs: BlobStore; readonly sql: SqlStore }
+import type { Ports, TileBlobObject, TileBlobReservation } from '../ports/index.js'
 
 const RESERVATION_MILLISECONDS = 5 * 60 * 1_000
 const INGEST_RECOVERY_LIMIT = 100
@@ -41,7 +39,7 @@ const reservationWindow = (now: Millis): Millis => millis(Number(now) + RESERVAT
 const generationKey = (hash: string): string => `${hash}/${crypto.randomUUID()}`
 
 const reclaimTileBlob = async (
-  ports: TileBlobStores,
+  ports: Pick<Ports, 'blobs' | 'sql'>,
   object: TileBlobObject,
   now: Millis,
 ): Promise<'reclaimed' | 'blocked' | 'missing'> => {
@@ -54,7 +52,7 @@ const reclaimTileBlob = async (
 
 /** Read the currently registered generation, with the pre-GC hash key as the migration fallback. */
 export const readTileBlob = async (
-  ports: TileBlobStores,
+  ports: Pick<Ports, 'blobs' | 'sql'>,
   hash: string,
 ): Promise<Uint8Array | null> => {
   const object = await ports.sql.readTileBlob(hash)
@@ -68,7 +66,7 @@ export const readTileBlob = async (
  * that read and the reservation, the reservation loses and no SQL reference can be created.
  */
 export const reserveTileBlob = async (
-  ports: TileBlobStores,
+  ports: Pick<Ports, 'blobs' | 'sql'>,
   hash: string,
   now = clock(),
 ): Promise<{ readonly reservation: TileBlobReservation; readonly bytes: Uint8Array } | null> => {
@@ -93,7 +91,7 @@ export const reserveTileBlob = async (
 
 /** Finish durable deletion work for one hash before restoring it under a new key. */
 const recoverDeletingHash = async (
-  ports: TileBlobStores,
+  ports: Pick<Ports, 'blobs' | 'sql'>,
   hash: string,
   now: Millis,
 ): Promise<boolean> => {
@@ -108,7 +106,7 @@ const recoverDeletingHash = async (
 
 /** Reserve an unfenced generation, recovering any interrupted older deletion once if needed. */
 export const reserveTileBlobUpload = async (
-  ports: TileBlobStores,
+  ports: Pick<Ports, 'blobs' | 'sql'>,
   hash: string,
   now = clock(),
 ): Promise<TileBlobReservation> => {
@@ -134,7 +132,7 @@ export const reserveTileBlobUpload = async (
  * calls R2 deletion. Deleting rows sort first, so every interrupted phase resumes before new work.
  */
 export const runTileBlobGc = async (
-  ports: TileBlobStores,
+  ports: Pick<Ports, 'blobs' | 'sql'>,
   options: {
     readonly mode: TileBlobGcMode
     readonly now?: Millis

@@ -5,8 +5,8 @@ import type { Millis, Seconds } from './time.js'
 export const MAX_TILE_OFFERS = 64
 /** Collect one burst of fetched tiles before sending its hash-first offer request. */
 export const TILE_OFFER_BATCH_DELAY_MS = 250
-/** Minimum fallback delay for an unchanged server resource while the userscript is active. */
-export const SERVER_SYNC_FALLBACK_MIN_MS = 5 * 60_000
+/** Refresh server-derived template status while the userscript is open. */
+export const TELEMETRY_STATUS_POLL_MS = 30_000
 
 export type WplaceUserId = number
 
@@ -92,9 +92,6 @@ export interface TileOfferBatch extends PainterIdentity {
 
 /** Current server-derived progress for every template the caller may read. */
 export interface StatusResponse {
-  readonly season: number
-  /** Monotonic within one season and shared by read and admin visibility projections. */
-  readonly revision: number
   readonly templates: readonly TemplateStatus[]
 }
 

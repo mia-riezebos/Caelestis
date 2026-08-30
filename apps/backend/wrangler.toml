@@ -28,10 +28,6 @@ class_name = "TelemetryShard"
 name = "ALARM_WATCHER"
 class_name = "AlarmWatcher"
 
-[[durable_objects.bindings]]
-name = "STATUS_READ_MODEL"
-class_name = "StatusReadModelObject"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TelemetryShard"]
@@ -39,10 +35,6 @@ new_sqlite_classes = ["TelemetryShard"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["AlarmWatcher"]
-
-[[migrations]]
-tag = "v3"
-new_sqlite_classes = ["StatusReadModelObject"]
 
 [vars]
 SHARD_STRATEGY = "single"
@@ -59,9 +51,6 @@ BASE_PATH = "/backend"
 # The first production rollout only inventories candidates. Change this only after its logs have
 # been reviewed; `delete` enables fenced physical R2 reclamation.
 TILE_BLOB_GC_MODE = "dry-run"
-# CI overrides these with the userscript version and deployment commit. Local builds stay bounded.
-USERSCRIPT_BUILD_ID = "development"
-FRONTEND_BUILD_ID = "development"
 
 [observability]
 enabled = true

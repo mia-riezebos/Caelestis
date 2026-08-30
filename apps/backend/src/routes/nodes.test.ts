@@ -4,8 +4,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { TemplateVersionRecord } from '../ports/index.js'
-import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
+import type { Ports, TemplateVersionRecord } from '../ports/index.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const bearer = { authorization: `Bearer ${BOOTSTRAP}` }
@@ -13,11 +12,12 @@ const bearer = { authorization: `Bearer ${BOOTSTRAP}` }
 const harness = () => {
   const sql = new MemorySqlStore()
   const blobs = new MemoryBlobStore()
-  const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-  const runtime = createBackendRuntime(
-    makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
-  )
-  return { blobs, sql, app: createApp(runtime) }
+  const ports: Ports = {
+    blobs,
+    sql,
+    counters: new MemoryCounterStore(sql, () => millis(Date.now())),
+  }
+  return { blobs, sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
 type NodeResponse = {

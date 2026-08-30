@@ -1,6 +1,6 @@
 import {
   MAX_TILE_OFFERS,
-  SERVER_SYNC_FALLBACK_MIN_MS,
+  TELEMETRY_STATUS_POLL_MS,
   TILE_OFFER_BATCH_DELAY_MS,
 } from '@caelestis/shared'
 import { LADDER_RESOLUTIONS, TILE_HISTORY_RESOLUTIONS } from '../ports/index.js'
@@ -24,7 +24,7 @@ export const CURRENT_CLIENT_CAPACITY_DEFAULTS = {
   maxPaintEventsPerReport: 1,
   tileOfferBatchWindowSeconds: TILE_OFFER_BATCH_DELAY_MS / 1_000,
   maxTileOffersPerRequest: MAX_TILE_OFFERS,
-  statusPollIntervalSeconds: SERVER_SYNC_FALLBACK_MIN_MS / 1_000,
+  statusPollIntervalSeconds: TELEMETRY_STATUS_POLL_MS / 1_000,
   statusRefreshesPerTileOfferRequest: 1,
   lifecycleStatusRefreshesPerUserDay: 2,
 } as const
@@ -52,7 +52,7 @@ export interface CapacityInputs {
   readonly statusPollIntervalSeconds: number
   /** Successful offer batches currently trigger one immediate status refresh. */
   readonly statusRefreshesPerTileOfferRequest: number
-  /** Connection and content lifecycle refreshes, separate from adaptive fallback polling. */
+  /** Connection and content lifecycle refreshes, separate from periodic polling. */
   readonly lifecycleStatusRefreshesPerUserDay: number
   /** Distinct content hashes retained per covered tile and day. */
   readonly tileVersionsPerCoveredTileDay: number

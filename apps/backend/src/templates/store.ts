@@ -16,7 +16,7 @@ import {
   uuidV7,
   WORLD_PIXELS,
 } from '@caelestis/shared'
-import type { BlobStore, SqlStore, TemplateVersionRecord } from '../ports/index.js'
+import type { Ports, TemplateVersionRecord } from '../ports/index.js'
 import { NodeNotFoundError, TemplateIdentityError, TemplateNotFoundError } from '../ports/index.js'
 
 export interface StoreTemplateInput {
@@ -101,7 +101,7 @@ const colourTotals = (
 }
 
 export const storeTemplate = async (
-  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
+  ports: Pick<Ports, 'blobs' | 'sql'>,
   input: StoreTemplateInput,
 ): Promise<StoredTemplate> => {
   if (input.templateId === undefined && input.nodeId !== null) {
