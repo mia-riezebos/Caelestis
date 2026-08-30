@@ -603,6 +603,25 @@ export const canvasTiles = sqliteTable(
   ],
 )
 
+/** D1-owned high-water mark used to rebuild the reconstructible season status projection. */
+export const statusProjectionRevisions = sqliteTable(
+  'status_projection_revisions',
+  {
+    season: integer('season').primaryKey(),
+    revision: integer('revision').notNull(),
+  },
+  (table) => [
+    check(
+      'status_projection_revisions_season_check',
+      sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0`,
+    ),
+    check(
+      'status_projection_revisions_revision_check',
+      sql`typeof(${table.revision}) = 'integer' AND ${table.revision} >= 0`,
+    ),
+  ],
+)
+
 export type TileBlobObjectState = 'uploading' | 'active' | 'candidate' | 'deleting' | 'deleted'
 
 /**

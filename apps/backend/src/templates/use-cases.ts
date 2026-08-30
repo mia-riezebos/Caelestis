@@ -7,7 +7,11 @@ import {
   TemplateIdentityError,
   TemplateNotFoundError,
 } from '../ports/index.js'
-import { BlobStoreService, SqlStoreService } from '../runtime/backend-runtime.js'
+import {
+  BlobStoreService,
+  SqlStoreService,
+  StatusReadModelService,
+} from '../runtime/backend-runtime.js'
 import {
   BackendStorageError,
   RequestValidationError,
@@ -32,6 +36,24 @@ const storage = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({
     try: run,
     catch: (cause) => new BackendStorageError({ operation, cause }),
+  })
+
+/** Invalidate a status-affecting template commit without making projection loss data loss. */
+const publishStatusProjection = (season: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const readModel = yield* StatusReadModelService
+    yield* Effect.promise(async () => {
+      try {
+        const revision = await sql.advanceStatusProjectionRevision(season)
+        await readModel.applyCommittedChange({ season, revision })
+      } catch (error) {
+        // The template mutation is already authoritative. Reconciliation either observes the
+        // revision gap or assigns a fresh revision after detecting changed content at the safety
+        // boundary, so projection downtime must not report the accepted mutation as failed.
+        console.error('status projection publication failed after template commit', error)
+      }
+    })
   })
 
 const store = (
@@ -102,7 +124,11 @@ export const createTemplateVersion = (input: {
   readonly originX: number
   readonly originY: number
   readonly png: Uint8Array
-}): Effect.Effect<StoredTemplate, TemplateError, BlobStoreService | SqlStoreService> =>
+}): Effect.Effect<
+  StoredTemplate,
+  TemplateError,
+  BlobStoreService | SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
     const existing = yield* storage('readTemplate', () => sql.readTemplate(input.templateId))
@@ -116,7 +142,7 @@ export const createTemplateVersion = (input: {
         }),
       )
     }
-    return yield* store(
+    const stored = yield* store(
       'createTemplateVersion',
       {
         ...input,
@@ -127,6 +153,8 @@ export const createTemplateVersion = (input: {
       },
       true,
     )
+    yield* publishStatusProjection(existing.season)
+    return stored
   })
 
 export interface PatchTemplateInput {
@@ -151,7 +179,7 @@ export interface PatchedTemplate {
 
 export const patchTemplate = (
   input: PatchTemplateInput,
-): Effect.Effect<PatchedTemplate, TemplateError, SqlStoreService> =>
+): Effect.Effect<PatchedTemplate, TemplateError, SqlStoreService | StatusReadModelService> =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
     if (input.timelapseFrozen === false && input.finished !== false) {
@@ -195,6 +223,11 @@ export const patchTemplate = (
       )
     }
 
+    if (input.published !== undefined) {
+      const committed = yield* storage('readTemplate', () => sql.readTemplate(input.templateId))
+      if (committed !== null) yield* publishStatusProjection(committed.season)
+    }
+
     return {
       id: input.templateId,
       ...(input.name === undefined ? {} : { name: input.name }),
@@ -218,12 +251,19 @@ export const deleteTemplate = (
 ): Effect.Effect<
   void,
   ResourceNotFoundError | ResourceConflictError | BackendStorageError,
-  SqlStoreService
+  SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
+    const before = yield* storage('readTemplate', () => sql.readTemplate(templateId))
+    if (before === null) {
+      return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
+    }
     const deleted = yield* storage('deleteTemplate', () => sql.deleteTemplate(templateId, expected))
-    if (deleted) return
+    if (deleted) {
+      yield* publishStatusProjection(before.season)
+      return
+    }
     const current = yield* storage('readTemplate', () => sql.readTemplate(templateId))
     return yield* Effect.fail(
       current === null

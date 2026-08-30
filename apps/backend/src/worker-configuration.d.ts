@@ -15,11 +15,12 @@ interface __BaseEnv_Env {
 	FRONTEND_BUILD_ID: "development";
 	TELEMETRY: DurableObjectNamespace<import("./worker").TelemetryShard>;
 	ALARM_WATCHER: DurableObjectNamespace<import("./worker").AlarmWatcher>;
+	STATUS_READ_MODEL: DurableObjectNamespace<import("./worker").StatusReadModelObject>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./worker");
-		durableNamespaces: "TelemetryShard" | "AlarmWatcher";
+	durableNamespaces: "TelemetryShard" | "AlarmWatcher" | "StatusReadModelObject";
 	}
 	interface Env extends __BaseEnv_Env {}
 }

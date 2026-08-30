@@ -64,6 +64,13 @@
       "when": 1788067170619,
       "tag": "0008_magenta_hemingway",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788074300825,
+      "tag": "0009_red_nitro",
+      "breakpoints": true
     }
   ]
 }

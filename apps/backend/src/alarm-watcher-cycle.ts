@@ -1,6 +1,10 @@
 import { type Millis, millis, seconds } from '@caelestis/shared'
 import { Effect } from 'effect'
-import { type BlobStoreService, SqlStoreService } from './runtime/backend-runtime.js'
+import {
+  type BlobStoreService,
+  SqlStoreService,
+  type StatusReadModelService,
+} from './runtime/backend-runtime.js'
 import {
   ALARM_FOLLOW_UP_RETRY_MILLISECONDS,
   type AlarmFollowUpReport,
@@ -18,7 +22,11 @@ interface AlarmStorage {
 type FollowUpRunner = (
   probes: Parameters<typeof fetchAlarmFollowUps>[0],
   options?: FetchAlarmFollowUpsOptions,
-) => Effect.Effect<AlarmFollowUpReport, unknown, BlobStoreService | SqlStoreService>
+) => Effect.Effect<
+  AlarmFollowUpReport,
+  unknown,
+  BlobStoreService | SqlStoreService | StatusReadModelService
+>
 
 const attempt = <A>(run: () => Promise<A>) =>
   Effect.tryPromise({
@@ -32,7 +40,7 @@ export const runAlarmWatcherCycle = (
   now: Millis,
   runFollowUps: FollowUpRunner = fetchAlarmFollowUps,
   clock: () => Millis = () => millis(Date.now()),
-): Effect.Effect<void, unknown, BlobStoreService | SqlStoreService> => {
+): Effect.Effect<void, unknown, BlobStoreService | SqlStoreService | StatusReadModelService> => {
   const cycle = Effect.gen(function* () {
     const sql = yield* SqlStoreService
     const probes = yield* attempt(() => sql.listDueAlarmProbes(now))

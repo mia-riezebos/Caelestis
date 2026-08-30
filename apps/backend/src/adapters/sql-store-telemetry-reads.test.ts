@@ -83,6 +83,14 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
 
   afterEach(() => harness.close())
 
+  it('keeps a monotonic status projection revision per season', async () => {
+    await expect(store.readStatusProjectionRevision(1)).resolves.toBe(0)
+    await expect(store.advanceStatusProjectionRevision(1)).resolves.toBe(1)
+    await expect(store.advanceStatusProjectionRevision(1)).resolves.toBe(2)
+    await expect(store.advanceStatusProjectionRevision(2)).resolves.toBe(1)
+    await expect(store.readStatusProjectionRevision(1)).resolves.toBe(2)
+  })
+
   it('keeps a finished template frozen until it is reopened', async () => {
     await store.insertTemplateVersion(version('template-1'))
     await expect(

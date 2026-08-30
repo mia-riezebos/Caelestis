@@ -10,6 +10,7 @@ const unhandledBackendHttpError = (error: never): never => {
 const mapBackendHttpError = (context: Context, error: BackendHttpError): Response => {
   switch (error._tag) {
     case 'SqlStoreReadError':
+    case 'StatusReadModelError':
     case 'TelemetryStorageError':
     case 'BackendStorageError':
       // Hono's default error handler logged the rejected store call before returning this response.

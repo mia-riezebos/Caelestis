@@ -141,6 +141,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly tileBlobReservations = new Map<string, TileBlobReservation>()
   private tileBlobScanState: TileBlobScanState = { completedSweeps: 0 }
   private readonly alarmStates = new Map<string, StoredTemplateAlarmState>()
+  private readonly statusProjectionRevisions = new Map<number, number>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -1115,6 +1116,16 @@ export class MemorySqlStore implements SqlStore {
       })
     }
     return out.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async readStatusProjectionRevision(season: number): Promise<number> {
+    return this.statusProjectionRevisions.get(season) ?? 0
+  }
+
+  async advanceStatusProjectionRevision(season: number): Promise<number> {
+    const revision = (this.statusProjectionRevisions.get(season) ?? 0) + 1
+    this.statusProjectionRevisions.set(season, revision)
+    return revision
   }
 
   async evaluateTemplateAlarm(

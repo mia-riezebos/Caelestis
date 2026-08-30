@@ -15,8 +15,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
+import { createMemoryStatusReadModel } from '../adapters/memory/memory-status-read-model.js'
 import { createApp } from '../app.js'
-import type { ContributionDelta } from '../ports/index.js'
+import type { ContributionDelta, SqlStore, StatusReadModel } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 import { selectTelemetryHistoryResolution, selectTileHistoryResolution } from './telemetry.js'
 
@@ -28,10 +29,11 @@ const NEXT_DAY = seconds(1_750_032_000 + 86_400)
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
-const harness = async () => {
+const harness = async (statusReadModelFor?: (sql: SqlStore) => StatusReadModel) => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
+  const statusReadModel = statusReadModelFor?.(sql) ?? createMemoryStatusReadModel(sql)
   await sql.insertNode({
     id: NODE_ID,
     season: 0,
@@ -47,7 +49,13 @@ const harness = async () => {
     counters,
     app: createApp(
       createBackendRuntime(
-        makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
+        makeBackendContext(
+          blobs,
+          sql,
+          counters,
+          { bootstrapAdminToken: BOOTSTRAP },
+          statusReadModel,
+        ),
       ),
       { currentSeason: 1 },
     ),
@@ -186,6 +194,94 @@ describe('telemetry read routes', () => {
     expect(response.status).toBe(500)
     expect(await response.text()).toBe('Internal Server Error')
     expect(consoleError).toHaveBeenCalledWith(error)
+  })
+
+  it('serves repeated status reads from one revisioned materialization', async () => {
+    const { app, sql } = await harness()
+    await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const reportToken = await mintToken(app, 'report')
+    const aggregate = vi.spyOn(sql, 'readTemplateStatuses')
+
+    await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    const afterCommit = aggregate.mock.calls.length
+    const first = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+    const second = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+
+    expect(first.status).toBe(200)
+    await expect(first.json()).resolves.toMatchObject({
+      season: 0,
+      revision: 2,
+    })
+    await expect(second.json()).resolves.toMatchObject({
+      season: 0,
+      revision: 2,
+    })
+    expect(aggregate).toHaveBeenCalledTimes(afterCommit)
+  })
+
+  it('repairs a failed post-commit projection without rolling back the accepted tile', async () => {
+    const failure = new Error('Durable Object unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { app } = await harness((sql) => {
+      const delegate = createMemoryStatusReadModel(sql)
+      return {
+        ...delegate,
+        applyCommittedChange: vi.fn(async () => Promise.reject(failure)),
+      }
+    })
+    await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const reportToken = await mintToken(app, 'report')
+
+    await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    const repaired = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+
+    expect(repaired.status).toBe(200)
+    await expect(repaired.json()).resolves.toMatchObject({
+      season: 0,
+      revision: 2,
+      templates: [expect.objectContaining({ correct: 1, wrong: 1, blank: 1 })],
+    })
+    expect(consoleError).toHaveBeenCalledWith(
+      'status projection publication failed after committed tile observation',
+      failure,
+    )
+  })
+
+  it('repairs a failed post-commit revision advance with a distinct revision', async () => {
+    const failure = new Error('D1 revision unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { app, sql } = await harness((store) =>
+      createMemoryStatusReadModel(store, { repairAfterMs: 0 }),
+    )
+    await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const reportToken = await mintToken(app, 'report')
+    vi.spyOn(sql, 'advanceStatusProjectionRevision').mockRejectedValueOnce(failure)
+
+    await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    expect(await sql.readStatusProjectionRevision(0)).toBe(1)
+    const repaired = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+
+    expect(repaired.status).toBe(200)
+    await expect(repaired.json()).resolves.toMatchObject({
+      season: 0,
+      revision: 2,
+      templates: [expect.objectContaining({ correct: 1, wrong: 1, blank: 1 })],
+    })
+    expect(consoleError).toHaveBeenCalledWith(
+      'status projection publication failed after committed tile observation',
+      failure,
+    )
   })
 
   it('serves the server-classified mismatch mask for one visible template tile', async () => {
@@ -381,7 +477,9 @@ describe('telemetry read routes', () => {
     const templateId = await createPublishedTemplate(app)
     const readToken = await mintToken(app, 'read')
     const query = (params: string) =>
-      app.request(`/telemetry/history?${params}`, { headers: bearer(readToken) })
+      app.request(`/telemetry/history?${params}`, {
+        headers: bearer(readToken),
+      })
 
     expect((await query(`resolution=60&from=1&to=2`)).status).toBe(400)
     expect((await query(`templateIds=not-a-uuid&resolution=60&from=1&to=2`)).status).toBe(400)
@@ -406,8 +504,20 @@ describe('telemetry read routes', () => {
     const readToken = await mintToken(app, 'read')
     await sql.rememberPainter(7, 'Mia', millis(Date.now()))
     await sql.addContributions([
-      contribution({ templateId, reportedByUserId: 1, placed: 10, correct: 8, repairs: 2 }),
-      contribution({ templateId, reportedByUserId: 2, placed: 6, correct: 6, repairs: 3 }),
+      contribution({
+        templateId,
+        reportedByUserId: 1,
+        placed: 10,
+        correct: 8,
+        repairs: 2,
+      }),
+      contribution({
+        templateId,
+        reportedByUserId: 2,
+        placed: 6,
+        correct: 6,
+        repairs: 3,
+      }),
     ])
 
     const response = await app.request(
@@ -458,7 +568,13 @@ describe('telemetry read routes', () => {
         correct: 3,
         repairs: 0,
       }),
-      contribution({ templateId, wplaceUserId: 9, placed: 20, correct: 5, repairs: 0 }),
+      contribution({
+        templateId,
+        wplaceUserId: 9,
+        placed: 20,
+        correct: 5,
+        repairs: 0,
+      }),
     ])
 
     const response = await app.request('/telemetry/leaderboard?season=0', {
@@ -492,7 +608,9 @@ describe('telemetry read routes', () => {
     const limited = await app.request('/telemetry/leaderboard?season=0&limit=1', {
       headers: bearer(readToken),
     })
-    const { entries } = (await limited.json()) as { entries: { wplaceUserId: number }[] }
+    const { entries } = (await limited.json()) as {
+      entries: { wplaceUserId: number }[]
+    }
     expect(entries).toHaveLength(1)
     expect(entries[0]?.wplaceUserId).toBe(7)
 
@@ -504,8 +622,11 @@ describe('telemetry read routes', () => {
       ).status,
     ).toBe(400)
     expect(
-      (await app.request('/telemetry/leaderboard?season=-1', { headers: bearer(readToken) }))
-        .status,
+      (
+        await app.request('/telemetry/leaderboard?season=-1', {
+          headers: bearer(readToken),
+        })
+      ).status,
     ).toBe(400)
     expect((await app.request('/telemetry/leaderboard?season=0')).status).toBe(401)
   })
@@ -540,18 +661,30 @@ describe('telemetry read routes', () => {
       app.request(`/telemetry/contributions?templateIds=${templateId}&from=${DAY}&to=${NEXT_DAY}`, {
         headers: bearer(token),
       })
-    await expect((await contributions(readToken)).json()).resolves.toEqual({ days: [] })
+    await expect((await contributions(readToken)).json()).resolves.toEqual({
+      days: [],
+    })
 
     const leaderboard = (token: string) =>
-      app.request('/telemetry/leaderboard?season=0', { headers: bearer(token) })
-    await expect((await leaderboard(readToken)).json()).resolves.toEqual({ entries: [] })
+      app.request('/telemetry/leaderboard?season=0', {
+        headers: bearer(token),
+      })
+    await expect((await leaderboard(readToken)).json()).resolves.toEqual({
+      entries: [],
+    })
 
     // The admin gate is the same one the manifest applies: full visibility.
-    const adminHistory = (await (await history('admin')).json()) as { buckets: unknown[] }
+    const adminHistory = (await (await history('admin')).json()) as {
+      buckets: unknown[]
+    }
     expect(adminHistory.buckets).toHaveLength(1)
-    const adminDays = (await (await contributions(BOOTSTRAP)).json()) as { days: unknown[] }
+    const adminDays = (await (await contributions(BOOTSTRAP)).json()) as {
+      days: unknown[]
+    }
     expect(adminDays.days).toHaveLength(1)
-    const adminEntries = (await (await leaderboard(BOOTSTRAP)).json()) as { entries: unknown[] }
+    const adminEntries = (await (await leaderboard(BOOTSTRAP)).json()) as {
+      entries: unknown[]
+    }
     expect(adminEntries.entries).toHaveLength(1)
   })
 
@@ -635,7 +768,9 @@ describe('telemetry read routes', () => {
     const reportToken = await mintToken(app, 'report')
     const hash = await uploadCanvasTile(app, reportToken, Math.floor(Date.now() / 1_000))
 
-    const response = await app.request(`/tiles/${hash}`, { headers: bearer(readToken) })
+    const response = await app.request(`/tiles/${hash}`, {
+      headers: bearer(readToken),
+    })
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('image/png')
     expect(response.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
@@ -646,7 +781,9 @@ describe('telemetry read routes', () => {
       new Set([object?.blobKey]),
     )
 
-    const absent = await app.request(`/tiles/${'b'.repeat(64)}`, { headers: bearer(readToken) })
+    const absent = await app.request(`/tiles/${'b'.repeat(64)}`, {
+      headers: bearer(readToken),
+    })
     expect(absent.status).toBe(404)
     await expect(absent.json()).resolves.toEqual({ error: 'not found' })
     expect((await app.request('/tiles/not-a-hash', { headers: bearer(readToken) })).status).toBe(

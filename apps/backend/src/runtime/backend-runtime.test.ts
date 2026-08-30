@@ -11,6 +11,7 @@ import {
   createBackendRuntime,
   makeBackendContext,
   SqlStoreService,
+  StatusReadModelService,
 } from './backend-runtime.js'
 import {
   AuthenticationError,
@@ -20,6 +21,7 @@ import {
   ResourceConflictError,
   ResourceNotFoundError,
   SqlStoreReadError,
+  StatusReadModelError,
   TelemetryStorageError,
   TelemetryValidationError,
 } from './errors.js'
@@ -44,6 +46,7 @@ describe('backend runtime', () => {
     expect(Context.get(runtime.context, BlobStoreService)).toBe(services.blobs)
     expect(Context.get(runtime.context, SqlStoreService)).toBe(services.sql)
     expect(Context.get(runtime.context, CounterStoreService)).toBe(services.counters)
+    expect(Context.get(runtime.context, StatusReadModelService)).toBeDefined()
 
     const resolved = await runtime.run(
       Effect.gen(function* () {
@@ -83,6 +86,13 @@ const edgeCases: readonly {
   {
     name: 'SQL read failure',
     failure: new SqlStoreReadError({ operation: 'read', cause: storageCause }),
+    status: 500,
+    body: 'Internal Server Error',
+    logsCause: true,
+  },
+  {
+    name: 'status read-model failure',
+    failure: new StatusReadModelError({ operation: 'reconcile', cause: storageCause }),
     status: 500,
     body: 'Internal Server Error',
     logsCause: true,
