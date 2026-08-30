@@ -172,6 +172,7 @@ describe('telemetry routes', () => {
       season: 7,
       scope: 'public',
       tokenHash: await hashToken(readToken),
+      revocable: true,
       lastRevision: 4,
     })
 
@@ -183,6 +184,7 @@ describe('telemetry routes', () => {
       season: 7,
       scope: 'admin',
       tokenHash: await hashToken(BOOTSTRAP),
+      revocable: false,
       lastRevision: null,
     })
   })

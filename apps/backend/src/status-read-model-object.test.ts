@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import {
   createChunkedStatusPersistence,
+  createLiveSessionFence,
   StatusReadModelObject,
 } from './status-read-model-object.js'
 
@@ -150,18 +151,21 @@ describe('status read-model Durable Object', () => {
       season: 8,
       scope: 'public',
       tokenHash: 'a'.repeat(64),
+      revocable: true,
       lastRevision: 2,
     })
     const adminSocket = socket({
       season: 8,
       scope: 'admin',
       tokenHash: 'b'.repeat(64),
+      revocable: true,
       lastRevision: 2,
     })
     const otherSeason = socket({
       season: 9,
       scope: 'public',
       tokenHash: 'a'.repeat(64),
+      revocable: true,
       lastRevision: 2,
     })
     const missingAttachment = socket(undefined)
@@ -224,5 +228,42 @@ describe('status read-model Durable Object', () => {
     )
     expect(missingIdentity.status).toBe(400)
     await expect(missingIdentity.text()).resolves.toBe('Invalid credential identity')
+  })
+
+  it('serializes an in-flight attachment ahead of revocation cleanup', async () => {
+    const fence = createLiveSessionFence()
+    let release!: (active: boolean) => void
+    let attached = false
+    const close = vi.fn()
+    const attaching = fence.attach(
+      async () =>
+        new Promise<boolean>((resolve) => {
+          release = resolve
+        }),
+      () => {
+        attached = true
+        return 'attached'
+      },
+    )
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    const revoking = fence.revoke(() => {
+      if (attached) close()
+    })
+
+    release(true)
+    await expect(attaching).resolves.toBe('attached')
+    await expect(revoking).resolves.toBeUndefined()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('rejects attachment after revocation and propagates cleanup failure', async () => {
+    const fence = createLiveSessionFence()
+    await expect(fence.revoke(() => Promise.reject(new Error('close failed')))).rejects.toThrow(
+      'close failed',
+    )
+    const attach = vi.fn(() => 'attached')
+
+    await expect(fence.attach(async () => false, attach)).resolves.toBeNull()
+    expect(attach).not.toHaveBeenCalled()
   })
 })

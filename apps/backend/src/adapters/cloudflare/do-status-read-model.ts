@@ -44,6 +44,7 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
       readonly season: number
       readonly scope: StatusVisibilityScope
       readonly tokenHash: string
+      readonly revocable: boolean
       readonly lastRevision: number | null
     },
   ): Promise<Response> {
@@ -53,6 +54,7 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     headers.set('x-caelestis-season', String(connection.season))
     headers.set('x-caelestis-scope', connection.scope)
     headers.set('x-caelestis-token-hash', connection.tokenHash)
+    headers.set('x-caelestis-revocable', connection.revocable ? '1' : '0')
     if (connection.lastRevision === null) headers.delete('x-caelestis-revision')
     else headers.set('x-caelestis-revision', String(connection.lastRevision))
     return this.shard(connection.season).fetch(new Request(request, { headers }))

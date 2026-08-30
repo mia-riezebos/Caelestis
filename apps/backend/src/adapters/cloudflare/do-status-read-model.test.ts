@@ -34,7 +34,13 @@ describe('Durable Object status read-model adapter', () => {
           'sec-websocket-protocol': 'caelestis.live.v1, caelestis.auth.SECRET',
         },
       }),
-      { season: 8, scope: 'admin', tokenHash: 'a'.repeat(64), lastRevision: 4 },
+      {
+        season: 8,
+        scope: 'admin',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        lastRevision: 4,
+      },
     )
 
     expect(namespace.getByName).toHaveBeenCalledWith('season:8')
@@ -47,6 +53,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(forwarded?.headers.get('x-caelestis-season')).toBe('8')
     expect(forwarded?.headers.get('x-caelestis-scope')).toBe('admin')
     expect(forwarded?.headers.get('x-caelestis-token-hash')).toBe('a'.repeat(64))
+    expect(forwarded?.headers.get('x-caelestis-revocable')).toBe('1')
     expect(forwarded?.headers.get('x-caelestis-revision')).toBe('4')
     expect(forwarded?.headers.get('sec-websocket-protocol')).toBe('caelestis.live.v1')
   })

@@ -59,5 +59,7 @@ export const revokeAccessTokenAndLiveSessions = (
   Effect.gen(function* () {
     yield* revokeAccessToken(tokenHash)
     const statusReadModel = yield* StatusReadModelService
-    yield* Effect.promise(() => closeLiveCredential(statusReadModel, season, tokenHash))
+    yield* storage('closeLiveCredential', () =>
+      closeLiveCredential(statusReadModel, season, tokenHash),
+    )
   })

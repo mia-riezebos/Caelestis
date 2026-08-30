@@ -10,9 +10,12 @@ import { hashToken, mintToken, SCOPES, type Scope, satisfiesScope, TOKEN_LENGTH 
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 
-const harness = () => {
+const harness = (
+  closeCredential: (season: number, tokenHash: string) => Promise<void> = vi.fn(
+    async (_season: number, _tokenHash: string) => undefined,
+  ),
+) => {
   const sql = new MemorySqlStore()
-  const closeCredential = vi.fn(async () => undefined)
   const context = makeBackendContext(
     new MemoryBlobStore(),
     sql,
@@ -427,6 +430,25 @@ describe('revocation', () => {
       401,
     )
     expect((await app.request('/admin/tokens', bearer(kept.body.token as string))).status).toBe(200)
+  })
+
+  it('reports live cleanup failure and lets idempotent revocation retry the fence', async () => {
+    const closeCredential = vi
+      .fn<(season: number, tokenHash: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('Durable Object unavailable'))
+      .mockResolvedValue(undefined)
+    const { app } = harness(closeCredential)
+    const holder = await mint(app, 'retry cleanup', 'admin')
+    const revoke = () =>
+      app.request(`/admin/tokens/${holder.body.tokenHash}`, {
+        method: 'DELETE',
+        ...bearer(BOOTSTRAP),
+      })
+
+    expect((await revoke()).status).toBe(500)
+    expect((await revoke()).status).toBe(204)
+    expect(closeCredential).toHaveBeenCalledTimes(2)
+    expect(closeCredential).toHaveBeenLastCalledWith(0, holder.body.tokenHash)
   })
 
   it('answers a repeated revoke the same way, because absence is the outcome', async () => {
