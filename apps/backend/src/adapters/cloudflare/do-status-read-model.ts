@@ -1,4 +1,5 @@
 import type { ManifestProjectionInput, ManifestProjectionRead } from '../../manifest/read-model.js'
+import { type MeasuredD1Operation, mergeD1Usage } from '../../metrics/request-metrics.js'
 import type {
   StatusProjectionChange,
   StatusProjectionMutation,
@@ -9,6 +10,12 @@ import type { StatusReadModelPort } from '../../status-read-model/port.js'
 import type { StatusReadModelObject } from '../../status-read-model-object.js'
 
 const seasonName = (season: number): string => `season:${season}`
+
+const measuredValue = <A>(measured: MeasuredD1Operation<A>): A => {
+  mergeD1Usage(measured.usage)
+  if (!measured.success) throw measured.error
+  return measured.value
+}
 
 export class DurableObjectStatusReadModel implements StatusReadModelPort {
   constructor(private readonly namespace: DurableObjectNamespace<StatusReadModelObject>) {}
@@ -22,17 +29,24 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     mutation?: StatusProjectionMutation,
   ): Promise<StatusProjectionChange | null> {
     const shard = this.shard(season)
-    return mutation === undefined
-      ? shard.applyCommittedChange(season)
-      : shard.applyCommittedChange(season, mutation)
+    const measured =
+      mutation === undefined
+        ? await shard.applyCommittedChangeMeasured(season)
+        : await shard.applyCommittedChangeMeasured(season, mutation)
+    return measuredValue(measured)
   }
 
-  reconcileSnapshot(season: number, scope: StatusVisibilityScope): Promise<StatusSnapshotRead> {
-    return this.shard(season).reconcileSnapshot(season, scope)
+  async reconcileSnapshot(
+    season: number,
+    scope: StatusVisibilityScope,
+  ): Promise<StatusSnapshotRead> {
+    const measured = await this.shard(season).reconcileSnapshotMeasured(season, scope)
+    return measuredValue(measured)
   }
 
-  readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
-    return this.shard(input.season).readManifestProjection(input)
+  async readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
+    const measured = await this.shard(input.season).readManifestProjectionMeasured(input)
+    return measuredValue(measured)
   }
 
   notifyManifestChange(season: number): Promise<void> {

@@ -86,6 +86,18 @@ describe('status read-model Durable Object', () => {
     })
   })
 
+  it('returns D1 usage with a measured status cache miss', async () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+
+    const measured = await object.reconcileSnapshotMeasured(3, 'public')
+
+    expect(measured).toMatchObject({ success: true, value: { cacheOutcome: 'miss' } })
+    expect(measured.usage.measuredQueries + measured.usage.unmeasuredQueries).toBeGreaterThan(0)
+  })
+
   it('lets hibernation answer heartbeat pings without waking the object', () => {
     database = new SqliteD1Database()
     const state = objectState(new Map())
@@ -371,6 +383,47 @@ describe('status read-model Durable Object', () => {
     )
   })
 
+  it('never reactivates a retired generation after eviction cleanup fails', async () => {
+    const held = new Map<string, unknown>()
+    const state = objectState(held)
+    const persistence = createChunkedManifestPersistence(state.storage, 6)
+    const manifest: Manifest = {
+      version: 'a'.repeat(64),
+      season: 6,
+      server: {
+        id: '01890f3a-6b7c-7def-8123-456789abcdef',
+        name: 'Server',
+        auth: 'none',
+      },
+      nodes: [],
+      templates: [],
+      tiles: [],
+    }
+    const entry = {
+      key: 'public:world',
+      configuredServer: '{}',
+      cachedAt: 1_750_000_000_000,
+      expiresAt: 1_750_000_180_000,
+      serializedBytes: serializedBytes(manifest),
+      manifest,
+    }
+    await persistence.save({ season: 6, revision: 3, entries: [entry] })
+    const remove = state.storage.delete.bind(state.storage)
+    state.storage.delete = vi.fn(async () => Promise.reject(new Error('cleanup failed')))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(persistence.save({ season: 6, revision: 3, entries: [] })).resolves.toBeUndefined()
+    state.storage.delete = remove
+    await persistence.save({ season: 6, revision: 3, entries: [entry] })
+
+    const recovered = createChunkedManifestPersistence(state.storage, 6)
+    await expect(recovered.load()).resolves.toMatchObject({
+      revision: 3,
+      entries: [{ manifest: { version: 'a'.repeat(64) } }],
+    })
+    consoleError.mockRestore()
+  })
+
   it('keeps the previously published manifest reconstructible when a chunk transaction fails', async () => {
     const held = new Map<string, unknown>()
     const state = objectState(held)
@@ -409,12 +462,17 @@ describe('status read-model Durable Object', () => {
   it('reconstructs hibernating subscriber scope from serialized socket attachments', async () => {
     database = new SqliteD1Database()
     const held = new Map<string, unknown>()
-    const socket = (attachment: unknown) =>
-      ({
-        deserializeAttachment: () => attachment,
+    const socket = (attachment: unknown) => {
+      let heldAttachment = attachment
+      return {
+        deserializeAttachment: () => heldAttachment,
+        serializeAttachment: (next: unknown) => {
+          heldAttachment = next
+        },
         send: vi.fn(),
         close: vi.fn(),
-      }) as unknown as WebSocket
+      } as unknown as WebSocket
+    }
     const publicSocket = socket({
       season: 8,
       scope: 'public',
@@ -475,6 +533,14 @@ describe('status read-model Durable Object', () => {
     expect(missingAttachment.send).not.toHaveBeenCalled()
     expect(adminSocket.close).toHaveBeenCalledWith(1008, 'credential revoked')
     expect(publicSocket.close).not.toHaveBeenCalled()
+
+    vi.mocked(publicSocket.send).mockClear()
+    vi.mocked(adminSocket.send).mockClear()
+    await recovered.notifyAlarmChange(8)
+    expect(publicSocket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'alarms-reconcile' }))
+    expect(adminSocket.send).not.toHaveBeenCalled()
+    recovered.webSocketMessage(adminSocket, 'ping')
+    expect(adminSocket.send).not.toHaveBeenCalled()
   })
 
   it('rejects missing internal routing headers before creating a socket pair', async () => {

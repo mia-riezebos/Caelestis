@@ -5,6 +5,7 @@ import { SqliteD1Database } from '../adapters/cloudflare/sqlite-d1.test-helper.j
 import type { TemplateVersionRecord } from '../ports/index.js'
 import {
   instrumentD1,
+  measureD1Usage,
   measureRequest,
   normalizeMetricRoute,
   recordCacheOutcome,
@@ -266,6 +267,27 @@ describe('request capacity metrics', () => {
 
     expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[9]).toBe('500')
     expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.slice(2, 6)).toEqual([0, 0, 1, 0])
+  })
+
+  it('returns attempted D1 usage with a failed remote operation', async () => {
+    const failing = database(0)
+    failing.prepare = () =>
+      ({
+        ...statement(0),
+        all: async () => {
+          throw new Error('D1 unavailable')
+        },
+      }) as unknown as D1PreparedStatement
+
+    const measured = await measureD1Usage(async () => {
+      await instrumentD1(failing).prepare('SELECT 1').all()
+    })
+
+    expect(measured).toMatchObject({
+      success: false,
+      error: expect.objectContaining({ message: 'D1 unavailable' }),
+      usage: { rowsRead: 0, rowsWritten: 0, measuredQueries: 1, unmeasuredQueries: 0 },
+    })
   })
 
   it('keeps a failed tile-offer batch requested count', async () => {

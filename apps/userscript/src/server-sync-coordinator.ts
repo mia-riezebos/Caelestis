@@ -41,6 +41,8 @@ export interface ServerSyncResource {
   ) => Promise<ServerSyncResult>
   /** Healthy live transport suppresses interval polling for this resource. */
   readonly live?: boolean
+  /** A global manifest revision invalidates this resource's currently active surface. */
+  readonly reconcileOnManifestEvent?: boolean
   /** Optional resource-owned validation/application for a compact live event. */
   readonly applyLiveEvent?: (server: ConnectedServer, event: unknown) => boolean
 }
@@ -384,13 +386,19 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
   }
   if (event.type === 'manifest-reconcile') {
     if (event.revision === null) {
-      requestServerSync('revision-gap', 'world-manifest', server)
+      for (const resource of resources.values()) {
+        if (resource.reconcileOnManifestEvent === true)
+          requestServerSync('revision-gap', resource.id, server)
+      }
       return
     }
     const live = liveConnections.get(serverConnectionIdentity(server))
     if (live === undefined || event.revision <= (live.manifestRevision ?? -1)) return
     live.manifestRevision = event.revision
-    requestServerSync('revision-gap', 'world-manifest', server)
+    for (const resource of resources.values()) {
+      if (resource.reconcileOnManifestEvent === true)
+        requestServerSync('revision-gap', resource.id, server)
+    }
     return
   }
   if (event.type === 'alarms-reconcile') {

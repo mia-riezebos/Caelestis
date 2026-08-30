@@ -327,6 +327,7 @@ describe('server sync coordinator', () => {
       scope: () => 'world',
       refresh: manifest,
       live: true,
+      reconcileOnManifestEvent: true,
     })
     registerServerSyncResource({
       id: 'telemetry-alarms',
@@ -394,6 +395,7 @@ describe('server sync coordinator', () => {
     )
     const status = vi.fn(async () => ({ status: 'unchanged' as const, revision: '7' }))
     const manifest = vi.fn(async () => ({ status: 'unchanged' as const }))
+    const allianceManifest = vi.fn(async () => ({ status: 'unchanged' as const }))
     const alarms = vi.fn(async () => ({ status: 'unchanged' as const }))
     const applyLiveEvent = vi.fn(() => false)
     registerServerSyncResource({
@@ -408,6 +410,13 @@ describe('server sync coordinator', () => {
       scope: () => 'world',
       refresh: manifest,
       live: true,
+      reconcileOnManifestEvent: true,
+    })
+    registerServerSyncResource({
+      id: 'alliance-manifest',
+      scope: () => 'banner:1',
+      refresh: allianceManifest,
+      reconcileOnManifestEvent: true,
     })
     registerServerSyncResource({
       id: 'telemetry-alarms',
@@ -422,6 +431,7 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(0)
     status.mockClear()
     manifest.mockClear()
+    allianceManifest.mockClear()
     alarms.mockClear()
 
     socket.receive({ type: 'status-delta', delta: { baseRevision: 5, revision: 6 } })
@@ -434,25 +444,30 @@ describe('server sync coordinator', () => {
     expect(applyLiveEvent).toHaveBeenCalledOnce()
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+    expect(allianceManifest).toHaveBeenCalledOnce()
     expect(alarms).toHaveBeenCalledOnce()
 
     status.mockClear()
     manifest.mockClear()
+    allianceManifest.mockClear()
     alarms.mockClear()
     socket.receive({ type: 'manifest-reconcile', revision: 4 })
     socket.receive({ type: 'manifest-reconcile', revision: 3 })
     await vi.advanceTimersByTimeAsync(0)
     expect(status).not.toHaveBeenCalled()
     expect(manifest).not.toHaveBeenCalled()
+    expect(allianceManifest).not.toHaveBeenCalled()
     expect(alarms).not.toHaveBeenCalled()
 
     status.mockClear()
     manifest.mockClear()
+    allianceManifest.mockClear()
     alarms.mockClear()
     socket.close()
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+    expect(allianceManifest).not.toHaveBeenCalled()
     expect(alarms).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(1_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
