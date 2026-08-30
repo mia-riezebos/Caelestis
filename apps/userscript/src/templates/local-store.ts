@@ -1,8 +1,12 @@
 import {
   encodeIndexedPng,
+  sameTemplateSurface,
+  type TemplateSurface,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  templateSurfaceBounds,
   WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
@@ -53,6 +57,8 @@ import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './serv
  */
 
 export interface PlacedTemplate extends ImportedTemplate {
+  /** Drawing surface this placement belongs to. Legacy browser-owned templates are world-scoped. */
+  readonly surface?: TemplateSurface
   /** Painted world-tile keys (`x/y`) used to bound mismatch and navigation work. */
   readonly tiles: ReadonlySet<string>
   readonly visible: boolean
@@ -423,6 +429,12 @@ export const displayTemplates = (): readonly PlacedTemplate[] => {
   })
 }
 
+/** The renderer and editor menu for one canvas must never see templates from another surface. */
+export const displayTemplatesForSurface = (surface: TemplateSurface): readonly PlacedTemplate[] =>
+  displayTemplates().filter((template) =>
+    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+  )
+
 /** Transient placement never touches IndexedDB or rebuilds tiles; the renderer translates them. */
 export const previewLocalTemplate = (id: string, originX: number, originY: number): boolean => {
   const existing = templates.get(id)
@@ -508,7 +520,7 @@ const yieldToBrowser = async (): Promise<void> => {
 }
 
 const validatePlacement = (
-  template: ImportedTemplate,
+  template: ImportedTemplate & { readonly surface?: TemplateSurface },
   originX = template.originX,
   originY = template.originY,
 ): void => {
@@ -523,6 +535,20 @@ const validatePlacement = (
     template.indices.length !== template.width * template.height
   ) {
     throw new RangeError('template dimensions do not match its pixels')
+  }
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  if (surface.kind !== 'world') {
+    const bounds = templateSurfaceBounds(surface)
+    if (
+      bounds === null ||
+      originX < bounds.minX ||
+      originY < bounds.minY ||
+      originX + template.width > bounds.maxX ||
+      originY + template.height > bounds.maxY
+    ) {
+      throw new RangeError(`template is outside the ${surface.kind} canvas`)
+    }
+    return
   }
   if (originX < 0 || originY < 0) throw new RangeError('template origin is outside the canvas')
   if (originX + template.width > WORLD_PIXELS) {
@@ -699,7 +725,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
         : (owns as AppearanceGroup[]),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
-  validatePlacement(normalised)
+  validatePlacement({ ...normalised, surface: WORLD_TEMPLATE_SURFACE })
   return normalised
 }
 
@@ -888,6 +914,7 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       previewOrigins.delete(id)
       templates.set(id, {
         ...winner,
+        surface: WORLD_TEMPLATE_SURFACE,
         appearance: winner.appearance ?? null,
         owns: winner.owns ?? (winner.appearance != null ? APPEARANCE_GROUPS : []),
         folderId: winner.folderId ?? null,
@@ -952,6 +979,7 @@ export const hasRoomForServerTemplate = (id: string, nextPixels: number): boolea
  */
 export const putServerTemplate = async (
   template: ImportedTemplate & {
+    surface?: TemplateSurface
     serverUrl: string
     serverTemplateId: string
     serverNodeId: string | null
@@ -981,6 +1009,7 @@ export const putServerTemplate = async (
     }
     templates.set(template.id, {
       ...template,
+      surface: template.surface ?? WORLD_TEMPLATE_SURFACE,
       tiles,
       // Whether someone else's template is on *your* canvas is your decision and nobody else's, so
       // it is read back from this browser's own record rather than defaulted.
@@ -1083,6 +1112,7 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
     const tiles = await paintedTileKeys(template)
     const placed: PlacedTemplate = {
       ...template,
+      surface: WORLD_TEMPLATE_SURFACE,
       tiles,
       visible: true,
       everPlaced: false,
@@ -1179,6 +1209,7 @@ export const copyAsLocalTemplate = async (
       const tiles = await paintedTileKeys(imported)
       const placed: PlacedTemplate = {
         ...imported,
+        surface: WORLD_TEMPLATE_SURFACE,
         tiles,
         visible: true,
         everPlaced: true,
@@ -1362,6 +1393,7 @@ const restoreStoredTemplates = async (): Promise<void> => {
         reserved = template
         templates.set(template.id, {
           ...template,
+          surface: WORLD_TEMPLATE_SURFACE,
           appearance: template.appearance ?? null,
           owns: template.owns ?? (template.appearance != null ? APPEARANCE_GROUPS : []),
           folderId: template.folderId ?? null,

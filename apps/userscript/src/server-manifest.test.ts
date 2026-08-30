@@ -87,3 +87,45 @@ describe('server manifest template lifecycle', () => {
     ).toBeNull()
   })
 })
+
+describe('server manifest drawing surfaces', () => {
+  const hqSurface = { kind: 'alliance-headquarters' as const, allianceId: 535_245 }
+  const hqManifest = {
+    ...manifest,
+    surface: hqSurface,
+    templates: [
+      {
+        ...manifest.templates[0],
+        bbox: { minX: -1, minY: -1, maxX: 1, maxY: 0 },
+        totalPixels: 2,
+        chunks: [
+          { tile: '-1/-1', hash: 'a'.repeat(64) },
+          { tile: '0/-1', hash: 'b'.repeat(64) },
+        ],
+      },
+    ],
+    tiles: ['-1/-1', '0/-1'],
+  }
+
+  it('accepts signed HQ chunks only for the expected alliance scope', () => {
+    const parsed = parseServerManifest(hqManifest, server, hqSurface)
+
+    expect(parsed?.surface).toEqual(hqSurface)
+    expect(parsed?.templates[0]).toMatchObject({ surface: hqSurface })
+    expect(parseServerManifest(hqManifest, server)).toBeNull()
+    expect(
+      parseServerManifest(hqManifest, server, {
+        kind: 'alliance-headquarters',
+        allianceId: 1,
+      }),
+    ).toBeNull()
+  })
+
+  it('keeps the omitted surface backward-compatible as world only', () => {
+    expect(parseServerManifest(manifest, server)?.surface).toEqual({
+      kind: 'world',
+      allianceId: null,
+    })
+    expect(parseServerManifest(manifest, server, hqSurface)).toBeNull()
+  })
+})

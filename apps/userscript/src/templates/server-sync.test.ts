@@ -1,4 +1,4 @@
-import { sha256Hex } from '@caelestis/shared'
+import { sha256Hex, type TemplateSurface } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface MockServer {
@@ -52,7 +52,12 @@ const store = vi.hoisted(() => ({
   forgetServerTemplate: vi.fn(),
   hasRoomForServerTemplate: vi.fn(() => true),
   localTemplates: vi.fn(
-    (): Array<{ id: string; serverUrl?: string; serverVersion?: string }> => [],
+    (): Array<{
+      id: string
+      serverUrl?: string
+      serverVersion?: string
+      surface?: TemplateSurface
+    }> => [],
   ),
   putServerTemplate: vi.fn(async () => true),
   updateServerTemplateMetadata: vi.fn(),
@@ -82,6 +87,32 @@ beforeEach(() => {
 })
 
 describe('server template sync', () => {
+  it('reconciles one alliance surface without removing the server world templates', async () => {
+    const surface = { kind: 'alliance-headquarters' as const, allianceId: 535_245 }
+    store.localTemplates.mockReturnValue([
+      {
+        id: 'srv:https%3A%2F%2Fexample.test:world-template',
+        serverUrl: connected.url,
+        serverVersion: 'v1',
+        surface: { kind: 'world', allianceId: null },
+      },
+      {
+        id: 'srv:https%3A%2F%2Fexample.test:@alliance-headquarters:535245:hq-template',
+        serverUrl: connected.url,
+        serverVersion: 'v1',
+        surface,
+      },
+    ])
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    await syncServerTemplates(connected, [], undefined, surface)
+
+    expect(store.forgetServerTemplate).toHaveBeenCalledTimes(1)
+    expect(store.forgetServerTemplate).toHaveBeenCalledWith(
+      'srv:https%3A%2F%2Fexample.test:@alliance-headquarters:535245:hq-template',
+    )
+  })
+
   it('ignores refresh callbacks from a removed or replaced connection', async () => {
     state.getState.mockReturnValue({ servers: [{ ...connected }] })
     const { syncServerTemplates } = await import('./server-sync.js')

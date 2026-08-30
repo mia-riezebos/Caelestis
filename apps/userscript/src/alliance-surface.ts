@@ -157,10 +157,16 @@ const readJson = (response: Response, accept: (body: unknown) => void): void => 
   }
 }
 
-const observeAlliance = (response: Response, sequence: number, headquarters: boolean): void => {
+const observeAlliance = (
+  response: Response,
+  sequence: number,
+  headquarters: boolean,
+  knownAllianceId?: number,
+): void => {
   readJson(response, (body) => {
     if (sequence < acceptedAllianceSequence || !isRecord(body)) return
-    const nextAllianceId = positiveInteger(headquarters ? body.allianceId : body.id)
+    const nextAllianceId =
+      knownAllianceId ?? positiveInteger(headquarters ? body.allianceId : body.id)
     if (nextAllianceId === null) return
     acceptedAllianceSequence = sequence
     if (allianceId !== null && allianceId !== nextAllianceId) allianceEpoch++
@@ -210,6 +216,7 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
     let observation:
       | { readonly kind: 'alliance'; readonly sequence: number }
       | { readonly kind: 'hq'; readonly sequence: number }
+      | { readonly kind: 'public-hq'; readonly sequence: number; readonly allianceId: number }
       | {
           readonly kind: 'draft'
           readonly sequence: number
@@ -231,7 +238,17 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
             hqBounds = null
             queueReconcile()
           }
-          if (url.pathname === '/alliance') {
+          if (
+            publicAllianceId !== null &&
+            (url.pathname === `/alliances/${publicAllianceId}/headquarters` ||
+              url.pathname === `/alliances/${publicAllianceId}/headquarters/manifest`)
+          ) {
+            observation = {
+              kind: 'public-hq',
+              sequence: ++allianceSequence,
+              allianceId: publicAllianceId,
+            }
+          } else if (url.pathname === '/alliance') {
             observation = { kind: 'alliance', sequence: ++allianceSequence }
           } else if (url.pathname === '/alliance/headquarters') {
             observation = { kind: 'hq', sequence: ++allianceSequence }
@@ -259,7 +276,12 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
       if (observation.kind === 'draft') {
         observeDraft(response, observation.sequence, observation.draftId, observation.allianceEpoch)
       } else {
-        observeAlliance(response, observation.sequence, observation.kind === 'hq')
+        observeAlliance(
+          response,
+          observation.sequence,
+          observation.kind !== 'alliance',
+          observation.kind === 'public-hq' ? observation.allianceId : undefined,
+        )
       }
       return response
     })

@@ -1,10 +1,14 @@
 import {
   PALETTE_RGB,
   quantiseToPalette,
+  sameTemplateSurface,
   sha256Hex,
+  type TemplateSurface,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  templateSurfaceKey,
   WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
@@ -226,7 +230,8 @@ const assemble = async (
   generationSignal: AbortSignal,
 ): Promise<{ width: number; height: number; indices: Uint8Array } | null> => {
   if (generationSignal.aborted) return null
-  const wrapsX = template.bbox.minX > template.bbox.maxX
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  const wrapsX = surface.kind === 'world' && template.bbox.minX > template.bbox.maxX
   const width = wrapsX
     ? WORLD_PIXELS - template.bbox.minX + template.bbox.maxX
     : template.bbox.maxX - template.bbox.minX
@@ -306,8 +311,16 @@ export const forgetChunks = (hashes: Iterable<string>): void => {
 }
 
 /** Our id for a server's template, namespaced so two servers cannot collide. */
-export const serverTemplateKey = (serverUrl: string, id: string): string =>
-  `srv:${encodeURIComponent(serverUrl)}:${id}`
+export const serverTemplateKey = (
+  serverUrl: string,
+  id: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): string => {
+  const prefix = `srv:${encodeURIComponent(serverUrl)}:`
+  return surface.kind === 'world'
+    ? `${prefix}${id}`
+    : `${prefix}@${templateSurfaceKey(surface)}:${id}`
+}
 
 /** Templates already in flight, so a second sync while one runs does not download everything twice. */
 const inFlight = new Map<string, number>()
@@ -355,10 +368,14 @@ export const endServerGeneration = (serverUrl: string): void => {
   generationControllers.get(serverUrl)?.controller.abort()
   generationControllers.delete(serverUrl)
   generations.set(serverUrl, generationOf(serverUrl) + 1)
-  pendingServerSyncs.delete(serverUrl)
+  for (const key of [...pendingServerSyncs.keys()]) {
+    if (key.startsWith(`${serverUrl}\n`)) pendingServerSyncs.delete(key)
+  }
   // A new connection must not queue behind the obsolete drain. The old run's release callback is
   // identity guarded, so it cannot delete the replacement when it eventually settles.
-  serverSyncRuns.delete(serverUrl)
+  for (const key of [...serverSyncRuns.keys()]) {
+    if (key.startsWith(`${serverUrl}\n`)) serverSyncRuns.delete(key)
+  }
   // The versions this server had asked for go with it. Kept, they outlive the connection for the
   // rest of the session, and a second server whose URL extends this one's shares their key prefix.
   const prefix = serverTemplateKey(serverUrl, '')
@@ -379,6 +396,7 @@ const syncServerTemplatesOnce = async (
   /** The manifest's templates, when the caller has just read them and would only re-read them. */
   known?: readonly ServerTemplate[],
   snapshotCurrent: () => boolean = () => true,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<void> => {
   const connectionCurrent = (): boolean => isCurrentServerConnection(server)
   if (server.status !== 'connected' || !connectionCurrent() || !snapshotCurrent()) return
@@ -410,9 +428,12 @@ const syncServerTemplatesOnce = async (
   // Could not ask, so nothing is known and nothing changes. Treating this as an empty server took
   // every template off the canvas on a single blip and put them back looking newly arrived.
   if (available === null) return
+  available = available.filter((template) =>
+    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+  )
   if (!current()) return
   const wanted = new Map(
-    available.map((template) => [serverTemplateKey(server.url, template.id), template]),
+    available.map((template) => [serverTemplateKey(server.url, template.id, surface), template]),
   )
   // Snapshot once. Re-reading and linearly searching the store for every manifest entry made a
   // large server sync quadratic in the number of templates.
@@ -421,10 +442,11 @@ const syncServerTemplatesOnce = async (
   for (const held of heldById.values()) {
     if (!current()) return
     if (held.serverUrl !== server.url) continue
+    if (!sameTemplateSurface(held.surface ?? WORLD_TEMPLATE_SURFACE, surface)) continue
     if (!wanted.has(held.id)) await forgetServerTemplate(held.id)
   }
   if (!current()) return
-  const ourPrefix = serverTemplateKey(server.url, '')
+  const ourPrefix = serverTemplateKey(server.url, '', surface)
   for (const key of [...latestVersion.keys()]) {
     if (key.startsWith(ourPrefix) && !wanted.has(key)) latestVersion.delete(key)
   }
@@ -445,7 +467,7 @@ const syncServerTemplatesOnce = async (
     // Asked before the download, not after. A server may advertise a manifest far larger than the
     // rendering budget, and decoding a template only to have the store refuse it wastes the entire
     // chunk transfer and assembly on every poll.
-    const wrapsX = template.bbox.minX > template.bbox.maxX
+    const wrapsX = surface.kind === 'world' && template.bbox.minX > template.bbox.maxX
     const width = wrapsX
       ? WORLD_PIXELS - template.bbox.minX + template.bbox.maxX
       : template.bbox.maxX - template.bbox.minX
@@ -476,6 +498,7 @@ const syncServerTemplatesOnce = async (
           const installed = await putServerTemplate(
             {
               id: key,
+              surface,
               name: template.name,
               source: 'image',
               originX: template.bbox.minX,
@@ -495,7 +518,7 @@ const syncServerTemplatesOnce = async (
               serverNodeId: template.nodeId,
               serverVersion: template.version,
               serverTileKeys: template.chunks.map((chunk) => chunk.tile),
-              wrapX: template.bbox.minX > template.bbox.maxX,
+              wrapX: surface.kind === 'world' && template.bbox.minX > template.bbox.maxX,
             },
             () => current() && latestVersion.get(key) === template.version,
           )
@@ -516,6 +539,7 @@ const syncServerTemplatesOnce = async (
 
 interface PendingServerSync {
   readonly server: ConnectedServer
+  readonly surface: TemplateSurface
   readonly known?: readonly ServerTemplate[]
   readonly snapshotCurrent?: () => boolean
 }
@@ -524,22 +548,33 @@ interface PendingServerSync {
 const pendingServerSyncs = new Map<string, PendingServerSync>()
 const serverSyncRuns = new Map<string, Promise<void>>()
 
-const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
-  const existing = serverSyncRuns.get(serverUrl)
+const serverSyncKey = (serverUrl: string, surface: TemplateSurface): string =>
+  `${serverUrl}\n${templateSurfaceKey(surface)}`
+
+const ensureServerSyncRun = (key: string): Promise<void> => {
+  const existing = serverSyncRuns.get(key)
   if (existing !== undefined) return existing
+  const requestedAtStart = pendingServerSyncs.get(key)
+  if (requestedAtStart === undefined) return Promise.resolve()
+  const serverUrl = requestedAtStart.server.url
   const generation = generationOf(serverUrl)
   const running = (async () => {
     while (true) {
       if (generationOf(serverUrl) !== generation) return
-      const requested = pendingServerSyncs.get(serverUrl)
+      const requested = pendingServerSyncs.get(key)
       if (requested === undefined) return
-      pendingServerSyncs.delete(serverUrl)
-      await syncServerTemplatesOnce(requested.server, requested.known, requested.snapshotCurrent)
+      pendingServerSyncs.delete(key)
+      await syncServerTemplatesOnce(
+        requested.server,
+        requested.known,
+        requested.snapshotCurrent,
+        requested.surface,
+      )
     }
   })()
-  serverSyncRuns.set(serverUrl, running)
+  serverSyncRuns.set(key, running)
   const release = (): void => {
-    if (serverSyncRuns.get(serverUrl) === running) serverSyncRuns.delete(serverUrl)
+    if (serverSyncRuns.get(key) === running) serverSyncRuns.delete(key)
   }
   void running.then(release, release)
   return running
@@ -555,32 +590,36 @@ export const syncServerTemplates = async (
   server: ConnectedServer,
   known?: readonly ServerTemplate[],
   snapshotCurrent?: () => boolean,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<void> => {
   // Immutable state rows may change cosmetic server metadata in place. Credentials, deployment,
   // season, scope, and connectivity define the lifetime that is allowed to continue this work.
   if (!isCurrentServerConnection(server)) return
   if (snapshotCurrent?.() === false) return
-  const pending = pendingServerSyncs.get(server.url)
+  const key = serverSyncKey(server.url, surface)
+  const pending = pendingServerSyncs.get(key)
   // A blind poll carries no newer state of its own. If a mutation has already queued the manifest
   // it just read, keep that authoritative snapshot instead of replacing it with a request that may
   // fail or return a stale intermediary. A later explicit snapshot still replaces an older one.
   if (known === undefined && pending?.known !== undefined) {
-    pendingServerSyncs.set(server.url, {
+    pendingServerSyncs.set(key, {
       server,
+      surface,
       known: pending.known,
       ...(pending.snapshotCurrent === undefined
         ? {}
         : { snapshotCurrent: pending.snapshotCurrent }),
     })
   } else {
-    pendingServerSyncs.set(server.url, {
+    pendingServerSyncs.set(key, {
       server,
+      surface,
       ...(known === undefined ? {} : { known }),
       ...(snapshotCurrent === undefined ? {} : { snapshotCurrent }),
     })
   }
-  while (pendingServerSyncs.has(server.url) || serverSyncRuns.has(server.url)) {
-    await ensureServerSyncRun(server.url)
+  while (pendingServerSyncs.has(key) || serverSyncRuns.has(key)) {
+    await ensureServerSyncRun(key)
   }
 }
 

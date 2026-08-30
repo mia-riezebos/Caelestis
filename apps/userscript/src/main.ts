@@ -1,5 +1,6 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { registerCaelestisUi } from '@caelestis/ui/elements'
+import { installAllianceServerSync } from './alliance-server-sync.js'
 import { installAllianceSurfaceObserver } from './alliance-surface.js'
 import {
   canvasPixelAtIn,
@@ -10,6 +11,7 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
+import { installAllianceOverlayLayer } from './gl/artboard-layer.js'
 import {
   installOverlayLayer,
   overlayGpuMemoryBytes,
@@ -295,6 +297,7 @@ const main = (): void => {
   // Server templates do not: they are re-fetched, because the server is where they live and a copy
   // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
   step('server templates', installServerSync)
+  step('alliance server templates', installAllianceServerSync)
   step('server telemetry', installTelemetry)
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {
@@ -355,6 +358,7 @@ const main = (): void => {
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
+  step('alliance overlay layer', installAllianceOverlayLayer)
   onFrame((frame) => renderOverlayControls(repaint, frame.canvas), 'Overlay controls')
   onTileFrame(draw)
   onLocalChange(redraw)

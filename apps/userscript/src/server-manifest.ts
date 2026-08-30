@@ -1,4 +1,13 @@
-import { TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
+import {
+  sameTemplateSurface,
+  type TemplateSurface,
+  TILE_SIZE,
+  templateSurface,
+  templateSurfaceBounds,
+  WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
+  WORLD_TILES,
+} from '@caelestis/shared'
 import type { ServerTemplate } from './server-cache.js'
 
 export type ServerAuthMode = 'none' | 'access_token'
@@ -21,6 +30,7 @@ export interface TreeNode {
 
 export interface ServerManifest {
   readonly season: number
+  readonly surface: TemplateSurface
   readonly server: ServerInfo
   readonly nodes: readonly TreeNode[]
   readonly templates: readonly ServerTemplate[]
@@ -141,11 +151,16 @@ export const parseTreeNodes = (value: unknown): readonly TreeNode[] | null => {
   return nodes
 }
 
-const manifestTileKey = (value: unknown): value is string => {
+const manifestTileKey = (value: unknown, surface: TemplateSurface): value is string => {
   if (typeof value !== 'string') return false
-  const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
+  const match = /^(0|-?[1-9]\d*)\/(0|-?[1-9]\d*)$/.exec(value)
   if (match === null) return false
-  return Number(match[1]) < WORLD_TILES && Number(match[2]) < WORLD_TILES
+  const x = Number(match[1])
+  const y = Number(match[2])
+  if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) return false
+  return surface.kind === 'world'
+    ? x >= 0 && y >= 0 && x < WORLD_TILES && y < WORLD_TILES
+    : x >= -1 && x <= 0 && y >= -1 && y <= 0
 }
 
 interface ManifestBbox {
@@ -155,8 +170,11 @@ interface ManifestBbox {
   readonly maxY: number
 }
 
-const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> =>
-  bbox.minX < bbox.maxX
+const manifestXSpans = (
+  bbox: ManifestBbox,
+  wraps: boolean,
+): ReadonlyArray<{ start: number; end: number }> =>
+  bbox.minX < bbox.maxX || !wraps
     ? [{ start: bbox.minX, end: bbox.maxX }]
     : [
         { start: bbox.minX, end: WORLD_PIXELS },
@@ -171,13 +189,17 @@ const tileCoordinates = (tile: string): { x: number; y: number } => {
   }
 }
 
-const chunkIntersectionArea = (tile: string, bbox: ManifestBbox): number => {
+const chunkIntersectionArea = (
+  tile: string,
+  bbox: ManifestBbox,
+  surface: TemplateSurface,
+): number => {
   const { x, y } = tileCoordinates(tile)
   const tileMinX = x * TILE_SIZE
   const tileMinY = y * TILE_SIZE
   const height = Math.min(tileMinY + TILE_SIZE, bbox.maxY) - Math.max(tileMinY, bbox.minY)
   if (height <= 0) return 0
-  const width = manifestXSpans(bbox).reduce(
+  const width = manifestXSpans(bbox, surface.kind === 'world').reduce(
     (total, span) =>
       total +
       Math.max(0, Math.min(tileMinX + TILE_SIZE, span.end) - Math.max(tileMinX, span.start)),
@@ -189,6 +211,7 @@ const chunkIntersectionArea = (tile: string, bbox: ManifestBbox): number => {
 const manifestContentsValid = (
   value: Record<string, unknown>,
   nodes: readonly TreeNode[],
+  surface: TemplateSurface,
 ): boolean => {
   const rawNodes = value.nodes as readonly unknown[]
   if (
@@ -212,7 +235,7 @@ const manifestContentsValid = (
     return false
   const declaredTiles = new Set<string>()
   for (const tile of value.tiles) {
-    if (!manifestTileKey(tile) || declaredTiles.has(tile)) return false
+    if (!manifestTileKey(tile, surface) || declaredTiles.has(tile)) return false
     declaredTiles.add(tile)
   }
 
@@ -244,20 +267,34 @@ const manifestContentsValid = (
       return false
     if (!isRecord(raw.bbox)) return false
     const { minX, minY, maxX, maxY } = raw.bbox
-    if (
-      ![minX, minY, maxX, maxY].every(Number.isSafeInteger) ||
-      Number(minX) < 0 ||
-      Number(minX) >= WORLD_PIXELS ||
-      Number(maxX) < 1 ||
-      Number(maxX) > WORLD_PIXELS ||
-      Number(minX) === Number(maxX) ||
-      Number(minY) < 0 ||
-      Number(minY) >= WORLD_PIXELS ||
-      Number(maxY) < 1 ||
-      Number(maxY) > WORLD_PIXELS ||
-      Number(minY) >= Number(maxY)
-    )
-      return false
+    if (![minX, minY, maxX, maxY].every(Number.isSafeInteger)) return false
+    if (surface.kind === 'world') {
+      if (
+        Number(minX) < 0 ||
+        Number(minX) >= WORLD_PIXELS ||
+        Number(maxX) < 1 ||
+        Number(maxX) > WORLD_PIXELS ||
+        Number(minX) === Number(maxX) ||
+        Number(minY) < 0 ||
+        Number(minY) >= WORLD_PIXELS ||
+        Number(maxY) < 1 ||
+        Number(maxY) > WORLD_PIXELS ||
+        Number(minY) >= Number(maxY)
+      )
+        return false
+    } else {
+      const bounds = templateSurfaceBounds(surface)
+      if (
+        bounds === null ||
+        Number(minX) < bounds.minX ||
+        Number(minY) < bounds.minY ||
+        Number(maxX) > bounds.maxX ||
+        Number(maxY) > bounds.maxY ||
+        Number(minX) >= Number(maxX) ||
+        Number(minY) >= Number(maxY)
+      )
+        return false
+    }
     if (!Array.isArray(raw.chunks) || raw.chunks.length === 0) return false
     chunks += raw.chunks.length
     if (chunks > MAX_MANIFEST_CHUNKS) return false
@@ -272,13 +309,13 @@ const manifestContentsValid = (
     for (const chunk of raw.chunks) {
       if (
         !isRecord(chunk) ||
-        !manifestTileKey(chunk.tile) ||
+        !manifestTileKey(chunk.tile, surface) ||
         typeof chunk.hash !== 'string' ||
         !SHA256_HEX.test(chunk.hash) ||
         ownTiles.has(chunk.tile)
       )
         return false
-      const intersection = chunkIntersectionArea(chunk.tile, bbox)
+      const intersection = chunkIntersectionArea(chunk.tile, bbox, surface)
       if (intersection === 0) return false
       capacity += intersection
       ownTiles.add(chunk.tile)
@@ -295,6 +332,7 @@ const manifestContentsValid = (
 export const parseServerManifest = (
   value: unknown,
   expected: ServerInfo,
+  expectedSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): ServerManifest | null => {
   if (
     !isRecord(value) ||
@@ -304,10 +342,17 @@ export const parseServerManifest = (
   )
     return null
   if (!Number.isSafeInteger(value.season) || Number(value.season) < 0) return null
+  const surface =
+    value.surface === undefined
+      ? WORLD_TEMPLATE_SURFACE
+      : isRecord(value.surface)
+        ? templateSurface(value.surface.kind, value.surface.allianceId)
+        : null
+  if (surface === null || !sameTemplateSurface(surface, expectedSurface)) return null
   const server = parseServerInfo(value.server)
   if (server === null || server.id !== expected.id) return null
   const nodes = parseTreeNodes(value.nodes)
-  if (nodes === null || !manifestContentsValid(value, nodes)) return null
+  if (nodes === null || !manifestContentsValid(value, nodes, surface)) return null
   const templates = (value.templates as readonly Record<string, unknown>[]).map(
     (template): ServerTemplate => ({
       id: String(template.id),
@@ -327,7 +372,8 @@ export const parseServerManifest = (
             : 0,
       bbox: template.bbox as ServerTemplate['bbox'],
       chunks: template.chunks as ServerTemplate['chunks'],
+      surface,
     }),
   )
-  return { season: Number(value.season), server, nodes, templates }
+  return { season: Number(value.season), surface, server, nodes, templates }
 }
