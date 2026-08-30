@@ -47,7 +47,10 @@ and [state API](https://developers.cloudflare.com/durable-objects/api/state/).
 | Five-client update within two seconds | `status-read-model-object.test.ts`: fans one committed update to five sockets; `live-client-acceptance.test.ts`: parses and applies it to five independent client states |
 | Restart and eviction | `status-read-model-object.test.ts`: persists a reconstructible season projection across object eviction |
 | Hibernation and socket attachments | `status-read-model-object.test.ts`: reconstructs hibernating subscriber scope; answers heartbeat pings without waking |
+| Revocation publication fence | `status-read-model-object.test.ts`: marks closing sockets revoked before returning and excludes them from later sends |
+| Manifest generation recovery | `status-read-model-object.test.ts`: re-adds an evicted projection without reusing a retired generation after cleanup failure |
 | Revision gaps and stale reads | `server-sync-coordinator.test.ts`: coalesces malformed, out-of-order, and reconnect recovery; discards an in-flight stale snapshot |
+| Projection D1 attribution | `status-read-model-object.test.ts` and `do-status-read-model.test.ts`: collect miss work inside the object and merge it into the originating request point |
 | Offline and visibility recovery | `server-sync-coordinator.test.ts`: pauses while hidden or offline and coalesces recovery events |
 | Old-server compatibility | `server-sync-coordinator.test.ts`: keeps compatibility polling and opens no socket when capability is absent |
 | Authentication scope | `routes/telemetry.test.ts`: authenticates and scope-binds live upgrades before resolving a season object |
@@ -72,8 +75,8 @@ paint path.
 
 - `effect` is exactly `4.0.0-beta.102` in the backend and wire-schema packages and resolves to that
   version in the lockfile.
-- Backend Worker dry-run bundle: 1645.26 KiB upload, 341.49 KiB gzip.
-- Userscript bundle: 568,750 bytes.
+- Backend Worker dry-run bundle: 1647.73 KiB upload, 342.07 KiB gzip.
+- Userscript bundle: 569,501 bytes.
 - Validation commands: `pnpm lint`, `pnpm check`, `pnpm test`, `pnpm build`,
   `pnpm test:release`, and a backend `wrangler deploy --dry-run`.
 

@@ -338,9 +338,9 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
       accepted++
     } else if (completeDisposition && rejected.has(entry.tile)) {
-      // A refusal is still a definitive acknowledgement. Re-offering it on every canvas read would
-      // turn stale client coverage into a hot loop; TTL/reconnect/content changes retain recovery.
-      tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+      // A refusal is definitive only for the current manifest coverage. Suppress hot-loop captures,
+      // but invalidate this receipt when a later manifest changes the covered tile set.
+      tileOfferAcknowledgements.rejected(server.url, owner, season, key)
     } else {
       tileOfferAcknowledgements.retryable(server.url, owner, season, key)
     }
@@ -497,8 +497,25 @@ const replayRecent = (server: ConnectedServer): void => {
 
 const rememberContents = (server: ConnectedServer, contents: ServerContents): void => {
   if (!isCurrentServerConnection(server)) return
-  coverage.set(server.url, { server, tiles: coverageFrom(contents), contents })
+  const held = coverage.get(server.url)
+  const previous = coverageFor(server)
+  const next = coverageFrom(contents)
+  const coverageChanged =
+    previous === null ||
+    contents.revision === undefined ||
+    held?.contents.revision !== contents.revision ||
+    previous.size !== next.size ||
+    [...previous].some((tile) => !next.has(tile))
+  coverage.set(server.url, { server, tiles: next, contents })
+  if (coverageChanged && server.season !== null) {
+    tileOfferAcknowledgements.invalidateRejections(
+      server.url,
+      serverConnectionIdentity(server),
+      server.season,
+    )
+  }
   replayRecent(server)
+  requestServerSync('manifest-applied', 'telemetry-status', server)
   requestServerSync('manifest-applied', 'telemetry-alarms', server)
 }
 
@@ -736,6 +753,9 @@ const refreshAlarms = async (
         if (alarm === null || templateIds.has(alarm.templateId)) return { status: 'failed' }
         templateIds.add(alarm.templateId)
         parsed.push(alarm)
+      }
+      if (!isCurrentServerConnection(server) || coverage.get(server.url) !== snapshot) {
+        return { status: 'failed' }
       }
       let changed = false
       const present = new Set<string>()

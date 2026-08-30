@@ -253,6 +253,7 @@ export const installAllianceServerSync = (): void => {
   onStateChange(stateChanged)
   registerServerSyncResource({
     id: ALLIANCE_MANIFEST_RESOURCE,
+    reconcileOnManifestEvent: true,
     scope: () =>
       selected !== null && readyGeneration === generation ? templateSurfaceKey(selected) : null,
     refresh: async (server, reason) => {

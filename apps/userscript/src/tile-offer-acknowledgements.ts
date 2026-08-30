@@ -1,7 +1,7 @@
 export type TileOfferDecision = 'fresh' | 'retry' | 'pending' | 'avoid'
 
 interface TileOfferReceipt {
-  readonly state: 'in-flight' | 'retryable' | 'acknowledged'
+  readonly state: 'in-flight' | 'retryable' | 'acknowledged' | 'rejected'
   readonly expiresAt: number
 }
 
@@ -51,7 +51,7 @@ export class TileOfferAcknowledgements {
     server.receipts.delete(observation)
     if (receipt.expiresAt > this.#now()) {
       server.receipts.set(observation, receipt)
-      return receipt.state === 'acknowledged' ? 'avoid' : 'pending'
+      return receipt.state === 'acknowledged' || receipt.state === 'rejected' ? 'avoid' : 'pending'
     }
     return 'retry'
   }
@@ -80,6 +80,23 @@ export class TileOfferAcknowledgements {
       state: 'acknowledged',
       expiresAt: this.#now() + this.#ttlMs,
     })
+  }
+
+  rejected(serverUrl: string, owner: object, season: number, observation: string): void {
+    const server = this.#settlementServer(serverUrl, owner, season)
+    if (server === null) return
+    this.#remember(server, observation, {
+      state: 'rejected',
+      expiresAt: this.#now() + this.#ttlMs,
+    })
+  }
+
+  invalidateRejections(serverUrl: string, owner: object, season: number): void {
+    const server = this.#servers.get(serverUrl)
+    if (server === undefined || server.owner !== owner || server.season !== season) return
+    for (const [observation, receipt] of server.receipts) {
+      if (receipt.state === 'rejected') server.receipts.delete(observation)
+    }
   }
 
   #remember(server: ServerAcknowledgements, observation: string, receipt: TileOfferReceipt): void {

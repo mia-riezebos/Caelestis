@@ -56,7 +56,10 @@ D1 exposes exact row metadata from successful `all`, `run`, and batch results. Q
 counted before awaiting D1 so failures remain visible, while row counts are added only from returned
 metadata. `raw`, `first`, and `exec` do not expose metadata; those calls increment `double6` instead
 of pretending they read zero rows. Native positional `raw` rows are preserved because joined reads
-can contain duplicate column names.
+can contain duplicate column names. Status and manifest projection operations collect the same
+metadata inside their Durable Object and return it with the RPC result, where the originating Worker
+request merges it into these columns. True projection-cache hits therefore remain zero-D1 reads,
+while misses, stale rebuilds, and forced repairs retain their actual D1 attribution.
 
 The metrics layer stores no URL query, raw route parameter, authorization value, token digest,
 username, user agent, tile coordinate, hash, or pixel payload. Unknown paths collapse to `other`.

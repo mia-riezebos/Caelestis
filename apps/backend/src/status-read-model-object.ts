@@ -11,6 +11,11 @@ import {
 } from './manifest/read-model.js'
 import { assembleManifestProjection } from './manifest/source.js'
 import {
+  instrumentD1,
+  type MeasuredD1Operation,
+  measureD1Usage,
+} from './metrics/request-metrics.js'
+import {
   createSeasonStatusReadModel,
   type PersistedStatusReadModel,
   type SeasonStatusReadModel,
@@ -38,6 +43,7 @@ interface LiveSubscriberAttachment {
   readonly tokenHash: string
   readonly revocable: boolean
   readonly lastRevision: number | null
+  readonly revoked?: boolean
 }
 
 export interface LiveSessionFence {
@@ -161,6 +167,10 @@ export const createChunkedManifestPersistence = (
     save: async (next) => {
       const previous = await loadIndex()
       const priorEntries = new Map(previous?.entries.map((entry) => [entry.key, entry]) ?? [])
+      const reservedGenerations = new Set([
+        ...(previous?.entries.map((entry) => entry.generation) ?? []),
+        ...(previous?.retired.map((entry) => entry.generation) ?? []),
+      ])
       const entries: StoredManifestProjection[] = []
       const newlyRetired: StoredManifestRetirement[] = []
       const repairedGenerations: string[] = []
@@ -179,8 +189,11 @@ export const createChunkedManifestPersistence = (
           priorEntries.delete(projection.key)
           continue
         }
-        const slot = prior?.generation.endsWith(':0') ? 1 : 0
-        const generation = `${next.revision}-${projection.manifest.version}-${encodeURIComponent(projection.key)}:${slot}`
+        const generationPrefix = `${next.revision}-${projection.manifest.version}-${encodeURIComponent(projection.key)}:`
+        let generationIndex = 0
+        while (reservedGenerations.has(`${generationPrefix}${generationIndex}`)) generationIndex++
+        const generation = `${generationPrefix}${generationIndex}`
+        reservedGenerations.add(generation)
         const chunks = chunkJsonText(JSON.stringify(projection.manifest))
         await storage.transaction(async (transaction) => {
           for (let chunk = 0; chunk < chunks.length; chunk += 1) {
@@ -368,7 +381,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     env: Env,
   ) {
     super(objectState, env)
-    this.sql = new D1SqlStore(env.DB)
+    this.sql = new D1SqlStore(instrumentD1(env.DB))
     this.objectState.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'))
   }
 
@@ -448,6 +461,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
         (attachment.scope === 'public' || attachment.scope === 'admin') &&
         /^[0-9a-f]{64}$/.test(attachment.tokenHash) &&
         typeof attachment.revocable === 'boolean' &&
+        attachment.revoked !== true &&
         (scope === undefined || attachment.scope === scope)
       )
     })
@@ -481,15 +495,35 @@ export class StatusReadModelObject extends DurableObject<Env> {
     return change
   }
 
+  applyCommittedChangeMeasured(
+    season: number,
+    mutation?: StatusProjectionMutation,
+  ): Promise<MeasuredD1Operation<StatusProjectionChange | null>> {
+    return measureD1Usage(() => this.applyCommittedChange(season, mutation))
+  }
+
   reconcileSnapshot(season: number, scope: StatusVisibilityScope): Promise<StatusSnapshotRead> {
     if (scope !== 'public' && scope !== 'admin') throw new RangeError('invalid visibility scope')
     return this.model(season).reconcileSnapshot(scope)
+  }
+
+  reconcileSnapshotMeasured(
+    season: number,
+    scope: StatusVisibilityScope,
+  ): Promise<MeasuredD1Operation<StatusSnapshotRead>> {
+    return measureD1Usage(() => this.reconcileSnapshot(season, scope))
   }
 
   async readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
     const projection = await this.manifestModel(input.season).read(input)
     if (projection.revisionChanged) this.broadcastManifest(projection.revision)
     return projection
+  }
+
+  readManifestProjectionMeasured(
+    input: ManifestProjectionInput,
+  ): Promise<MeasuredD1Operation<ManifestProjectionRead>> {
+    return measureD1Usage(() => this.readManifestProjection(input))
   }
 
   private broadcastManifest(revision: number): void {
@@ -513,7 +547,12 @@ export class StatusReadModelObject extends DurableObject<Env> {
     await this.liveSessions.revoke(() => {
       for (const socket of this.subscribers()) {
         const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
-        if (attachment?.tokenHash === tokenHash) socket.close(1008, 'credential revoked')
+        if (attachment?.tokenHash !== tokenHash || attachment.revoked === true) continue
+        socket.serializeAttachment({
+          ...attachment,
+          revoked: true,
+        } satisfies LiveSubscriberAttachment)
+        socket.close(1008, 'credential revoked')
       }
     })
   }
@@ -562,6 +601,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
           tokenHash,
           revocable,
           lastRevision,
+          revoked: false,
         } satisfies LiveSubscriberAttachment)
         this.objectState.acceptWebSocket(server, ['status'])
         return { client, server }
@@ -588,6 +628,11 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
+    const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
+    if (attachment?.revoked === true) {
+      socket.close(1008, 'credential revoked')
+      return
+    }
     if (typeof message === 'string' && message === 'ping') socket.send('pong')
   }
 
