@@ -20,6 +20,10 @@ database_name = "caelestis"
 database_id = "53a57050-6d18-4466-980d-f5e51e416c04"
 migrations_dir = "./migrations"
 
+[[analytics_engine_datasets]]
+binding = "REQUEST_METRICS"
+dataset = "caelestis_request_metrics"
+
 [[durable_objects.bindings]]
 name = "TELEMETRY"
 class_name = "TelemetryShard"
