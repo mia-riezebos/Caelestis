@@ -1,12 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  capacityObservationSql,
   classifyR2Operations,
+  comparison,
   deriveModelInputs,
   operationTotals,
   readCapacityConfiguration,
   sumInsights,
 } from './capacity-observation.mjs'
+
+test('observes content-addressed hashes and persistent schema rows', () => {
+  const sql = capacityObservationSql({ season: 7 }, new Date('2026-08-30T00:00:00Z'))
+
+  assert.match(sql, /SELECT DISTINCT sha256/)
+  assert.match(sql, /AS persistent_rows/)
+  assert.doesNotMatch(sql, /SELECT DISTINCT season, tile_x, tile_y, sha256/)
+})
 
 test('reads only public resource identifiers from wrangler configuration', () => {
   assert.deepEqual(
@@ -42,8 +52,28 @@ test('reduces D1 insights and identifies status reads', () => {
         totalRowsWritten: 4,
         numberOfTimesRun: 2,
       },
+      {
+        query: 'select from canvas_tiles',
+        totalRowsRead: 6,
+        totalRowsWritten: 0,
+        numberOfTimesRun: 3,
+      },
+      {
+        query: 'select from access_tokens',
+        totalRowsRead: 4,
+        totalRowsWritten: 0,
+        numberOfTimesRun: 4,
+      },
     ]),
-    { rowsRead: 102, rowsWritten: 4, statusRequests: 12, statusRowsRead: 100 },
+    {
+      rowsRead: 112,
+      rowsWritten: 4,
+      statusRequests: 12,
+      statusRowsRead: 100,
+      paintRowsRead: 2,
+      tileRowsRead: 6,
+      otherRowsRead: 4,
+    },
   )
 })
 
@@ -60,29 +90,44 @@ test('derives rates from measured client-open time', () => {
         paint_events: 8,
         client_tile_observations: 16,
         distinct_tile_versions: 20,
+        persistent_rows: 40,
         logical_rows: 100,
         database_size_bytes: 25_000,
         history_start_s: 5 * 86_400,
       },
-      { rowsRead: 12_000, rowsWritten: 100, statusRequests: 480, statusRowsRead: 9_600 },
+      {
+        rowsRead: 12_000,
+        rowsWritten: 100,
+        statusRequests: 480,
+        statusRowsRead: 9_600,
+        paintRowsRead: 160,
+        tileRowsRead: 320,
+        otherRowsRead: 2_400,
+      },
       {
         paintBatchWindowSeconds: 0,
         maxPaintEventsPerReport: 1,
         tileOfferBatchWindowSeconds: 0.25,
         maxTileOffersPerRequest: 64,
         statusPollIntervalSeconds: 30,
+        statusRefreshesPerTileOfferRequest: 1,
+        lifecycleStatusRefreshesPerUserDay: 2,
       },
     )
 
-    assert.equal(inputs.activeHoursPerUser, 2)
-    assert.equal(inputs.paintEventsPerUserHour, 2)
-    assert.equal(inputs.tileFetchesPerUserHour, 4)
+    assert.equal(inputs.activeHoursPerUser, 23 / 12)
+    assert.equal(inputs.paintEventsPerUserHour, 48 / 23)
+    assert.equal(inputs.tileFetchesPerUserHour, 96 / 23)
     assert.equal(inputs.averageTemplatesPerTile, 1.5)
     assert.equal(inputs.tileVersionsPerCoveredTileDay, 2)
     assert.equal(inputs.historyDays, 5)
     assert.equal(inputs.d1BytesPerLogicalRow, 250)
     assert.equal(inputs.d1RowsReadPerStatusRequest, 20)
+    assert.equal(inputs.d1RowsReadPerPaintReportRequest, 20)
+    assert.equal(inputs.d1RowsReadPerTileOfferRequest, 10)
+    assert.equal(inputs.d1RowsReadPerTileUploadRequest, 10)
     assert.equal(inputs.otherD1RowsReadPerDay, 2_400)
+    assert.equal(inputs.persistentD1Rows, 40)
   } finally {
     Date.now = originalNow
   }
@@ -104,4 +149,64 @@ test('classifies billable R2 operations', () => {
     classifyR2Operations({ PutObject: 3, GetObject: 5, HeadObject: 2, Unknown: 100 }),
     { classA: 3, classB: 7 },
   )
+})
+
+test('preserves unavailable R2 operation metrics as null', () => {
+  const compared = comparison(
+    {
+      daily: {
+        workerRequests: 1,
+        durableObjectRequests: 2,
+        d1RowsRead: 3,
+        d1LogicalRowMutations: 4,
+        d1RowsWrittenUpperBound: 5,
+        r2ClassAOperations: 6,
+        r2ClassBOperations: 7,
+      },
+      storage: { r2Bytes: 8 },
+    },
+    { unavailable: 'token missing' },
+  )
+
+  assert.equal(compared.r2ClassAOperations.observed, null)
+  assert.equal(compared.r2ClassBOperations.observed, null)
+})
+
+test('derives status-only client hours after separating triggered refreshes', () => {
+  const inputs = deriveModelInputs(
+    {
+      active_users: 0,
+      templates: 1,
+      covered_tiles: 0,
+      template_tile_entries: 0,
+      paint_events: 0,
+      client_tile_observations: 0,
+      distinct_tile_versions: 0,
+      persistent_rows: 5,
+      logical_rows: 5,
+      database_size_bytes: 500,
+      history_start_s: 0,
+    },
+    {
+      rowsRead: 1_200,
+      rowsWritten: 0,
+      statusRequests: 120,
+      statusRowsRead: 1_200,
+      paintRowsRead: 0,
+      tileRowsRead: 0,
+      otherRowsRead: 0,
+    },
+    {
+      paintBatchWindowSeconds: 0,
+      maxPaintEventsPerReport: 1,
+      tileOfferBatchWindowSeconds: 0.25,
+      maxTileOffersPerRequest: 64,
+      statusPollIntervalSeconds: 30,
+      statusRefreshesPerTileOfferRequest: 1,
+      lifecycleStatusRefreshesPerUserDay: 2,
+    },
+  )
+
+  assert.equal(inputs.activeUsers, 1)
+  assert.equal(inputs.activeHoursPerUser, (118 * 30) / 3_600)
 })

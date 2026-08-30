@@ -25,6 +25,8 @@ export const CURRENT_CLIENT_CAPACITY_DEFAULTS = {
   tileOfferBatchWindowSeconds: TILE_OFFER_BATCH_DELAY_MS / 1_000,
   maxTileOffersPerRequest: MAX_TILE_OFFERS,
   statusPollIntervalSeconds: TELEMETRY_STATUS_POLL_MS / 1_000,
+  statusRefreshesPerTileOfferRequest: 1,
+  lifecycleStatusRefreshesPerUserDay: 2,
 } as const
 
 /** The low end of Cloudflare's 200-500 requests/s guidance for storage-heavy objects. */
@@ -48,6 +50,10 @@ export interface CapacityInputs {
   readonly tileOfferBatchWindowSeconds: number
   readonly maxTileOffersPerRequest: number
   readonly statusPollIntervalSeconds: number
+  /** Successful offer batches currently trigger one immediate status refresh. */
+  readonly statusRefreshesPerTileOfferRequest: number
+  /** Connection and content lifecycle refreshes, separate from periodic polling. */
+  readonly lifecycleStatusRefreshesPerUserDay: number
   /** Distinct content hashes retained per covered tile and day. */
   readonly tileVersionsPerCoveredTileDay: number
   readonly averageTileBytes: number
@@ -57,9 +63,15 @@ export interface CapacityInputs {
   readonly d1BytesPerLogicalRow: number
   /** D1 bills every row scanned by a status query. Calibrate this from D1 Insights. */
   readonly d1RowsReadPerStatusRequest: number
+  /** Route-specific D1 reads calibrated from D1 Insights for the observed workload. */
+  readonly d1RowsReadPerPaintReportRequest: number
+  readonly d1RowsReadPerTileOfferRequest: number
+  readonly d1RowsReadPerTileUploadRequest: number
   /** Manifest, dashboard, and other queries outside the telemetry request model. */
   readonly otherD1RowsReadPerDay: number
   readonly otherWorkerRequestsPerDay: number
+  /** Current rows whose lifetime is not already modeled by telemetry retention. */
+  readonly persistentD1Rows: number
 }
 
 export interface CapacityEstimate {
@@ -71,7 +83,11 @@ export interface CapacityEstimate {
     readonly tileOfferRequests: number
     readonly tileUploadRequests: number
     readonly tileObservations: number
-    readonly statusPollRequests: number
+    readonly periodicStatusPollRequests: number
+    readonly offerStatusRefreshRequests: number
+    readonly lifecycleStatusRefreshRequests: number
+    /** All status requests: periodic, post-offer, and lifecycle-triggered. */
+    readonly statusRequests: number
   }
   readonly daily: {
     readonly workerRequests: number
@@ -200,9 +216,18 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
   const tileUploadRequests = Math.min(tileOffers, newTileVersions)
   const serverOnlyTileObservations = Math.max(0, newTileVersions - tileUploadRequests)
   const tileObservations = tileOffers + serverOnlyTileObservations
-  const statusPollRequests = activeUserHours * (3_600 / inputs.statusPollIntervalSeconds)
+  const periodicStatusPollRequests = activeUserHours * (3_600 / inputs.statusPollIntervalSeconds)
+  const offerStatusRefreshRequests = tileOfferRequests * inputs.statusRefreshesPerTileOfferRequest
+  const lifecycleStatusRefreshRequests =
+    inputs.activeUsers * inputs.lifecycleStatusRefreshesPerUserDay
+  const statusRequests =
+    periodicStatusPollRequests + offerStatusRefreshRequests + lifecycleStatusRefreshRequests
   const d1RowsRead =
-    statusPollRequests * inputs.d1RowsReadPerStatusRequest + inputs.otherD1RowsReadPerDay
+    statusRequests * inputs.d1RowsReadPerStatusRequest +
+    paintReportRequests * inputs.d1RowsReadPerPaintReportRequest +
+    tileOfferRequests * inputs.d1RowsReadPerTileOfferRequest +
+    tileUploadRequests * inputs.d1RowsReadPerTileUploadRequest +
+    inputs.otherD1RowsReadPerDay
 
   const paintTemplateTouches = classifiedPaintEvents * inputs.averageTemplatesPerPaint
   const paintTileTouches = classifiedPaintEvents * inputs.averageTilesPerPaint
@@ -249,7 +274,7 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
     paintReportRequests +
     tileOfferRequests +
     tileUploadRequests +
-    statusPollRequests +
+    statusRequests +
     inputs.otherWorkerRequestsPerDay
 
   const r2ClassAOperations = newTileVersions
@@ -283,8 +308,7 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
     contributionRowsPerDay * inputs.historyDays +
     telemetryRows +
     tileHistoryRows +
-    inputs.activeUsers +
-    inputs.coveredTiles * (1 + inputs.averageTemplatesPerTile)
+    inputs.persistentD1Rows
   const d1Bytes = d1LogicalRows * inputs.d1BytesPerLogicalRow
   const r2Bytes = r2StorageGrowthBytes * inputs.historyDays
 
@@ -344,7 +368,10 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
       tileOfferRequests,
       tileUploadRequests,
       tileObservations,
-      statusPollRequests,
+      periodicStatusPollRequests,
+      offerStatusRefreshRequests,
+      lifecycleStatusRefreshRequests,
+      statusRequests,
     },
     daily: {
       workerRequests,

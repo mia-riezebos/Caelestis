@@ -86,8 +86,15 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
 - The model uses Poisson occupancy for active time buckets and fixed-window request batching. It
   reports logical D1 mutations and a conservative table-plus-index ceiling, including the full
   lifetime cost of each decay-ladder row. Live analytics supplies the actual billed count.
-- Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 8
-  tests and `pnpm test:capacity` passed 5 tests. Backend, shared, and userscript type checks passed
+- Status traffic is split into periodic, post-offer, and lifecycle refreshes. Observation derives
+  user-hours only from the periodic remainder, so status-only clients remain represented without
+  pretending every status call is a 30-second clock tick.
+- D1 reads from paint reports, tile offers, and tile uploads have separate calibrated inputs and
+  scale with scenario traffic. Only unclassified dashboard, manifest, and other reads remain a
+  fixed optional residual. Persistent schema rows are included in D1 storage independently of
+  telemetry retention.
+- Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 9
+  tests and `pnpm test:capacity` passed 8 tests. Backend, shared, and userscript type checks passed
   after building workspace outputs.
 - `pnpm capacity:observe` uses read-only D1 SQL, D1 Insights, and Cloudflare GraphQL analytics. Its
   2026-08-30 production window measured 20,779 Worker requests, 58 Durable Object invocations,
@@ -100,6 +107,13 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
 - D1 reads are the first wall: D1 Insights measured 7,027,389 rows, or 141% of the 5 million rows
   read/day Free allowance. The 8,378 status calls scanned about 520 rows each and accounted for
   4,356,332 of those rows. Paint batching cannot reduce that fixed query traffic.
+- The original scaled README scenarios omitted the remaining workload-dependent reads. The revised
+  conservative boundary charges the full historical non-status residual as about 3,600 reads per
+  telemetry request: roughly 4 eight-hour users fit the 90-template shape (6 do not), while roughly
+  14 fit a 10-template/4-tile shape (15 do not). A fresh `capacity:observe` run recalibrates those
+  route costs; the local Cloudflare identity could not refresh the historical snapshot (`7403`).
+- R2 storage observations now deduplicate by content hash, and missing GraphQL metrics stay null
+  rather than becoming false zeroes.
 - Limit sources, checked 2026-08-30:
   - https://developers.cloudflare.com/workers/platform/limits/
   - https://developers.cloudflare.com/durable-objects/platform/pricing/

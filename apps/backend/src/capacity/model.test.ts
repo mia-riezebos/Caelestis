@@ -18,8 +18,12 @@ const inputs = (patch: Partial<CapacityInputs> = {}): CapacityInputs => ({
   historyDays: 30,
   d1BytesPerLogicalRow: 200,
   d1RowsReadPerStatusRequest: 100,
+  d1RowsReadPerPaintReportRequest: 0,
+  d1RowsReadPerTileOfferRequest: 0,
+  d1RowsReadPerTileUploadRequest: 0,
   otherD1RowsReadPerDay: 0,
   otherWorkerRequestsPerDay: 0,
+  persistentD1Rows: 0,
   ...patch,
 })
 
@@ -31,7 +35,10 @@ describe('capacity model', () => {
     expect(estimate.traffic.paintReportRequests).toBe(400)
     expect(estimate.traffic.tileOffers).toBe(1_200)
     expect(estimate.traffic.tileOfferRequests).toBeCloseTo(1_197.505, 3)
-    expect(estimate.traffic.statusPollRequests).toBe(4_800)
+    expect(estimate.traffic.periodicStatusPollRequests).toBe(4_800)
+    expect(estimate.traffic.offerStatusRefreshRequests).toBeCloseTo(1_197.505, 3)
+    expect(estimate.traffic.lifecycleStatusRefreshRequests).toBe(20)
+    expect(estimate.traffic.statusRequests).toBeCloseTo(6_017.505, 3)
   })
 
   it('shows that status polling exhausts D1 reads before Workers for 100 eight-hour clients', () => {
@@ -45,9 +52,10 @@ describe('capacity model', () => {
       }),
     )
 
-    expect(estimate.traffic.statusPollRequests).toBe(96_000)
-    expect(estimate.daily.workerRequests).toBe(104_000)
-    expect(estimate.daily.d1RowsRead).toBe(9_600_000)
+    expect(estimate.traffic.periodicStatusPollRequests).toBe(96_000)
+    expect(estimate.traffic.statusRequests).toBe(96_200)
+    expect(estimate.daily.workerRequests).toBe(104_200)
+    expect(estimate.daily.d1RowsRead).toBe(9_620_000)
     expect(estimate.utilization.firstLimit).toBe('d1RowsRead')
     expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBeNull()
   })
@@ -62,6 +70,7 @@ describe('capacity model', () => {
         tileVersionsPerCoveredTileDay: 0,
         maxPaintEventsPerReport: 64,
         statusPollIntervalSeconds: 300,
+        lifecycleStatusRefreshesPerUserDay: 0,
         otherWorkerRequestsPerDay: 90_000,
       }),
     )
@@ -79,6 +88,7 @@ describe('capacity model', () => {
         tileFetchesPerUserHour: 0,
         tileVersionsPerCoveredTileDay: 0,
         d1RowsReadPerStatusRequest: 50_000,
+        lifecycleStatusRefreshesPerUserDay: 0,
       }),
     )
 
@@ -112,6 +122,31 @@ describe('capacity model', () => {
     expect(quiet.daily.d1LogicalRowMutations).toBeGreaterThan(5)
     expect(quiet.daily.d1RowsWrittenUpperBound).toBeGreaterThan(10)
     expect(quiet.storage.d1LogicalRows).toBeGreaterThan(30)
+  })
+
+  it('scales route-specific D1 reads and persistent schema storage', () => {
+    const estimate = estimateCapacity(
+      inputs({
+        activeUsers: 2,
+        activeHoursPerUser: 1,
+        paintEventsPerUserHour: 5,
+        tileFetchesPerUserHour: 10,
+        tileVersionsPerCoveredTileDay: 0.5,
+        d1RowsReadPerStatusRequest: 100,
+        d1RowsReadPerPaintReportRequest: 7,
+        d1RowsReadPerTileOfferRequest: 11,
+        d1RowsReadPerTileUploadRequest: 13,
+        persistentD1Rows: 500,
+      }),
+    )
+
+    expect(estimate.daily.d1RowsRead).toBeCloseTo(
+      estimate.traffic.statusRequests * 100 +
+        estimate.traffic.paintReportRequests * 7 +
+        estimate.traffic.tileOfferRequests * 11 +
+        estimate.traffic.tileUploadRequests * 13,
+    )
+    expect(estimate.storage.d1LogicalRows).toBeGreaterThanOrEqual(500)
   })
 
   it('reserves per-template sharding for single-object throughput, not free-tier quota', () => {

@@ -131,26 +131,27 @@ the 30-second status refresh makes D1 reads the first wall.
 
 | Workload | Daily estimate or measurement | Free-tier result |
 | --- | --- | --- |
-| Production, 2026-08-30: 3 reporting clients open 23.3 hours on average, 90 templates, 36 covered tiles | 20,779 Worker requests; 58 Durable Object requests; 7.32M D1 rows read; 14,719 D1 rows written | Over: D1 reads reached 146% |
-| Same 90-template shape: 8 users active 8 hours | 8,377 modeled Worker requests; 3.99M D1 rows read; at most 13,577 D1 rows written | Fits, with little read headroom |
-| Smaller 10-template/4-tile shape: 80 users active 8 hours | 77,651 modeled Worker requests; 4.44M D1 rows read; at most 19,271 D1 rows written | Fits before non-telemetry traffic |
+| Production, 2026-08-30: 3 reporting clients, 90 templates, 36 covered tiles | 20,779 Worker requests; 58 Durable Object requests; 7.32M D1 rows read; 14,719 D1 rows written | Over: D1 reads reached 146% |
+| Same 90-template shape: 4 users active 8 hours | 4,575 modeled Worker requests; 3.72M D1 rows read; at most 7,310 D1 rows written | Fits; 6 users model at 5.34M reads |
+| Smaller 10-template/4-tile shape: 14 users active 8 hours | 15,554 modeled Worker requests; 4.69M D1 rows read; at most 14,166 D1 rows written | Fits narrowly; 15 users model at 5.02M reads |
 
-The projections use the production paint and tile-fetch rates, scale status-query reads with the
-template set, and exclude unrelated dashboard and manifest traffic. Treat roughly 8 users with 90
-templates or 80 users with 10 templates as upper bounds, not targets. A 100-user, eight-hour day at
-the current 90-template shape would make 96,000 status requests and scan about 49.9 million D1 rows
-before any other traffic.
+The scenario rows are conservative bounds, not promises. They use the recorded production rates
+(0.5 paints and 9 tile observations per user-hour), count the status refresh after every successful
+offer plus two lifecycle refreshes per user-day, and charge the full historical non-status D1 residual
+as about 3,600 rows read per telemetry request. That last assumption deliberately overcounts
+unrelated traffic until a fresh observation can split paint, offer, upload, dashboard, and manifest
+queries. Roughly 4 users with 90 templates or 14 users with 10 templates fit this bound; deployers
+should rerun the observation command for their own template shape.
 
-The first knob is the status path: lengthen its 30-second refresh interval, or cache or precompute
-its result. A five-minute interval cuts its request and row-read cost by 10, but the measured
-production workload would still leave only about 1.9 million D1 rows/day for growth. Paint batching
-does not reduce status-query reads. Per-template Durable Object sharding also does not extend
-account quotas; the measured single-object rate was only 0.00031 requests/second against the model's
-conservative 200 requests/second throughput budget.
+The first knob is the status path: lengthen its 30-second interval, or cache or precompute its
+result. Paint batching does not reduce periodic, post-offer, or lifecycle status reads. Per-template
+Durable Object sharding also does not extend account quotas; the measured single-object rate was
+only 0.00031 requests/second against the model's conservative 200 requests/second throughput budget.
 
-R2 is not the near-term wall at the measured 135 distinct tile versions/day. At 70–125 KB per
-version, tile blobs grow by about 9.5–16.9 MB/day. They currently accumulate even after SQL history
-compacts, so long-lived deployments still need to watch the 10 GB storage allowance.
+R2 was not the measured near-term wall: production held 71.4 MB of payload. The observation command
+now counts distinct content hashes rather than coordinate versions, matching the content-addressed
+store. Tile blobs still accumulate after SQL history compacts, so long-lived deployments need to
+watch the 10 GB storage allowance.
 
 Run the same read-only 24-hour comparison against the configured production resources with:
 
@@ -158,8 +159,8 @@ Run the same read-only 24-hour comparison against the configured production reso
 CLOUDFLARE_API_TOKEN=... pnpm capacity:observe
 ```
 
-The token is optional for the local model and D1 Insights portion; Cloudflare GraphQL comparisons
-are reported as unavailable when it is absent.
+The token is optional for the local model and D1 Insights portion; Cloudflare GraphQL comparisons,
+including R2 operation counts, are reported as unavailable rather than zero when it is absent.
 
 ## Userscript releases
 

@@ -25,13 +25,38 @@ const isStatusInsight = (item) =>
   item.query.includes('json_group_array') &&
   item.query.includes('group by "templates"."id"')
 
+const includesTable = (item, names) => names.some((name) => item.query.includes(name))
+
+const isPaintInsight = (item) =>
+  includesTable(item, ['applied_events', 'telemetry_buckets', 'contributions', 'painters'])
+
+const isTileInsight = (item) =>
+  includesTable(item, [
+    'canvas_tiles',
+    'tile_history',
+    'template_tile_statuses',
+    'tile_blob_objects',
+    'tile_blob_reservations',
+  ])
+
 export const sumInsights = (insights) => {
   const statusInsights = insights.filter(isStatusInsight)
+  const paintInsights = insights.filter((item) => !isStatusInsight(item) && isPaintInsight(item))
+  const tileInsights = insights.filter(
+    (item) => !isStatusInsight(item) && !isPaintInsight(item) && isTileInsight(item),
+  )
+  const classified = new Set([...statusInsights, ...paintInsights, ...tileInsights])
   return {
     rowsRead: insights.reduce((sum, item) => sum + item.totalRowsRead, 0),
     rowsWritten: insights.reduce((sum, item) => sum + item.totalRowsWritten, 0),
     statusRequests: statusInsights.reduce((sum, item) => sum + item.numberOfTimesRun, 0),
     statusRowsRead: statusInsights.reduce((sum, item) => sum + item.totalRowsRead, 0),
+    paintRowsRead: paintInsights.reduce((sum, item) => sum + item.totalRowsRead, 0),
+    tileRowsRead: tileInsights.reduce((sum, item) => sum + item.totalRowsRead, 0),
+    otherRowsRead: insights.reduce(
+      (sum, item) => sum + (classified.has(item) ? 0 : item.totalRowsRead),
+      0,
+    ),
   }
 }
 
@@ -83,17 +108,34 @@ export const classifyR2Operations = (operations) =>
   )
 
 export const deriveModelInputs = (database, insightTotals, currentClientDefaults) => {
-  const activeUsers = Number(database.active_users)
-  const measuredOpenHours =
-    activeUsers === 0 ? 0 : (insightTotals.statusRequests * 30) / 3_600 / activeUsers
-  const activeHoursPerUser = Math.min(24, measuredOpenHours)
-  const activeUserHours = activeUsers * activeHoursPerUser
+  const reportingUsers = Number(database.active_users)
+  const offerStatusRequests = Math.min(
+    insightTotals.statusRequests,
+    Number(database.client_tile_observations) *
+      currentClientDefaults.statusRefreshesPerTileOfferRequest,
+  )
+  const activeUserHoursFrom = (users) =>
+    (Math.max(
+      0,
+      insightTotals.statusRequests -
+        offerStatusRequests -
+        users * currentClientDefaults.lifecycleStatusRefreshesPerUserDay,
+    ) *
+      currentClientDefaults.statusPollIntervalSeconds) /
+    3_600
+  let activeUsers = Math.max(reportingUsers, insightTotals.statusRequests > 0 ? 1 : 0)
+  for (let iteration = 0; iteration < 2; iteration++) {
+    activeUsers = Math.max(activeUsers, Math.ceil(activeUserHoursFrom(activeUsers) / 24))
+  }
+  const activeUserHours = activeUserHoursFrom(activeUsers)
+  const activeHoursPerUser = activeUsers === 0 ? 0 : activeUserHours / activeUsers
   const paintEvents = Number(database.paint_events)
   const clientTileObservations = Number(database.client_tile_observations)
   const coveredTiles = Number(database.covered_tiles)
   const logicalRows = Number(database.logical_rows)
   const historyStartSeconds = Number(database.history_start_s)
   const nowSeconds = Math.floor(Date.now() / 1_000)
+  const tileReadRequests = clientTileObservations * 2
 
   return {
     activeUsers,
@@ -119,8 +161,15 @@ export const deriveModelInputs = (database, insightTotals, currentClientDefaults
       insightTotals.statusRequests === 0
         ? 0
         : insightTotals.statusRowsRead / insightTotals.statusRequests,
-    otherD1RowsReadPerDay: Math.max(0, insightTotals.rowsRead - insightTotals.statusRowsRead),
+    d1RowsReadPerPaintReportRequest:
+      paintEvents === 0 ? 0 : insightTotals.paintRowsRead / paintEvents,
+    d1RowsReadPerTileOfferRequest:
+      tileReadRequests === 0 ? 0 : insightTotals.tileRowsRead / tileReadRequests,
+    d1RowsReadPerTileUploadRequest:
+      tileReadRequests === 0 ? 0 : insightTotals.tileRowsRead / tileReadRequests,
+    otherD1RowsReadPerDay: insightTotals.otherRowsRead,
     otherWorkerRequestsPerDay: 0,
+    persistentD1Rows: Number(database.persistent_rows),
   }
 }
 
@@ -132,10 +181,10 @@ const wranglerJson = (args) =>
     }),
   )
 
-const queryDatabase = (configuration, since) => {
+export const capacityObservationSql = (configuration, since) => {
   const sinceMilliseconds = since.getTime()
   const sinceSeconds = Math.floor(sinceMilliseconds / 1_000)
-  const sql = `
+  return `
     WITH current_tiles AS (
       SELECT version_tiles.tile_x, version_tiles.tile_y
       FROM version_tiles
@@ -152,8 +201,8 @@ const queryDatabase = (configuration, since) => {
       SELECT reported_by_user_id AS id
       FROM tile_history
       WHERE bucket_start_s >= ${sinceSeconds} AND reported_by_user_id <> 0
-    ), relevant_versions AS (
-      SELECT DISTINCT season, tile_x, tile_y, sha256
+    ), relevant_hashes AS (
+      SELECT DISTINCT sha256
       FROM tile_history
       WHERE bucket_start_s >= ${sinceSeconds}
     )
@@ -169,12 +218,26 @@ const queryDatabase = (configuration, since) => {
       (SELECT COUNT(*) FROM tile_history
         WHERE resolution_s = 0 AND bucket_start_s >= ${sinceSeconds}
           AND reported_by_user_id = 0) AS server_tile_observations,
-      (SELECT COUNT(*) FROM relevant_versions) AS distinct_tile_versions,
+      (SELECT COUNT(*) FROM relevant_hashes) AS distinct_tile_versions,
       (SELECT MIN(value) FROM (
         SELECT MIN(seen_at_ms) / 1000 AS value FROM applied_events
         UNION ALL SELECT MIN(bucket_start_s) FROM tile_history
         UNION ALL SELECT MIN(bucket_start_s) FROM telemetry_buckets
       ) WHERE value IS NOT NULL) AS history_start_s,
+      (
+        (SELECT COUNT(*) FROM server_settings) +
+        (SELECT COUNT(*) FROM nodes) +
+        (SELECT COUNT(*) FROM template_versions) +
+        (SELECT COUNT(*) FROM templates) +
+        (SELECT COUNT(*) FROM version_tiles) +
+        (SELECT COUNT(*) FROM access_tokens) +
+        (SELECT COUNT(*) FROM painters) +
+        (SELECT COUNT(*) FROM canvas_tiles) +
+        (SELECT COUNT(*) FROM template_tile_statuses) +
+        (SELECT COUNT(*) FROM tile_blob_gc_state) +
+        (SELECT COUNT(*) FROM tile_blob_objects) +
+        (SELECT COUNT(*) FROM tile_blob_reservations)
+      ) AS persistent_rows,
       (
         (SELECT COUNT(*) FROM server_settings) +
         (SELECT COUNT(*) FROM nodes) +
@@ -188,9 +251,16 @@ const queryDatabase = (configuration, since) => {
         (SELECT COUNT(*) FROM painters) +
         (SELECT COUNT(*) FROM tile_history) +
         (SELECT COUNT(*) FROM canvas_tiles) +
-        (SELECT COUNT(*) FROM template_tile_statuses)
+        (SELECT COUNT(*) FROM template_tile_statuses) +
+        (SELECT COUNT(*) FROM tile_blob_gc_state) +
+        (SELECT COUNT(*) FROM tile_blob_objects) +
+        (SELECT COUNT(*) FROM tile_blob_reservations)
       ) AS logical_rows
   `
+}
+
+const queryDatabase = (configuration, since) => {
+  const sql = capacityObservationSql(configuration, since)
   const response = wranglerJson(['d1', 'execute', 'DB', '--remote', '--json', '--command', sql])[0]
   if (response?.success !== true || response.results?.[0] === undefined) {
     throw new Error('remote D1 observation query failed')
@@ -285,7 +355,8 @@ const queryCloudflareMetrics = async (configuration, start, end) => {
 }
 
 export const comparison = (estimate, observed) => {
-  const observedR2 = classifyR2Operations(observed.r2?.operations ?? {})
+  const observedR2 =
+    observed.r2?.operations === undefined ? null : classifyR2Operations(observed.r2.operations)
   return {
     workerRequests: {
       model: estimate.daily.workerRequests,
@@ -310,11 +381,11 @@ export const comparison = (estimate, observed) => {
     },
     r2ClassAOperations: {
       model: estimate.daily.r2ClassAOperations,
-      observed: observedR2.classA,
+      observed: observedR2?.classA ?? null,
     },
     r2ClassBOperations: {
       model: estimate.daily.r2ClassBOperations,
-      observed: observedR2.classB,
+      observed: observedR2?.classB ?? null,
     },
   }
 }
