@@ -5,7 +5,15 @@ import { SqliteD1Database } from '../adapters/cloudflare/sqlite-d1.test-helper.j
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import type { Ports, SqlStore, TileBlobReservation, TileObservation } from '../ports/index.js'
-import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
+import {
+  readTileBlob,
+  reserveTileBlob,
+  reserveTileBlobUpload,
+  runTileBlobGc,
+  TILE_BLOB_GC_DELETE_LIMIT,
+  TILE_BLOB_GC_SCAN_LIMIT,
+  type TileBlobGcMode,
+} from './tile-blobs.js'
 
 const TOKEN = 'a'.repeat(64)
 const HASH = 'b'.repeat(64)
@@ -56,6 +64,11 @@ const adapters: readonly { name: string; make(): Harness }[] = [
 const commit = (sql: SqlStore, reservation: TileBlobReservation) =>
   sql.commitTileBlobReservation(reservation.id, millis(2_000), observation(), [])
 
+const logger = { log: () => {}, error: () => {} }
+
+const gc = (harness: Harness, mode: TileBlobGcMode, now: number) =>
+  runTileBlobGc(harness.ports, { mode, now: millis(now), logger })
+
 describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
   let harness: Harness
 
@@ -105,5 +118,57 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
 
     expect(reservation.blobKey).toMatch(new RegExp(`^${HASH}/`))
     await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
+  })
+
+  it('keeps dry-run bounded, resumable and unable to delete', async () => {
+    const hashes = Array.from({ length: TILE_BLOB_GC_SCAN_LIMIT + 2 }, (_, index) =>
+      index.toString(16).padStart(64, '0'),
+    )
+    for (const hash of hashes) await harness.blobs.put('tiles', hash, BYTES)
+    await harness.blobs.put('chunks', HASH, BYTES)
+
+    const first = await gc(harness, 'dry-run', 1_000)
+    expect(first).toMatchObject({
+      scanned: TILE_BLOB_GC_SCAN_LIMIT,
+      candidates: TILE_BLOB_GC_SCAN_LIMIT,
+      queued: TILE_BLOB_GC_DELETE_LIMIT,
+      reclaimed: 0,
+      completedSweeps: 0,
+    })
+    expect(first.cursor).toBeDefined()
+    const second = await gc(harness, 'dry-run', 2_000)
+    expect(second).toMatchObject({ scanned: 2, candidates: 2, completedSweeps: 1 })
+    await expect(harness.blobs.get('tiles', hashes[0] ?? '')).resolves.toEqual(BYTES)
+    await expect(harness.blobs.get('chunks', HASH)).resolves.toEqual(BYTES)
+  })
+
+  it('recovers a crash after candidate creation', async () => {
+    await harness.blobs.put('tiles', HASH, BYTES)
+    await gc(harness, 'dry-run', 1_000)
+
+    const report = await gc(harness, 'delete', 2_000)
+    expect(report).toMatchObject({ reclaimed: 1, failed: 0 })
+    await expect(harness.blobs.get('tiles', HASH)).resolves.toBeNull()
+  })
+
+  it('recovers a crash after fencing and before R2 deletion', async () => {
+    await harness.blobs.put('tiles', HASH, BYTES)
+    await harness.sql.noteTileBlobObject(HASH, HASH, millis(1_000))
+    await harness.sql.claimTileBlobDeletion(HASH, millis(1_100))
+
+    const report = await gc(harness, 'delete', 2_000)
+    expect(report).toMatchObject({ retries: 1, reclaimed: 1, failed: 0 })
+    await expect(harness.blobs.get('tiles', HASH)).resolves.toBeNull()
+  })
+
+  it('recovers a crash after R2 deletion and before SQL finalization', async () => {
+    await harness.blobs.put('tiles', HASH, BYTES)
+    await harness.sql.noteTileBlobObject(HASH, HASH, millis(1_000))
+    await harness.sql.claimTileBlobDeletion(HASH, millis(1_100))
+    await harness.blobs.delete('tiles', [HASH])
+
+    const report = await gc(harness, 'delete', 2_000)
+    expect(report).toMatchObject({ retries: 1, reclaimed: 1, failed: 0 })
+    await expect(harness.sql.listTileBlobDeletionWork(1)).resolves.toEqual([])
   })
 })

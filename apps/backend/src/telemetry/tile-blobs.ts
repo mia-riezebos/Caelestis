@@ -1,8 +1,35 @@
 import { type Millis, millis } from '@caelestis/shared'
-import type { Ports, TileBlobReservation } from '../ports/index.js'
+import type { Ports, TileBlobObject, TileBlobReservation } from '../ports/index.js'
 
 const RESERVATION_MILLISECONDS = 5 * 60 * 1_000
 const INGEST_RECOVERY_LIMIT = 100
+export const TILE_BLOB_GC_SCAN_LIMIT = 10
+export const TILE_BLOB_GC_DELETE_LIMIT = 5
+
+const TILE_BLOB_KEY = /^([0-9a-f]{64})(?:\/[0-9a-f-]{36})?$/
+
+export type TileBlobGcMode = 'dry-run' | 'delete'
+
+export interface TileBlobGcReport {
+  readonly event: 'tile_blob_gc'
+  readonly mode: TileBlobGcMode
+  readonly scanned: number
+  readonly candidates: number
+  readonly referenced: number
+  readonly invalidKeys: number
+  readonly queued: number
+  readonly blocked: number
+  readonly retries: number
+  readonly reclaimed: number
+  readonly failed: number
+  readonly completedSweeps: number
+  readonly cursor?: string
+}
+
+interface TileBlobGcLogger {
+  log(message: string): void
+  error(message: string): void
+}
 
 const clock = (): Millis => millis(Date.now())
 
@@ -10,6 +37,18 @@ const reservationWindow = (now: Millis): Millis => millis(Number(now) + RESERVAT
 
 /** A restored hash always gets a new physical key, so an older delete cannot remove its bytes. */
 const generationKey = (hash: string): string => `${hash}/${crypto.randomUUID()}`
+
+const reclaimTileBlob = async (
+  ports: Pick<Ports, 'blobs' | 'sql'>,
+  object: TileBlobObject,
+  now: Millis,
+): Promise<'reclaimed' | 'blocked' | 'missing'> => {
+  const claim = await ports.sql.claimTileBlobDeletion(object.blobKey, now)
+  if (claim !== 'claimed') return claim
+  await ports.blobs.delete('tiles', [object.blobKey])
+  await ports.sql.finishTileBlobDeletion(object.blobKey, now)
+  return 'reclaimed'
+}
 
 /** Read the currently registered generation, with the pre-GC hash key as the migration fallback. */
 export const readTileBlob = async (
@@ -60,9 +99,7 @@ const recoverDeletingHash = async (
   const deleting = work.filter((object) => object.hash === hash && object.state === 'deleting')
   if (deleting.length === 0) return false
   for (const object of deleting) {
-    if ((await ports.sql.claimTileBlobDeletion(object.blobKey, now)) !== 'claimed') continue
-    await ports.blobs.delete('tiles', [object.blobKey])
-    await ports.sql.finishTileBlobDeletion(object.blobKey, now)
+    await reclaimTileBlob(ports, object, now)
   }
   return true
 }
@@ -86,4 +123,86 @@ export const reserveTileBlobUpload = async (
     break
   }
   throw new Error(`tile blob ${hash} is fenced by deletion work that could not be recovered`)
+}
+
+/**
+ * Advance one bounded R2 sweep and one bounded deletion batch.
+ *
+ * Candidate rows and the scan cursor persist in dry-run mode, but only `delete` claims a fence or
+ * calls R2 deletion. Deleting rows sort first, so every interrupted phase resumes before new work.
+ */
+export const runTileBlobGc = async (
+  ports: Pick<Ports, 'blobs' | 'sql'>,
+  options: {
+    readonly mode: TileBlobGcMode
+    readonly now?: Millis
+    readonly logger?: TileBlobGcLogger
+  },
+): Promise<TileBlobGcReport> => {
+  const now = options.now ?? clock()
+  const logger = options.logger ?? console
+  const scan = await ports.sql.readTileBlobScanState()
+  const page = await ports.blobs.list('tiles', {
+    ...(scan.cursor === undefined ? {} : { cursor: scan.cursor }),
+    limit: TILE_BLOB_GC_SCAN_LIMIT,
+  })
+  let candidates = 0
+  let referenced = 0
+  let invalidKeys = 0
+  for (const blobKey of page.keys) {
+    const hash = TILE_BLOB_KEY.exec(blobKey)?.[1]
+    if (hash === undefined) {
+      invalidKeys++
+      continue
+    }
+    const result = await ports.sql.noteTileBlobObject(hash, blobKey, now)
+    if (result === 'candidate') candidates++
+    else if (result === 'referenced') referenced++
+  }
+  await ports.sql.writeTileBlobScanState(page.cursor)
+
+  const work = await ports.sql.listTileBlobDeletionWork(TILE_BLOB_GC_DELETE_LIMIT)
+  let blocked = 0
+  let retries = 0
+  let reclaimed = 0
+  let failed = 0
+  if (options.mode === 'delete') {
+    for (const object of work) {
+      if (object.state === 'deleting') retries++
+      try {
+        const result = await reclaimTileBlob(ports, object, now)
+        if (result === 'blocked') blocked++
+        else if (result === 'reclaimed') reclaimed++
+      } catch (error) {
+        failed++
+        logger.error(
+          JSON.stringify({
+            event: 'tile_blob_gc_error',
+            hash: object.hash,
+            blobKey: object.blobKey,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        )
+      }
+    }
+  }
+
+  const nextScan = await ports.sql.readTileBlobScanState()
+  const report: TileBlobGcReport = {
+    event: 'tile_blob_gc',
+    mode: options.mode,
+    scanned: page.keys.length,
+    candidates,
+    referenced,
+    invalidKeys,
+    queued: work.length,
+    blocked,
+    retries,
+    reclaimed,
+    failed,
+    completedSweeps: nextScan.completedSweeps,
+    ...(nextScan.cursor === undefined ? {} : { cursor: nextScan.cursor }),
+  }
+  logger.log(JSON.stringify(report))
+  return report
 }

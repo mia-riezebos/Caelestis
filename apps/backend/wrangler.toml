@@ -40,6 +40,9 @@ SEASON = "0"
 OPEN_ACCESS = "true"
 # Mount the runtime adapter here while keeping the portable Hono app root-relative.
 BASE_PATH = "/backend"
+# The first production rollout only inventories candidates. Change this only after its logs have
+# been reviewed; `delete` enables fenced physical R2 reclamation.
+TILE_BLOB_GC_MODE = "dry-run"
 
 [observability]
 enabled = true
