@@ -9,6 +9,7 @@ import type {
   StatusResponse,
   TileHistoryResponse,
 } from '@caelestis/shared'
+import { frontendClientAccept } from './client-metrics.js'
 import { isServerUrlConfigured, resolveSelectedServerUrl, resolveServerUrl } from './server-url.js'
 
 /**
@@ -68,6 +69,17 @@ const fetchWithTransientRetry = async (url: string, init: RequestInit): Promise<
 const request = async (path: string, init?: RequestInit): Promise<Response> => {
   const token = readToken()
   const headers = new Headers(init?.headers)
+  const reconciles =
+    path === '/manifest' ||
+    path.startsWith('/manifest?') ||
+    path === '/telemetry/status' ||
+    path.startsWith('/telemetry/status?') ||
+    path === '/telemetry/alarms' ||
+    path.startsWith('/telemetry/alarms?')
+  headers.set(
+    'accept',
+    reconciles ? frontendClientAccept('recovery', 'connect') : frontendClientAccept(),
+  )
   if (token !== null) headers.set('authorization', `Bearer ${token}`)
   const response = await fetchWithTransientRetry(`${readServerUrl()}${path}`, { ...init, headers })
   if (!response.ok) {

@@ -1,5 +1,6 @@
 import { sameTemplateSurface, type TemplateSurface, templateSurfaceKey } from '@caelestis/shared'
 import { activeAllianceSurface, onActiveAllianceSurfaceChange } from './alliance-surface.js'
+import { userscriptClientHeaders } from './client-metrics.js'
 import { count } from './debug.js'
 import type { ServerManifest } from './server-manifest.js'
 import { parseServerManifest } from './server-manifest.js'
@@ -58,6 +59,7 @@ const readServer = async (
   surface: TemplateSurface,
   ownGeneration: number,
   signal: AbortSignal,
+  reason: 'connect' | 'interval',
 ): Promise<void> => {
   count('alliance-sync:server considered')
   if (server.status !== 'connected') {
@@ -86,7 +88,10 @@ const readServer = async (
     count('alliance-sync:manifest requested')
     const token = activeServerToken(server)
     const response = await fetch(serverEndpoint(server.url, `/manifest?${query}`), {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+      headers: {
+        ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+        ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+      },
       signal: AbortSignal.any([signal, AbortSignal.timeout(MANIFEST_TIMEOUT_MS)]),
     })
     if (!response.ok || !requestCurrent()) {
@@ -108,7 +113,7 @@ const readServer = async (
   }
 }
 
-const syncSelected = (): void => {
+const syncSelected = (reason: 'connect' | 'interval'): void => {
   const surface = selected
   if (surface === null) {
     count('alliance-sync:no selected surface')
@@ -125,7 +130,8 @@ const syncSelected = (): void => {
     return
   }
   count('alliance-sync:sweep')
-  for (const server of getState().servers) void readServer(server, surface, ownGeneration, signal)
+  for (const server of getState().servers)
+    void readServer(server, surface, ownGeneration, signal, reason)
 }
 
 const retire = async (surface: TemplateSurface): Promise<void> => {
@@ -161,7 +167,7 @@ const selectActiveSurface = (): void => {
       if (previous !== null) await retire(previous)
       if (generation !== ownGeneration) return
       readyGeneration = ownGeneration
-      syncSelected()
+      syncSelected('connect')
     })
   void transition.catch(() => undefined)
 }
@@ -179,7 +185,7 @@ const stateChanged = (next: State): void => {
   const connected = connectedServers(next)
   if (!connectionsChanged(connected)) return
   lastConnectedServers = connected
-  syncSelected()
+  syncSelected('connect')
 }
 
 /** Poll exact alliance surface manifests only while that Wplace editor is active. */
@@ -190,7 +196,7 @@ export const installAllianceServerSync = (): void => {
   onActiveAllianceSurfaceChange(selectActiveSurface)
   onStateChange(stateChanged)
   selectActiveSurface()
-  setInterval(syncSelected, POLL_MS)
+  setInterval(() => syncSelected('interval'), POLL_MS)
 }
 
 /** Stable diagnostic key for the currently selected alliance manifest scope. */

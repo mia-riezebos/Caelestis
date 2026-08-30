@@ -12,6 +12,7 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
+import { recordTileOfferBatch, recordTileOfferBatchRequested } from '../metrics/request-metrics.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -21,7 +22,7 @@ import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
 import {
   MAX_CANVAS_TILE_BYTES,
-  offerTiles,
+  offerTilesWithOutcome,
   readMismatchMask,
   recordPaint,
   uploadTile,
@@ -383,6 +384,7 @@ export const createTelemetryRoutes = (
     if (body === null || body.offers.length > MAX_TILE_OFFERS) {
       return c.json({ error: 'invalid tile offer batch' }, 400)
     }
+    recordTileOfferBatchRequested(body.offers.length)
     if (new Set(body.offers.map((offer) => offer.tile)).size !== body.offers.length) {
       return c.json({ error: 'tile offer batch contains duplicates' }, 400)
     }
@@ -408,7 +410,15 @@ export const createTelemetryRoutes = (
         },
       })
     }
-    return runBackendHttp(c, runtime, offerTiles(offers), (wanted) => c.json({ wanted }))
+    return runBackendHttp(c, runtime, offerTilesWithOutcome(offers), (result) => {
+      recordTileOfferBatch({
+        requested: body.offers.length,
+        accepted: result.accepted,
+        alreadyKnown: result.alreadyKnown,
+        rejected: result.rejected,
+      })
+      return c.json({ wanted: result.wanted })
+    })
   })
 
   routes.put('/tiles/:x/:y/:hash', requireScopeEffect(runtime, auth, 'report'), async (c) => {

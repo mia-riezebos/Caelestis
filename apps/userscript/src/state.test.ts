@@ -1120,9 +1120,12 @@ describe('server state boundaries', () => {
       }),
     )
     expect(refreshed).toHaveBeenCalledOnce()
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
-      authorization: 'Bearer keep-me',
-    })
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
+      'Bearer keep-me',
+    )
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('accept')).toContain(
+      'application/vnd.caelestis.client+json',
+    )
   })
 
   it('uses open access without deleting a rejected persisted token', async () => {
@@ -1146,10 +1149,16 @@ describe('server state boundaries', () => {
       }),
     )
     expect(activeServerToken(connected)).toBeNull()
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
-      authorization: 'Bearer stale-code',
-    })
-    expect(fetchMock.mock.calls[2]?.[1]?.headers).toEqual({})
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
+      'Bearer stale-code',
+    )
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('accept')).toContain(
+      'application/vnd.caelestis.client+json',
+    )
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).has('authorization')).toBe(false)
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).get('accept')).toContain(
+      'application/vnd.caelestis.client+json',
+    )
   })
 
   it('publishes each stored-server refresh as soon as that server settles', async () => {

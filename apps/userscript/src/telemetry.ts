@@ -4,6 +4,7 @@ import {
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   type PaintEvent,
+  type ReconciliationReason,
   type StatusResponse,
   seconds,
   sha256Hex,
@@ -13,6 +14,7 @@ import {
   tileKey,
   uuidV7,
 } from '@caelestis/shared'
+import { userscriptClientHeaders } from './client-metrics.js'
 import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
 import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
@@ -107,7 +109,12 @@ const statusKey = (serverUrl: string, templateId: string): string =>
   `${serverUrl}\u0000${templateId}`
 
 const authHeaders = (server: ConnectedServer): Record<string, string> =>
-  activeServerToken(server) === null ? {} : { authorization: `Bearer ${activeServerToken(server)}` }
+  activeServerToken(server) === null
+    ? userscriptClientHeaders()
+    : {
+        ...userscriptClientHeaders(),
+        authorization: `Bearer ${activeServerToken(server)}`,
+      }
 
 const coverageFor = (server: ConnectedServer): ReadonlySet<string> | null => {
   const known = coverage.get(server.url)
@@ -237,7 +244,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     ),
   )
   const uploaded = await uploadWanted(server, identity, entries, wanted)
-  await refreshStatus(server)
+  await refreshStatus(server, 'post-offer')
   const previousDedupe = offered.get(server.url)
   const dedupe =
     previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
@@ -395,7 +402,7 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   if (!isCurrentServerConnection(server)) return
   coverage.set(server.url, { server, tiles: coverageFrom(contents), contents })
   replayRecent(server)
-  void refreshServerTelemetry(server).catch(reportTelemetryError)
+  void refreshServerTelemetry(server, 'manifest-applied').catch(reportTelemetryError)
 }
 
 const alarmFrom = (value: unknown): Alarm | null => {
@@ -470,11 +477,19 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
   return candidate as TemplateStatus
 }
 
-const refreshStatus = async (server: ConnectedServer): Promise<void> => {
+const refreshStatus = async (
+  server: ConnectedServer,
+  reason: ReconciliationReason,
+): Promise<void> => {
   if (server.season === null || !isCurrentServerConnection(server)) return
   const response = await fetchWithRetry(
     serverEndpoint(server.url, `/telemetry/status?season=${server.season}`),
-    { headers: authHeaders(server) },
+    {
+      headers: {
+        ...authHeaders(server),
+        ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+      },
+    },
   )
   if (response === null || !response.ok || !isCurrentServerConnection(server)) return
   const body = (await response.json().catch(() => null)) as Partial<StatusResponse> | null
@@ -507,13 +522,21 @@ const refreshStatus = async (server: ConnectedServer): Promise<void> => {
   }
 }
 
-const refreshAlarms = async (server: ConnectedServer): Promise<void> => {
+const refreshAlarms = async (
+  server: ConnectedServer,
+  reason: ReconciliationReason,
+): Promise<void> => {
   if (server.season === null || !isCurrentServerConnection(server)) return
   const snapshot = coverage.get(server.url)
   if (snapshot === undefined || !isCurrentServerConnection(snapshot.server)) return
   const response = await fetchWithRetry(
     serverEndpoint(server.url, `/telemetry/alarms?season=${server.season}`),
-    { headers: authHeaders(server) },
+    {
+      headers: {
+        ...authHeaders(server),
+        ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+      },
+    },
   )
   if (
     response === null ||
@@ -555,8 +578,11 @@ const refreshAlarms = async (server: ConnectedServer): Promise<void> => {
   if (changed) notifyAlarmListeners()
 }
 
-const refreshServerTelemetry = async (server: ConnectedServer): Promise<void> => {
-  await Promise.all([refreshStatus(server), refreshAlarms(server)])
+const refreshServerTelemetry = async (
+  server: ConnectedServer,
+  reason: ReconciliationReason,
+): Promise<void> => {
+  await Promise.all([refreshStatus(server, reason), refreshAlarms(server, reason)])
 }
 
 const notifyAlarmListeners = (): void => {
@@ -685,18 +711,18 @@ export const installTelemetry = (): void => {
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
       replayRecent(server)
-      void refreshServerTelemetry(server).catch(reportTelemetryError)
+      void refreshServerTelemetry(server, 'state-change').catch(reportTelemetryError)
     }
   })
   setInterval(() => {
     for (const server of getState().servers) {
       if (server.status === 'connected')
-        void refreshServerTelemetry(server).catch(reportTelemetryError)
+        void refreshServerTelemetry(server, 'interval').catch(reportTelemetryError)
     }
   }, STATUS_POLL_MS)
   for (const server of getState().servers) {
     if (server.status === 'connected')
-      void refreshServerTelemetry(server).catch(reportTelemetryError)
+      void refreshServerTelemetry(server, 'connect').catch(reportTelemetryError)
   }
 }
 
