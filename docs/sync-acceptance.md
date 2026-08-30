@@ -10,9 +10,9 @@ Run `pnpm capacity:report` and `pnpm test:capacity` from the repository root.
 
 | Measure | Baseline | Five-client healthy-live projection |
 | --- | ---: | ---: |
-| Avoidable Worker requests | 14,645 conservative lower bound | 400 |
-| Reduction | — | 97.27% |
-| Tile-offer batches still available at the 90% gate | — | 1,064 |
+| Avoidable Worker requests | 12,570 conservative lower bound | 400 |
+| Reduction | — | 96.8178% |
+| Required tile-offer batches | 2,075 captured lower bound | Measured separately |
 | Status and manifest projection RPC reads | — | 250 |
 | Authoritative projection rebuilds | — | 50 |
 | Cache outcomes | — | 2 miss, 48 stale, 200 hit |
@@ -20,17 +20,17 @@ Run `pnpm capacity:report` and `pnpm test:capacity` from the repository root.
 | Projected billable Durable Object request units | — | 283 |
 | Heartbeat wakeups | — | 0 |
 
-The model uses the lower edge of each rounded status, manifest, and tile-offer baseline bucket.
-Required paint reports and requested tile writes are excluded and must be reported separately. D1 rows depend on template
-and status cardinality; the request metrics record their actual values rather than substituting a
-fixed estimate. Five simultaneous projection readers share one rebuild per resource cohort, so 250
-status and manifest reads require at most 50 authoritative rebuilds in this scenario. Alarm reads
-remain direct and are included in the Worker total without being misreported as projection-cache
-hits.
+The model uses the lower edge of each rounded status and manifest baseline bucket. Tile offers,
+paint reports, and requested tile writes are required report traffic: the rollout records them
+separately without treating them as avoidable synchronization. D1 rows depend on template and status
+cardinality; the request metrics record their actual values rather than substituting a fixed
+estimate. Five simultaneous projection readers share one rebuild per resource cohort, so 250 status
+and manifest reads require at most 50 authoritative rebuilds in this scenario. Alarm reads remain
+direct and are included in the Worker total without being misreported as projection-cache hits.
 
-The Worker total also includes five alarm reads after each of the four scheduled scans. Follow-up
-alarm reads are data-dependent and consume the remaining 1,064-request budget alongside tile
-offers; production measurement records both rather than assuming they are zero.
+The avoidable Worker total also includes five alarm reads after each of the four scheduled scans.
+Follow-up alarm reads are data-dependent avoidable work and production measurement records them
+rather than assuming they are zero.
 
 The Durable Object total follows Cloudflare's current rules: RPCs, WebSocket connections, and
 incoming application messages are requests; incoming WebSocket messages are billed in groups of
@@ -56,8 +56,10 @@ and [state API](https://developers.cloudflare.com/durable-objects/api/state/).
 | Old-server compatibility | `server-sync-coordinator.test.ts`: keeps compatibility polling and opens no socket when capability is absent |
 | Authentication scope | `routes/telemetry.test.ts`: authenticates and scope-binds live upgrades before resolving a season object |
 | Alarm delivery without steady polling | `status-read-model-object.test.ts`: broadcasts alarm reconciliation; `server-sync-coordinator.test.ts`: refreshes alarms from the live event |
-| Paint invariants | `telemetry.test.ts`: retries one immutable paint event without changing count, order, or attribution |
-| Tile-offer retry compatibility | `telemetry.test.ts`: retries ambiguous old-server responses and explicit server requests |
+| Paint invariants | `telemetry.test.ts`: reports identical accepted-paint callbacks separately and retries one immutable event without changing count, order, or attribution |
+| Report response convergence | `telemetry.test.ts`: applies offer and upload status deltas without an additional status read |
+| Tile-report invariants | `telemetry.test.ts`: reports matching repeated fetch callbacks in separate valid batches and deduplicates only replay of one observation |
+| Tile-offer retry compatibility | `telemetry.test.ts`: retries one observation after an ambiguous old-server response and honors explicit upload requests |
 
 Healthy live safety reads carry `recovery`; non-live resources and servers without the live
 capability carry `compatibility-poll`. Manifest and status reads both record `hit`, `miss`, or
@@ -66,18 +68,22 @@ reconciliation reasons, and tile-offer outcomes.
 
 ## Paint-reporting equivalence
 
-One accepted paint creates one UUIDv7 event per matching server. Every retry sends the byte-identical
+One accepted-paint callback creates one UUIDv7 event per matching server, including when consecutive
+callbacks have identical payloads and timestamps. Every retry sends the byte-identical
 body, preserving tile and pixel order, user attribution, event count, and idempotency key. Retry
 attempts remain immediate and bounded at three; a terminal failure removes the local dedupe entry so
 the existing replay path can try the same logical event again. Tile offers do not gate or reorder the
-paint path.
+paint path. Likewise, every covered Wplace tile-fetch callback receives a distinct observation ID
+and is offered; batching never combines two observations for the same tile because the backend batch
+contract requires unique tile keys. Offer and upload responses continue carrying status deltas so
+these required reports replace, rather than trigger, redundant status refreshes.
 
 ## Build contract
 
 - `effect` is exactly `4.0.0-beta.102` in the backend and wire-schema packages and resolves to that
   version in the lockfile.
 - Backend Worker dry-run bundle: 1647.93 KiB upload, 342.12 KiB gzip.
-- Userscript bundle: 569,767 bytes.
+- Userscript bundle: 569,723 bytes.
 - Validation commands: `pnpm lint`, `pnpm check`, `pnpm test`, `pnpm build`,
   `pnpm test:release`, and a backend `wrangler deploy --dry-run`.
 
@@ -90,10 +96,12 @@ healthy clients connected for one fixed 24-hour UTC window, then:
    Worker requests, D1 rows, cache outcomes, transport modes, and tile-offer outcomes.
 2. Record Durable Object requests and duration for the same UTC window. Keep the raw incoming
    WebSocket-message count distinct from its 20-to-1 billed request units.
-3. Record required `POST /telemetry/paints` and `PUT /telemetry/tiles/:x/:y/:hash` traffic separately.
+3. Record required `POST /telemetry/tiles/offers`, `POST /telemetry/paints`, and
+   `PUT /telemetry/tiles/:x/:y/:hash` traffic separately.
 4. Run
    `pnpm capacity:report -- --tile-offer-batches <measured-batches> --extra-alarm-reads <measured-follow-up-reads>`
-   and require `reductionPercent >= 90`.
+   and require `reductionPercent >= 90`; the tile-offer argument records required report volume and
+   does not reduce that percentage.
 5. Exercise restart/eviction, revision-gap, offline/online, hidden/visible, old-server, and revoked
    credential recovery once during the window; confirm each client converges without a manual
    refresh.
