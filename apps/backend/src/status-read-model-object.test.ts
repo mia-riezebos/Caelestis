@@ -175,8 +175,19 @@ describe('status read-model Durable Object', () => {
     }
     const source = vi.fn(async () => manifest)
     const repair = createSeasonManifestReadModel({ season: 4, source, persistence: broken })
+    const put = state.storage.put.bind(state.storage)
+    let failPublication = true
+    state.storage.put = vi.fn(async (key, value) => {
+      if (failPublication && key === 'manifest-read-model:v1:index') {
+        failPublication = false
+        throw new Error('index publication failed')
+      }
+      await put(key, value)
+    })
+    await expect(repair.read(input)).rejects.toThrow('index publication failed')
+    state.storage.put = put
     await repair.read(input)
-    expect(source).toHaveBeenCalledOnce()
+    expect(source).toHaveBeenCalledTimes(2)
 
     const recoveredPersistence = createChunkedManifestPersistence(state.storage, 4)
     await expect(recoveredPersistence.load()).resolves.toMatchObject({

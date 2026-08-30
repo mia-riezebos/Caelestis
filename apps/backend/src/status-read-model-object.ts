@@ -163,6 +163,7 @@ export const createChunkedManifestPersistence = (
       const priorEntries = new Map(previous?.entries.map((entry) => [entry.key, entry]) ?? [])
       const entries: StoredManifestProjection[] = []
       const newlyRetired: StoredManifestRetirement[] = []
+      const repairedGenerations: string[] = []
       for (const projection of next.entries) {
         const prior = priorEntries.get(projection.key)
         if (
@@ -198,7 +199,7 @@ export const createChunkedManifestPersistence = (
         })
         if (prior !== undefined) {
           newlyRetired.push({ generation: prior.generation, chunks: prior.chunks })
-          invalidGenerations.delete(prior.generation)
+          if (invalidGenerations.has(prior.generation)) repairedGenerations.push(prior.generation)
           priorEntries.delete(projection.key)
         }
       }
@@ -214,6 +215,7 @@ export const createChunkedManifestPersistence = (
       }
       await storage.put(MANIFEST_CACHE_INDEX_KEY, published)
       index = published
+      for (const generation of repairedGenerations) invalidGenerations.delete(generation)
       if (retired.length > 0) {
         try {
           await deleteRetired(retired)
