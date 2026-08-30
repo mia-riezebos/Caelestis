@@ -10,9 +10,9 @@ Run `pnpm capacity:report` and `pnpm test:capacity` from the repository root.
 
 | Measure | Baseline | Five-client healthy-live projection |
 | --- | ---: | ---: |
-| Avoidable Worker requests | 14,660 | 975 |
-| Reduction | — | 93.35% |
-| Tile-offer batches still available at the 90% gate | — | 491 |
+| Avoidable Worker requests | 14,645 conservative lower bound | 975 |
+| Reduction | — | 93.34% |
+| Tile-offer batches still available at the 90% gate | — | 489 |
 | Status and manifest projection RPC reads | — | 970 |
 | Authoritative projection rebuilds | — | 194 |
 | Cache outcomes | — | 2 miss, 192 stale, 776 hit |
@@ -20,8 +20,8 @@ Run `pnpm capacity:report` and `pnpm test:capacity` from the repository root.
 | Projected billable Durable Object request units | — | 999 |
 | Heartbeat wakeups | — | 0 |
 
-The model uses the captured status, manifest, and tile-offer traffic only. Required paint reports
-and requested tile writes are excluded and must be reported separately. D1 rows depend on template
+The model uses the lower edge of each rounded status, manifest, and tile-offer baseline bucket.
+Required paint reports and requested tile writes are excluded and must be reported separately. D1 rows depend on template
 and status cardinality; the request metrics record their actual values rather than substituting a
 fixed estimate. Five simultaneous projection readers share one rebuild per resource cohort, so 970
 reads require at most 194 authoritative rebuilds in this scenario.

@@ -208,6 +208,20 @@ describe('server and manifest routes', () => {
     expect(response.status).toBe(200)
     expect(writeDataPoint).toHaveBeenCalledOnce()
     expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[7]).toBe('miss')
+
+    const etag = response.headers.get('etag') as string
+    const conditional = new Request('https://example.test/manifest', {
+      headers: { ...bearer(MEMBER).headers, 'if-none-match': etag },
+    })
+    const notModified = await measureRequest(
+      { writeDataPoint },
+      conditional,
+      '/manifest',
+      async () => app.fetch(conditional),
+    )
+    expect(notModified.status).toBe(304)
+    expect(writeDataPoint.mock.calls[1]?.[0]?.blobs?.[7]).toBe('hit')
+    expect(writeDataPoint.mock.calls[1]?.[0]?.blobs?.[9]).toBe('304')
   })
 
   it('selects one alliance surface without leaking world or another alliance', async () => {
