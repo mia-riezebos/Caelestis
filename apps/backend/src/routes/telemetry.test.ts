@@ -121,7 +121,7 @@ const uploadCanvas = async (
     },
     body: bytes,
   })
-  expect(response.status).toBe(204)
+  expect(response.status).toBe(200)
   return hash
 }
 
@@ -183,8 +183,10 @@ describe('telemetry routes', () => {
   })
 
   it('requests missing template-covered tiles and serves server-backed progress after upload', async () => {
-    const { app } = await harness()
+    const { app, sql } = await harness()
     const templateId = await createPublishedTemplate(app)
+    const readTemplateStatuses = vi.spyOn(sql, 'readTemplateStatuses')
+    readTemplateStatuses.mockClear()
     const reportToken = await mintToken(app, 'report')
     const bytes = await canvasTile()
     const hash = await sha256Hex(bytes)
@@ -216,7 +218,30 @@ describe('telemetry routes', () => {
       },
       body: bytes,
     })
-    expect(uploaded.status).toBe(204)
+    expect(uploaded.status).toBe(200)
+    await expect(uploaded.json()).resolves.toEqual({
+      status: {
+        baseRevision: 1,
+        revision: 2,
+        templates: [
+          {
+            templateId,
+            correct: 1,
+            wrong: 1,
+            blank: 1,
+            total: 3,
+            colours: [
+              { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+              { index: 1, correct: 0, wrong: 0, blank: 1, total: 1 },
+              { index: 2, correct: 0, wrong: 1, blank: 0, total: 1 },
+            ],
+            observedAt: now * 1_000,
+          },
+        ],
+        removedTemplateIds: [],
+      },
+    })
+    expect(readTemplateStatuses).not.toHaveBeenCalled()
 
     const status = await app.request('/telemetry/status?season=0', {
       headers: bearer(reportToken),
@@ -246,7 +271,10 @@ describe('telemetry routes', () => {
       headers: { ...bearer(reportToken), 'content-type': 'application/json' },
       body: JSON.stringify(offer),
     })
-    await expect(repeated.json()).resolves.toEqual({ wanted: [] })
+    await expect(repeated.json()).resolves.toEqual({
+      wanted: [],
+      status: { baseRevision: 2, revision: 3, templates: [], removedTemplateIds: [] },
+    })
 
     const duplicate = await app.request('/telemetry/tiles/offers', {
       method: 'POST',
@@ -323,14 +351,17 @@ describe('telemetry routes', () => {
       body: bytes,
     })
 
-    expect(uploaded.status).toBe(204)
+    expect(uploaded.status).toBe(200)
     await expect(sql.readTemplateStatuses(0, false)).resolves.toHaveLength(1)
-    expect(applyCommittedChange).toHaveBeenCalledWith(0)
+    expect(applyCommittedChange).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ baseRevision: 0, revision: 1 }),
+    )
     expect(consoleError).toHaveBeenCalledWith(projectionError)
   })
 
   it('repairs accepted uploads and known offers before a later history fold can fail', async () => {
-    const applyCommittedChange = vi.fn(async () => undefined)
+    const applyCommittedChange = vi.fn(async () => null)
     const { app, sql } = await harness({
       applyCommittedChange,
       reconcileSnapshot: vi.fn(async () => ({
@@ -398,7 +429,7 @@ describe('telemetry routes', () => {
       body: bytes,
     })
 
-    expect(uploaded.status).toBe(204)
+    expect(uploaded.status).toBe(200)
     await expect(sql.readLatestTile(0, { x: 0, y: 0 })).resolves.toEqual(
       expect.objectContaining({ observedAt: expect.any(Number) }),
     )

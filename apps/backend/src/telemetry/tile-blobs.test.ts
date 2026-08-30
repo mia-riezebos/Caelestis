@@ -90,7 +90,10 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     const held = await reserveTileBlob(harness.ports, HASH, millis(1_500))
     expect(held).not.toBeNull()
     if (held === null) throw new Error('expected the legacy blob to be reserved')
-    await expect(commit(harness.sql, held.reservation)).resolves.toBe(true)
+    await expect(commit(harness.sql, held.reservation)).resolves.toEqual({
+      revision: null,
+      statusChanges: [],
+    })
 
     await expect(harness.sql.claimTileBlobDeletion(HASH, millis(3_000))).resolves.toBe('missing')
     await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
@@ -104,7 +107,10 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     const reservation = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
     expect(reservation.blobKey).not.toBe(HASH)
     await harness.blobs.put('tiles', reservation.blobKey, BYTES)
-    await expect(commit(harness.sql, reservation)).resolves.toBe(true)
+    await expect(commit(harness.sql, reservation)).resolves.toEqual({
+      revision: null,
+      statusChanges: [],
+    })
 
     await expect(harness.blobs.get('tiles', HASH)).resolves.toBeNull()
     await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
@@ -119,7 +125,10 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
 
     const reservation = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
     await harness.blobs.put('tiles', reservation.blobKey, BYTES)
-    await expect(commit(harness.sql, reservation)).resolves.toBe(true)
+    await expect(commit(harness.sql, reservation)).resolves.toEqual({
+      revision: null,
+      statusChanges: [],
+    })
 
     expect(reservation.blobKey).toMatch(new RegExp(`^${HASH}/`))
     await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
@@ -147,7 +156,7 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     await harness.blobs.put('tiles', retry.blobKey, BYTES)
     await expect(
       harness.sql.commitTileBlobReservation(retry.id, millis(302_200), observation(), []),
-    ).resolves.toBe(true)
+    ).resolves.toEqual({ revision: null, statusChanges: [] })
 
     // The first request finally completes after the retry. Both target one physical key.
     await harness.blobs.put('tiles', stale.blobKey, BYTES)

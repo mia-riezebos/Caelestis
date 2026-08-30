@@ -1,4 +1,9 @@
-import type { StatusSnapshotRead, StatusVisibilityScope } from '../../status-read-model/model.js'
+import type {
+  StatusProjectionChange,
+  StatusProjectionMutation,
+  StatusSnapshotRead,
+  StatusVisibilityScope,
+} from '../../status-read-model/model.js'
 import type { StatusReadModelPort } from '../../status-read-model/port.js'
 import type { StatusReadModelObject } from '../../status-read-model-object.js'
 
@@ -11,8 +16,14 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return this.namespace.getByName(seasonName(season))
   }
 
-  async applyCommittedChange(season: number): Promise<void> {
-    await this.shard(season).applyCommittedChange(season)
+  async applyCommittedChange(
+    season: number,
+    mutation?: StatusProjectionMutation,
+  ): Promise<StatusProjectionChange | null> {
+    const shard = this.shard(season)
+    return mutation === undefined
+      ? shard.applyCommittedChange(season)
+      : shard.applyCommittedChange(season, mutation)
   }
 
   reconcileSnapshot(season: number, scope: StatusVisibilityScope): Promise<StatusSnapshotRead> {

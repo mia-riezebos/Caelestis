@@ -88,5 +88,6 @@ export {
   type TileHistoryQuery,
   type TileHistoryReporterRow,
   type TileObservation,
+  type TileObservationCommit,
   tooManyTemplateIds,
 } from './sql-store.js'

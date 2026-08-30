@@ -55,19 +55,189 @@ describe('D1SqlStore', () => {
 
   it('retains a status revision for equal fingerprints and advances it atomically on change', async () => {
     await expect(
-      store.commitStatusProjectionRevision(4, 'a'.repeat(64), 'b'.repeat(64)),
+      store.commitStatusProjectionRevision(4, 0, false, 'a'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(1)
     await expect(
-      store.commitStatusProjectionRevision(4, 'a'.repeat(64), 'b'.repeat(64)),
+      store.commitStatusProjectionRevision(4, 1, false, 'a'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(1)
     await expect(
-      store.commitStatusProjectionRevision(4, 'c'.repeat(64), 'b'.repeat(64)),
+      store.commitStatusProjectionRevision(4, 1, false, 'c'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(2)
 
     const recovered = new D1SqlStore(d1 as unknown as D1Database)
     await expect(
-      recovered.commitStatusProjectionRevision(4, 'c'.repeat(64), 'b'.repeat(64)),
+      recovered.commitStatusProjectionRevision(4, 2, false, 'c'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(2)
+  })
+
+  it('reuses a dirty tile revision only for the exact incrementally persisted snapshot', async () => {
+    await store.commitStatusProjectionRevision(4, 0, false, 'a'.repeat(64), 'b'.repeat(64))
+    d1.sqlite
+      .prepare('UPDATE status_read_model_revisions SET revision = 2, fingerprints_dirty = 1')
+      .run()
+    await expect(
+      store.commitStatusProjectionRevision(4, 2, true, 'c'.repeat(64), 'd'.repeat(64)),
+    ).resolves.toBe(2)
+    d1.sqlite
+      .prepare('UPDATE status_read_model_revisions SET revision = 3, fingerprints_dirty = 1')
+      .run()
+    await expect(
+      store.commitStatusProjectionRevision(4, 3, false, 'e'.repeat(64), 'f'.repeat(64)),
+    ).resolves.toBe(4)
+  })
+
+  it('commits tile status and its revision together and fences a stale reconciliation', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    const hash = 'd'.repeat(64)
+    await expect(
+      store.reserveTileBlobUpload(hash, hash, 'reservation', millis(1_000), millis(5_000)),
+    ).resolves.not.toBeNull()
+
+    await expect(
+      store.commitTileBlobReservation(
+        'reservation',
+        millis(2_000),
+        {
+          season: 1,
+          tile: { x: 0, y: 0 },
+          hash,
+          observedAt: millis(2_000),
+          reportedAt: seconds(2),
+          reportedWithToken: 'c'.repeat(64),
+          reportedByUserId: 42,
+        },
+        [
+          {
+            templateId: 'template-1',
+            versionId: 'version-1',
+            tile: { x: 0, y: 0 },
+            correct: 1,
+            wrong: 0,
+            blank: 0,
+            observedAt: millis(2_000),
+          },
+        ],
+        false,
+        false,
+        true,
+      ),
+    ).resolves.toMatchObject({ revision: 1, statusChanges: [{ previous: null }] })
+    await expect(store.readStatusProjectionRevision(1)).resolves.toBe(1)
+    await expect(
+      store.commitStatusProjectionRevision(1, 0, false, 'a'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBeNull()
+    await expect(
+      store.commitStatusProjectionRevision(1, 1, true, 'a'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBe(1)
+  })
+
+  it('commits many overlapping template statuses with a fixed D1 query count', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    const statuses = []
+    for (let index = 0; index < 30; index++) {
+      const templateId = `template-${index}`
+      const versionId = `version-${index}`
+      await store.insertTemplateVersion(templateVersion({ templateId, versionId }))
+      statuses.push({
+        templateId,
+        versionId,
+        tile: { x: 0, y: 0 },
+        correct: 1,
+        wrong: 0,
+        blank: 0,
+        observedAt: millis(2_000),
+      })
+    }
+    const hash = 'd'.repeat(64)
+    await store.reserveTileBlobUpload(hash, hash, 'bulk-reservation', millis(1_000), millis(5_000))
+    const before = d1.batchStatements
+
+    await expect(
+      store.commitTileBlobReservation(
+        'bulk-reservation',
+        millis(2_000),
+        {
+          season: 1,
+          tile: { x: 0, y: 0 },
+          hash,
+          observedAt: millis(2_000),
+          reportedAt: seconds(2),
+          reportedWithToken: 'c'.repeat(64),
+          reportedByUserId: 42,
+        },
+        statuses,
+        false,
+        false,
+        true,
+      ),
+    ).resolves.toMatchObject({ revision: 1 })
+    expect(d1.batchStatements - before).toBeLessThanOrEqual(10)
+  })
+
+  it('rejects a classified status after the template moves to another current version', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    const hash = 'd'.repeat(64)
+    await store.reserveTileBlobUpload(hash, hash, 'stale-version', millis(1_000), millis(5_000))
+    await store.insertTemplateVersion(
+      templateVersion({ versionId: 'version-2', createdAt: millis(1_500) }),
+      { requireExisting: true },
+    )
+
+    await expect(
+      store.commitTileBlobReservation(
+        'stale-version',
+        millis(2_000),
+        {
+          season: 1,
+          tile: { x: 0, y: 0 },
+          hash,
+          observedAt: millis(2_000),
+          reportedAt: seconds(2),
+          reportedWithToken: 'c'.repeat(64),
+          reportedByUserId: 42,
+        },
+        [
+          {
+            templateId: 'template-1',
+            versionId: 'version-1',
+            tile: { x: 0, y: 0 },
+            correct: 1,
+            wrong: 0,
+            blank: 0,
+            observedAt: millis(2_000),
+          },
+        ],
+        false,
+        false,
+        true,
+      ),
+    ).resolves.toEqual({ revision: null, statusChanges: [] })
   })
 
   it('uses hash indexes for tile blob reference checks', () => {
