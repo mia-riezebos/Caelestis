@@ -180,10 +180,17 @@ export class StatusReadModelObject extends DurableObject<Env> {
       persistence: createChunkedStatusPersistence(this.objectState.storage, season),
       revisions: {
         current: (requestedSeason) => this.sql.readStatusProjectionRevision(requestedSeason),
-        commit: (requestedSeason, expectedRevision, publicFingerprint, adminFingerprint) =>
+        commit: (
+          requestedSeason,
+          expectedRevision,
+          retainRevision,
+          publicFingerprint,
+          adminFingerprint,
+        ) =>
           this.sql.commitStatusProjectionRevision(
             requestedSeason,
             expectedRevision,
+            retainRevision,
             publicFingerprint,
             adminFingerprint,
           ),

@@ -156,77 +156,80 @@ export const fetchCanvasTiles = async (
     budgeted.filter(({ ring }) => !ring).map(({ tile }) => tileKey(tile)),
   )
   const serverRefreshedTemplateTiles = new Set<string>()
-  for (const { tile, ring } of budgeted) {
-    const latest = await ports.sql.readLatestTile(season, tile)
-    if (
-      ring &&
-      latest !== null &&
-      now * 1_000 - latest.observedAt < RING_STALENESS_SECONDS * 1_000
-    ) {
-      fresh++
-      continue
-    }
-    try {
-      const response = await fetchImpl(wplaceTileUrl(season, tile), {
-        headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
-      })
-      if (!response.ok) {
-        failed++
+  try {
+    for (const { tile, ring } of budgeted) {
+      const latest = await ports.sql.readLatestTile(season, tile)
+      if (
+        ring &&
+        latest !== null &&
+        now * 1_000 - latest.observedAt < RING_STALENESS_SECONDS * 1_000
+      ) {
+        fresh++
         continue
       }
-      const bytes = new Uint8Array(await response.arrayBuffer())
-      if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
-        failed++
-        continue
-      }
-      const hash = await sha256Hex(bytes)
-      if (latest?.hash === hash) {
-        unchanged++
-        if (!ring) {
-          await runtime.run(
-            refreshAuthoritativeTile(
-              {
-                wplaceUserId: FETCHER_USER_ID,
-                displayName: FETCHER_DISPLAY_NAME,
-                tokenHash,
-                season,
-                tile,
-                hash,
-                observedAt: now,
-                includeUnpublished: true,
-              },
-              bytes,
-              { projectionBatch },
-            ),
-          )
-          serverRefreshedTemplateTiles.add(tileKey(tile))
+      try {
+        const response = await fetchImpl(wplaceTileUrl(season, tile), {
+          headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
+        })
+        if (!response.ok) {
+          failed++
+          continue
         }
-        continue
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
+          failed++
+          continue
+        }
+        const hash = await sha256Hex(bytes)
+        if (latest?.hash === hash) {
+          unchanged++
+          if (!ring) {
+            await runtime.run(
+              refreshAuthoritativeTile(
+                {
+                  wplaceUserId: FETCHER_USER_ID,
+                  displayName: FETCHER_DISPLAY_NAME,
+                  tokenHash,
+                  season,
+                  tile,
+                  hash,
+                  observedAt: now,
+                  includeUnpublished: true,
+                },
+                bytes,
+                { projectionBatch },
+              ),
+            )
+            serverRefreshedTemplateTiles.add(tileKey(tile))
+          }
+          continue
+        }
+        await runtime.run(
+          uploadTile(
+            {
+              wplaceUserId: FETCHER_USER_ID,
+              displayName: FETCHER_DISPLAY_NAME,
+              tokenHash,
+              season,
+              tile,
+              hash,
+              observedAt: now,
+              includeUnpublished: true,
+            },
+            bytes,
+            { requireCoverage: false, authoritative: true, projectionBatch },
+          ),
+        )
+        if (!ring) serverRefreshedTemplateTiles.add(tileKey(tile))
+        fetched++
+      } catch {
+        // One unreachable tile must not starve the rest of the run.
+        failed++
       }
-      await runtime.run(
-        uploadTile(
-          {
-            wplaceUserId: FETCHER_USER_ID,
-            displayName: FETCHER_DISPLAY_NAME,
-            tokenHash,
-            season,
-            tile,
-            hash,
-            observedAt: now,
-            includeUnpublished: true,
-          },
-          bytes,
-          { requireCoverage: false, authoritative: true, projectionBatch },
-        ),
-      )
-      if (!ring) serverRefreshedTemplateTiles.add(tileKey(tile))
-      fetched++
-    } catch {
-      // One unreachable tile must not starve the rest of the run.
-      failed++
     }
+  } finally {
+    await projectionBatch.flush()
   }
-  await projectionBatch.flush()
 
   const templates = await ports.sql.listManifestTemplates(
     { season, surface: WORLD_TEMPLATE_SURFACE },
@@ -321,57 +324,76 @@ export const fetchAlarmFollowUps = async (
   let pending = probes.length - selectedProbes.length
   let remaining = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
 
-  for (const probe of selectedProbes) {
-    const template = (
-      await ports.sql.listManifestTemplates(
-        { season: probe.season, surface: WORLD_TEMPLATE_SURFACE },
-        true,
+  try {
+    for (const probe of selectedProbes) {
+      const template = (
+        await ports.sql.listManifestTemplates(
+          { season: probe.season, surface: WORLD_TEMPLATE_SURFACE },
+          true,
+        )
+      ).find(
+        (candidate) => candidate.id === probe.templateId && candidate.versionId === probe.versionId,
       )
-    ).find(
-      (candidate) => candidate.id === probe.templateId && candidate.versionId === probe.versionId,
-    )
-    let tiles = (await ports.sql.listAlarmTiles(probe.season)).filter(
-      (row) => row.templateId === probe.templateId && row.versionId === probe.versionId,
-    )
-    if (template === undefined || tiles.length === 0) {
-      await ports.sql.clearAlarmProbe(probe.templateId, probe.alarmId, probe.dueAt)
-      failed++
-      continue
-    }
-    const staleTiles = tiles
-      .filter((row) => row.observedAt === null || row.observedAt < probe.dueAt)
-      .map((row) => ({
-        ...row,
-        tile: { x: row.tileX, y: row.tileY },
-      }))
-      .sort(compareAlarmTileFreshness)
-    if (staleTiles.length > 0 && remaining === 0) {
-      pending++
-      continue
-    }
-    const batch = staleTiles.slice(0, remaining)
+      let tiles = (await ports.sql.listAlarmTiles(probe.season)).filter(
+        (row) => row.templateId === probe.templateId && row.versionId === probe.versionId,
+      )
+      if (template === undefined || tiles.length === 0) {
+        await ports.sql.clearAlarmProbe(probe.templateId, probe.alarmId, probe.dueAt)
+        failed++
+        continue
+      }
+      const staleTiles = tiles
+        .filter((row) => row.observedAt === null || row.observedAt < probe.dueAt)
+        .map((row) => ({
+          ...row,
+          tile: { x: row.tileX, y: row.tileY },
+        }))
+        .sort(compareAlarmTileFreshness)
+      if (staleTiles.length > 0 && remaining === 0) {
+        pending++
+        continue
+      }
+      const batch = staleTiles.slice(0, remaining)
 
-    let complete = true
-    for (const { tile } of batch) {
-      remaining--
-      try {
-        const response = await fetchImpl(wplaceTileUrl(probe.season, tile), {
-          headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
-        })
-        if (!response.ok) {
-          complete = false
-          break
-        }
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
-          complete = false
-          break
-        }
-        const hash = await sha256Hex(bytes)
-        const latest = await ports.sql.readLatestTile(probe.season, tile)
-        if (latest?.hash === hash) {
+      let complete = true
+      for (const { tile } of batch) {
+        remaining--
+        try {
+          const response = await fetchImpl(wplaceTileUrl(probe.season, tile), {
+            headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
+          })
+          if (!response.ok) {
+            complete = false
+            break
+          }
+          const bytes = new Uint8Array(await response.arrayBuffer())
+          if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
+            complete = false
+            break
+          }
+          const hash = await sha256Hex(bytes)
+          const latest = await ports.sql.readLatestTile(probe.season, tile)
+          if (latest?.hash === hash) {
+            await runtime.run(
+              refreshAuthoritativeTile(
+                {
+                  wplaceUserId: FETCHER_USER_ID,
+                  displayName: FETCHER_DISPLAY_NAME,
+                  tokenHash,
+                  season: probe.season,
+                  tile,
+                  hash,
+                  observedAt: now,
+                  includeUnpublished: true,
+                },
+                bytes,
+                { projectionBatch },
+              ),
+            )
+            continue
+          }
           await runtime.run(
-            refreshAuthoritativeTile(
+            uploadTile(
               {
                 wplaceUserId: FETCHER_USER_ID,
                 displayName: FETCHER_DISPLAY_NAME,
@@ -383,57 +405,16 @@ export const fetchAlarmFollowUps = async (
                 includeUnpublished: true,
               },
               bytes,
-              { projectionBatch },
+              { requireCoverage: false, authoritative: true, projectionBatch },
             ),
           )
-          continue
+        } catch {
+          complete = false
+          break
         }
-        await runtime.run(
-          uploadTile(
-            {
-              wplaceUserId: FETCHER_USER_ID,
-              displayName: FETCHER_DISPLAY_NAME,
-              tokenHash,
-              season: probe.season,
-              tile,
-              hash,
-              observedAt: now,
-              includeUnpublished: true,
-            },
-            bytes,
-            { requireCoverage: false, authoritative: true, projectionBatch },
-          ),
-        )
-      } catch {
-        complete = false
-        break
       }
-    }
 
-    if (!complete) {
-      await ports.sql.deferAlarmProbe(
-        probe.templateId,
-        probe.alarmId,
-        probe.dueAt,
-        millis(now * 1_000 + ALARM_FOLLOW_UP_RETRY_MILLISECONDS),
-      )
-      failed++
-      pending++
-      continue
-    }
-    tiles = (await ports.sql.listAlarmTiles(probe.season)).filter(
-      (row) => row.templateId === probe.templateId && row.versionId === probe.versionId,
-    )
-    const status = (
-      await ports.sql.readTemplateStatuses(probe.season, true, { serverOwnedOnly: true })
-    ).find((candidate) => candidate.templateId === probe.templateId)
-    if (
-      status === undefined ||
-      status.total !== template.totalPixels ||
-      status.correct + status.wrong + status.blank !== status.total ||
-      !tiles.every((row) => row.observedAt !== null && row.observedAt >= probe.dueAt)
-    ) {
-      if (batch.length === 0) {
+      if (!complete) {
         await ports.sql.deferAlarmProbe(
           probe.templateId,
           probe.alarmId,
@@ -441,30 +422,54 @@ export const fetchAlarmFollowUps = async (
           millis(now * 1_000 + ALARM_FOLLOW_UP_RETRY_MILLISECONDS),
         )
         failed++
+        pending++
+        continue
       }
-      pending++
-      continue
+      tiles = (await ports.sql.listAlarmTiles(probe.season)).filter(
+        (row) => row.templateId === probe.templateId && row.versionId === probe.versionId,
+      )
+      const status = (
+        await ports.sql.readTemplateStatuses(probe.season, true, { serverOwnedOnly: true })
+      ).find((candidate) => candidate.templateId === probe.templateId)
+      if (
+        status === undefined ||
+        status.total !== template.totalPixels ||
+        status.correct + status.wrong + status.blank !== status.total ||
+        !tiles.every((row) => row.observedAt !== null && row.observedAt >= probe.dueAt)
+      ) {
+        if (batch.length === 0) {
+          await ports.sql.deferAlarmProbe(
+            probe.templateId,
+            probe.alarmId,
+            probe.dueAt,
+            millis(now * 1_000 + ALARM_FOLLOW_UP_RETRY_MILLISECONDS),
+          )
+          failed++
+        }
+        pending++
+        continue
+      }
+      await ports.sql.evaluateTemplateAlarm(
+        {
+          templateId: probe.templateId,
+          versionId: probe.versionId,
+          total: status.total,
+          correct: status.correct,
+          observedAt: millis(now * 1_000),
+        },
+        {
+          kind: 'follow-up',
+          alarmId: probe.alarmId,
+          pixelsLost: probe.pixelsLost,
+          dueAt: probe.dueAt,
+        },
+        'unused',
+      )
+      evaluated++
     }
-    await ports.sql.evaluateTemplateAlarm(
-      {
-        templateId: probe.templateId,
-        versionId: probe.versionId,
-        total: status.total,
-        correct: status.correct,
-        observedAt: millis(now * 1_000),
-      },
-      {
-        kind: 'follow-up',
-        alarmId: probe.alarmId,
-        pixelsLost: probe.pixelsLost,
-        dueAt: probe.dueAt,
-      },
-      'unused',
-    )
-    evaluated++
+  } finally {
+    await projectionBatch.flush()
   }
-
-  await projectionBatch.flush()
 
   return { evaluated, failed, pending }
 }

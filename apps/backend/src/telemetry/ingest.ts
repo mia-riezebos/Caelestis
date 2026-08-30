@@ -335,6 +335,7 @@ const recordObservationPromise = async (
     statuses,
     recordHistory,
     options.authoritative ?? false,
+    metadata.includeUnpublished,
   )
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
@@ -345,31 +346,25 @@ const recordObservationPromise = async (
       : {
           baseRevision: committed.revision - 1,
           revision: committed.revision,
-          changes: committed.statusChanges.flatMap(({ previous, current }) => {
-            const target = targets.find(
-              (candidate) =>
-                candidate.templateId === current.templateId &&
-                candidate.versionId === current.versionId,
-            )
-            if (target === undefined) return []
-            const value = (status: TemplateTileStatusRecord) => ({
-              correct: status.correct,
-              wrong: status.wrong,
-              blank: status.blank,
-              ...(status.colours === undefined ? {} : { colours: status.colours }),
-              observedAt: status.observedAt,
-            })
-            return [
-              {
+          changes: committed.statusChanges.map(
+            ({ published, totalPixels, colourTotals, previous, current }) => {
+              const value = (status: TemplateTileStatusRecord) => ({
+                correct: status.correct,
+                wrong: status.wrong,
+                blank: status.blank,
+                ...(status.colours === undefined ? {} : { colours: status.colours }),
+                observedAt: status.observedAt,
+              })
+              return {
                 templateId: current.templateId,
-                published: target.published,
-                total: target.totalPixels,
-                ...(target.colourTotals === undefined ? {} : { colourTotals: target.colourTotals }),
+                published,
+                total: totalPixels,
+                ...(colourTotals === undefined ? {} : { colourTotals }),
                 previous: previous === null ? null : value(previous),
                 current: value(current),
-              },
-            ]
-          }),
+              }
+            },
+          ),
         }
   await options.onCommitted?.(mutation)
   await ports.sql.foldTileHistory(

@@ -1474,6 +1474,7 @@ export class D1SqlStore implements SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
     forceCurrent = false,
+    includeUnpublished = false,
   ): Promise<TileObservationCommit | null> {
     const statements: D1PreparedStatement[] = [
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
@@ -1549,36 +1550,87 @@ export class D1SqlStore implements SqlStore {
           observation.hash,
         ),
     )
-    const statusResults: Array<{
-      readonly before: number
-      readonly write: number
-      readonly status: TemplateTileStatusRecord
-    }> = []
-    for (const status of statuses) {
-      const before = statements.length
+    const statusesJson = JSON.stringify(
+      statuses.map((status) => ({
+        templateId: status.templateId,
+        versionId: status.versionId,
+        tileX: status.tile.x,
+        tileY: status.tile.y,
+        correct: status.correct,
+        wrong: status.wrong,
+        blank: status.blank,
+        colours: status.colours ?? [],
+        observedAt: status.observedAt,
+      })),
+    )
+    const incomingStatuses = `SELECT
+      json_extract(value, '$.templateId') AS template_id,
+      json_extract(value, '$.versionId') AS version_id,
+      json_extract(value, '$.tileX') AS tile_x,
+      json_extract(value, '$.tileY') AS tile_y,
+      json_extract(value, '$.correct') AS correct,
+      json_extract(value, '$.wrong') AS wrong,
+      json_extract(value, '$.blank') AS blank,
+      json_extract(value, '$.colours') AS colours_json,
+      json_extract(value, '$.observedAt') AS observed_at_ms
+      FROM json_each(?)`
+    const statusReadResult =
+      statuses.length === 0
+        ? null
+        : (() => {
+            const index = statements.length
+            statements.push(
+              this.client
+                .prepare(
+                  `WITH incoming AS (${incomingStatuses})
+                   SELECT incoming.*,
+                     status.correct AS previous_correct,
+                     status.wrong AS previous_wrong,
+                     status.blank AS previous_blank,
+                     status.colours_json AS previous_colours_json,
+                     status.observed_at_ms AS previous_observed_at_ms,
+                     status.server_owned AS previous_server_owned,
+                     template.published_at IS NOT NULL AS published,
+                     version.total_pixels,
+                     version.colour_totals_json
+                   FROM incoming
+                   INNER JOIN templates AS template
+                     ON template.id = incoming.template_id
+                    AND template.current_version_id = incoming.version_id
+                   INNER JOIN template_versions AS version ON version.id = incoming.version_id
+                   LEFT JOIN template_tile_statuses AS status
+                     ON status.template_id = incoming.template_id
+                    AND status.version_id = incoming.version_id
+                    AND status.tile_x = incoming.tile_x
+                    AND status.tile_y = incoming.tile_y
+                   WHERE ? = 1 OR template.published_at IS NOT NULL`,
+                )
+                .bind(statusesJson, includeUnpublished ? 1 : 0),
+            )
+            return index
+          })()
+    if (statuses.length > 0) {
       statements.push(
         this.client
           .prepare(
-            `SELECT correct, wrong, blank, colours_json, observed_at_ms
-             FROM template_tile_statuses
-             WHERE template_id = ? AND version_id = ? AND tile_x = ? AND tile_y = ?`,
-          )
-          .bind(status.templateId, status.versionId, status.tile.x, status.tile.y),
-      )
-      const write = statements.length
-      statements.push(
-        this.client
-          .prepare(
-            `INSERT INTO template_tile_statuses (
+            `WITH incoming AS (${incomingStatuses})
+             INSERT INTO template_tile_statuses (
                template_id, version_id, tile_x, tile_y, correct, wrong, blank,
                colours_json, observed_at_ms, server_owned
              )
-             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-             WHERE EXISTS (
-               SELECT 1 FROM tile_blob_reservations AS reservation
-               INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
-               WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
-             )
+             SELECT incoming.template_id, incoming.version_id, incoming.tile_x, incoming.tile_y,
+               incoming.correct, incoming.wrong, incoming.blank, incoming.colours_json,
+               incoming.observed_at_ms, ?
+             FROM incoming
+             INNER JOIN templates AS template
+               ON template.id = incoming.template_id
+              AND template.current_version_id = incoming.version_id
+             WHERE (? = 1 OR template.published_at IS NOT NULL)
+               AND EXISTS (
+                 SELECT 1 FROM tile_blob_reservations AS reservation
+                 INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
+                 WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
+               )
              ON CONFLICT(template_id, version_id, tile_x, tile_y) DO UPDATE SET
                correct = excluded.correct,
                wrong = excluded.wrong,
@@ -1590,16 +1642,9 @@ export class D1SqlStore implements SqlStore {
                template_tile_statuses.observed_at_ms <= excluded.observed_at_ms`,
           )
           .bind(
-            status.templateId,
-            status.versionId,
-            status.tile.x,
-            status.tile.y,
-            status.correct,
-            status.wrong,
-            status.blank,
-            JSON.stringify(status.colours ?? []),
-            status.observedAt,
+            statusesJson,
             forceCurrent ? 1 : 0,
+            includeUnpublished ? 1 : 0,
             reservationId,
             observation.hash,
           ),
@@ -1608,16 +1653,24 @@ export class D1SqlStore implements SqlStore {
         statements.push(
           this.client
             .prepare(
-              `INSERT INTO template_alarm_tile_statuses (
+              `WITH incoming AS (${incomingStatuses})
+               INSERT INTO template_alarm_tile_statuses (
                  template_id, version_id, tile_x, tile_y, correct, wrong, blank,
                  colours_json, observed_at_ms
                )
-               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-               WHERE EXISTS (
-                 SELECT 1 FROM tile_blob_reservations AS reservation
-                 INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
-                 WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
-               )
+               SELECT incoming.template_id, incoming.version_id, incoming.tile_x, incoming.tile_y,
+                 incoming.correct, incoming.wrong, incoming.blank, incoming.colours_json,
+                 incoming.observed_at_ms
+               FROM incoming
+               INNER JOIN templates AS template
+                 ON template.id = incoming.template_id
+                AND template.current_version_id = incoming.version_id
+               WHERE (? = 1 OR template.published_at IS NOT NULL)
+                 AND EXISTS (
+                   SELECT 1 FROM tile_blob_reservations AS reservation
+                   INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
+                   WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
+                 )
                ON CONFLICT(template_id, version_id, tile_x, tile_y) DO UPDATE SET
                  correct = excluded.correct,
                  wrong = excluded.wrong,
@@ -1626,22 +1679,9 @@ export class D1SqlStore implements SqlStore {
                  observed_at_ms = excluded.observed_at_ms
                WHERE template_alarm_tile_statuses.observed_at_ms <= excluded.observed_at_ms`,
             )
-            .bind(
-              status.templateId,
-              status.versionId,
-              status.tile.x,
-              status.tile.y,
-              status.correct,
-              status.wrong,
-              status.blank,
-              JSON.stringify(status.colours ?? []),
-              status.observedAt,
-              reservationId,
-              observation.hash,
-            ),
+            .bind(statusesJson, includeUnpublished ? 1 : 0, reservationId, observation.hash),
         )
       }
-      statusResults.push({ before, write, status })
     }
     const revisionResult =
       statuses.length === 0
@@ -1661,6 +1701,12 @@ export class D1SqlStore implements SqlStore {
                        ON object.blob_key = reservation.blob_key
                      WHERE reservation.id = ? AND reservation.sha256 = ?
                        AND object.state = 'active'
+                   ) AND EXISTS (
+                     SELECT 1 FROM json_each(?) AS raw
+                     INNER JOIN templates AS template
+                       ON template.id = json_extract(raw.value, '$.templateId')
+                      AND template.current_version_id = json_extract(raw.value, '$.versionId')
+                     WHERE ? = 1 OR template.published_at IS NOT NULL
                    )
                    ON CONFLICT(season) DO UPDATE SET
                      revision = status_read_model_revisions.revision + 1,
@@ -1673,6 +1719,8 @@ export class D1SqlStore implements SqlStore {
                   '0'.repeat(64),
                   reservationId,
                   observation.hash,
+                  statusesJson,
+                  includeUnpublished ? 1 : 0,
                 ),
             )
             return index
@@ -1682,31 +1730,61 @@ export class D1SqlStore implements SqlStore {
     )
     const results = await this.client.batch(statements)
     if (Number(results[1]?.meta.changes) === 0) return null
-    const statusChanges = statusResults.flatMap(({ before, write, status }) => {
-      if (Number(results[write]?.meta.changes) === 0) return []
-      const row = results[before]?.results[0] as
-        | {
-            correct: number
-            wrong: number
-            blank: number
-            colours_json: string
-            observed_at_ms: number
-          }
-        | undefined
+    type AcceptedStatusRow = {
+      template_id: string
+      version_id: string
+      tile_x: number
+      tile_y: number
+      previous_correct: number | null
+      previous_wrong: number | null
+      previous_blank: number | null
+      previous_colours_json: string | null
+      previous_observed_at_ms: number | null
+      previous_server_owned: number | null
+      published: number
+      total_pixels: number
+      colour_totals_json: string | null
+    }
+    const acceptedRows =
+      statusReadResult === null
+        ? []
+        : ((results[statusReadResult]?.results as AcceptedStatusRow[] | undefined) ?? [])
+    const incomingByKey = new Map(
+      statuses.map((status) => [
+        `${status.templateId}\u0000${status.versionId}\u0000${status.tile.x}/${status.tile.y}`,
+        status,
+      ]),
+    )
+    const statusChanges = acceptedRows.flatMap((row) => {
+      const current = incomingByKey.get(
+        `${row.template_id}\u0000${row.version_id}\u0000${row.tile_x}/${row.tile_y}`,
+      )
+      if (current === undefined) return []
+      if (
+        row.previous_observed_at_ms !== null &&
+        !(forceCurrent && row.previous_server_owned === 0) &&
+        row.previous_observed_at_ms > current.observedAt
+      ) {
+        return []
+      }
+      const colourTotals = parseColourTotals(row.colour_totals_json)
       return [
         {
+          published: row.published === 1,
+          totalPixels: Number(row.total_pixels),
+          ...(colourTotals === undefined ? {} : { colourTotals }),
           previous:
-            row === undefined
+            row.previous_observed_at_ms === null
               ? null
               : {
-                  ...status,
-                  correct: Number(row.correct),
-                  wrong: Number(row.wrong),
-                  blank: Number(row.blank),
-                  colours: parseColourStatuses(row.colours_json),
-                  observedAt: Number(row.observed_at_ms) as Millis,
+                  ...current,
+                  correct: Number(row.previous_correct),
+                  wrong: Number(row.previous_wrong),
+                  blank: Number(row.previous_blank),
+                  colours: parseColourStatuses(row.previous_colours_json ?? '[]'),
+                  observedAt: Number(row.previous_observed_at_ms) as Millis,
                 },
-          current: status,
+          current,
         },
       ]
     })
@@ -2132,6 +2210,7 @@ export class D1SqlStore implements SqlStore {
   async commitStatusProjectionRevision(
     season: number,
     expectedRevision: number,
+    retainRevision: boolean,
     publicFingerprint: string,
     adminFingerprint: string,
   ): Promise<number | null> {
@@ -2149,17 +2228,17 @@ export class D1SqlStore implements SqlStore {
       .prepare(
         `INSERT INTO status_read_model_revisions (
            season, revision, public_fingerprint, admin_fingerprint, fingerprints_dirty
-         ) SELECT ?1, 1, ?3, ?4, 0
+         ) SELECT ?1, 1, ?4, ?5, 0
            WHERE ?2 = 0 OR EXISTS (
              SELECT 1 FROM status_read_model_revisions
              WHERE season = ?1 AND revision = ?2
            )
          ON CONFLICT (season) DO UPDATE SET
            revision = revision + CASE
-             WHEN fingerprints_dirty = 0 AND (
-               public_fingerprint <> excluded.public_fingerprint
+             WHEN fingerprints_dirty = 1 AND ?3 = 1 THEN 0
+             WHEN fingerprints_dirty = 1
+               OR public_fingerprint <> excluded.public_fingerprint
                OR admin_fingerprint <> excluded.admin_fingerprint
-             )
              THEN 1 ELSE 0 END,
            public_fingerprint = excluded.public_fingerprint,
            admin_fingerprint = excluded.admin_fingerprint,
@@ -2167,7 +2246,7 @@ export class D1SqlStore implements SqlStore {
          WHERE status_read_model_revisions.revision = ?2
          RETURNING revision`,
       )
-      .bind(season, expectedRevision, publicFingerprint, adminFingerprint)
+      .bind(season, expectedRevision, retainRevision ? 1 : 0, publicFingerprint, adminFingerprint)
       .first<{ revision: number }>()
     if (row === null) return null
     if (!Number.isSafeInteger(row.revision) || row.revision < 1)

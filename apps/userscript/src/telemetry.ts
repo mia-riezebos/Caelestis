@@ -23,9 +23,11 @@ import { invalidateServerMismatchTile } from './server-mismatch.js'
 import { coalesceServerRead } from './server-read-coalescer.js'
 import {
   applyServerSyncDelta,
+  applyServerSyncSnapshot,
   registerServerSyncResource,
   requestServerSync,
   type ServerSyncResult,
+  serverSyncRevision,
 } from './server-sync-coordinator.js'
 import { serverEndpoint } from './server-url.js'
 import {
@@ -172,9 +174,10 @@ const uploadWanted = async (
   identity: NonNullable<ReturnType<typeof accountIdentity>>,
   entries: readonly OfferedTile[],
   wanted: ReadonlySet<string>,
-): Promise<{ readonly uploaded: ReadonlySet<string>; readonly receivedStatus: boolean }> => {
+): Promise<{ readonly uploaded: ReadonlySet<string>; readonly missingStatus: boolean }> => {
   const uploaded = new Set<string>()
   const deltas: StatusDelta[] = []
+  let missingStatus = false
   await Promise.all(
     entries
       .filter((entry) => wanted.has(entry.tile))
@@ -202,7 +205,8 @@ const uploadWanted = async (
           invalidateServerMismatchTile(server.url, entry.coord)
           const body = (await response.json().catch(() => null)) as { status?: unknown } | null
           const delta = statusDeltaFrom(body?.status)
-          if (delta !== null) deltas.push(delta)
+          if (delta === null) missingStatus = true
+          else deltas.push(delta)
         } else if (response !== null)
           warn('install', 'telemetry tile upload was rejected', {
             server: server.url,
@@ -215,7 +219,7 @@ const uploadWanted = async (
     (left, right) => left.baseRevision - right.baseRevision || left.revision - right.revision,
   )
   for (const delta of deltas) applyStatusDelta(server, delta)
-  return { uploaded, receivedStatus: deltas.length > 0 }
+  return { uploaded, missingStatus }
 }
 
 const flushOffers = async (serverUrl: string): Promise<void> => {
@@ -264,8 +268,8 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   )
   const offeredStatus = statusDeltaFrom(responseBody.status)
   if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
-  const { uploaded, receivedStatus } = await uploadWanted(server, identity, entries, wanted)
-  if (offeredStatus === null && !receivedStatus)
+  const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
+  if (offeredStatus === null || missingStatus)
     requestServerSync('post-offer', 'telemetry-status', server)
   const previousDedupe = offered.get(server.url)
   const dedupe =
@@ -583,6 +587,7 @@ const refreshStatus = async (
     serverConnectionIdentity(server),
     `${server.season}\u0000world\u0000status`,
     async () => {
+      const startedRevision = serverSyncRevision(server, 'world', 'telemetry-status')
       const response = await fetchWithRetry(
         serverEndpoint(server.url, `/telemetry/status?season=${server.season}`),
         {
@@ -603,28 +608,38 @@ const refreshStatus = async (
         (body.revision !== undefined && (!Number.isSafeInteger(body.revision) || body.revision < 0))
       )
         return { status: 'failed' }
-      let changed = false
+      const next: TemplateStatus[] = []
       const present = new Set<string>()
       for (const raw of body.templates) {
         const status = templateStatusFrom(raw)
         if (status === null) return { status: 'failed' }
         const key = statusKey(server.url, status.templateId)
         present.add(key)
-        if (JSON.stringify(statuses.get(key)?.value) !== JSON.stringify(status)) {
-          statuses.set(key, { server, value: status })
-          changed = true
-        }
+        next.push(status)
       }
-      for (const key of [...statuses.keys()]) {
-        if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
-        statuses.delete(key)
-        changed = true
-      }
-      if (changed) notifyStatusListeners()
-      return {
+      const changed =
+        next.some(
+          (status) =>
+            JSON.stringify(statuses.get(statusKey(server.url, status.templateId))?.value) !==
+            JSON.stringify(status),
+        ) ||
+        [...statuses.keys()].some(
+          (key) => key.startsWith(`${server.url}\u0000`) && !present.has(key),
+        )
+      const result: ServerSyncResult = {
         status: changed ? 'changed' : 'unchanged',
         ...(body.revision === undefined ? {} : { revision: String(body.revision) }),
       }
+      applyServerSyncSnapshot(server, 'world', 'telemetry-status', startedRevision, result, () => {
+        for (const status of next)
+          statuses.set(statusKey(server.url, status.templateId), { server, value: status })
+        for (const key of [...statuses.keys()]) {
+          if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
+          statuses.delete(key)
+        }
+        if (changed) notifyStatusListeners()
+      })
+      return { status: 'skipped' }
     },
   )
 }

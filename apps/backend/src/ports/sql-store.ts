@@ -700,6 +700,9 @@ export interface TemplateTileStatusRecord {
 }
 
 export interface TemplateTileStatusChange {
+  readonly published: boolean
+  readonly totalPixels: number
+  readonly colourTotals?: readonly { readonly index: number; readonly total: number }[]
   readonly previous: TemplateTileStatusRecord | null
   readonly current: TemplateTileStatusRecord
 }
@@ -994,6 +997,8 @@ export interface SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
     forceCurrent?: boolean,
+    /** Whether the committing reporter may still target an unpublished current version. */
+    includeUnpublished?: boolean,
   ): Promise<TileObservationCommit | null>
 
   releaseTileBlobReservation(reservationId: string): Promise<void>
@@ -1033,6 +1038,7 @@ export interface SqlStore {
   commitStatusProjectionRevision(
     season: number,
     expectedRevision: number,
+    retainRevision: boolean,
     publicFingerprint: string,
     adminFingerprint: string,
   ): Promise<number | null>

@@ -140,6 +140,40 @@ describe('server sync coordinator', () => {
     expect(refresh).toHaveBeenCalledTimes(2)
   })
 
+  it('discards a full snapshot when a delta advances its in-flight base revision', async () => {
+    const {
+      applyServerSyncDelta,
+      applyServerSyncSnapshot,
+      installServerSyncCoordinator,
+      registerServerSyncResource,
+      serverSyncRevision,
+    } = await import('./server-sync-coordinator.js')
+    registerServerSyncResource({
+      id: 'status',
+      scope: () => 'world',
+      refresh: vi.fn(async () => ({ status: 'unchanged' as const, revision: '1' })),
+    })
+    installServerSyncCoordinator()
+    await vi.advanceTimersByTimeAsync(0)
+    const started = serverSyncRevision(server, 'world', 'status')
+    expect(started).toBe('1')
+    expect(applyServerSyncDelta(server, 'world', 'status', '1', '2', vi.fn())).toBe('applied')
+    const apply = vi.fn()
+
+    expect(
+      applyServerSyncSnapshot(
+        server,
+        'world',
+        'status',
+        started,
+        { status: 'changed', revision: '1' },
+        apply,
+      ),
+    ).toBe('stale')
+    expect(apply).not.toHaveBeenCalled()
+    expect(serverSyncRevision(server, 'world', 'status')).toBe('2')
+  })
+
   it('runs one follow-up when an event arrives during the resource read', async () => {
     const { installServerSyncCoordinator, registerServerSyncResource, requestServerSync } =
       await import('./server-sync-coordinator.js')

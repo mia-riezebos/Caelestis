@@ -169,6 +169,43 @@ describe('the 6-hour tile fetcher', () => {
     )
   })
 
+  it('flushes committed projection changes when a later fetch-job read aborts', async () => {
+    const { ports, sql, fetchImpl } = harness()
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('first', [{ x: 5, y: 5 }]),
+      bbox: {
+        minX: 5 * TILE_SIZE,
+        minY: 5 * TILE_SIZE,
+        maxX: 5 * TILE_SIZE + 1,
+        maxY: 5 * TILE_SIZE + 1,
+      },
+      chunks: [{ tileX: 5, tileY: 5, hash }],
+    })
+    const applyCommittedChange = vi.fn(async () => null)
+    const statusReadModel: StatusReadModelPort = {
+      applyCommittedChange,
+      reconcileSnapshot: vi.fn(),
+    }
+    const readLatestTile = sql.readLatestTile.bind(sql)
+    let reads = 0
+    vi.spyOn(sql, 'readLatestTile').mockImplementation(async (...args) => {
+      reads++
+      if (reads === 2) throw new Error('D1 read failed')
+      return readLatestTile(...args)
+    })
+
+    await expect(
+      fetchCanvasTiles(
+        { ...ports, statusReadModel },
+        { season: 0, now: NOW, fetchImpl, maxTiles: 2 },
+      ),
+    ).rejects.toThrow('D1 read failed')
+    expect(applyCommittedChange).toHaveBeenCalledTimes(1)
+  })
+
   it('survives an upstream failure without abandoning the run', async () => {
     const { ports, sql } = harness()
     await sql.insertTemplateVersion(version('lone', [{ x: 5, y: 5 }]))

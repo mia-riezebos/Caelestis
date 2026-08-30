@@ -42,6 +42,7 @@ export interface StatusRevisionStore {
   readonly commit: (
     season: number,
     expectedRevision: number,
+    retainRevision: boolean,
     publicFingerprint: string,
     adminFingerprint: string,
   ) => Promise<number | null>
@@ -298,9 +299,15 @@ export const createSeasonStatusReadModel = (options: {
         fingerprint(publicTemplates),
         fingerprint(adminTemplates),
       ])
+      const retainRevision =
+        state !== null &&
+        state.revision === expectedRevision &&
+        sameTemplates(state.publicTemplates, publicTemplates) &&
+        sameTemplates(state.adminTemplates, adminTemplates)
       const revision = await options.revisions.commit(
         options.season,
         expectedRevision,
+        retainRevision,
         publicFingerprint,
         adminFingerprint,
       )
