@@ -209,6 +209,38 @@ describe('server sync coordinator', () => {
     })
   })
 
+  it('keeps queued recovery suspended if the page becomes hidden again', async () => {
+    let first = true
+    let releaseStatus: (() => void) | undefined
+    const status = vi.fn(async () => {
+      if (!first) return 'status-v1'
+      first = false
+      return await new Promise<string>((resolve) => {
+        releaseStatus = () => resolve('status-v0')
+      })
+    })
+    const coordinator = await import('./server-sync-coordinator.js')
+    coordinator.registerServerSyncResource('status', status)
+    coordinator.installServerSyncCoordinator()
+    await flush()
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    releaseStatus?.()
+    await flush()
+    expect(status).toHaveBeenCalledOnce()
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(status).toHaveBeenCalledTimes(2)
+  })
+
   it('allows response-driven follow-ups while hidden without restarting fallback polling', async () => {
     const status = vi.fn(async () => 'status-v1')
     const coordinator = await import('./server-sync-coordinator.js')

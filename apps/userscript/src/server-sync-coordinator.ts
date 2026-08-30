@@ -202,22 +202,26 @@ export const requestServerSync = async (
   await refreshConnection(stateFor(server), resources, metadata)
 }
 
-/**
- * Apply an authoritative event after any read that started before it, coalescing concurrent events
- * onto one bounded follow-up per resource.
- */
+const canRunAfterCurrent = (metadata: SyncRequestMetadata): boolean =>
+  metadata.mode === 'recovery' ? active() : online()
+
+/** Sequence an authoritative event or active recovery after any older read. */
 export const requestServerSyncAfterCurrent = async (
   server: ConnectedServer,
   resources: readonly ServerSyncResource[],
   metadata: SyncRequestMetadata,
 ): Promise<void> => {
-  if (!isCurrentServerConnection(server) || !online()) return
+  if (!isCurrentServerConnection(server) || !canRunAfterCurrent(metadata)) return
   const state = stateFor(server)
   await Promise.all(
     resources.map(async (resource) => {
       const current = resourceStateFor(state, resource).inFlight
       if (current !== undefined) await current
-      if (connections.get(server.url) !== state || !isCurrentServerConnection(server) || !online())
+      if (
+        connections.get(server.url) !== state ||
+        !isCurrentServerConnection(server) ||
+        !canRunAfterCurrent(metadata)
+      )
         return
       await runResource(state, resource, metadata)
     }),
