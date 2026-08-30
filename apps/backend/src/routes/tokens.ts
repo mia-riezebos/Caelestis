@@ -1,8 +1,11 @@
 import { millis } from '@caelestis/shared'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScope } from '../auth/middleware.js'
-import { hashToken, mintToken, SCOPES, type Scope } from '../auth/tokens.js'
+import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
+import { SCOPES, type Scope } from '../auth/tokens.js'
+import { listAccessTokens, mintAccessToken, revokeAccessToken } from '../auth/use-cases.js'
 import type { AccessToken } from '../ports/index.js'
+import type { BackendRuntime } from '../runtime/backend-runtime.js'
+import { runBackendHttp } from '../runtime/hono.js'
 
 const MAX_LABEL_LENGTH = 128
 /** Even 128 control characters per label remain below the userscript's 64 KiB JSON cap. */
@@ -47,10 +50,10 @@ const tokenCursor = (token: AccessToken): string => `${token.createdAt}:${token.
  *
  * @see .scratch/v1/issues/03-auth-model.md
  */
-export const createTokenRoutes = (auth: AuthOptions) => {
+export const createTokenRoutes = (runtime: BackendRuntime, auth: AuthOptions) => {
   const routes = new Hono()
 
-  routes.use('/*', requireScope(auth, 'admin'))
+  routes.use('/*', requireScopeEffect(runtime, auth, 'admin'))
 
   routes.post('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
@@ -62,55 +65,61 @@ export const createTokenRoutes = (auth: AuthOptions) => {
     }
     if (!isScope(scope)) return c.json({ error: `scope must be one of ${SCOPES.join(', ')}` }, 400)
 
-    const token = mintToken()
     const caller = c.get('caller')
-    const record: AccessToken = {
-      tokenHash: await hashToken(token),
-      label,
-      scope,
-      // The bootstrap operator has no row of its own, so it is named rather than referenced.
-      createdWithToken: caller.token?.tokenHash ?? 'bootstrap',
-      createdAt: millis(Date.now()),
-    }
-    await auth.sql.insertAccessToken(record)
-
-    // The only time the plaintext exists outside the caller's hands. Everything after this reads
-    // the hash.
-    return c.json({ token, ...publicView(record) }, 201)
+    return runBackendHttp(
+      c,
+      runtime,
+      mintAccessToken({
+        label,
+        scope,
+        // The bootstrap operator has no row of its own, so it is named rather than referenced.
+        createdWithToken: caller.token?.tokenHash ?? 'bootstrap',
+      }),
+      ({ token, record }) =>
+        // The only time the plaintext exists outside the caller's hands. Everything after this reads
+        // the hash.
+        c.json({ token, ...publicView(record) }, 201),
+    )
   })
 
   routes.get('/', async (c) => {
     const cursor = parseCursor(c.req.query('cursor'))
     if (cursor === null) return c.json({ error: 'cursor is invalid' }, 400)
-    const stored = await auth.sql.listAccessTokens({
-      ...(cursor === undefined ? {} : { after: cursor }),
-      limit: TOKEN_PAGE_SIZE + 1,
-    })
-    const page = stored.slice(0, TOKEN_PAGE_SIZE).map(publicView)
-    const nextCursor =
-      stored.length > TOKEN_PAGE_SIZE && page.length > 0
-        ? tokenCursor(page[page.length - 1] as AccessToken)
-        : null
-    const bootstrap = auth.bootstrapAdminToken
-    if (bootstrap === undefined || bootstrap.length === 0 || cursor !== undefined) {
-      return c.json({ tokens: page, nextCursor })
-    }
-    return c.json({
-      tokens: [
-        {
-          label: 'bootstrap',
-          scope: 'admin' as const,
-          // Unknown rather than invented. It was set whenever the server was deployed, which is not
-          // something this process can find out.
-          createdAt: 0,
-          // Said on the wire rather than left for the client to infer from the label, which anyone
-          // could give a real token.
-          bootstrap: true,
-        },
-        ...page,
-      ],
-      nextCursor,
-    })
+    return runBackendHttp(
+      c,
+      runtime,
+      listAccessTokens({
+        ...(cursor === undefined ? {} : { after: cursor }),
+        limit: TOKEN_PAGE_SIZE + 1,
+      }),
+      (stored) => {
+        const page = stored.slice(0, TOKEN_PAGE_SIZE).map(publicView)
+        const nextCursor =
+          stored.length > TOKEN_PAGE_SIZE && page.length > 0
+            ? tokenCursor(page[page.length - 1] as AccessToken)
+            : null
+        const bootstrap = auth.bootstrapAdminToken
+        if (bootstrap === undefined || bootstrap.length === 0 || cursor !== undefined) {
+          return c.json({ tokens: page, nextCursor })
+        }
+        return c.json({
+          tokens: [
+            {
+              label: 'bootstrap',
+              scope: 'admin' as const,
+              // Unknown rather than invented. It was set whenever the server was deployed, which is not
+              // something this process can find out.
+              createdAt: 0,
+              // Said on the wire rather than left for the client to infer from the label, which anyone
+              // could give a real token.
+              bootstrap: true,
+            },
+            ...page,
+          ],
+          nextCursor,
+        })
+      },
+    )
   })
 
   routes.delete('/:tokenHash', async (c) => {
@@ -126,8 +135,7 @@ export const createTokenRoutes = (auth: AuthOptions) => {
     //
     // It also removes an existence oracle: 404-versus-200 told an admin whether a hash it does not
     // hold exists. Admin-gated, so minor, but free to close.
-    await auth.sql.revokeAccessToken(tokenHash)
-    return c.body(null, 204)
+    return runBackendHttp(c, runtime, revokeAccessToken(tokenHash), () => c.body(null, 204))
   })
 
   return routes

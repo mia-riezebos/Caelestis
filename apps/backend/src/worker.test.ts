@@ -131,6 +131,23 @@ it('mounts the runtime app beneath its configured base path', async () => {
   expect(outside.status).toBe(404)
 })
 
+it('reuses one prepared app and Effect runtime for the same Worker environment', async () => {
+  const getByName = vi.fn(() => ({}))
+  const configured = {
+    ...env(),
+    TELEMETRY: { getByName },
+  } as unknown as Env
+
+  expect((await worker.fetch(new Request('https://example.com/health'), configured)).status).toBe(
+    200,
+  )
+  expect((await worker.fetch(new Request('https://example.com/server'), configured)).status).toBe(
+    200,
+  )
+
+  expect(getByName).toHaveBeenCalledTimes(1)
+})
+
 it('runs scheduled tile blob GC in configured dry-run mode without R2 deletion', async () => {
   const hash = 'b'.repeat(64)
   const list = vi.fn(async () => ({
