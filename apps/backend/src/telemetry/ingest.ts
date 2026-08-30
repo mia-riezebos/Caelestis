@@ -35,6 +35,10 @@ import {
   StatusReadModelService,
 } from '../runtime/backend-runtime.js'
 import { TelemetryStorageError, TelemetryValidationError } from '../runtime/errors.js'
+import type {
+  StatusProjectionChange,
+  StatusProjectionMutation,
+} from '../status-read-model/model.js'
 import {
   repairCommittedStatusProjection,
   type StatusReadModelPort,
@@ -53,6 +57,54 @@ interface BlobSqlStores extends BlobStores {
 
 interface IngestStores extends BlobSqlStores {
   readonly statusReadModel: StatusReadModelPort
+}
+
+const applyStatusProjectionMutations = async (
+  readModel: StatusReadModelPort,
+  season: number,
+  mutations: readonly StatusProjectionMutation[],
+): Promise<StatusProjectionChange | null> => {
+  const first = mutations[0]
+  const last = mutations.at(-1)
+  if (first === undefined || last === undefined) return null
+  const contiguous = mutations.every(
+    (mutation, index) => index === 0 || mutation.baseRevision === mutations[index - 1]?.revision,
+  )
+  return contiguous
+    ? repairCommittedStatusProjection(readModel, season, {
+        baseRevision: first.baseRevision,
+        revision: last.revision,
+        changes: mutations.flatMap((mutation) => mutation.changes),
+      })
+    : repairCommittedStatusProjection(readModel, season)
+}
+
+export interface StatusProjectionBatch {
+  readonly add: (season: number, mutation: StatusProjectionMutation) => void
+  readonly flush: () => Promise<void>
+}
+
+/** Coalesce one server job into at most one projection RPC per touched season. */
+export const createStatusProjectionBatch = (
+  readModel: StatusReadModelPort,
+): StatusProjectionBatch => {
+  const pending = new Map<number, StatusProjectionMutation[]>()
+  return {
+    add: (season, mutation) => {
+      const mutations = pending.get(season) ?? []
+      mutations.push(mutation)
+      pending.set(season, mutations)
+    },
+    flush: async () => {
+      const entries = [...pending]
+      pending.clear()
+      await Promise.all(
+        entries.map(([season, mutations]) =>
+          applyStatusProjectionMutations(readModel, season, mutations),
+        ),
+      )
+    },
+  }
 }
 
 interface TelemetryStores extends BlobSqlStores {
@@ -250,7 +302,7 @@ const recordObservationPromise = async (
   options: {
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
-    readonly onCommitted?: () => void | Promise<void>
+    readonly onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>
   } = {},
 ): Promise<void> => {
   const canvas = await decodeCanvas(bytes)
@@ -283,11 +335,38 @@ const recordObservationPromise = async (
     statuses,
     recordHistory,
     options.authoritative ?? false,
+    metadata.includeUnpublished,
   )
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
-  await options.onCommitted?.()
+  const mutation: StatusProjectionMutation | null =
+    committed.revision === null
+      ? null
+      : {
+          baseRevision: committed.revision - 1,
+          revision: committed.revision,
+          changes: committed.statusChanges.map(
+            ({ published, totalPixels, colourTotals, previous, current }) => {
+              const value = (status: TemplateTileStatusRecord) => ({
+                correct: status.correct,
+                wrong: status.wrong,
+                blank: status.blank,
+                ...(status.colours === undefined ? {} : { colours: status.colours }),
+                observedAt: status.observedAt,
+              })
+              return {
+                templateId: current.templateId,
+                published,
+                total: totalPixels,
+                ...(colourTotals === undefined ? {} : { colourTotals }),
+                previous: previous === null ? null : value(previous),
+                current: value(current),
+              }
+            },
+          ),
+        }
+  await options.onCommitted?.(mutation)
   await ports.sql.foldTileHistory(
     metadata.season,
     metadata.tile,
@@ -300,46 +379,39 @@ const refreshAuthoritativeTilePromise = async (
   ports: IngestStores,
   metadata: TileMetadata,
   bytes: Uint8Array,
-): Promise<void> => {
+  projectionBatch?: StatusProjectionBatch,
+): Promise<StatusProjectionChange | null> => {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
     throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
   }
   const actualHash = await sha256Hex(bytes)
   if (actualHash !== metadata.hash) throw new RangeError('tile bytes do not match their sha256')
-  const canvas = await decodeCanvas(bytes)
-  const targets = await ports.sql.listTelemetryTargets(
-    metadata.season,
-    metadata.tile,
-    metadata.includeUnpublished,
-  )
-  const observedAt = millis(metadata.observedAt * 1_000)
-  const statuses = (
-    await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAt)))
-  )
-    .filter((result): result is ClassifiedTarget => result !== null)
-    .map((result) => result.status)
-  await ports.sql.recordTileObservation(
-    {
-      season: metadata.season,
-      tile: metadata.tile,
-      hash: metadata.hash,
-      observedAt,
-      reportedAt: metadata.observedAt,
-      reportedWithToken: metadata.tokenHash,
-      reportedByUserId: metadata.wplaceUserId,
+  const held = await reserveTileBlob(ports, metadata.hash)
+  if (held === null) throw new Error(`authoritative tile blob ${metadata.hash} is unavailable`)
+  let projection: StatusProjectionChange | null = null
+  await recordObservationPromise(ports, metadata, bytes, held.reservation.id, {
+    recordHistory: false,
+    authoritative: true,
+    onCommitted: async (mutation) => {
+      if (mutation === null) return
+      if (projectionBatch !== undefined) projectionBatch.add(metadata.season, mutation)
+      else {
+        projection = await repairCommittedStatusProjection(
+          ports.statusReadModel,
+          metadata.season,
+          mutation,
+        )
+      }
     },
-    statuses,
-    false,
-    true,
-  )
-  await repairCommittedStatusProjection(ports.statusReadModel, metadata.season)
+  })
+  return projection
 }
 
 /** Process an offer immediately when the content-addressed bytes already exist. */
 const offerTilePromise = async (
   ports: IngestStores,
   metadata: TileMetadata,
-  onCommitted?: () => void | Promise<void>,
+  onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>,
 ): Promise<'ignored' | 'wanted' | 'recorded'> => {
   const targets = await ports.sql.listTelemetryTargets(
     metadata.season,
@@ -363,8 +435,9 @@ const uploadTilePromise = async (
     readonly requireCoverage?: boolean
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
+    readonly projectionBatch?: StatusProjectionBatch
   } = {},
-): Promise<void> => {
+): Promise<StatusProjectionChange | null> => {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
     throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
   }
@@ -379,13 +452,25 @@ const uploadTilePromise = async (
     throw new RangeError('tile is not covered by a visible template')
   }
   const reservation = await reserveTileBlobUpload(ports, actualHash)
+  let projection: StatusProjectionChange | null = null
   try {
     await ports.blobs.put('tiles', reservation.blobKey, bytes)
     await recordObservationPromise(ports, metadata, bytes, reservation.id, {
       ...(options.recordHistory === undefined ? {} : { recordHistory: options.recordHistory }),
       ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
-      onCommitted: () => repairCommittedStatusProjection(ports.statusReadModel, metadata.season),
+      onCommitted: async (mutation) => {
+        if (mutation === null) return
+        if (options.projectionBatch !== undefined)
+          options.projectionBatch.add(metadata.season, mutation)
+        else
+          projection = await repairCommittedStatusProjection(
+            ports.statusReadModel,
+            metadata.season,
+            mutation,
+          )
+      },
     })
+    return projection
   } catch (error) {
     await ports.sql.releaseTileBlobReservation(reservation.id)
     throw error
@@ -501,8 +586,9 @@ export const readMismatchMask = (
 export const refreshAuthoritativeTile = (
   metadata: TileMetadata,
   bytes: Uint8Array,
+  options: { readonly projectionBatch?: StatusProjectionBatch } = {},
 ): Effect.Effect<
-  void,
+  StatusProjectionChange | null,
   TelemetryStorageError,
   BlobStoreService | SqlStoreService | StatusReadModelService
 > =>
@@ -511,7 +597,12 @@ export const refreshAuthoritativeTile = (
     const sql = yield* SqlStoreService
     const statusReadModel = yield* StatusReadModelService
     return yield* storage('refreshAuthoritativeTile', () =>
-      refreshAuthoritativeTilePromise({ blobs, sql, statusReadModel }, metadata, bytes),
+      refreshAuthoritativeTilePromise(
+        { blobs, sql, statusReadModel },
+        metadata,
+        bytes,
+        options.projectionBatch,
+      ),
     )
   })
 
@@ -528,9 +619,10 @@ export const offerTile = (
     const sql = yield* SqlStoreService
     const statusReadModel = yield* StatusReadModelService
     return yield* storage('offerTile', () =>
-      offerTilePromise({ blobs, sql, statusReadModel }, metadata, () =>
-        repairCommittedStatusProjection(statusReadModel, metadata.season),
-      ),
+      offerTilePromise({ blobs, sql, statusReadModel }, metadata, async (mutation) => {
+        if (mutation === null) return
+        await repairCommittedStatusProjection(statusReadModel, metadata.season, mutation)
+      }),
     )
   })
 
@@ -547,6 +639,7 @@ export interface TileOfferResult {
   readonly accepted: number
   readonly alreadyKnown: number
   readonly rejected: number
+  readonly projection: StatusProjectionChange | null
 }
 
 /** Preserve per-offer decisions for capacity metrics while keeping the wire response unchanged. */
@@ -562,7 +655,8 @@ export const offerTilesWithOutcome = (
     const sql = yield* SqlStoreService
     const statusReadModel = yield* StatusReadModelService
     const wanted: string[] = []
-    const changedSeasons = new Set<number>()
+    const mutations = new Map<number, StatusProjectionMutation[]>()
+    let projection: StatusProjectionChange | null = null
     let alreadyKnown = 0
     let rejected = 0
     yield* Effect.acquireUseRelease(
@@ -571,8 +665,11 @@ export const offerTilesWithOutcome = (
         Effect.gen(function* () {
           for (const offer of offers) {
             const outcome = yield* storage('offerTile', () =>
-              offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata, () => {
-                changedSeasons.add(offer.metadata.season)
+              offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata, (mutation) => {
+                if (mutation === null) return
+                const seasonMutations = mutations.get(offer.metadata.season) ?? []
+                seasonMutations.push(mutation)
+                mutations.set(offer.metadata.season, seasonMutations)
               }),
             )
             if (outcome === 'wanted') wanted.push(offer.key)
@@ -582,12 +679,16 @@ export const offerTilesWithOutcome = (
         }),
       () =>
         Effect.promise(async () => {
-          for (const season of changedSeasons) {
-            await repairCommittedStatusProjection(statusReadModel, season)
+          for (const [season, seasonMutations] of mutations) {
+            projection = await applyStatusProjectionMutations(
+              statusReadModel,
+              season,
+              seasonMutations,
+            )
           }
         }),
     )
-    return { wanted, accepted: wanted.length, alreadyKnown, rejected }
+    return { wanted, accepted: wanted.length, alreadyKnown, rejected, projection }
   })
 
 /** Validate and persist one uploaded tile without leaking storage failures into a 400 response. */
@@ -598,9 +699,10 @@ export const uploadTile = (
     readonly requireCoverage?: boolean
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
+    readonly projectionBatch?: StatusProjectionBatch
   } = {},
 ): Effect.Effect<
-  void,
+  StatusProjectionChange | null,
   TelemetryStorageError | TelemetryValidationError,
   BlobStoreService | SqlStoreService | StatusReadModelService
 > =>

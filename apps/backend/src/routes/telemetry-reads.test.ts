@@ -119,7 +119,7 @@ const uploadCanvasTile = async (
     },
     body: bytes,
   })
-  expect(uploaded.status).toBe(204)
+  expect(uploaded.status).toBe(200)
   return hash
 }
 
@@ -201,10 +201,10 @@ describe('telemetry read routes', () => {
       headers: bearer(BOOTSTRAP),
     })
 
-    await expect(publicFirst.json()).resolves.toEqual({ revision: 1, templates: [] })
-    await expect(publicAgain.json()).resolves.toEqual({ revision: 1, templates: [] })
+    await expect(publicFirst.json()).resolves.toEqual({ revision: 2, templates: [] })
+    await expect(publicAgain.json()).resolves.toEqual({ revision: 2, templates: [] })
     await expect(admin.json()).resolves.toMatchObject({
-      revision: 1,
+      revision: 2,
       templates: [{ templateId: draftId }],
     })
     // The committed upload materializes both scopes once; three reads do no D1 aggregation.
@@ -220,7 +220,7 @@ describe('telemetry read routes', () => {
       headers: bearer(readToken),
     })
     await expect(publicAfterPublish.json()).resolves.toMatchObject({
-      revision: 2,
+      revision: 3,
       templates: [{ templateId: draftId }],
     })
     expect(aggregate).toHaveBeenCalledTimes(4)

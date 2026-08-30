@@ -228,6 +228,61 @@ export const applyServerSyncRevision = (
   armTimer()
 }
 
+export type ServerSyncDeltaOutcome = 'applied' | 'duplicate' | 'reconcile' | 'stale-connection'
+
+export const serverSyncRevision = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+): string | undefined => schedules.get(scheduleKey(server, scope, resource))?.revision
+
+/** Apply a full read only if no response-driven delta advanced the resource while it was in flight. */
+export const applyServerSyncSnapshot = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+  startedRevision: string | undefined,
+  result: ServerSyncResult,
+  apply: () => void,
+): 'applied' | 'stale' | 'stale-connection' => {
+  if (!isCurrentServerConnection(server)) return 'stale-connection'
+  if (serverSyncRevision(server, scope, resource) !== startedRevision) return 'stale'
+  apply()
+  applyResult(server, scope, resource, result)
+  armTimer()
+  return 'applied'
+}
+
+/**
+ * Apply one ordered authoritative delta. Exact base matching makes duplicate, stale, and
+ * out-of-order mutation responses harmless; a gap schedules one bounded reconciliation.
+ */
+export const applyServerSyncDelta = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+  baseRevision: string,
+  revision: string,
+  apply: () => void,
+): ServerSyncDeltaOutcome => {
+  if (!isCurrentServerConnection(server)) return 'stale-connection'
+  const current = serverSyncRevision(server, scope, resource)
+  if (current === revision) return 'duplicate'
+  if (current === undefined || current !== baseRevision) {
+    requestServerSync('revision-gap', resource, server)
+    return 'reconcile'
+  }
+  try {
+    apply()
+  } catch {
+    requestServerSync('revision-gap', resource, server)
+    return 'reconcile'
+  }
+  applyResult(server, scope, resource, { status: 'changed', revision })
+  armTimer()
+  return 'applied'
+}
+
 const recover = (reason: 'focus' | 'online'): void => {
   if (activeDocument()) requestServerSync(reason)
   else clearTimer()

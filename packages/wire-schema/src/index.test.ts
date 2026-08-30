@@ -16,12 +16,14 @@ import {
   PaintPixels,
   PaintTile,
   ServerInfo,
+  StatusDelta,
   StatusResponse,
   Template,
   TemplateStatus,
   TileHistoryResponse,
   TileOffer,
   TileOfferResponse,
+  TileUploadResponse,
 } from './index.js'
 
 const HASH = 'a'.repeat(64)
@@ -110,14 +112,16 @@ const encoders = [
   Schema.encodeSync(PaintEvent),
   Schema.encodeSync(TileOffer),
   Schema.encodeSync(TileOfferResponse),
+  Schema.encodeSync(TileUploadResponse),
   Schema.encodeSync(TemplateStatus),
+  Schema.encodeSync(StatusDelta),
   Schema.encodeSync(NodeStatus),
   Schema.encodeSync(Alarm),
   Schema.encodeSync(AlarmsResponse),
 ]
 
 it('exposes every exported wire schema as a bidirectional codec', () => {
-  expect(encoders).toHaveLength(14)
+  expect(encoders).toHaveLength(16)
 })
 
 describe('tile and template schemas', () => {
@@ -1388,6 +1392,37 @@ describe('cross-field and time-unit schemas', () => {
     })
     expect(Schema.decodeUnknownSync(StatusResponse)({ templates: [] })).toEqual({ templates: [] })
     expectRejected(StatusResponse, { revision: -1, templates: [] })
+  })
+
+  it('accepts ordered status deltas and rejects overlaps or backwards revisions', () => {
+    const delta = {
+      baseRevision: 3,
+      revision: 4,
+      templates: [],
+      removedTemplateIds: [TEMPLATE_ID],
+    }
+    expect(Schema.decodeUnknownSync(StatusDelta)(delta)).toEqual(delta)
+    expect(Schema.decodeUnknownSync(TileOfferResponse)({ wanted: [], status: delta })).toEqual({
+      wanted: [],
+      status: delta,
+    })
+    expect(Schema.decodeUnknownSync(TileUploadResponse)({ status: delta })).toEqual({
+      status: delta,
+    })
+    expectRejected(StatusDelta, { ...delta, baseRevision: 5 })
+    expectRejected(StatusDelta, {
+      ...delta,
+      templates: [
+        {
+          templateId: TEMPLATE_ID,
+          correct: 0,
+          wrong: 0,
+          blank: 1,
+          total: 1,
+          observedAt: MILLIS,
+        },
+      ],
+    })
   })
 
   it('rejects per-colour status rows that do not partition the template total', () => {

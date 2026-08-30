@@ -3,12 +3,17 @@ import {
   createSeasonStatusReadModel,
   type PersistedStatusReadModel,
   type SeasonStatusReadModel,
+  type StatusProjectionChange,
+  type StatusProjectionMutation,
   type StatusSnapshotRead,
   type StatusVisibilityScope,
 } from './model.js'
 
 export interface StatusReadModelPort {
-  readonly applyCommittedChange: (season: number) => Promise<void>
+  readonly applyCommittedChange: (
+    season: number,
+    mutation?: StatusProjectionMutation,
+  ) => Promise<StatusProjectionChange | null>
   readonly reconcileSnapshot: (
     season: number,
     scope: StatusVisibilityScope,
@@ -19,11 +24,13 @@ export interface StatusReadModelPort {
 export const repairCommittedStatusProjection = async (
   readModel: StatusReadModelPort,
   season: number,
-): Promise<void> => {
+  mutation?: StatusProjectionMutation,
+): Promise<StatusProjectionChange | null> => {
   try {
-    await readModel.applyCommittedChange(season)
+    return await readModel.applyCommittedChange(season, mutation)
   } catch (error) {
     console.error(error)
+    return null
   }
 }
 
@@ -50,9 +57,18 @@ export class DirectStatusReadModel implements StatusReadModelPort {
         },
       },
       revisions: {
-        commit: (requestedSeason, publicFingerprint, adminFingerprint) =>
+        current: (requestedSeason) => this.sql.readStatusProjectionRevision(requestedSeason),
+        commit: (
+          requestedSeason,
+          expectedRevision,
+          retainRevision,
+          publicFingerprint,
+          adminFingerprint,
+        ) =>
           this.sql.commitStatusProjectionRevision(
             requestedSeason,
+            expectedRevision,
+            retainRevision,
             publicFingerprint,
             adminFingerprint,
           ),
@@ -62,8 +78,11 @@ export class DirectStatusReadModel implements StatusReadModelPort {
     return created
   }
 
-  async applyCommittedChange(season: number): Promise<void> {
-    await this.model(season).applyCommittedChange()
+  async applyCommittedChange(
+    season: number,
+    mutation?: StatusProjectionMutation,
+  ): Promise<StatusProjectionChange | null> {
+    return this.model(season).applyCommittedChange(mutation)
   }
 
   reconcileSnapshot(season: number, scope: StatusVisibilityScope): Promise<StatusSnapshotRead> {

@@ -105,6 +105,7 @@ import {
   type TileHistoryQuery,
   type TileHistoryReporterRow,
   type TileObservation,
+  type TileObservationCommit,
   tooManyTemplateIds,
 } from '../../ports/index.js'
 import {
@@ -1147,7 +1148,10 @@ export class D1SqlStore implements SqlStore {
         minY: templateVersions.minY,
         maxX: templateVersions.maxX,
         maxY: templateVersions.maxY,
+        totalPixels: templateVersions.totalPixels,
+        colourTotalsJson: templateVersions.colourTotalsJson,
         finishedAt: templates.finishedAt,
+        publishedAt: templates.publishedAt,
       })
       .from(versionTiles)
       .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
@@ -1169,15 +1173,21 @@ export class D1SqlStore implements SqlStore {
         ),
       )
       .then((rows) =>
-        rows.map((row) => ({
-          templateId: row.templateId,
-          versionId: row.versionId,
-          tileX: row.tileX,
-          tileY: row.tileY,
-          hash: row.hash,
-          bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
-          finished: row.finishedAt !== null,
-        })),
+        rows.map((row) => {
+          const colourTotals = parseColourTotals(row.colourTotalsJson)
+          return {
+            templateId: row.templateId,
+            versionId: row.versionId,
+            tileX: row.tileX,
+            tileY: row.tileY,
+            hash: row.hash,
+            bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
+            finished: row.finishedAt !== null,
+            published: row.publishedAt !== null,
+            totalPixels: row.totalPixels,
+            ...(colourTotals === undefined ? {} : { colourTotals }),
+          }
+        }),
       )
   }
 
@@ -1464,7 +1474,8 @@ export class D1SqlStore implements SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
     forceCurrent = false,
-  ): Promise<boolean> {
+    includeUnpublished = false,
+  ): Promise<TileObservationCommit | null> {
     const statements: D1PreparedStatement[] = [
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
       this.client
@@ -1538,12 +1549,254 @@ export class D1SqlStore implements SqlStore {
           reservationId,
           observation.hash,
         ),
+    )
+    const statusesJson = JSON.stringify(
+      statuses.map((status) => ({
+        templateId: status.templateId,
+        versionId: status.versionId,
+        tileX: status.tile.x,
+        tileY: status.tile.y,
+        correct: status.correct,
+        wrong: status.wrong,
+        blank: status.blank,
+        colours: status.colours ?? [],
+        observedAt: status.observedAt,
+      })),
+    )
+    const incomingStatuses = `SELECT
+      json_extract(value, '$.templateId') AS template_id,
+      json_extract(value, '$.versionId') AS version_id,
+      json_extract(value, '$.tileX') AS tile_x,
+      json_extract(value, '$.tileY') AS tile_y,
+      json_extract(value, '$.correct') AS correct,
+      json_extract(value, '$.wrong') AS wrong,
+      json_extract(value, '$.blank') AS blank,
+      json_extract(value, '$.colours') AS colours_json,
+      json_extract(value, '$.observedAt') AS observed_at_ms
+      FROM json_each(?)`
+    const statusReadResult =
+      statuses.length === 0
+        ? null
+        : (() => {
+            const index = statements.length
+            statements.push(
+              this.client
+                .prepare(
+                  `WITH incoming AS (${incomingStatuses})
+                   SELECT incoming.*,
+                     status.correct AS previous_correct,
+                     status.wrong AS previous_wrong,
+                     status.blank AS previous_blank,
+                     status.colours_json AS previous_colours_json,
+                     status.observed_at_ms AS previous_observed_at_ms,
+                     status.server_owned AS previous_server_owned,
+                     template.published_at IS NOT NULL AS published,
+                     version.total_pixels,
+                     version.colour_totals_json
+                   FROM incoming
+                   INNER JOIN templates AS template
+                     ON template.id = incoming.template_id
+                    AND template.current_version_id = incoming.version_id
+                   INNER JOIN template_versions AS version ON version.id = incoming.version_id
+                   LEFT JOIN template_tile_statuses AS status
+                     ON status.template_id = incoming.template_id
+                    AND status.version_id = incoming.version_id
+                    AND status.tile_x = incoming.tile_x
+                    AND status.tile_y = incoming.tile_y
+                   WHERE ? = 1 OR template.published_at IS NOT NULL`,
+                )
+                .bind(statusesJson, includeUnpublished ? 1 : 0),
+            )
+            return index
+          })()
+    if (statuses.length > 0) {
+      statements.push(
+        this.client
+          .prepare(
+            `WITH incoming AS (${incomingStatuses})
+             INSERT INTO template_tile_statuses (
+               template_id, version_id, tile_x, tile_y, correct, wrong, blank,
+               colours_json, observed_at_ms, server_owned
+             )
+             SELECT incoming.template_id, incoming.version_id, incoming.tile_x, incoming.tile_y,
+               incoming.correct, incoming.wrong, incoming.blank, incoming.colours_json,
+               incoming.observed_at_ms, ?
+             FROM incoming
+             INNER JOIN templates AS template
+               ON template.id = incoming.template_id
+              AND template.current_version_id = incoming.version_id
+             WHERE (? = 1 OR template.published_at IS NOT NULL)
+               AND EXISTS (
+                 SELECT 1 FROM tile_blob_reservations AS reservation
+                 INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
+                 WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
+               )
+             ON CONFLICT(template_id, version_id, tile_x, tile_y) DO UPDATE SET
+               correct = excluded.correct,
+               wrong = excluded.wrong,
+               blank = excluded.blank,
+               colours_json = excluded.colours_json,
+               observed_at_ms = excluded.observed_at_ms,
+               server_owned = excluded.server_owned
+             WHERE ${forceCurrent ? 'template_tile_statuses.server_owned = 0 OR ' : ''}
+               template_tile_statuses.observed_at_ms <= excluded.observed_at_ms`,
+          )
+          .bind(
+            statusesJson,
+            forceCurrent ? 1 : 0,
+            includeUnpublished ? 1 : 0,
+            reservationId,
+            observation.hash,
+          ),
+      )
+      if (forceCurrent) {
+        statements.push(
+          this.client
+            .prepare(
+              `WITH incoming AS (${incomingStatuses})
+               INSERT INTO template_alarm_tile_statuses (
+                 template_id, version_id, tile_x, tile_y, correct, wrong, blank,
+                 colours_json, observed_at_ms
+               )
+               SELECT incoming.template_id, incoming.version_id, incoming.tile_x, incoming.tile_y,
+                 incoming.correct, incoming.wrong, incoming.blank, incoming.colours_json,
+                 incoming.observed_at_ms
+               FROM incoming
+               INNER JOIN templates AS template
+                 ON template.id = incoming.template_id
+                AND template.current_version_id = incoming.version_id
+               WHERE (? = 1 OR template.published_at IS NOT NULL)
+                 AND EXISTS (
+                   SELECT 1 FROM tile_blob_reservations AS reservation
+                   INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
+                   WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
+                 )
+               ON CONFLICT(template_id, version_id, tile_x, tile_y) DO UPDATE SET
+                 correct = excluded.correct,
+                 wrong = excluded.wrong,
+                 blank = excluded.blank,
+                 colours_json = excluded.colours_json,
+                 observed_at_ms = excluded.observed_at_ms
+               WHERE template_alarm_tile_statuses.observed_at_ms <= excluded.observed_at_ms`,
+            )
+            .bind(statusesJson, includeUnpublished ? 1 : 0, reservationId, observation.hash),
+        )
+      }
+    }
+    const revisionResult =
+      statuses.length === 0
+        ? null
+        : (() => {
+            const index = statements.length
+            statements.push(
+              this.client
+                .prepare(
+                  `INSERT INTO status_read_model_revisions (
+                     season, revision, public_fingerprint, admin_fingerprint, fingerprints_dirty
+                   )
+                   SELECT ?, 1, ?, ?, 1
+                   WHERE EXISTS (
+                     SELECT 1 FROM tile_blob_reservations AS reservation
+                     INNER JOIN tile_blob_objects AS object
+                       ON object.blob_key = reservation.blob_key
+                     WHERE reservation.id = ? AND reservation.sha256 = ?
+                       AND object.state = 'active'
+                   ) AND EXISTS (
+                     SELECT 1 FROM json_each(?) AS raw
+                     INNER JOIN templates AS template
+                       ON template.id = json_extract(raw.value, '$.templateId')
+                      AND template.current_version_id = json_extract(raw.value, '$.versionId')
+                     WHERE ? = 1 OR template.published_at IS NOT NULL
+                   )
+                   ON CONFLICT(season) DO UPDATE SET
+                     revision = status_read_model_revisions.revision + 1,
+                     fingerprints_dirty = 1
+                   RETURNING revision`,
+                )
+                .bind(
+                  observation.season,
+                  '0'.repeat(64),
+                  '0'.repeat(64),
+                  reservationId,
+                  observation.hash,
+                  statusesJson,
+                  includeUnpublished ? 1 : 0,
+                ),
+            )
+            return index
+          })()
+    statements.push(
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE id = ?').bind(reservationId),
     )
     const results = await this.client.batch(statements)
-    if (Number(results[1]?.meta.changes) === 0) return false
-    await this.writeTileStatuses(statuses, forceCurrent)
-    return true
+    if (Number(results[1]?.meta.changes) === 0) return null
+    type AcceptedStatusRow = {
+      template_id: string
+      version_id: string
+      tile_x: number
+      tile_y: number
+      previous_correct: number | null
+      previous_wrong: number | null
+      previous_blank: number | null
+      previous_colours_json: string | null
+      previous_observed_at_ms: number | null
+      previous_server_owned: number | null
+      published: number
+      total_pixels: number
+      colour_totals_json: string | null
+    }
+    const acceptedRows =
+      statusReadResult === null
+        ? []
+        : ((results[statusReadResult]?.results as AcceptedStatusRow[] | undefined) ?? [])
+    const incomingByKey = new Map(
+      statuses.map((status) => [
+        `${status.templateId}\u0000${status.versionId}\u0000${status.tile.x}/${status.tile.y}`,
+        status,
+      ]),
+    )
+    const statusChanges = acceptedRows.flatMap((row) => {
+      const current = incomingByKey.get(
+        `${row.template_id}\u0000${row.version_id}\u0000${row.tile_x}/${row.tile_y}`,
+      )
+      if (current === undefined) return []
+      if (
+        row.previous_observed_at_ms !== null &&
+        !(forceCurrent && row.previous_server_owned === 0) &&
+        row.previous_observed_at_ms > current.observedAt
+      ) {
+        return []
+      }
+      const colourTotals = parseColourTotals(row.colour_totals_json)
+      return [
+        {
+          published: row.published === 1,
+          totalPixels: Number(row.total_pixels),
+          ...(colourTotals === undefined ? {} : { colourTotals }),
+          previous:
+            row.previous_observed_at_ms === null
+              ? null
+              : {
+                  ...current,
+                  correct: Number(row.previous_correct),
+                  wrong: Number(row.previous_wrong),
+                  blank: Number(row.previous_blank),
+                  colours: parseColourStatuses(row.previous_colours_json ?? '[]'),
+                  observedAt: Number(row.previous_observed_at_ms) as Millis,
+                },
+          current,
+        },
+      ]
+    })
+    const revisionRow =
+      revisionResult === null
+        ? undefined
+        : (results[revisionResult]?.results[0] as { revision?: unknown } | undefined)
+    const revision = revisionRow === undefined ? null : Number(revisionRow.revision)
+    if (revision !== null && (!Number.isSafeInteger(revision) || revision < 1)) {
+      throw new Error('tile status commit returned an invalid projection revision')
+    }
+    return { revision, statusChanges }
   }
 
   async releaseTileBlobReservation(reservationId: string): Promise<void> {
@@ -1945,14 +2198,27 @@ export class D1SqlStore implements SqlStore {
     })
   }
 
+  async readStatusProjectionRevision(season: number): Promise<number> {
+    if (!Number.isSafeInteger(season) || season < 0) throw new RangeError('invalid season')
+    const row = await this.client
+      .prepare('SELECT revision FROM status_read_model_revisions WHERE season = ?')
+      .bind(season)
+      .first<{ revision: number }>()
+    return row?.revision ?? 0
+  }
+
   async commitStatusProjectionRevision(
     season: number,
+    expectedRevision: number,
+    retainRevision: boolean,
     publicFingerprint: string,
     adminFingerprint: string,
-  ): Promise<number> {
+  ): Promise<number | null> {
     if (
       !Number.isSafeInteger(season) ||
       season < 0 ||
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0 ||
       !/^[0-9a-f]{64}$/.test(publicFingerprint) ||
       !/^[0-9a-f]{64}$/.test(adminFingerprint)
     ) {
@@ -1961,22 +2227,30 @@ export class D1SqlStore implements SqlStore {
     const row = await this.client
       .prepare(
         `INSERT INTO status_read_model_revisions (
-           season, revision, public_fingerprint, admin_fingerprint
-         ) VALUES (?1, 1, ?2, ?3)
+           season, revision, public_fingerprint, admin_fingerprint, fingerprints_dirty
+         ) SELECT ?1, 1, ?4, ?5, 0
+           WHERE ?2 = 0 OR EXISTS (
+             SELECT 1 FROM status_read_model_revisions
+             WHERE season = ?1 AND revision = ?2
+           )
          ON CONFLICT (season) DO UPDATE SET
            revision = revision + CASE
-             WHEN public_fingerprint <> excluded.public_fingerprint
+             WHEN fingerprints_dirty = 1 AND ?3 = 1 THEN 0
+             WHEN fingerprints_dirty = 1
+               OR public_fingerprint <> excluded.public_fingerprint
                OR admin_fingerprint <> excluded.admin_fingerprint
              THEN 1 ELSE 0 END,
            public_fingerprint = excluded.public_fingerprint,
-           admin_fingerprint = excluded.admin_fingerprint
+           admin_fingerprint = excluded.admin_fingerprint,
+           fingerprints_dirty = 0
+         WHERE status_read_model_revisions.revision = ?2
          RETURNING revision`,
       )
-      .bind(season, publicFingerprint, adminFingerprint)
+      .bind(season, expectedRevision, retainRevision ? 1 : 0, publicFingerprint, adminFingerprint)
       .first<{ revision: number }>()
-    if (row === null || !Number.isSafeInteger(row.revision) || row.revision < 1) {
-      throw new Error('status projection revision commit returned no revision')
-    }
+    if (row === null) return null
+    if (!Number.isSafeInteger(row.revision) || row.revision < 1)
+      throw new Error('status projection revision commit returned an invalid revision')
     return row.revision
   }
 

@@ -617,10 +617,6 @@ export const TileOffer = Schema.Struct({
   ts: Seconds,
 })
 
-export const TileOfferResponse = Schema.Struct({
-  wanted: boundedArray(TileKey, MAX_MANIFEST_TILES),
-})
-
 export const TileOfferBatch = Schema.Struct({
   wplaceUserId: NonNegativeInteger,
   displayName: Name,
@@ -669,6 +665,34 @@ export const TemplateStatus: Schema.Codec<Shared.TemplateStatus> = TemplateStatu
     }, 'classification counts must fit the total; colour rows must be unique and partition it'),
   ),
 )
+
+export const StatusDelta: Schema.Codec<Shared.StatusDelta> = Schema.Struct({
+  baseRevision: NonNegativeInteger,
+  revision: NonNegativeInteger,
+  templates: boundedArray(TemplateStatus, MAX_MANIFEST_TEMPLATES),
+  removedTemplateIds: boundedArray(Identifier, MAX_MANIFEST_TEMPLATES),
+}).pipe(
+  Schema.check(
+    booleanFilter(
+      (delta) =>
+        delta.revision >= delta.baseRevision &&
+        new Set(delta.templates.map((status) => status.templateId)).size ===
+          delta.templates.length &&
+        new Set(delta.removedTemplateIds).size === delta.removedTemplateIds.length &&
+        delta.templates.every((status) => !delta.removedTemplateIds.includes(status.templateId)),
+      'status delta revisions must be ordered and template ids must be unique',
+    ),
+  ),
+)
+
+export const TileOfferResponse: Schema.Codec<Shared.TileOfferResponse> = Schema.Struct({
+  wanted: boundedArray(TileKey, MAX_MANIFEST_TILES),
+  status: Schema.optionalKey(StatusDelta),
+})
+
+export const TileUploadResponse: Schema.Codec<Shared.TileUploadResponse> = Schema.Struct({
+  status: Schema.optionalKey(StatusDelta),
+})
 
 const NodeStatusStruct = Schema.Struct({
   nodeId: Identifier,
@@ -944,8 +968,10 @@ assertExact<Exact<Schema.Schema.Type<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof TileUploadResponse>, Shared.TileUploadResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOfferBatch>, Shared.TileOfferBatch>>()
 assertExact<Exact<Schema.Schema.Type<typeof TemplateStatus>, Shared.TemplateStatus>>()
+assertExact<Exact<Schema.Schema.Type<typeof StatusDelta>, Shared.StatusDelta>>()
 assertExact<Exact<Schema.Schema.Type<typeof NodeStatus>, Shared.NodeStatus>>()
 assertExact<Exact<Schema.Schema.Type<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof HistoryBucket>, Shared.HistoryBucket>>()
@@ -972,8 +998,10 @@ assertExact<Exact<Schema.Codec.Encoded<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TileUploadResponse>, Shared.TileUploadResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferBatch>, Shared.TileOfferBatch>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TemplateStatus>, Shared.TemplateStatus>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof StatusDelta>, Shared.StatusDelta>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof NodeStatus>, Shared.NodeStatus>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof HistoryBucket>, Shared.HistoryBucket>>()

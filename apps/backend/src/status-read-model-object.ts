@@ -4,6 +4,8 @@ import {
   createSeasonStatusReadModel,
   type PersistedStatusReadModel,
   type SeasonStatusReadModel,
+  type StatusProjectionChange,
+  type StatusProjectionMutation,
   type StatusReadModelPersistence,
   type StatusSnapshotRead,
   type StatusVisibilityScope,
@@ -177,9 +179,18 @@ export class StatusReadModelObject extends DurableObject<Env> {
       },
       persistence: createChunkedStatusPersistence(this.objectState.storage, season),
       revisions: {
-        commit: (requestedSeason, publicFingerprint, adminFingerprint) =>
+        current: (requestedSeason) => this.sql.readStatusProjectionRevision(requestedSeason),
+        commit: (
+          requestedSeason,
+          expectedRevision,
+          retainRevision,
+          publicFingerprint,
+          adminFingerprint,
+        ) =>
           this.sql.commitStatusProjectionRevision(
             requestedSeason,
+            expectedRevision,
+            retainRevision,
             publicFingerprint,
             adminFingerprint,
           ),
@@ -189,8 +200,11 @@ export class StatusReadModelObject extends DurableObject<Env> {
     return created
   }
 
-  async applyCommittedChange(season: number): Promise<void> {
-    await this.model(season).applyCommittedChange()
+  async applyCommittedChange(
+    season: number,
+    mutation?: StatusProjectionMutation,
+  ): Promise<StatusProjectionChange | null> {
+    return this.model(season).applyCommittedChange(mutation)
   }
 
   reconcileSnapshot(season: number, scope: StatusVisibilityScope): Promise<StatusSnapshotRead> {
