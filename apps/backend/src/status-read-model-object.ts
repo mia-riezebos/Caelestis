@@ -1,6 +1,15 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { LiveSyncServerEvent, StatusDelta } from '@caelestis/shared'
+import type { LiveSyncServerEvent, Manifest, StatusDelta } from '@caelestis/shared'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
+import {
+  createSeasonManifestReadModel,
+  type ManifestProjectionInput,
+  type ManifestProjectionRead,
+  type ManifestReadModelPersistence,
+  type PersistedManifestProjection,
+  type SeasonManifestReadModel,
+} from './manifest/read-model.js'
+import { assembleManifestProjection } from './manifest/source.js'
 import {
   createSeasonStatusReadModel,
   type PersistedStatusReadModel,
@@ -19,6 +28,8 @@ const CHUNK_PREFIX = 'status-read-model:v2:chunk:'
 const MAX_CHUNK_JSON_BYTES = 512 * 1024
 const MAX_DELTA_MESSAGE_BYTES = 32 * 1024
 const LIVE_PROTOCOL = 'caelestis.live.v1'
+const MANIFEST_CACHE_INDEX_KEY = 'manifest-read-model:v1:index'
+const MANIFEST_CACHE_CHUNK_BYTES = 512 * 1024
 
 interface LiveSubscriberAttachment {
   readonly season: number
@@ -62,6 +73,163 @@ interface PersistedStatusManifest {
   readonly reconciledAt: number
   readonly activeSlot: 0 | 1
   readonly slots: readonly [PersistedChunkSlot | null, PersistedChunkSlot | null]
+}
+
+interface StoredManifestProjection extends Omit<PersistedManifestProjection, 'manifest'> {
+  readonly version: string
+  readonly generation: string
+  readonly chunks: number
+}
+
+interface StoredManifestRetirement {
+  readonly generation: string
+  readonly chunks: number
+}
+
+interface StoredManifestCacheIndex {
+  readonly season: number
+  readonly revision: number
+  readonly entries: readonly StoredManifestProjection[]
+  readonly retired: readonly StoredManifestRetirement[]
+}
+
+const manifestChunkKey = (generation: string, index: number): string =>
+  `manifest-read-model:v1:chunk:${generation}:${index}`
+
+const chunkJsonText = (value: string): readonly string[] => {
+  const chunks: string[] = []
+  let offset = 0
+  while (offset < value.length) {
+    let low = offset + 1
+    let high = value.length
+    let end = low
+    while (low <= high) {
+      const candidate = Math.floor((low + high) / 2)
+      const bytes = new TextEncoder().encode(value.slice(offset, candidate)).byteLength
+      if (bytes <= MANIFEST_CACHE_CHUNK_BYTES) {
+        end = candidate
+        low = candidate + 1
+      } else high = candidate - 1
+    }
+    chunks.push(value.slice(offset, end))
+    offset = end
+  }
+  return chunks
+}
+
+/** Persist each bounded projection independently so one cache write never rewrites every surface. */
+export const createChunkedManifestPersistence = (
+  storage: DurableObjectStorage,
+  season: number,
+): ManifestReadModelPersistence => {
+  let index: StoredManifestCacheIndex | null = null
+  const loadIndex = async () => {
+    index ??= (await storage.get<StoredManifestCacheIndex>(MANIFEST_CACHE_INDEX_KEY)) ?? null
+    return index
+  }
+  const deleteRetired = async (retired: readonly StoredManifestRetirement[]) => {
+    const keys = retired.flatMap(({ generation, chunks }) =>
+      Array.from({ length: chunks }, (_, chunk) => manifestChunkKey(generation, chunk)),
+    )
+    for (let offset = 0; offset < keys.length; offset += 128) {
+      await storage.delete(keys.slice(offset, offset + 128))
+    }
+  }
+  return {
+    load: async () => {
+      const stored = await loadIndex()
+      if (stored === null || stored.season !== season) return null
+      const entries: PersistedManifestProjection[] = []
+      for (const entry of stored.entries) {
+        const parts: string[] = []
+        for (let chunk = 0; chunk < entry.chunks; chunk += 1) {
+          const part = await storage.get<string>(manifestChunkKey(entry.generation, chunk))
+          if (part === undefined) {
+            return { season: stored.season, revision: stored.revision, entries: [] }
+          }
+          parts.push(part)
+        }
+        try {
+          const manifest: unknown = JSON.parse(parts.join(''))
+          if (
+            typeof manifest !== 'object' ||
+            manifest === null ||
+            !('version' in manifest) ||
+            manifest.version !== entry.version
+          ) {
+            return { season: stored.season, revision: stored.revision, entries: [] }
+          }
+          entries.push({ ...entry, manifest: manifest as Manifest })
+        } catch {
+          return { season: stored.season, revision: stored.revision, entries: [] }
+        }
+      }
+      return { season: stored.season, revision: stored.revision, entries }
+    },
+    save: async (next) => {
+      const previous = await loadIndex()
+      const priorEntries = new Map(previous?.entries.map((entry) => [entry.key, entry]) ?? [])
+      const entries: StoredManifestProjection[] = []
+      const newlyRetired: StoredManifestRetirement[] = []
+      for (const projection of next.entries) {
+        const prior = priorEntries.get(projection.key)
+        if (prior?.version === projection.manifest.version) {
+          entries.push({
+            ...prior,
+            configuredServer: projection.configuredServer,
+            cachedAt: projection.cachedAt,
+            expiresAt: projection.expiresAt,
+          })
+          priorEntries.delete(projection.key)
+          continue
+        }
+        const generation = `${next.revision}-${projection.manifest.version}-${encodeURIComponent(projection.key)}`
+        const chunks = chunkJsonText(JSON.stringify(projection.manifest))
+        await storage.transaction(async (transaction) => {
+          for (let chunk = 0; chunk < chunks.length; chunk += 1) {
+            await transaction.put(manifestChunkKey(generation, chunk), chunks[chunk])
+          }
+        })
+        entries.push({
+          key: projection.key,
+          configuredServer: projection.configuredServer,
+          cachedAt: projection.cachedAt,
+          expiresAt: projection.expiresAt,
+          version: projection.manifest.version,
+          generation,
+          chunks: chunks.length,
+        })
+        if (prior !== undefined) {
+          newlyRetired.push({ generation: prior.generation, chunks: prior.chunks })
+          priorEntries.delete(projection.key)
+        }
+      }
+      newlyRetired.push(
+        ...[...priorEntries.values()].map(({ generation, chunks }) => ({ generation, chunks })),
+      )
+      const retired = [...(previous?.retired ?? []), ...newlyRetired]
+      const published: StoredManifestCacheIndex = {
+        season: next.season,
+        revision: next.revision,
+        entries,
+        retired,
+      }
+      await storage.put(MANIFEST_CACHE_INDEX_KEY, published)
+      index = published
+      if (retired.length > 0) {
+        try {
+          await deleteRetired(retired)
+          const cleaned = { ...published, retired: [] }
+          await storage.put(MANIFEST_CACHE_INDEX_KEY, cleaned)
+          index = cleaned
+        } catch (error) {
+          // The new index is already durable. Retired chunks are reconstructible garbage and the
+          // next save retries their cleanup; they must not suppress the invalidation or live event.
+          console.error(error)
+        }
+      }
+    },
+  }
 }
 
 const chunkKey = (slot: 0 | 1, scope: StatusVisibilityScope, index: number): string =>
@@ -187,6 +355,11 @@ const validSeason = (season: number): void => {
 /** Cloudflare lifecycle adapter; all projection rules stay in the deep read-model module. */
 export class StatusReadModelObject extends DurableObject<Env> {
   private bound: { readonly season: number; readonly model: SeasonStatusReadModel } | null = null
+  private manifestBound: {
+    readonly season: number
+    readonly model: SeasonManifestReadModel
+  } | null = null
+  private boundSeason: number | null = null
   private readonly sql: D1SqlStore
   private readonly liveSessions = createLiveSessionFence()
 
@@ -199,7 +372,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   private model(season: number): SeasonStatusReadModel {
-    validSeason(season)
+    this.bindSeason(season)
     if (this.bound !== null) {
       if (this.bound.season !== season)
         throw new Error('Durable Object is already bound to a season')
@@ -234,6 +407,26 @@ export class StatusReadModelObject extends DurableObject<Env> {
     return created
   }
 
+  private bindSeason(season: number): void {
+    validSeason(season)
+    if (this.boundSeason !== null && this.boundSeason !== season) {
+      throw new Error('Durable Object is already bound to a season')
+    }
+    this.boundSeason = season
+  }
+
+  private manifestModel(season: number): SeasonManifestReadModel {
+    this.bindSeason(season)
+    if (this.manifestBound !== null) return this.manifestBound.model
+    const model = createSeasonManifestReadModel({
+      season,
+      source: (input) => assembleManifestProjection(this.sql, input),
+      persistence: createChunkedManifestPersistence(this.objectState.storage, season),
+    })
+    this.manifestBound = { season, model }
+    return model
+  }
+
   private send(socket: WebSocket, event: LiveSyncServerEvent): void {
     try {
       socket.send(JSON.stringify(event))
@@ -250,7 +443,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
       return (
         typeof attachment === 'object' &&
         attachment !== null &&
-        attachment.season === this.bound?.season &&
+        attachment.season === this.boundSeason &&
         (attachment.scope === 'public' || attachment.scope === 'admin') &&
         /^[0-9a-f]{64}$/.test(attachment.tokenHash) &&
         typeof attachment.revocable === 'boolean' &&
@@ -292,10 +485,20 @@ export class StatusReadModelObject extends DurableObject<Env> {
     return this.model(season).reconcileSnapshot(scope)
   }
 
-  async notifyManifestChange(season: number): Promise<void> {
-    this.model(season)
-    const event: LiveSyncServerEvent = { type: 'manifest-reconcile' }
+  async readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
+    const projection = await this.manifestModel(input.season).read(input)
+    if (projection.revisionChanged) this.broadcastManifest(projection.revision)
+    return projection
+  }
+
+  private broadcastManifest(revision: number): void {
+    const event: LiveSyncServerEvent = { type: 'manifest-reconcile', revision }
     for (const socket of this.subscribers()) this.send(socket, event)
+  }
+
+  async notifyManifestChange(season: number): Promise<void> {
+    const revision = await this.manifestModel(season).invalidate()
+    this.broadcastManifest(revision)
   }
 
   async closeCredential(season: number, tokenHash: string): Promise<void> {

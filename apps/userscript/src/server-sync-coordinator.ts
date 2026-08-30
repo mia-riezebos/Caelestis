@@ -62,6 +62,7 @@ interface LiveConnection {
   heartbeatTimeout: ReturnType<typeof setTimeout> | null
   attempts: number
   healthy: boolean
+  manifestRevision: number | null
 }
 
 const resources = new Map<string, ServerSyncResource>()
@@ -341,7 +342,13 @@ const parseLiveEvent = (data: unknown): LiveSyncServerEvent | null => {
   })()
   if (typeof parsed !== 'object' || parsed === null || !('type' in parsed)) return null
   const candidate = parsed as Record<string, unknown>
-  if (candidate.type === 'manifest-reconcile') return { type: 'manifest-reconcile' }
+  if (
+    candidate.type === 'manifest-reconcile' &&
+    Number.isSafeInteger(candidate.revision) &&
+    Number(candidate.revision) >= 0
+  ) {
+    return { type: 'manifest-reconcile', revision: Number(candidate.revision) }
+  }
   if (
     (candidate.type === 'ready' || candidate.type === 'status-reconcile') &&
     Number.isSafeInteger(candidate.revision) &&
@@ -363,6 +370,9 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     return
   }
   if (event.type === 'manifest-reconcile') {
+    const live = liveConnections.get(serverConnectionIdentity(server))
+    if (live === undefined || event.revision <= (live.manifestRevision ?? -1)) return
+    live.manifestRevision = event.revision
     requestServerSync('revision-gap', 'world-manifest', server)
     return
   }
@@ -501,6 +511,7 @@ const reconcileLiveConnections = (): void => {
         heartbeatTimeout: null,
         attempts: 0,
         healthy: false,
+        manifestRevision: null,
       }
       liveConnections.set(owner, connection)
     }

@@ -1,7 +1,8 @@
-import { millis } from '@caelestis/shared'
+import { type Manifest, millis } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import {
+  createChunkedManifestPersistence,
   createChunkedStatusPersistence,
   createLiveSessionFence,
   StatusReadModelObject,
@@ -32,7 +33,10 @@ describe('status read-model Durable Object', () => {
         }
         target.set(key, structuredClone(value))
       },
-      delete: async (key: string) => target.delete(key),
+      delete: async (key: string | string[]) =>
+        Array.isArray(key)
+          ? key.reduce((deleted, item) => Number(target.delete(item)) + deleted, 0)
+          : target.delete(key),
     })
     return {
       getWebSockets: (tag?: string) => (tag === undefined || tag === 'status' ? sockets : []),
@@ -101,6 +105,161 @@ describe('status read-model Durable Object', () => {
       publicTemplates: statuses,
       adminTemplates: statuses,
     })
+  })
+
+  it('chunks a large manifest projection and preserves its revision when a chunk needs repair', async () => {
+    const manifest: Manifest = {
+      version: 'a'.repeat(64),
+      season: 4,
+      server: {
+        id: '01890f3a-6b7c-7def-8123-456789abcdef',
+        name: 'Server',
+        auth: 'none',
+      },
+      nodes: Array.from({ length: 12_000 }, (_, index) => ({
+        id: `node-${index}`,
+        parentId: null,
+        path: `/node-${index}`,
+        name: `Node ${index} ${'x'.repeat(180)}`,
+        createdAt: millis(1_750_000_000_000),
+      })),
+      templates: [],
+      tiles: [],
+    }
+    expect(new TextEncoder().encode(JSON.stringify(manifest)).byteLength).toBeGreaterThan(
+      2 * 1024 * 1024,
+    )
+    const held = new Map<string, unknown>()
+    const state = objectState(held, 2 * 1024 * 1024)
+    const persistence = createChunkedManifestPersistence(state.storage, 4)
+
+    await persistence.save({
+      season: 4,
+      revision: 7,
+      entries: [
+        {
+          key: 'public:world',
+          configuredServer: '{}',
+          cachedAt: 1_750_000_000_000,
+          expiresAt: 1_750_000_180_000,
+          manifest,
+        },
+      ],
+    })
+    const chunks = [...held.keys()].filter((key) => key.startsWith('manifest-read-model:v1:chunk:'))
+    expect(chunks.length).toBeGreaterThan(1)
+    await expect(createChunkedManifestPersistence(state.storage, 4).load()).resolves.toMatchObject({
+      season: 4,
+      revision: 7,
+      entries: [{ manifest }],
+    })
+
+    await state.storage.delete(chunks[0] as string)
+    await expect(createChunkedManifestPersistence(state.storage, 4).load()).resolves.toEqual({
+      season: 4,
+      revision: 7,
+      entries: [],
+    })
+  })
+
+  it('keeps the previously published manifest cache when a replacement chunk write fails', async () => {
+    const held = new Map<string, unknown>()
+    const state = objectState(held)
+    const persistence = createChunkedManifestPersistence(state.storage, 6)
+    const first: Manifest = {
+      version: 'a'.repeat(64),
+      season: 6,
+      server: {
+        id: '01890f3a-6b7c-7def-8123-456789abcdef',
+        name: 'Server',
+        auth: 'none',
+      },
+      nodes: [],
+      templates: [],
+      tiles: [],
+    }
+    const entry = {
+      key: 'public:world',
+      configuredServer: '{}',
+      cachedAt: 1_750_000_000_000,
+      expiresAt: 1_750_000_180_000,
+      manifest: first,
+    }
+    await persistence.save({ season: 6, revision: 3, entries: [entry] })
+    const transaction = state.storage.transaction.bind(state.storage)
+    state.storage.transaction = vi.fn(async () => Promise.reject(new Error('storage failed')))
+
+    await expect(
+      persistence.save({
+        season: 6,
+        revision: 4,
+        entries: [
+          {
+            ...entry,
+            cachedAt: entry.cachedAt + 1,
+            manifest: { ...first, version: 'b'.repeat(64) },
+          },
+        ],
+      }),
+    ).rejects.toThrow('storage failed')
+    state.storage.transaction = transaction
+
+    await expect(createChunkedManifestPersistence(state.storage, 6).load()).resolves.toMatchObject({
+      revision: 3,
+      entries: [{ manifest: { version: 'a'.repeat(64) } }],
+    })
+  })
+
+  it('publishes a replacement manifest even when retired-chunk cleanup must retry', async () => {
+    const held = new Map<string, unknown>()
+    const state = objectState(held)
+    const persistence = createChunkedManifestPersistence(state.storage, 6)
+    const first: Manifest = {
+      version: 'a'.repeat(64),
+      season: 6,
+      server: {
+        id: '01890f3a-6b7c-7def-8123-456789abcdef',
+        name: 'Server',
+        auth: 'none',
+      },
+      nodes: [],
+      templates: [],
+      tiles: [],
+    }
+    const entry = {
+      key: 'public:world',
+      configuredServer: '{}',
+      cachedAt: 1_750_000_000_000,
+      expiresAt: 1_750_000_180_000,
+      manifest: first,
+    }
+    await persistence.save({ season: 6, revision: 3, entries: [entry] })
+    const remove = state.storage.delete.bind(state.storage)
+    state.storage.delete = vi.fn(async () => Promise.reject(new Error('cleanup failed')))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(
+      persistence.save({
+        season: 6,
+        revision: 4,
+        entries: [
+          {
+            ...entry,
+            cachedAt: entry.cachedAt + 1,
+            manifest: { ...first, version: 'b'.repeat(64) },
+          },
+        ],
+      }),
+    ).resolves.toBeUndefined()
+    state.storage.delete = remove
+
+    await expect(createChunkedManifestPersistence(state.storage, 6).load()).resolves.toMatchObject({
+      revision: 4,
+      entries: [{ manifest: { version: 'b'.repeat(64) } }],
+    })
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'cleanup failed' }),
+    )
   })
 
   it('keeps the previously published manifest reconstructible when a chunk transaction fails', async () => {
@@ -197,7 +356,9 @@ describe('status read-model Durable Object', () => {
 
     for (const subscriber of [publicSocket, adminSocket]) {
       expect(subscriber.send).toHaveBeenCalledWith(expect.stringContaining('"type":"status-delta"'))
-      expect(subscriber.send).toHaveBeenCalledWith(JSON.stringify({ type: 'manifest-reconcile' }))
+      expect(subscriber.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: 'manifest-reconcile', revision: 2 }),
+      )
     }
     expect(otherSeason.send).not.toHaveBeenCalled()
     expect(missingAttachment.send).not.toHaveBeenCalled()
