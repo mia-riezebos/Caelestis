@@ -10,8 +10,8 @@ import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { Ports, TemplateVersionRecord } from '../ports/index.js'
-import { createBackendRuntime } from '../runtime/backend-runtime.js'
+import type { TemplateVersionRecord } from '../ports/index.js'
+import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 import { fetchCanvasTiles, RING_STALENESS_SECONDS } from './fetcher.js'
 
 const TOKEN = 'a'.repeat(64)
@@ -54,8 +54,7 @@ const harness = () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
-  const ports: Ports = { blobs, sql, counters }
-  const runtime = createBackendRuntime(ports)
+  const runtime = createBackendRuntime(makeBackendContext(blobs, sql, counters))
   const requested: string[] = []
   const userAgents: (string | null)[] = []
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -67,7 +66,7 @@ const harness = () => {
     const body = await tileBytes(Number(match[1]) * 7 + Number(match[2]))
     return new Response(body.slice())
   }) as typeof fetch
-  return { ports, runtime, sql, requested, userAgents, fetchImpl }
+  return { runtime, sql, requested, userAgents, fetchImpl }
 }
 
 describe('the 6-hour tile fetcher', () => {
@@ -126,7 +125,7 @@ describe('the 6-hour tile fetcher', () => {
   })
 
   it('survives an upstream failure without abandoning the run', async () => {
-    const { ports, runtime, sql } = harness()
+    const { runtime, sql } = harness()
     await sql.insertTemplateVersion(version('lone', [{ x: 5, y: 5 }]))
     let calls = 0
     const flaky = (async () => {
@@ -137,7 +136,7 @@ describe('the 6-hour tile fetcher', () => {
 
     const report = await runtime.run(fetchCanvasTiles({ season: 0, now: NOW, fetchImpl: flaky }))
     expect(report).toMatchObject({ fetched: 0, failed: 9 })
-    expect(await ports.sql.readLatestTile(0, { x: 5, y: 5 })).toBeNull()
+    expect(await sql.readLatestTile(0, { x: 5, y: 5 })).toBeNull()
   })
 
   it('spends its budget on template tiles before any ring tile', async () => {

@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from 'effect'
-import type { BlobStore, CounterStore, Ports, SqlStore } from '../ports/index.js'
+import type { BlobStore, CounterStore, SqlStore } from '../ports/index.js'
 
 export interface AuthenticationConfig {
   readonly bootstrapAdminToken?: string | undefined
@@ -29,20 +29,17 @@ export type BackendServices =
   | CounterStoreService
   | AuthenticationConfigService
 
-export const contextFromPorts = (
-  ports: Ports,
+export const makeBackendContext = (
+  blobs: BlobStore,
+  sql: SqlStore,
+  counters: CounterStore,
   authentication: AuthenticationConfig = {},
 ): Context.Context<BackendServices> =>
-  Context.make(BlobStoreService, ports.blobs).pipe(
-    Context.add(SqlStoreService, ports.sql),
-    Context.add(CounterStoreService, ports.counters),
+  Context.make(BlobStoreService, blobs).pipe(
+    Context.add(SqlStoreService, sql),
+    Context.add(CounterStoreService, counters),
     Context.add(AuthenticationConfigService, authentication),
   )
-
-export const layerFromPorts = (
-  ports: Ports,
-  authentication: AuthenticationConfig = {},
-): Layer.Layer<BackendServices> => Layer.succeedContext(contextFromPorts(ports, authentication))
 
 export interface BackendRuntime {
   readonly context: Context.Context<BackendServices>
@@ -54,17 +51,7 @@ export interface BackendRuntime {
   ) => Promise<A | B>
 }
 
-/**
- * The temporary bridge from the current dependency bag to Effect services.
- *
- * Routes migrate one at a time. The bridge disappears after the last caller stops accepting
- * `Ports`, while the Context service identities remain stable.
- */
-export const createBackendRuntime = (
-  ports: Ports,
-  authentication: AuthenticationConfig = {},
-): BackendRuntime => {
-  const context = contextFromPorts(ports, authentication)
+export const createBackendRuntime = (context: Context.Context<BackendServices>): BackendRuntime => {
   const layer = Layer.succeedContext(context)
 
   return {

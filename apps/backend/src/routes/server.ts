@@ -2,7 +2,7 @@ import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { requireRuntimeScope } from '../auth/middleware.js'
-import type { Ports } from '../ports/index.js'
+import type { SqlStore } from '../ports/index.js'
 import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
 import { BackendStorageError, SqlStoreReadError } from '../runtime/errors.js'
 import { runBackendHttp } from '../runtime/hono.js'
@@ -18,7 +18,7 @@ const MAX_DESCRIPTION_LENGTH = 4096
  * deployment begins with; anything set here wins for as long as it is set.
  */
 export const resolveServerInfo = async (
-  ports: Pick<Ports, 'sql'>,
+  ports: { readonly sql: SqlStore },
   base: ServerInfo,
 ): Promise<ServerInfo> => {
   const settings = await ports.sql.readServerSettings()

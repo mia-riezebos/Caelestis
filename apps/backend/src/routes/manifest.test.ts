@@ -5,13 +5,13 @@ import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
 import { hashToken } from '../auth/tokens.js'
-import type { Ports, TemplateVersionRecord } from '../ports/index.js'
+import type { TemplateVersionRecord } from '../ports/index.js'
+import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const MEMBER = 'member-token'
 const createdAt = millis(1_750_000_000_000)
 const serverOptions = {
-  bootstrapAdminToken: BOOTSTRAP,
   serverId: '01890f3a-6b7c-7def-8123-456789abcdef',
   serverName: 'Test server',
   serverDescription: 'Description',
@@ -40,11 +40,8 @@ describe('server and manifest routes', () => {
 
   beforeEach(async () => {
     sql = new MemorySqlStore()
-    const ports: Ports = {
-      blobs: new MemoryBlobStore(),
-      sql,
-      counters: new MemoryCounterStore(sql, () => createdAt),
-    }
+    const blobs = new MemoryBlobStore()
+    const counters = new MemoryCounterStore(sql, () => createdAt)
     await sql.insertNode({
       id: '01890f3a-6b7c-7def-8123-456789abcde0',
       season: 7,
@@ -71,7 +68,12 @@ describe('server and manifest routes', () => {
       createdWithToken: 'bootstrap',
       createdAt,
     })
-    app = createApp(ports, serverOptions)
+    app = createApp(
+      createBackendRuntime(
+        makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
+      ),
+      serverOptions,
+    )
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -86,12 +88,17 @@ describe('server and manifest routes', () => {
       auth: 'access_token',
     })
 
-    const ports: Ports = {
-      blobs: new MemoryBlobStore(),
-      sql,
-      counters: new MemoryCounterStore(sql, () => createdAt),
-    }
-    const open = createApp(ports, { ...serverOptions, openAccess: true })
+    const open = createApp(
+      createBackendRuntime(
+        makeBackendContext(
+          new MemoryBlobStore(),
+          sql,
+          new MemoryCounterStore(sql, () => createdAt),
+          { bootstrapAdminToken: BOOTSTRAP, openAccess: true },
+        ),
+      ),
+      { ...serverOptions, openAccess: true },
+    )
     await expect((await open.request('/server')).json()).resolves.toMatchObject({ auth: 'none' })
 
     // And the advertisement has to be true. `/server` is public precisely so a userscript can decide

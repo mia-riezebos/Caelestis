@@ -1,6 +1,6 @@
 import { Effect } from 'effect'
 import type { MiddlewareHandler } from 'hono'
-import type { AccessToken, SqlStore } from '../ports/index.js'
+import type { AccessToken } from '../ports/index.js'
 import {
   AuthenticationConfigService,
   type BackendRuntime,
@@ -60,48 +60,6 @@ const equalsConstantTime = (left: string, right: string): boolean => {
   return difference === 0
 }
 
-export interface AuthOptions {
-  readonly sql: SqlStore
-  /**
-   * The operator's bootstrap credential, from the environment.
-   *
-   * It mints the first real admin token and is not expected on ordinary requests. Absent or empty
-   * means the server has no bootstrap path, which is the right default once real tokens exist.
-   */
-  readonly bootstrapAdminToken?: string | undefined
-
-  /**
-   * Serve the read surface without a credential.
-   *
-   * `/server` advertises `auth: 'none'` when this is set, and that advertisement is the entire
-   * reason `/server` is public: a userscript reads it to decide whether to ask its user for a token
-   * before adding the server. When the flag only changed the advertisement, a client that believed
-   * it got a 401 from `/manifest` — the one thing the endpoint exists to prevent.
-   *
-   * `read` only. `report` writes counters and `admin` writes everything, and neither becomes public
-   * because a server chose to publish its manifest.
-   *
-   * A credential that is presented is still read: an admin on an open server must keep seeing
-   * drafts. A credential that is presented and invalid still fails, rather than quietly falling back
-   * to anonymous — a holder whose token was revoked needs to learn that, and anyone who wants the
-   * anonymous view can have it by sending no header at all.
-   */
-  readonly openAccess?: boolean | undefined
-}
-
-/**
- * Require at least `required` scope.
- *
- * Every rejection is a bare 401 or 403 with no detail. Distinguishing "no such token" from "revoked"
- * from "wrong scope" would let a holder of one credential probe for the existence of others.
- *
- * "Bare" is about detail, not about the body. Three reviewers have now read it as "send no body at
- * all" and filed the `{"error":"unauthorized"}` payload as a violation, so: the body is a constant
- * per status, identical for a missing header, a malformed scheme, an unknown token and a deleted
- * one. Nothing in it varies with the cause, which is the whole property. 401 versus 403 is the one
- * distinction that is deliberate — it tells a caller whether to authenticate or give up, and it
- * says nothing about any credential the caller does not already hold.
- */
 /**
  * The digest recorded for an anonymous caller on an open server. Not a credential and cannot be one:
  * no token hashes to all zeroes, so it can never collide with a real one, and the author columns
@@ -109,45 +67,11 @@ export interface AuthOptions {
  */
 const OPEN_ACCESS_HASH = '0'.repeat(64)
 
-export const requireScope =
-  ({ sql, bootstrapAdminToken, openAccess }: AuthOptions, required: Scope): MiddlewareHandler =>
-  async (c, next) => {
-    const presented = bearerToken(c.req.header('authorization'))
-    // A fallback, not a short circuit. Returning here before reading the credential downgraded an
-    // authenticated admin to `read` on an open server, so `includeUnpublished` went false and the
-    // one caller who is supposed to see drafts stopped seeing them. Anonymous access is what a
-    // request with no usable credential gets, not what every request gets.
-    const anonymousRead = required === 'read' && openAccess === true
-    if (presented === null) {
-      if (!anonymousRead) return c.json({ error: 'unauthorized' }, 401)
-      c.set('caller', { scope: 'read', token: null, tokenHash: OPEN_ACCESS_HASH })
-      return next()
-    }
-
-    // The `length > 0` arm is unreachable today and kept deliberately: `bearerToken` returns null
-    // for an empty token, so `presented` is never '' and an empty configured secret can never match
-    // on length. No test can pin it — said here rather than left looking load-bearing. It stays
-    // because the day someone loosens `bearerToken`, an unset secret must not become a valid
-    // credential.
-    if (
-      bootstrapAdminToken !== undefined &&
-      bootstrapAdminToken.length > 0 &&
-      equalsConstantTime(presented, bootstrapAdminToken)
-    ) {
-      c.set('caller', { scope: 'admin', token: null, tokenHash: await hashToken(presented) })
-      return next()
-    }
-
-    // Absence is revocation. Revoking deletes the row, so there is no second "is it still live"
-    // condition to forget — a reader that finds a token is holding a usable one.
-    const token = await sql.readAccessToken(await hashToken(presented))
-    if (token === null) return c.json({ error: 'unauthorized' }, 401)
-    if (!satisfiesScope(token.scope, required)) return c.json({ error: 'forbidden' }, 403)
-
-    c.set('caller', { scope: token.scope, token, tokenHash: token.tokenHash })
-    return next()
-  }
-
+/**
+ * Require at least `required` scope without revealing whether a credential exists or was revoked.
+ * The response body is constant per status; 401 versus 403 only tells the caller whether it should
+ * authenticate or stop retrying with its current privilege.
+ */
 const authenticateScope = (
   authorization: string | undefined,
   required: Scope,
@@ -197,7 +121,6 @@ const authenticateScope = (
     return { scope: token.scope, token, tokenHash: token.tokenHash }
   })
 
-/** Effect-backed authentication for routes already migrated off the legacy dependency bag. */
 export const requireRuntimeScope =
   (runtime: BackendRuntime, required: Scope): MiddlewareHandler =>
   async (c, next) => {
