@@ -43,6 +43,8 @@ import {
   repairCommittedStatusProjection,
   type StatusReadModelPort,
 } from '../status-read-model/port.js'
+import { decodedPixelCache } from './decoded-pixel-cache.js'
+import { readMismatchArtifact, writeMismatchArtifact } from './derived-classification.js'
 import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
@@ -169,9 +171,50 @@ const decodeCanvas = async (bytes: Uint8Array): Promise<Uint8Array> => {
   return quantiseToPalette(image.pixels, PALETTE_RGB).indices
 }
 
+const decodeCanvasInput = (hash: string, bytes: Uint8Array): Promise<Uint8Array> =>
+  decodedPixelCache.get(
+    `canvas:${hash}`,
+    () => decodeCanvas(bytes),
+    (canvas) => canvas.byteLength,
+  )
+
+const readDecodedCanvas = (ports: BlobSqlStores, hash: string): Promise<Uint8Array | null> =>
+  decodedPixelCache.get(
+    `canvas:${hash}`,
+    async () => {
+      const bytes = await readTileBlob(ports, hash)
+      return bytes === null ? null : decodeCanvas(bytes).catch(() => null)
+    },
+    (canvas) => canvas?.byteLength ?? 0,
+  )
+
+const readDecodedChunk = (ports: BlobStores, hash: string) =>
+  decodedPixelCache.get(
+    `chunk:${hash}`,
+    async () => {
+      const bytes = await ports.blobs.get('chunks', hash)
+      return bytes === null ? null : decodeWplaceIndexedPng(bytes)
+    },
+    (chunk) => chunk?.indices.byteLength ?? 0,
+  )
+
 interface ClassifiedTarget {
   readonly status: TemplateTileStatusRecord
-  readonly mask?: Uint8Array
+  readonly mask: Uint8Array
+}
+
+const persistMismatchArtifact = async (
+  blobs: BlobStore,
+  identity: Parameters<typeof writeMismatchArtifact>[1],
+  mask: Uint8Array,
+): Promise<void> => {
+  try {
+    await writeMismatchArtifact(blobs, identity, mask)
+  } catch (error) {
+    // This is a reconstructible optimization. Never roll back or hide accepted authoritative data
+    // because its derived copy could not be written; a later read will retry the same key.
+    console.error('failed to persist derived mismatch artifact', error)
+  }
 }
 
 const classifyTarget = async (
@@ -179,19 +222,16 @@ const classifyTarget = async (
   target: TelemetryTarget,
   canvas: Uint8Array,
   observedAt: number,
-  includeMask = false,
 ): Promise<ClassifiedTarget | null> => {
   const rect = chunkRect(target)
   if (rect === null) return null
-  const bytes = await ports.blobs.get('chunks', target.hash)
-  if (bytes === null) return null
-  const chunk = await decodeWplaceIndexedPng(bytes)
+  const chunk = await readDecodedChunk(ports, target.hash)
   if (chunk === null || chunk.width !== rect.width || chunk.height !== rect.height) return null
 
   let correct = 0
   let wrong = 0
   let blank = 0
-  const classifications = includeMask ? new Uint8Array(rect.width * rect.height) : null
+  const classifications = new Uint8Array(rect.width * rect.height)
   const colours = new Map<
     number,
     { index: number; correct: number; wrong: number; blank: number; total: number }
@@ -214,15 +254,15 @@ const classifyTarget = async (
       if (actual === TRANSPARENT_INDEX) {
         blank++
         colour.blank++
-        if (classifications !== null) classifications[chunkRow + x] = BLANK
+        classifications[chunkRow + x] = BLANK
       } else if (actual === wanted) {
         correct++
         colour.correct++
-        if (classifications !== null) classifications[chunkRow + x] = MATCH
+        classifications[chunkRow + x] = MATCH
       } else {
         wrong++
         colour.wrong++
-        if (classifications !== null) classifications[chunkRow + x] = WRONG
+        classifications[chunkRow + x] = WRONG
       }
       colours.set(wanted, colour)
     }
@@ -238,11 +278,7 @@ const classifyTarget = async (
       colours: [...colours.values()].sort((left, right) => left.index - right.index),
       observedAt: millis(observedAt),
     },
-    ...(classifications === null
-      ? {}
-      : {
-          mask: encodeMismatchMask(rect, classifications),
-        }),
+    mask: encodeMismatchMask(rect, classifications),
   }
 }
 
@@ -276,12 +312,14 @@ const readMismatchMaskPromise = async (
   if (target === undefined) return { kind: 'not-found' }
   const latest = await ports.sql.readLatestTile(query.season, query.tile)
   if (latest === null) return { kind: 'unobserved' }
-  const canvasBytes = await readTileBlob(ports, latest.hash)
-  if (canvasBytes === null) return { kind: 'unobserved' }
-  const canvas = await decodeCanvas(canvasBytes).catch(() => null)
+  const identity = { ...query, canvasHash: latest.hash }
+  const artifact = await readMismatchArtifact(ports.blobs, identity)
+  if (artifact !== null) return { kind: 'found', bytes: artifact }
+  const canvas = await readDecodedCanvas(ports, latest.hash)
   if (canvas === null) return { kind: 'unobserved' }
-  const classified = await classifyTarget(ports, target, canvas, latest.observedAt, true)
-  if (classified?.mask === undefined) return { kind: 'unobserved' }
+  const classified = await classifyTarget(ports, target, canvas, latest.observedAt)
+  if (classified === null) return { kind: 'unobserved' }
+  await persistMismatchArtifact(ports.blobs, identity, classified.mask)
   return { kind: 'found', bytes: classified.mask }
 }
 
@@ -305,7 +343,7 @@ const recordObservationPromise = async (
     readonly onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>
   } = {},
 ): Promise<void> => {
-  const canvas = await decodeCanvas(bytes)
+  const canvas = await decodeCanvasInput(metadata.hash, bytes)
   const targets = await ports.sql.listTelemetryTargets(
     metadata.season,
     metadata.tile,
@@ -340,6 +378,22 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
+  // The D1 anchor is authoritative. Derived writes happen only after acceptance and cannot turn a
+  // committed upload into a failure; missing artifacts rebuild from the raw D1/R2 inputs on read.
+  await Promise.all(
+    classified.map(({ status, mask }) =>
+      persistMismatchArtifact(
+        ports.blobs,
+        {
+          templateId: status.templateId,
+          versionId: status.versionId,
+          tile: status.tile,
+          canvasHash: metadata.hash,
+        },
+        mask,
+      ),
+    ),
+  )
   const mutation: StatusProjectionMutation | null =
     committed.revision === null
       ? null
@@ -502,17 +556,13 @@ const recordPaintPromise = async (
     const targets = await ports.sql.listTelemetryTargets(event.season, tile, includeUnpublished)
     if (targets.length === 0) continue
     const latest = await ports.sql.readLatestTile(event.season, tile)
-    const previousBytes = latest === null ? null : await readTileBlob(ports, latest.hash)
-    const previous =
-      previousBytes === null ? null : await decodeCanvas(previousBytes).catch(() => null)
+    const previous = latest === null ? null : await readDecodedCanvas(ports, latest.hash)
 
     for (const target of targets) {
       if (target.finished) continue
       const rect = chunkRect(target)
       if (rect === null) continue
-      const chunkBytes = await ports.blobs.get('chunks', target.hash)
-      if (chunkBytes === null) continue
-      const chunk = await decodeWplaceIndexedPng(chunkBytes)
+      const chunk = await readDecodedChunk(ports, target.hash)
       if (chunk === null || chunk.width !== rect.width || chunk.height !== rect.height) continue
       const total = totals.get(target.templateId) ?? { placed: 0, correct: 0, repairs: 0 }
       for (let index = 0; index < paintedTile.pixels.x.length; index += 1) {
