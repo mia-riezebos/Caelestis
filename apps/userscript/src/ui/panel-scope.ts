@@ -64,13 +64,13 @@ export const alliancePanelTitle = (surface: TemplateSurface): string => {
   }
 }
 
-/** Keep the artboard control below Wplace's fullscreen header and at its normal inset otherwise. */
+/** Keep the artboard control below Wplace's fullscreen header without relying on localized copy. */
 export const allianceRailTop = (stage: HTMLElement, normalTop: number, gap: number): number => {
-  const exit = stage
-    .closest('dialog[open]')
-    ?.querySelector<HTMLElement>('button[aria-label="Exit full screen"]')
-  const header = exit?.closest('header')
-  if (header === undefined || header === null) return normalTop
+  const header = Array.from(stage.parentElement?.children ?? []).find(
+    (element) =>
+      element.tagName === 'HEADER' && element.querySelector('button[aria-pressed="true"]') !== null,
+  )
+  if (header === undefined) return normalTop
   return Math.max(
     normalTop,
     Math.ceil(header.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + gap),

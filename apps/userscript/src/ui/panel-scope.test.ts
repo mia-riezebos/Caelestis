@@ -98,19 +98,23 @@ describe('alliance drawer DOM contracts', () => {
   it('sits below Wplace chrome while the artboard is full screen', () => {
     const dialog = document.createElement('dialog')
     dialog.setAttribute('open', '')
+    const editor = document.createElement('div')
     const header = document.createElement('header')
     const exit = document.createElement('button')
-    exit.setAttribute('aria-label', 'Exit full screen')
+    exit.setAttribute('aria-label', 'Vollbild beenden')
+    exit.setAttribute('aria-pressed', 'true')
     header.append(exit)
     const stage = document.createElement('div')
-    dialog.append(header, stage)
+    editor.append(header, stage)
+    dialog.append(editor)
     document.body.append(dialog)
     stage.getBoundingClientRect = () => ({ top: 100 }) as DOMRect
     header.getBoundingClientRect = () => ({ bottom: 180 }) as DOMRect
 
     expect(allianceRailTop(stage, 12, 12)).toBe(92)
 
-    exit.setAttribute('aria-label', 'Open full screen')
+    exit.setAttribute('aria-label', 'Vollbild')
+    exit.setAttribute('aria-pressed', 'false')
     expect(allianceRailTop(stage, 12, 12)).toBe(12)
     dialog.remove()
   })
