@@ -6,7 +6,7 @@ import {
 } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
-import { readManifest } from '../manifest/use-cases.js'
+import { readManifestProjection } from '../manifest/use-cases.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
 
@@ -53,10 +53,13 @@ export const createManifestRoutes = (
       )
     }
 
+    const candidates = (c.req.header('if-none-match') ?? '')
+      .split(',')
+      .map((candidate) => candidate.trim().replace(/^W\//, ''))
     return runBackendHttp(
       c,
       runtime,
-      readManifest({
+      readManifestProjection({
         // Resolved rather than the configured value: the manifest carries the server's name too, and
         // a rename that showed up on `/server` but not here would leave the tree labelled with the
         // old one — which is exactly where anyone would look to check the rename worked.
@@ -64,21 +67,21 @@ export const createManifestRoutes = (
         season,
         surface,
         includeUnpublished: c.get('caller').scope === 'admin',
+        ifNoneMatch: candidates,
+        // Only the deployed season owns a bounded Durable Object projection. Historical season
+        // reads remain authoritative without materializing attacker-selected shards.
+        cacheable: season === options.currentSeason,
       }),
-      (manifest) => {
-        const etag = `"${manifest.version}"`
+      (projection) => {
+        const etag = `"${projection.version}"`
         const headers = { ETag: etag, Vary: 'Authorization' }
         // RFC 9110 lets If-None-Match carry a comma-separated list and mark each entry weak with `W/`.
         // An exact string compare therefore missed a conforming client entirely: send two etags, or one
         // a cache has weakened, and you never get a 304 again. Weak comparison is the right one here —
         // the manifest is a content hash, so a weak and a strong tag over the same bytes mean the same.
-        const candidates = (c.req.header('if-none-match') ?? '')
-          .split(',')
-          .map((candidate) => candidate.trim().replace(/^W\//, ''))
-        if (candidates.includes(etag) || candidates.includes('*')) {
-          return c.body(null, 304, headers)
-        }
-        return c.json(manifest, 200, headers)
+        return projection.notModified
+          ? c.body(null, 304, headers)
+          : c.json(projection.manifest, 200, headers)
       },
     )
   })

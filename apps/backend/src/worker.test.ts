@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
+import type { ManifestProjectionInput } from './manifest/read-model.js'
+import { DirectStatusReadModel } from './status-read-model/port.js'
 import worker from './worker.js'
 
 // `worker.ts` re-exports the Durable Object, whose module imports `cloudflare:workers` — absent
@@ -29,6 +32,7 @@ afterEach(() => {
 
 const env = () => {
   d1 = new SqliteD1Database()
+  const statusReadModel = new DirectStatusReadModel(new D1SqlStore(d1 as unknown as D1Database))
   return {
     SHARD_STRATEGY: 'single',
     DB: d1,
@@ -36,6 +40,12 @@ const env = () => {
     // `DurableObjectCounterStore` resolves its stub in the constructor, so the namespace has to
     // answer `getByName` even on a path that never calls the shard.
     TELEMETRY: { getByName: () => ({}) },
+    STATUS_READ_MODEL: {
+      getByName: () => ({
+        readManifestProjection: (input: ManifestProjectionInput) =>
+          statusReadModel.readManifestProjection(input),
+      }),
+    },
     ALARM_WATCHER: { getByName: () => ({ schedule: async () => undefined }) },
     ADMIN_TOKEN: BOOTSTRAP,
   } as unknown as Env

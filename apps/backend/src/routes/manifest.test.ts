@@ -55,7 +55,8 @@ describe('server and manifest routes', () => {
         applyCommittedChange: (season, mutation) =>
           directStatus.applyCommittedChange(season, mutation),
         reconcileSnapshot: (season, scope) => directStatus.reconcileSnapshot(season, scope),
-        notifyManifestChange,
+        readManifestProjection: (input) => directStatus.readManifestProjection(input),
+        notifyManifestChange: (season) => notifyManifestChange(season),
       },
     )
     await sql.insertNode({
@@ -112,6 +113,7 @@ describe('server and manifest routes', () => {
       createdWithToken: 'bootstrap',
       createdAt,
     })
+    notifyManifestChange.mockImplementation((season) => directStatus.notifyManifestChange(season))
     app = createApp(context, serverOptions)
   })
 
@@ -173,6 +175,7 @@ describe('server and manifest routes', () => {
     // compare satisfied too — so the RFC 9110 parsing was untested. And no test sent `?season=` at
     // all: the route's parse and its 400 could both be deleted with the suite green, while
     // season-scoping is an acceptance criterion covered only at the store level.
+    const assemble = vi.spyOn(sql, 'listManifestTemplates')
     const first = await app.request('/manifest', bearer(MEMBER))
     const etag = first.headers.get('etag') as string
 
@@ -192,6 +195,7 @@ describe('server and manifest routes', () => {
     expect([weak.status, listed.status, wildcard.status, stale.status]).toEqual([
       304, 304, 304, 200,
     ])
+    expect(assemble).toHaveBeenCalledOnce()
 
     // The ETag has to be readable cross-origin or none of the above is reachable by the userscript,
     // which is the only client and is cross-origin by definition.
@@ -201,6 +205,7 @@ describe('server and manifest routes', () => {
     const other = await app.request('/manifest?season=99', bearer(MEMBER))
     expect(other.status).toBe(200)
     expect(((await other.json()) as { season: number }).season).toBe(99)
+    expect(assemble).toHaveBeenCalledTimes(2)
     expect((await app.request('/manifest?season=abc', bearer(MEMBER))).status).toBe(400)
   })
 
@@ -293,17 +298,24 @@ describe('server and manifest routes', () => {
       })
 
     it('renames it for everyone, without a redeploy', async () => {
+      const before = await app.request('/manifest', bearer(MEMBER))
+      const previousEtag = before.headers.get('etag') ?? ''
       expect((await patch({ name: 'Caelestis' })).status).toBe(200)
       expect(notifyManifestChange).toHaveBeenCalledWith(serverOptions.currentSeason)
 
       const info = (await (await app.request('/server')).json()) as { name: string }
       expect(info.name).toBe('Caelestis')
-      const manifest = (await (await app.request('/manifest', bearer(MEMBER))).json()) as {
+      const response = await app.request('/manifest', {
+        headers: { ...bearer(MEMBER).headers, 'if-none-match': previousEtag },
+      })
+      const manifest = (await response.json()) as {
         server: { name: string }
       }
       // The manifest carries the name too, and it is where anyone would look to check a rename
       // worked — so a rename visible on one and not the other is worse than no rename at all.
       expect(manifest.server.name).toBe('Caelestis')
+      expect(response.status).toBe(200)
+      expect(response.headers.get('etag')).not.toBe(previousEtag)
     })
 
     it('leaves the description alone when only the name is set', async () => {
