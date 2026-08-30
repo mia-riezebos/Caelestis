@@ -11,7 +11,7 @@ import {
   TRANSPARENT_INDEX,
   WRONG,
 } from '@caelestis/shared'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -135,6 +135,8 @@ const contribution = (overrides: Partial<ContributionDelta>): ContributionDelta 
 })
 
 describe('telemetry read routes', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   it('selects the coarsest retained tier that still yields about 200 points', () => {
     const now = seconds(2_000_000_000)
     const range = (age: number, width = age) => ({
@@ -161,6 +163,24 @@ describe('telemetry read routes', () => {
         now,
       ),
     ).toBe(21_600)
+  })
+
+  it('maps a typed status read failure to the existing 500 response', async () => {
+    const { app, sql } = await harness()
+    const readToken = await mintToken(app, 'read')
+    const error = new Error('database unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    sql.readTemplateStatuses = async () => {
+      throw error
+    }
+
+    const response = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+
+    expect(response.status).toBe(500)
+    expect(await response.text()).toBe('Internal Server Error')
+    expect(consoleError).toHaveBeenCalledWith(error)
   })
 
   it('serves the server-classified mismatch mask for one visible template tile', async () => {

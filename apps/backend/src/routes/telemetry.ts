@@ -1,21 +1,11 @@
 import {
-  type CanvasTilesResponse,
-  type ContributionsResponse,
-  type HistoryBucket,
-  type HistoryResponse,
-  type LeaderboardEntry,
-  type LeaderboardResponse,
   MAX_TILE_OFFERS,
   millis,
   type PaintEvent as PaintEventValue,
   parseTileKey,
   type Seconds,
-  type StatusResponse,
   seconds,
-  type TileHistoryFrame,
-  type TileHistoryResponse,
   type TileOfferBatch as TileOfferBatchValue,
-  tileKey,
   WORLD_TILES,
 } from '@caelestis/shared'
 import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
@@ -28,6 +18,8 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   TILE_HISTORY_RESOLUTIONS,
 } from '../ports/index.js'
+import type { BackendRuntime } from '../runtime/backend-runtime.js'
+import { runBackendHttp } from '../runtime/hono.js'
 import {
   MAX_CANVAS_TILE_BYTES,
   offerTile,
@@ -35,6 +27,18 @@ import {
   recordPaint,
   uploadTile,
 } from '../telemetry/ingest.js'
+import {
+  readCanvas,
+  readContributions,
+  readHistory,
+  readLeaderboard,
+  readStatus,
+  readTileHistory,
+  selectTelemetryHistoryResolution,
+  selectTileHistoryResolution,
+} from '../telemetry/queries.js'
+
+export { selectTelemetryHistoryResolution, selectTileHistoryResolution }
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const WHOLE_NUMBER = /^(?:0|[1-9]\d*)$/
@@ -45,166 +49,6 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 /** Larger leaderboards stop being leaderboards; page by narrowing the window instead. */
 const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
-const TARGET_HISTORY_POINTS = 200
-
-interface HistoryTier {
-  readonly resolution: number
-  /** How long this tier is retained. Omitted for the final, permanent tier. */
-  readonly retainedFor?: number
-  /** Raw tile observations are irregular; one minute is a conservative density estimate. */
-  readonly estimatedStep?: number
-}
-
-const TELEMETRY_HISTORY_TIERS: readonly HistoryTier[] = [
-  { resolution: 60, retainedFor: 6 * 3_600 },
-  { resolution: 300, retainedFor: 24 * 3_600 },
-  { resolution: 900, retainedFor: 7 * 86_400 },
-  { resolution: 3_600, retainedFor: 30 * 86_400 },
-  { resolution: 21_600 },
-]
-
-const TILE_HISTORY_TIERS: readonly HistoryTier[] = [
-  { resolution: 0, retainedFor: 86_400, estimatedStep: 60 },
-  { resolution: 3_600, retainedFor: 7 * 86_400 },
-  { resolution: 21_600, retainedFor: 30 * 86_400 },
-  { resolution: 86_400 },
-]
-
-/** Pick one tier that covers the whole range without making the client know the ladder. */
-const selectHistoryResolution = (
-  tiers: readonly HistoryTier[],
-  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
-  now = seconds(Math.floor(Date.now() / 1_000)),
-): number => {
-  const permanent = tiers.at(-1)
-  if (permanent === undefined) throw new Error('history tier ladder must not be empty')
-  const eligible = tiers.filter(
-    (tier) => tier.retainedFor === undefined || range.fromSeconds >= now - tier.retainedFor,
-  )
-  const covering = eligible.length === 0 ? [permanent] : eligible
-  const width = range.toSeconds - range.fromSeconds
-  const selected =
-    covering
-      .filter((tier) => width / (tier.estimatedStep ?? tier.resolution) >= TARGET_HISTORY_POINTS)
-      .at(-1) ?? covering[0]
-  if (selected === undefined) throw new Error('history tier ladder must not be empty')
-  return selected.resolution
-}
-
-export const selectTelemetryHistoryResolution = (
-  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
-  now?: Seconds,
-): number => selectHistoryResolution(TELEMETRY_HISTORY_TIERS, range, now)
-
-const telemetryCoverageStart = (
-  resolution: number,
-  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
-  now: Seconds,
-): Seconds => {
-  const index = TELEMETRY_HISTORY_TIERS.findIndex((tier) => tier.resolution === resolution)
-  const tier = TELEMETRY_HISTORY_TIERS[index]
-  const nextTier = TELEMETRY_HISTORY_TIERS[index + 1]
-  if (tier?.retainedFor === undefined || nextTier === undefined) return range.fromSeconds
-
-  // A source tier is folded only after its complete target bucket crosses the retention cutoff.
-  // The target bucket containing the cutoff is therefore the first interval still guaranteed to
-  // have source-tier coverage. Missing rows inside it mean zero activity, not missing history.
-  const cutoff = now - tier.retainedFor
-  const retainedStart = Math.floor(cutoff / nextTier.resolution) * nextTier.resolution
-  const requestedStart = Math.max(range.fromSeconds, retainedStart)
-  return seconds(Math.ceil(requestedStart / resolution) * resolution)
-}
-
-export const selectTileHistoryResolution = (
-  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
-  now?: Seconds,
-): number => selectHistoryResolution(TILE_HISTORY_TIERS, range, now)
-
-const coalesceTelemetryHistory = (
-  buckets: readonly HistoryBucket[],
-  resolution: number,
-  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
-): readonly HistoryBucket[] => {
-  const groups = new Map<string, HistoryBucket[]>()
-  for (const bucket of buckets) {
-    const bucketStart = seconds(Math.floor(bucket.bucketStart / resolution) * resolution)
-    if (bucketStart < range.fromSeconds || bucketStart >= range.toSeconds) continue
-    const key = `${bucket.templateId}\u0000${bucketStart}`
-    const held = groups.get(key) ?? []
-    held.push(bucket)
-    groups.set(key, held)
-  }
-  return [...groups.entries()]
-    .map(([key, candidates]) => {
-      const separator = key.indexOf('\u0000')
-      const templateId = key.slice(0, separator)
-      const bucketStart = seconds(Number(key.slice(separator + 1)))
-      const selected: HistoryBucket[] = []
-      for (const candidate of [...candidates].sort(
-        (left, right) => right.resolution - left.resolution || left.bucketStart - right.bucketStart,
-      )) {
-        const end = candidate.bucketStart + candidate.resolution
-        if (
-          selected.some(
-            (held) =>
-              candidate.bucketStart < held.bucketStart + held.resolution && end > held.bucketStart,
-          )
-        ) {
-          continue
-        }
-        selected.push(candidate)
-      }
-      return {
-        templateId,
-        resolution,
-        bucketStart,
-        placed: selected.reduce((total, bucket) => total + bucket.placed, 0),
-        correct: selected.reduce((total, bucket) => total + bucket.correct, 0),
-        repairs: selected.reduce((total, bucket) => total + bucket.repairs, 0),
-      }
-    })
-    .sort((left, right) =>
-      left.templateId < right.templateId
-        ? -1
-        : left.templateId > right.templateId
-          ? 1
-          : left.bucketStart - right.bucketStart,
-    )
-}
-
-const coalesceTileHistory = (
-  tiers: readonly { readonly resolution: number; readonly frames: readonly TileHistoryFrame[] }[],
-  resolution: number,
-  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
-): readonly TileHistoryFrame[] => {
-  if (resolution === 0) return tiers[0]?.frames ?? []
-  const groups = new Map<
-    number,
-    { readonly resolution: number; readonly frame: TileHistoryFrame }[]
-  >()
-  for (const tier of tiers) {
-    for (const frame of tier.frames) {
-      const bucketStart = Math.floor(frame.bucketStart / resolution) * resolution
-      if (bucketStart < range.fromSeconds || bucketStart >= range.toSeconds) continue
-      const held = groups.get(bucketStart) ?? []
-      held.push({ resolution: tier.resolution, frame })
-      groups.set(bucketStart, held)
-    }
-  }
-  return [...groups]
-    .sort(([left], [right]) => left - right)
-    .flatMap(([bucketStart, candidates]) => {
-      const latest = [...candidates]
-        .sort(
-          (left, right) =>
-            left.frame.bucketStart - right.frame.bucketStart || right.resolution - left.resolution,
-        )
-        .at(-1)?.frame
-      return latest === undefined
-        ? []
-        : [{ bucketStart: seconds(bucketStart), hash: latest.hash, reporters: latest.reporters }]
-    })
-}
 
 const wholeNumber = (value: string | undefined): number | null => {
   if (value === undefined || !WHOLE_NUMBER.test(value)) return null
@@ -285,21 +129,24 @@ const readBoundedBody = async (request: Request, limit: number): Promise<Uint8Ar
 
 export const createTelemetryRoutes = (
   ports: Ports,
+  runtime: BackendRuntime,
   auth: AuthOptions,
   options: { readonly currentSeason: number },
 ) => {
   const routes = new Hono()
 
-  routes.get('/status', requireScope(auth, 'read'), async (c) => {
+  routes.get('/status', requireScope(auth, 'read'), (c) => {
     const season =
       c.req.query('season') === undefined
         ? options.currentSeason
         : wholeNumber(c.req.query('season'))
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
-    const response: StatusResponse = {
-      templates: await ports.sql.readTemplateStatuses(season, c.get('caller').scope === 'admin'),
-    }
-    return c.json(response)
+    return runBackendHttp(
+      c,
+      runtime,
+      readStatus(season, c.get('caller').scope === 'admin'),
+      (response) => c.json(response),
+    )
   })
 
   routes.get(
@@ -341,7 +188,7 @@ export const createTelemetryRoutes = (
     },
   )
 
-  routes.get('/history', requireScope(auth, 'read'), async (c) => {
+  routes.get('/history', requireScope(auth, 'read'), (c) => {
     const templateIds = parseTemplateIds(c.req.query('templateIds'))
     if (templateIds === null) {
       return c.json(
@@ -374,50 +221,21 @@ export const createTelemetryRoutes = (
     if (range === null) {
       return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
     }
-    const selectableTiers =
-      typeof maxResolution === 'number'
-        ? TELEMETRY_HISTORY_TIERS.filter((tier) => tier.resolution <= maxResolution)
-        : TELEMETRY_HISTORY_TIERS
-    const readAt = seconds(Math.floor(Date.now() / 1_000))
-    const resolution =
-      typeof legacyResolution === 'number'
-        ? legacyResolution
-        : selectHistoryResolution(selectableTiers, range, readAt)
-    // Buckets carry no publish state of their own, so the ids are resolved through the same gate
-    // the manifest applies: to a read-scoped caller an unpublished template's history is as absent
-    // as the template — a stale id from an earlier manifest poll answers with nothing, not a 403
-    // that would confirm the id still names something.
-    const visibleIds =
-      c.get('caller').scope === 'admin'
-        ? templateIds
-        : await ports.sql.filterPublishedTemplateIds(templateIds)
-    const buckets =
-      visibleIds.length === 0
-        ? []
-        : await ports.sql.readBuckets({
-            templateIds: visibleIds,
-            resolution:
-              typeof legacyResolution === 'number'
-                ? resolution
-                : LADDER_RESOLUTIONS.filter((tier) => tier <= resolution),
-            ...range,
-          })
-    const response: HistoryResponse = {
-      ...(typeof maxResolution === 'number'
-        ? {
-            resolution,
-            coverageStart: telemetryCoverageStart(resolution, range, readAt),
-          }
-        : {}),
-      buckets:
-        typeof legacyResolution === 'number'
-          ? buckets
-          : coalesceTelemetryHistory(buckets, resolution, range),
-    }
-    return c.json(response)
+    return runBackendHttp(
+      c,
+      runtime,
+      readHistory({
+        templateIds,
+        range,
+        ...(typeof legacyResolution === 'number' ? { legacyResolution } : {}),
+        ...(typeof maxResolution === 'number' ? { maxResolution } : {}),
+        includeUnpublished: c.get('caller').scope === 'admin',
+      }),
+      (response) => c.json(response),
+    )
   })
 
-  routes.get('/contributions', requireScope(auth, 'read'), async (c) => {
+  routes.get('/contributions', requireScope(auth, 'read'), (c) => {
     const templateIds = parseTemplateIds(c.req.query('templateIds'))
     if (templateIds === null) {
       return c.json(
@@ -429,19 +247,19 @@ export const createTelemetryRoutes = (
     if (range === null) {
       return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
     }
-    // Rows come back already reduced across reporters — see `readContributions` on the port. The
-    // route adds nothing on purpose: serving reporter rows here is the double-credit bug.
-    const response: ContributionsResponse = {
-      days: await ports.sql.readContributions({
+    return runBackendHttp(
+      c,
+      runtime,
+      readContributions({
         templateIds,
-        ...range,
+        range,
         includeUnpublished: c.get('caller').scope === 'admin',
       }),
-    }
-    return c.json(response)
+      (response) => c.json(response),
+    )
   })
 
-  routes.get('/leaderboard', requireScope(auth, 'read'), async (c) => {
+  routes.get('/leaderboard', requireScope(auth, 'read'), (c) => {
     const season =
       c.req.query('season') === undefined
         ? options.currentSeason
@@ -470,72 +288,33 @@ export const createTelemetryRoutes = (
       return c.json({ error: `limit must be 1..${MAX_LEADERBOARD_LIMIT}` }, 400)
     }
 
-    // MAX-then-SUM: the port reduced each painter-day across reporters, so summing here credits
-    // each day exactly once no matter how many clients reported it.
-    const rows = await ports.sql.readContributions({
-      season,
-      ...(templateIds === undefined ? {} : { templateIds }),
-      ...(from === undefined ? {} : { fromSeconds: seconds(from) }),
-      ...(to === undefined ? {} : { toSeconds: seconds(to) }),
-      includeUnpublished: c.get('caller').scope === 'admin',
-    })
-    const byUser = new Map<number, LeaderboardEntry & { readonly days: Set<number> }>()
-    for (const row of rows) {
-      const held = byUser.get(row.wplaceUserId)
-      const entry = held ?? {
-        wplaceUserId: row.wplaceUserId,
-        displayName: row.displayName,
-        placed: 0,
-        correct: 0,
-        repairs: 0,
-        activeDays: 0,
-        lastDay: row.day,
-        days: new Set<number>(),
-      }
-      entry.days.add(row.day)
-      byUser.set(row.wplaceUserId, {
-        ...entry,
-        placed: entry.placed + row.placed,
-        correct: entry.correct + row.correct,
-        repairs: entry.repairs + row.repairs,
-        lastDay: row.day > entry.lastDay ? row.day : entry.lastDay,
-      })
-    }
-    const response: LeaderboardResponse = {
-      entries: [...byUser.values()]
-        .map(({ days, ...entry }) => ({ ...entry, activeDays: days.size }))
-        // The user id tiebreak is not part of the advertised order; it only keeps two equal
-        // painters from swapping places between requests.
-        .sort(
-          (left, right) =>
-            right.correct - left.correct ||
-            right.placed - left.placed ||
-            left.wplaceUserId - right.wplaceUserId,
-        )
-        .slice(0, limit),
-    }
-    return c.json(response)
+    return runBackendHttp(
+      c,
+      runtime,
+      readLeaderboard({
+        season,
+        ...(templateIds === undefined ? {} : { templateIds }),
+        ...(from === undefined ? {} : { from: seconds(from) }),
+        ...(to === undefined ? {} : { to: seconds(to) }),
+        limit,
+        includeUnpublished: c.get('caller').scope === 'admin',
+      }),
+      (response) => c.json(response),
+    )
   })
 
-  routes.get('/canvas', requireScope(auth, 'read'), async (c) => {
+  routes.get('/canvas', requireScope(auth, 'read'), (c) => {
     const season =
       c.req.query('season') === undefined
         ? options.currentSeason
         : wholeNumber(c.req.query('season'))
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
-    const response: CanvasTilesResponse = {
-      tiles: (await ports.sql.listLatestTiles(season)).map((held) => ({
-        tile: tileKey(held.tile),
-        hash: held.hash,
-        observedAt: held.observedAt,
-      })),
-    }
-    return c.json(response)
+    return runBackendHttp(c, runtime, readCanvas(season), (response) => c.json(response))
   })
 
   // GET here, PUT with a trailing `:hash` above — Hono matches on method and path together, so the
   // two never collide, and `history` is not a valid hash so nothing shadows the upload either.
-  routes.get('/tiles/:x/:y/history', requireScope(auth, 'read'), async (c) => {
+  routes.get('/tiles/:x/:y/history', requireScope(auth, 'read'), (c) => {
     const x = wholeNumber(c.req.param('x'))
     const y = wholeNumber(c.req.param('y'))
     if (x === null || y === null || x >= WORLD_TILES || y >= WORLD_TILES) {
@@ -562,39 +341,17 @@ export const createTelemetryRoutes = (
     if (range === null) {
       return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
     }
-    const resolution =
-      typeof legacyResolution === 'number' ? legacyResolution : selectTileHistoryResolution(range)
-    const tiers =
-      typeof legacyResolution === 'number'
-        ? [
-            {
-              resolution,
-              frames: await ports.sql.readTileHistory({
-                season,
-                tile: { x, y },
-                resolution,
-                ...range,
-              }),
-            },
-          ]
-        : await Promise.all(
-            TILE_HISTORY_RESOLUTIONS.filter((tier) => tier <= resolution).map(async (tier) => ({
-              resolution: tier,
-              frames: await ports.sql.readTileHistory({
-                season,
-                tile: { x, y },
-                resolution: tier,
-                ...range,
-              }),
-            })),
-          )
-    const response: TileHistoryResponse = {
-      frames:
-        typeof legacyResolution === 'number'
-          ? (tiers[0]?.frames ?? [])
-          : coalesceTileHistory(tiers, resolution, range),
-    }
-    return c.json(response)
+    return runBackendHttp(
+      c,
+      runtime,
+      readTileHistory({
+        season,
+        tile: { x, y },
+        range,
+        ...(typeof legacyResolution === 'number' ? { legacyResolution } : {}),
+      }),
+      (response) => c.json(response),
+    )
   })
 
   routes.post('/tiles/offers', requireScope(auth, 'report'), async (c) => {
