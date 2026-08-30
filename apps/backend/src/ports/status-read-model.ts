@@ -12,13 +12,18 @@ export interface StatusSnapshotQuery {
   readonly scope: StatusVisibilityScope
 }
 
+export interface StatusSnapshotIdentity extends StatusSnapshotQuery {
+  readonly revision: number
+}
+
 export interface StatusSubscriberQuery extends StatusSnapshotQuery {
-  readonly afterRevision: number
+  /** Snapshot the subscriber already holds, including its season and authorization scope. */
+  readonly after: StatusSnapshotIdentity | null
 }
 
 export interface StatusSubscriberAttachment {
-  readonly revision: number
-  /** Null means the subscriber already holds this exact revision. */
+  readonly identity: StatusSnapshotIdentity
+  /** Null means the subscriber already holds this exact season, scope, and revision. */
   readonly snapshot: StatusResponse | null
 }
 

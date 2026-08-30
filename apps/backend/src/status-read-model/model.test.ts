@@ -46,12 +46,18 @@ const source = (
 ) => {
   let revision = options.revision ?? 1
   const readRevision = vi.fn(async () => revision)
+  const advanceRevision = vi.fn(async () => ++revision)
   const readTemplates = vi.fn(async (_season: number, scope: StatusVisibilityScope) =>
     scope === 'admin' ? (options.admin ?? []) : (options.read ?? []),
   )
   return {
-    value: { readRevision, readTemplates } satisfies StatusProjectionSource,
+    value: {
+      readRevision,
+      advanceRevision,
+      readTemplates,
+    } satisfies StatusProjectionSource,
     readRevision,
+    advanceRevision,
     readTemplates,
     setRevision: (next: number) => {
       revision = next
@@ -63,12 +69,23 @@ describe('revisioned status read model', () => {
   it('rebuilds once and reuses the stored aggregation at the current revision', async () => {
     const origin = source({ revision: 4, read: [status('public', 1)] })
     const storage = new MemoryProjectionStorage()
-    const model = createStatusReadModel({ source: origin.value, storage, now: () => 1_000 })
+    const model = createStatusReadModel({
+      source: origin.value,
+      storage,
+      now: () => 1_000,
+    })
 
     const first = await model.reconcileSnapshot({ season: 7, scope: 'read' })
-    const repeated = await model.reconcileSnapshot({ season: 7, scope: 'read' })
+    const repeated = await model.reconcileSnapshot({
+      season: 7,
+      scope: 'read',
+    })
 
-    expect(first).toEqual({ season: 7, revision: 4, templates: [status('public', 1)] })
+    expect(first).toEqual({
+      season: 7,
+      revision: 4,
+      templates: [status('public', 1)],
+    })
     expect(repeated).toBe(first)
     expect(origin.readTemplates).toHaveBeenCalledOnce()
   })
@@ -78,6 +95,7 @@ describe('revisioned status read model', () => {
     const revisions = [5, 5, 6, 6, 6]
     const origin: StatusProjectionSource = {
       readRevision: vi.fn(async () => revisions.shift() ?? 6),
+      advanceRevision: vi.fn(async () => 7),
       readTemplates: vi.fn(async () => templates),
     }
     const storage = new MemoryProjectionStorage()
@@ -111,7 +129,11 @@ describe('revisioned status read model', () => {
   })
 
   it('keeps accepted state repairable when projection publication fails', async () => {
-    const origin = source({ revision: 3, read: [status('new', 1)], admin: [status('new', 1)] })
+    const origin = source({
+      revision: 3,
+      read: [status('new', 1)],
+      admin: [status('new', 1)],
+    })
     const storage = new MemoryProjectionStorage()
     const previous: StoredStatusSnapshot = {
       response: { season: 0, revision: 2, templates: [status('old', 0)] },
@@ -153,21 +175,74 @@ describe('revisioned status read model', () => {
     expect(origin.readTemplates).toHaveBeenCalledWith(1, 'admin')
   })
 
-  it('attaches at the current revision and only includes a snapshot for a stale subscriber', async () => {
+  it('attaches without a snapshot only for the same season, scope, and revision', async () => {
     const origin = source({ revision: 9, read: [status('public', 1)] })
     const model = createStatusReadModel({
       source: origin.value,
       storage: new MemoryProjectionStorage(),
     })
 
-    const stale = await model.attachSubscriber({ season: 4, scope: 'read', afterRevision: 8 })
-    const current = await model.attachSubscriber({ season: 4, scope: 'read', afterRevision: 9 })
+    const stale = await model.attachSubscriber({
+      season: 4,
+      scope: 'read',
+      after: { season: 4, scope: 'read', revision: 8 },
+    })
+    const current = await model.attachSubscriber({
+      season: 4,
+      scope: 'read',
+      after: { season: 4, scope: 'read', revision: 9 },
+    })
+    const promoted = await model.attachSubscriber({
+      season: 4,
+      scope: 'admin',
+      after: { season: 4, scope: 'read', revision: 9 },
+    })
+    const demoted = await model.attachSubscriber({
+      season: 4,
+      scope: 'read',
+      after: { season: 4, scope: 'admin', revision: 9 },
+    })
 
-    expect(stale).toMatchObject({ revision: 9, snapshot: { season: 4, revision: 9 } })
-    expect(current).toEqual({ revision: 9, snapshot: null })
+    expect(stale).toMatchObject({
+      identity: { season: 4, scope: 'read', revision: 9 },
+      snapshot: { season: 4, revision: 9 },
+    })
+    expect(current).toEqual({
+      identity: { season: 4, scope: 'read', revision: 9 },
+      snapshot: null,
+    })
+    expect(promoted.snapshot).not.toBeNull()
+    expect(demoted.snapshot).not.toBeNull()
   })
 
-  it('repairs a cached snapshot after the bounded safety TTL even at the same revision', async () => {
+  it('repairs a missed revision publication with a distinct monotonic identity', async () => {
+    let now = 0
+    const origin = source({ revision: 4, read: [status('public', 0)] })
+    const storage = new MemoryProjectionStorage()
+    const model = createStatusReadModel({
+      source: origin.value,
+      storage,
+      now: () => now,
+      repairAfterMs: 60_000,
+    })
+    await model.reconcileSnapshot({ season: 0, scope: 'read' })
+    origin.readTemplates.mockResolvedValue([status('public', 1)])
+    now = 60_000
+
+    const repaired = await model.reconcileSnapshot({
+      season: 0,
+      scope: 'read',
+    })
+
+    expect(origin.advanceRevision).toHaveBeenCalledWith(0)
+    expect(repaired).toEqual({
+      season: 0,
+      revision: 5,
+      templates: [status('public', 1)],
+    })
+  })
+
+  it('revalidates an unchanged cached snapshot after the bounded safety TTL', async () => {
     let now = 0
     const origin = source({ revision: 1, read: [status('public', 0)] })
     const storage = new MemoryProjectionStorage()
@@ -180,11 +255,14 @@ describe('revisioned status read model', () => {
 
     const initial = await model.reconcileSnapshot({ season: 0, scope: 'read' })
     now = 120_000
-    origin.readTemplates.mockResolvedValue([status('public', 1)])
-    const repaired = await model.reconcileSnapshot({ season: 0, scope: 'read' })
+    const repaired = await model.reconcileSnapshot({
+      season: 0,
+      scope: 'read',
+    })
 
     expect(initial.templates).toEqual([status('public', 0)])
-    expect(repaired.templates).toEqual([status('public', 1)])
+    expect(repaired.templates).toEqual([status('public', 0)])
     expect(origin.readTemplates).toHaveBeenCalledTimes(2)
+    expect(origin.advanceRevision).not.toHaveBeenCalled()
   })
 })

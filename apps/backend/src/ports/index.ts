@@ -93,6 +93,7 @@ export {
 export type {
   CommittedStatusChange,
   StatusReadModel,
+  StatusSnapshotIdentity,
   StatusSnapshotQuery,
   StatusSubscriberAttachment,
   StatusSubscriberQuery,

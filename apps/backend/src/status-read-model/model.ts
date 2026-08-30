@@ -18,6 +18,7 @@ export interface StoredStatusSnapshot {
 
 export interface StatusProjectionSource {
   readRevision(season: number): Promise<number>
+  advanceRevision(season: number): Promise<number>
   readTemplates(season: number, scope: StatusVisibilityScope): Promise<readonly TemplateStatus[]>
 }
 
@@ -43,6 +44,11 @@ const assertQuery = (query: StatusSnapshotQuery): void => {
   }
 }
 
+const sameTemplates = (
+  left: readonly TemplateStatus[],
+  right: readonly TemplateStatus[],
+): boolean => JSON.stringify(left) === JSON.stringify(right)
+
 /** Build the deep read-model module; the returned boundary intentionally owns only three actions. */
 export const createStatusReadModel = (options: {
   readonly source: StatusProjectionSource
@@ -57,15 +63,29 @@ export const createStatusReadModel = (options: {
     query: StatusSnapshotQuery,
     minimumRevision = 0,
   ): Promise<StatusResponse> => {
+    let requiredRevision = minimumRevision
     for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
       const before = await options.source.readRevision(query.season)
-      if (!validRevision(before) || before < minimumRevision) continue
+      if (!validRevision(before) || before < requiredRevision) continue
       const templates = await options.source.readTemplates(query.season, query.scope)
       const after = await options.source.readRevision(query.season)
       if (before !== after) continue
 
       const current = await options.storage.read(query.season, query.scope)
       if (current !== null && current.response.revision > after) return current.response
+      if (
+        current !== null &&
+        current.response.revision === after &&
+        !sameTemplates(current.response.templates, templates)
+      ) {
+        // The authoritative mutation committed but its first revision publication was lost. Claim
+        // a fresh identity, then reread under it so a concurrent mutation cannot produce a torn
+        // snapshot carrying the repair revision.
+        const repairedRevision = await options.source.advanceRevision(query.season)
+        if (!validRevision(repairedRevision) || repairedRevision <= after) continue
+        requiredRevision = repairedRevision
+        continue
+      }
       const stored: StoredStatusSnapshot = {
         response: { season: query.season, revision: after, templates },
         reconciledAt: now(),
@@ -110,13 +130,26 @@ export const createStatusReadModel = (options: {
     query: StatusSubscriberQuery,
   ): Promise<StatusSubscriberAttachment> => {
     assertQuery(query)
-    if (!validRevision(query.afterRevision)) {
-      throw new StatusReconciliationError('invalid subscriber status revision')
+    if (query.after !== null) {
+      assertQuery(query.after)
+      if (!validRevision(query.after.revision)) {
+        throw new StatusReconciliationError('invalid subscriber status revision')
+      }
     }
     const snapshot = await reconcileSnapshot(query)
-    return {
+    const identity = {
+      season: snapshot.season,
+      scope: query.scope,
       revision: snapshot.revision,
-      snapshot: query.afterRevision === snapshot.revision ? null : snapshot,
+    } as const
+    const alreadyHeld =
+      query.after !== null &&
+      query.after.season === identity.season &&
+      query.after.scope === identity.scope &&
+      query.after.revision === identity.revision
+    return {
+      identity,
+      snapshot: alreadyHeld ? null : snapshot,
     }
   }
 

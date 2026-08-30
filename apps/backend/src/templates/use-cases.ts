@@ -43,16 +43,17 @@ const publishStatusProjection = (season: number) =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
     const readModel = yield* StatusReadModelService
-    const revision = yield* storage('advanceStatusProjectionRevision', () =>
-      sql.advanceStatusProjectionRevision(season),
-    )
-    yield* Effect.promise(() => readModel.applyCommittedChange({ season, revision })).pipe(
-      Effect.catchDefect((error) =>
-        Effect.sync(() =>
-          console.error('status projection update failed after template commit', error),
-        ),
-      ),
-    )
+    yield* Effect.promise(async () => {
+      try {
+        const revision = await sql.advanceStatusProjectionRevision(season)
+        await readModel.applyCommittedChange({ season, revision })
+      } catch (error) {
+        // The template mutation is already authoritative. Reconciliation either observes the
+        // revision gap or assigns a fresh revision after detecting changed content at the safety
+        // boundary, so projection downtime must not report the accepted mutation as failed.
+        console.error('status projection publication failed after template commit', error)
+      }
+    })
   })
 
 const store = (
@@ -108,7 +109,9 @@ export const createTemplate = (
       const parent = yield* storage('readNode', () => sql.readNode(nodeId))
       if (parent === null) {
         return yield* Effect.fail(
-          new RequestValidationError({ message: `node does not exist: ${nodeId}` }),
+          new RequestValidationError({
+            message: `node does not exist: ${nodeId}`,
+          }),
         )
       }
       season = parent.season
@@ -218,7 +221,9 @@ export const patchTemplate = (
       return yield* Effect.fail(
         current === null
           ? new ResourceNotFoundError({ message: 'not found' })
-          : new ResourceConflictError({ message: 'template changed concurrently' }),
+          : new ResourceConflictError({
+              message: 'template changed concurrently',
+            }),
       )
     }
 
@@ -234,7 +239,10 @@ export const patchTemplate = (
       ...(input.published === undefined ? {} : { published: input.published }),
       ...(input.finished === undefined
         ? {}
-        : { finished: input.finished, finishedAt: input.finished ? now : null }),
+        : {
+            finished: input.finished,
+            finishedAt: input.finished ? now : null,
+          }),
       ...(input.finished === true
         ? { timelapseFrozen: true }
         : input.timelapseFrozen === undefined
@@ -267,7 +275,9 @@ export const deleteTemplate = (
     return yield* Effect.fail(
       current === null
         ? new ResourceNotFoundError({ message: 'not found' })
-        : new ResourceConflictError({ message: 'template changed concurrently' }),
+        : new ResourceConflictError({
+            message: 'template changed concurrently',
+          }),
     )
   })
 

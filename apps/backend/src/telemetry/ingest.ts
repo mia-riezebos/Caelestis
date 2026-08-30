@@ -123,7 +123,13 @@ const classifyTarget = async (
   const classifications = includeMask ? new Uint8Array(rect.width * rect.height) : null
   const colours = new Map<
     number,
-    { index: number; correct: number; wrong: number; blank: number; total: number }
+    {
+      index: number
+      correct: number
+      wrong: number
+      blank: number
+      total: number
+    }
   >()
   for (let y = 0; y < rect.height; y += 1) {
     const chunkRow = y * rect.width
@@ -232,7 +238,10 @@ const recordObservationPromise = async (
   metadata: TileMetadata,
   bytes: Uint8Array,
   reservationId: string,
-  options: { readonly recordHistory?: boolean; readonly authoritative?: boolean } = {},
+  options: {
+    readonly recordHistory?: boolean
+    readonly authoritative?: boolean
+  } = {},
 ): Promise<void> => {
   const canvas = await decodeCanvas(bytes)
   const targets = await ports.sql.listTelemetryTargets(
@@ -282,13 +291,14 @@ const publishCommittedStatuses = async (
   statuses: readonly TemplateTileStatusRecord[],
 ): Promise<void> => {
   if (statuses.length === 0) return
-  const revision = await ports.sql.advanceStatusProjectionRevision(season)
   try {
+    const revision = await ports.sql.advanceStatusProjectionRevision(season)
     await ports.statusReadModel?.applyCommittedChange({ season, revision })
   } catch (error) {
-    // D1 already owns the committed write and revision. The next bounded snapshot reconciliation
-    // observes the gap and rebuilds; projection loss must not turn an accepted tile into a retry.
-    console.error('status projection update failed after committed tile observation', error)
+    // D1 already owns the committed status rows. A revision gap repairs immediately; if revision
+    // advancement itself was lost, the bounded safety reconciliation detects changed content,
+    // claims a fresh revision, and rebuilds without turning the accepted tile into a retry.
+    console.error('status projection publication failed after committed tile observation', error)
   }
 }
 
@@ -406,7 +416,11 @@ const dayOf = (timestamp: Seconds): Seconds => seconds(Math.floor(timestamp / 86
 
 /** Classify a fully accepted paint against server-owned template chunks and the latest tile anchor. */
 const recordPaintPromise = async (
-  ports: { readonly blobs: BlobStore; readonly sql: SqlStore; readonly counters: CounterStore },
+  ports: {
+    readonly blobs: BlobStore
+    readonly sql: SqlStore
+    readonly counters: CounterStore
+  },
   event: PaintEvent,
   reporterTokenHash: string,
   includeUnpublished: boolean,
@@ -436,7 +450,11 @@ const recordPaintPromise = async (
       if (chunkBytes === null) continue
       const chunk = await decodeWplaceIndexedPng(chunkBytes)
       if (chunk === null || chunk.width !== rect.width || chunk.height !== rect.height) continue
-      const total = totals.get(target.templateId) ?? { placed: 0, correct: 0, repairs: 0 }
+      const total = totals.get(target.templateId) ?? {
+        placed: 0,
+        correct: 0,
+        repairs: 0,
+      }
       for (let index = 0; index < paintedTile.pixels.x.length; index += 1) {
         const x = paintedTile.pixels.x[index] ?? -1
         const y = paintedTile.pixels.y[index] ?? -1

@@ -43,6 +43,7 @@ export class StatusReadModelObject extends DurableObject<Env> implements StatusR
     this.model = createStatusReadModel({
       source: {
         readRevision: (season) => sql.readStatusProjectionRevision(season),
+        advanceRevision: (season) => sql.advanceStatusProjectionRevision(season),
         readTemplates: (season, scope) => sql.readTemplateStatuses(season, scope === 'admin'),
       },
       storage: new DurableStatusProjectionStorage(ctx.storage),

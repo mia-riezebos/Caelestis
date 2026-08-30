@@ -54,7 +54,10 @@ const env = () => {
           revision: 0,
           templates: [],
         }),
-        attachSubscriber: async () => ({ revision: 0, snapshot: null }),
+        attachSubscriber: async () => ({
+          identity: { season: 0, scope: 'read', revision: 0 },
+          snapshot: null,
+        }),
       }),
     },
     ADMIN_TOKEN: BOOTSTRAP,
@@ -75,7 +78,10 @@ it('mints the first admin token with the configured ADMIN_TOKEN binding', async 
   const response = await mint(`Bearer ${BOOTSTRAP}`)
 
   expect(response.status).toBe(201)
-  await expect(response.json()).resolves.toMatchObject({ label: 'first-admin', scope: 'admin' })
+  await expect(response.json()).resolves.toMatchObject({
+    label: 'first-admin',
+    scope: 'admin',
+  })
 })
 
 it('derives binding-backed clients for every Worker event', () => {
