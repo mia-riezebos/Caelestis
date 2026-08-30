@@ -11,8 +11,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { Ports, TemplateVersionRecord } from '../ports/index.js'
-import { fetchAlarmFollowUps, fetchCanvasTiles, RING_STALENESS_SECONDS } from './fetcher.js'
+import type { TemplateVersionRecord } from '../ports/index.js'
+import {
+  type FetcherStores,
+  fetchAlarmFollowUps,
+  fetchCanvasTiles,
+  RING_STALENESS_SECONDS,
+} from './fetcher.js'
 
 const TOKEN = 'a'.repeat(64)
 const NOW = seconds(1_750_032_000)
@@ -55,7 +60,7 @@ const harness = () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
-  const ports: Ports = { blobs, sql, counters }
+  const ports = { blobs, sql, counters }
   const requested: string[] = []
   const userAgents: (string | null)[] = []
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -540,7 +545,7 @@ describe('the 6-hour tile fetcher', () => {
         listAlarmTiles: vi.fn(async () => []),
         listManifestTemplates,
       },
-    } as unknown as Ports
+    } as unknown as FetcherStores
     const probes = ['one', 'two'].map((templateId) => ({
       templateId,
       versionId: `${templateId}-version`,

@@ -99,10 +99,7 @@ describe('assembleManifest', () => {
       listManifestTiles: async () => [],
     } as unknown as MemorySqlStore
 
-    const manifest = await assembleManifest(
-      { sql: torn },
-      { server, season: 1, includeUnpublished: false },
-    )
+    const manifest = await assembleManifest(torn, { server, season: 1, includeUnpublished: false })
 
     expect(manifest.templates).toEqual([])
     expectDecodes(manifest)
@@ -125,10 +122,7 @@ describe('assembleManifest', () => {
       listManifestTiles: sql.listManifestTiles.bind(sql),
     } as unknown as MemorySqlStore
 
-    const manifest = await assembleManifest(
-      { sql: torn },
-      { server, season: 1, includeUnpublished: false },
-    )
+    const manifest = await assembleManifest(torn, { server, season: 1, includeUnpublished: false })
 
     expect(manifest.templates).toEqual([])
     expectDecodes(manifest)
@@ -150,7 +144,7 @@ describe('assembleManifest', () => {
     } as unknown as MemorySqlStore
 
     await expect(
-      assembleManifest({ sql: flooded }, { server, season: 1, includeUnpublished: false }),
+      assembleManifest(flooded, { server, season: 1, includeUnpublished: false }),
     ).rejects.toThrow(/assembles 100001 nodes, more than the 100000/)
   })
 
@@ -173,10 +167,7 @@ describe('assembleManifest', () => {
     await sql.setTemplatePublishedAt(templateA, createdAt, createdAt)
     await sql.setTemplatePublishedAt(templateB, createdAt, createdAt)
 
-    const manifest = await assembleManifest(
-      { sql },
-      { server, season: 1, includeUnpublished: false },
-    )
+    const manifest = await assembleManifest(sql, { server, season: 1, includeUnpublished: false })
 
     expect(manifest.templates).toHaveLength(2)
     expectDecodes(manifest)
@@ -218,10 +209,11 @@ describe('assembleManifest', () => {
         // biome-ignore lint/style/noNonNullAssertion: same
         await store.setTemplatePublishedAt(ids[index]!, createdAt, createdAt)
       }
-      const manifest = await assembleManifest(
-        { sql: store },
-        { server, season: 1, includeUnpublished: false },
-      )
+      const manifest = await assembleManifest(store, {
+        server,
+        season: 1,
+        includeUnpublished: false,
+      })
       return manifest.version
     }
 
@@ -250,10 +242,11 @@ describe('assembleManifest', () => {
       await sql.setTemplatePublishedAt(id, createdAt, createdAt)
     }
 
-    const manifest = await assembleManifest(
-      { sql: reversing(sql) },
-      { server, season: 1, includeUnpublished: false },
-    )
+    const manifest = await assembleManifest(reversing(sql), {
+      server,
+      season: 1,
+      includeUnpublished: false,
+    })
 
     expect(manifest.nodes.map((entry) => entry.id)).toEqual([node.id, other.id].sort())
     expect(manifest.templates.map((entry) => entry.id)).toEqual([...ids].sort())
@@ -275,10 +268,7 @@ describe('assembleManifest', () => {
     await sql.insertTemplateVersion(record)
     await sql.setTemplatePublishedAt(templateId, createdAt, createdAt)
 
-    const manifest = await assembleManifest(
-      { sql },
-      { server, season: 1, includeUnpublished: false },
-    )
+    const manifest = await assembleManifest(sql, { server, season: 1, includeUnpublished: false })
 
     expect(manifest.templates[0]?.chunks.map((chunk) => chunk.tile)).toEqual(['0/0', '1/0', '2/0'])
     expect(manifest.tiles).toEqual(['0/0', '1/0', '2/0'])
@@ -295,10 +285,7 @@ describe('assembleManifest', () => {
     await sql.insertTemplateVersion(version(second, '01890f3a-6b7c-7def-8123-456789abcdb8', 1))
     await sql.setTemplatePublishedAt(second, createdAt, createdAt)
 
-    const manifest = await assembleManifest(
-      { sql },
-      { server, season: 1, includeUnpublished: false },
-    )
+    const manifest = await assembleManifest(sql, { server, season: 1, includeUnpublished: false })
 
     // Template `first` sorts before `second` by id but covers tile 9/0, so an unsorted union would
     // read ['9/0', '1/0'].
@@ -311,8 +298,8 @@ describe('assembleManifest', () => {
     )
     await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-456789abcde1', createdAt, createdAt)
 
-    const first = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false })
-    const second = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false })
+    const first = await assembleManifest(sql, { server, season: 1, includeUnpublished: false })
+    const second = await assembleManifest(sql, { server, season: 1, includeUnpublished: false })
     expect(JSON.stringify(second)).toBe(JSON.stringify(first))
     expect(first.version).toMatch(/^[0-9a-f]{64}$/)
     expect(first).toMatchObject({
@@ -336,10 +323,7 @@ describe('assembleManifest', () => {
       path: '/another',
       name: 'Another',
     })
-    const changed = await assembleManifest(
-      { sql },
-      { server, season: 1, includeUnpublished: false },
-    )
+    const changed = await assembleManifest(sql, { server, season: 1, includeUnpublished: false })
     expect(changed.version).not.toBe(first.version)
   })
 
@@ -358,8 +342,8 @@ describe('assembleManifest', () => {
     await sql.insertTemplateVersion(draft)
     await sql.setTemplatePublishedAt(published.templateId, createdAt, createdAt)
 
-    const member = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false })
-    const admin = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: true })
+    const member = await assembleManifest(sql, { server, season: 1, includeUnpublished: false })
+    const admin = await assembleManifest(sql, { server, season: 1, includeUnpublished: true })
 
     expect(member.templates).toHaveLength(1)
     expect(admin.templates.map(({ published }) => published)).toEqual([true, false])

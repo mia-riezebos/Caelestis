@@ -4,16 +4,16 @@ import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { Ports } from '../ports/index.js'
 import {
   BlobStoreService,
   CounterStoreService,
   createBackendRuntime,
-  layerFromPorts,
+  makeBackendContext,
+  makeBackendLayer,
   SqlStoreService,
 } from './backend-runtime.js'
 
-const makePorts = (): Ports => {
+const makeAdapters = () => {
   const sql = new MemorySqlStore()
   return {
     blobs: new MemoryBlobStore(),
@@ -23,13 +23,14 @@ const makePorts = (): Ports => {
 }
 
 describe('backend runtime', () => {
-  it('bridges existing ports into stable Context services', async () => {
-    const ports = makePorts()
-    const runtime = createBackendRuntime(ports)
+  it('assembles stable Context services explicitly', async () => {
+    const adapters = makeAdapters()
+    const context = makeBackendContext(adapters.blobs, adapters.sql, adapters.counters)
+    const runtime = createBackendRuntime(context)
 
-    expect(Context.get(runtime.context, BlobStoreService)).toBe(ports.blobs)
-    expect(Context.get(runtime.context, SqlStoreService)).toBe(ports.sql)
-    expect(Context.get(runtime.context, CounterStoreService)).toBe(ports.counters)
+    expect(Context.get(runtime.context, BlobStoreService)).toBe(adapters.blobs)
+    expect(Context.get(runtime.context, SqlStoreService)).toBe(adapters.sql)
+    expect(Context.get(runtime.context, CounterStoreService)).toBe(adapters.counters)
 
     const resolved = await runtime.run(
       Effect.gen(function* () {
@@ -40,17 +41,19 @@ describe('backend runtime', () => {
         }
       }),
     )
-    expect(resolved).toEqual(ports)
+    expect(resolved).toEqual(adapters)
   })
 
   it('builds an explicit layer from memory adapters', async () => {
-    const ports = makePorts()
+    const adapters = makeAdapters()
     const program = Effect.gen(function* () {
       return yield* SqlStoreService
     })
 
-    await expect(Effect.runPromise(Effect.provide(program, layerFromPorts(ports)))).resolves.toBe(
-      ports.sql,
-    )
+    await expect(
+      Effect.runPromise(
+        Effect.provide(program, makeBackendLayer(adapters.blobs, adapters.sql, adapters.counters)),
+      ),
+    ).resolves.toBe(adapters.sql)
   })
 })

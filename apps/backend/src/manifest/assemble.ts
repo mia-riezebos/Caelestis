@@ -7,7 +7,7 @@ import {
   tileKey,
 } from '@caelestis/shared'
 import { Effect } from 'effect'
-import type { Ports } from '../ports/index.js'
+import type { SqlStore } from '../ports/index.js'
 import { SqlStoreService } from '../runtime/backend-runtime.js'
 import { BackendStorageError } from '../runtime/errors.js'
 
@@ -26,7 +26,7 @@ const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000
 
 const assembleManifestWithSql = async (
-  sql: Ports['sql'],
+  sql: SqlStore,
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
   const surface = options.surface ?? { kind: 'world', allianceId: null }
@@ -147,9 +147,9 @@ const assembleManifestWithSql = async (
 
 /** Compatibility entry point for assembler tests and callers that have not migrated yet. */
 export const assembleManifest = (
-  ports: Pick<Ports, 'sql'>,
+  sql: SqlStore,
   options: AssembleManifestOptions,
-): Promise<Manifest> => assembleManifestWithSql(ports.sql, options)
+): Promise<Manifest> => assembleManifestWithSql(sql, options)
 
 /** Assemble one manifest from the SQL service supplied by the prepared backend runtime. */
 export const assembleManifestEffect = (

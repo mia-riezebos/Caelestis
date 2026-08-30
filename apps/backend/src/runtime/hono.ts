@@ -25,6 +25,10 @@ const mapBackendHttpError = (context: Context, error: BackendHttpError): Respons
       return context.json({ error: 'unauthorized' }, 401)
     case 'ForbiddenError':
       return context.json({ error: 'forbidden' }, 403)
+    default: {
+      const exhaustive: never = error
+      return exhaustive
+    }
   }
 }
 

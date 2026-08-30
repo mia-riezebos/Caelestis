@@ -19,9 +19,11 @@ import {
 } from '@caelestis/shared'
 import { Effect } from 'effect'
 import type {
+  BlobStore,
   ContributionDelta,
   CounterDelta,
-  Ports,
+  CounterStore,
+  SqlStore,
   TelemetryTarget,
   TemplateTileStatusRecord,
   TileObservation,
@@ -35,6 +37,18 @@ import { TelemetryStorageError, TelemetryValidationError } from '../runtime/erro
 import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
+
+interface BlobStores {
+  readonly blobs: BlobStore
+}
+
+interface BlobSqlStores extends BlobStores {
+  readonly sql: SqlStore
+}
+
+interface TelemetryStores extends BlobSqlStores {
+  readonly counters: CounterStore
+}
 
 interface Reporter {
   readonly wplaceUserId: number
@@ -100,7 +114,7 @@ interface ClassifiedTarget {
 }
 
 const classifyTarget = async (
-  ports: Pick<Ports, 'blobs'>,
+  ports: BlobStores,
   target: TelemetryTarget,
   canvas: Uint8Array,
   observedAt: number,
@@ -186,7 +200,7 @@ export interface MismatchMaskQuery {
 
 /** Read one server-owned classification mask from the latest accepted canvas observation. */
 const readMismatchMaskPromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: BlobSqlStores,
   query: MismatchMaskQuery,
 ): Promise<MismatchMaskRead> => {
   const targets = await ports.sql.listTelemetryTargets(
@@ -220,7 +234,7 @@ const readMismatchMaskPromise = async (
  * and viewer context.
  */
 const recordObservationPromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: BlobSqlStores,
   metadata: TileMetadata,
   bytes: Uint8Array,
   reservationId: string,
@@ -269,7 +283,7 @@ const recordObservationPromise = async (
 
 /** Reclassify bytes already held by the current canvas hash without another R2 upload or history fold. */
 const refreshAuthoritativeTilePromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: BlobSqlStores,
   metadata: TileMetadata,
   bytes: Uint8Array,
 ): Promise<void> => {
@@ -308,7 +322,7 @@ const refreshAuthoritativeTilePromise = async (
 
 /** Process an offer immediately when the content-addressed bytes already exist. */
 const offerTilePromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: BlobSqlStores,
   metadata: TileMetadata,
 ): Promise<'ignored' | 'wanted' | 'recorded'> => {
   const targets = await ports.sql.listTelemetryTargets(
@@ -324,7 +338,7 @@ const offerTilePromise = async (
 }
 
 const uploadTilePromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: BlobSqlStores,
   metadata: TileMetadata,
   bytes: Uint8Array,
   options: {
@@ -366,7 +380,7 @@ const dayOf = (timestamp: Seconds): Seconds => seconds(Math.floor(timestamp / 86
 
 /** Classify a fully accepted paint against server-owned template chunks and the latest tile anchor. */
 const recordPaintPromise = async (
-  ports: Ports,
+  ports: TelemetryStores,
   event: PaintEvent,
   reporterTokenHash: string,
   includeUnpublished: boolean,
