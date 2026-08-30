@@ -1,8 +1,8 @@
 # Capacity estimates & free-tier ceiling
 
 Type: task
-Status: open
-Blocked by: 17
+Status: in progress
+Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/22
 
 ## Question
@@ -46,3 +46,43 @@ about as much as a guess.
 
 Output: a short table in the README — "roughly N users and M templates fit free; beyond that,
 Workers Paid" — plus whatever the model reveals about which knob to turn first.
+
+## Acceptance criteria
+
+- [ ] A tested model accepts active users, templates, covered tiles, paint traffic, tile-fetch
+      traffic, active time, batching, tile size, and tile-change rate.
+- [ ] The model reports daily Worker and Durable Object requests, D1 logical writes, D1 retained
+      rows, and R2 operations and storage growth.
+- [ ] The model reflects the current telemetry route, single-shard counter store, decay ladders,
+      250 ms tile-offer batching, and lack of physical tile-blob GC.
+- [ ] A repeatable read-only command compares a production window with the corresponding model
+      inputs and Cloudflare usage metrics.
+- [ ] The README gives one measured free-tier scenario, the first limit it reaches, and the first
+      knob to turn.
+
+## TODOs
+
+- [x] Reconcile the capacity contract with the current telemetry pipeline and Cloudflare limits.
+- [ ] Implement and test the capacity model for Workers, Durable Objects, D1, and R2.
+- [ ] Add a repeatable live measurement command and compare a production window with the model.
+- [ ] Document the measured ceiling and first knob in the README, then run repository validation.
+
+## Notes
+
+- Issue #17 closed on 2026-08-30, and its real Berrycamp fixture corpus is present on `main`.
+- Cloudflare's current Workers Free limits include 100,000 Worker requests/day. Durable Objects
+  include 100,000 requests/day and no longer list a separate row-write allowance. D1 still includes
+  100,000 rows written/day. R2 includes 10 GB-month, 1 million Class A operations/month, and
+  10 million Class B operations/month.
+- Current code sends one Durable Object RPC per accepted paint report plus alarm invocations. Tile
+  offers do not call the Durable Object. The userscript batches tile offers for 250 ms and sends
+  paint reports individually.
+- SQL tile-history rows compact, but R2 tile blobs are not physically collected. The model must
+  therefore report cumulative blob growth rather than implying that SQL retention frees R2 space.
+- `per-template` sharding cannot extend the free request quota. It becomes relevant only if a paid
+  deployment measures single-shard latency or overload before its account quotas.
+- Limit sources, checked 2026-08-30:
+  - https://developers.cloudflare.com/workers/platform/limits/
+  - https://developers.cloudflare.com/durable-objects/platform/pricing/
+  - https://developers.cloudflare.com/d1/platform/pricing/
+  - https://developers.cloudflare.com/r2/pricing/
