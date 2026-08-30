@@ -186,6 +186,14 @@ describe('the Drizzle schema and migration history agree', () => {
     database
       .prepare('UPDATE templates SET current_version_id = ? WHERE id = ?')
       .run('legacy-version', 'legacy')
+    database
+      .prepare(
+        `INSERT INTO template_tile_statuses (
+          template_id, version_id, tile_x, tile_y, correct, wrong, blank,
+          colours_json, observed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('legacy', 'legacy-version', 0, 0, 1, 2, 3, '{}', 1_000)
 
     for (const migration of migrations.slice(surfaceIndex)) {
       database.exec(`BEGIN;\n${migration.sql.replaceAll('--> statement-breakpoint', '')}\nCOMMIT;`)
@@ -206,6 +214,20 @@ describe('the Drizzle schema and migration history agree', () => {
         .prepare('SELECT version_id, tile_x, tile_y FROM version_tiles WHERE version_id = ?')
         .get('legacy-version'),
     ).toEqual({ version_id: 'legacy-version', tile_x: 0, tile_y: 0 })
+    expect(
+      database
+        .prepare(
+          `SELECT template_id, version_id, correct, wrong, blank
+           FROM template_tile_statuses WHERE template_id = ?`,
+        )
+        .get('legacy'),
+    ).toEqual({
+      template_id: 'legacy',
+      version_id: 'legacy-version',
+      correct: 1,
+      wrong: 2,
+      blank: 3,
+    })
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     database.close()
   })
