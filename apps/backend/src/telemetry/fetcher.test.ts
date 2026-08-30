@@ -55,20 +55,22 @@ const harness = () => {
   const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
   const ports: Ports = { blobs, sql, counters }
   const requested: string[] = []
-  const fetchImpl = (async (input: RequestInfo | URL) => {
+  const userAgents: (string | null)[] = []
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     requested.push(url)
+    userAgents.push(new Headers(init?.headers).get('user-agent'))
     const match = url.match(/tiles\/(\d+)\/(\d+)\.png$/)
     if (match === null) return new Response(null, { status: 404 })
     const body = await tileBytes(Number(match[1]) * 7 + Number(match[2]))
     return new Response(body.slice())
   }) as typeof fetch
-  return { ports, sql, requested, fetchImpl }
+  return { ports, sql, requested, userAgents, fetchImpl }
 }
 
 describe('the 6-hour tile fetcher', () => {
   it('fetches each tile once even when templates overlap, plus a deduplicated ring', async () => {
-    const { ports, sql, requested, fetchImpl } = harness()
+    const { ports, sql, requested, userAgents, fetchImpl } = harness()
     // Two templates on the same tile, one a neighbour — the shared tile must fetch exactly once.
     await sql.insertTemplateVersion(version('overlap-a', [{ x: 100, y: 100 }]))
     await sql.insertTemplateVersion(version('overlap-b', [{ x: 100, y: 100 }]))
@@ -77,6 +79,7 @@ describe('the 6-hour tile fetcher', () => {
     const report = await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
 
     expect(new Set(requested).size).toBe(requested.length)
+    expect(new Set(userAgents)).toEqual(new Set(['Caelestis-Tile-Fetcher/1.0']))
     // 2 template tiles + the ring around a 2×1 block: a 4×3 rectangle of tiles in total.
     expect(requested).toHaveLength(12)
     expect(report).toMatchObject({ fetched: 12, unchanged: 0, fresh: 0, failed: 0, deferred: 0 })

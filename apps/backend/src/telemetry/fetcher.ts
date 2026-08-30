@@ -37,6 +37,8 @@ export const MAX_FETCH_TILES_PER_RUN = 200
 /** Ring tiles skip their refetch while younger than this — surroundings age fine. */
 export const RING_STALENESS_SECONDS = 72_000 // 20 hours: roughly daily under a 6-hour cron.
 
+const WPLACE_TILE_USER_AGENT = 'Caelestis-Tile-Fetcher/1.0'
+
 export interface FetchReport {
   readonly fetched: number
   readonly unchanged: number
@@ -104,7 +106,9 @@ export const fetchCanvasTiles = async (
       continue
     }
     try {
-      const response = await fetchImpl(wplaceTileUrl(season, tile))
+      const response = await fetchImpl(wplaceTileUrl(season, tile), {
+        headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
+      })
       if (!response.ok) {
         failed++
         continue
