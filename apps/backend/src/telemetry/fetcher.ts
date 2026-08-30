@@ -7,6 +7,7 @@ import {
   WORLD_TILES,
 } from '@caelestis/shared'
 import type { Ports } from '../ports/index.js'
+import { createBackendRuntime } from '../runtime/backend-runtime.js'
 import { MAX_CANVAS_TILE_BYTES, recordObservation } from './ingest.js'
 
 /**
@@ -62,6 +63,7 @@ export const fetchCanvasTiles = async (
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
   const fetchImpl = options.fetchImpl ?? fetch
   const { season } = options
+  const runtime = createBackendRuntime(ports)
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
   // admin's draft deserves the same timelapse the published version will show.
@@ -124,19 +126,20 @@ export const fetchCanvasTiles = async (
         continue
       }
       await ports.blobs.put('tiles', hash, bytes)
-      await recordObservation(
-        ports,
-        {
-          wplaceUserId: FETCHER_USER_ID,
-          displayName: FETCHER_DISPLAY_NAME,
-          tokenHash,
-          season,
-          tile,
-          hash,
-          observedAt: now,
-          includeUnpublished: true,
-        },
-        bytes,
+      await runtime.run(
+        recordObservation(
+          {
+            wplaceUserId: FETCHER_USER_ID,
+            displayName: FETCHER_DISPLAY_NAME,
+            tokenHash,
+            season,
+            tile,
+            hash,
+            observedAt: now,
+            includeUnpublished: true,
+          },
+          bytes,
+        ),
       )
       fetched++
     } catch {

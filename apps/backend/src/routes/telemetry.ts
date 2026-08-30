@@ -12,7 +12,6 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
-import type { Ports } from '../ports/index.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -22,7 +21,7 @@ import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
 import {
   MAX_CANVAS_TILE_BYTES,
-  offerTile,
+  offerTiles,
   readMismatchMask,
   recordPaint,
   uploadTile,
@@ -128,7 +127,6 @@ const readBoundedBody = async (request: Request, limit: number): Promise<Uint8Ar
 }
 
 export const createTelemetryRoutes = (
-  ports: Ports,
   runtime: BackendRuntime,
   auth: AuthOptions,
   options: { readonly currentSeason: number },
@@ -172,19 +170,25 @@ export const createTelemetryRoutes = (
       ) {
         return c.json({ error: 'template, version, tile and season must be valid' }, 400)
       }
-      const result = await readMismatchMask(ports, {
-        season,
-        templateId,
-        versionId,
-        tile: { x, y },
-        includeUnpublished: c.get('caller').scope === 'admin',
-      })
-      if (result.kind === 'not-found') return c.json({ error: 'template tile not found' }, 404)
-      if (result.kind === 'unobserved') return c.body(null, 204)
-      return c.body(result.bytes.slice().buffer as ArrayBuffer, 200, {
-        'content-type': 'application/vnd.caelestis.mismatch-mask',
-        'cache-control': 'no-store',
-      })
+      return runBackendHttp(
+        c,
+        runtime,
+        readMismatchMask({
+          season,
+          templateId,
+          versionId,
+          tile: { x, y },
+          includeUnpublished: c.get('caller').scope === 'admin',
+        }),
+        (result) => {
+          if (result.kind === 'not-found') return c.json({ error: 'template tile not found' }, 404)
+          if (result.kind === 'unobserved') return c.body(null, 204)
+          return c.body(result.bytes.slice().buffer as ArrayBuffer, 200, {
+            'content-type': 'application/vnd.caelestis.mismatch-mask',
+            'cache-control': 'no-store',
+          })
+        },
+      )
     },
   )
 
@@ -366,23 +370,25 @@ export const createTelemetryRoutes = (
       return c.json({ error: 'tile offer batch contains duplicates' }, 400)
     }
     const caller = c.get('caller')
-    const wanted: string[] = []
+    const offers = []
     for (const offer of body.offers) {
       const tile = parseTileKey(offer.tile)
       if (tile === null) return c.json({ error: 'invalid tile offer batch' }, 400)
-      const result = await offerTile(ports, {
-        wplaceUserId: body.wplaceUserId,
-        displayName: body.displayName,
-        tokenHash: caller.tokenHash,
-        season: body.season,
-        tile,
-        hash: offer.sha256,
-        observedAt: offer.ts,
-        includeUnpublished: caller.scope === 'admin',
+      offers.push({
+        key: offer.tile,
+        metadata: {
+          wplaceUserId: body.wplaceUserId,
+          displayName: body.displayName,
+          tokenHash: caller.tokenHash,
+          season: body.season,
+          tile,
+          hash: offer.sha256,
+          observedAt: offer.ts,
+          includeUnpublished: caller.scope === 'admin',
+        },
       })
-      if (result === 'wanted') wanted.push(offer.tile)
     }
-    return c.json({ wanted })
+    return runBackendHttp(c, runtime, offerTiles(offers), (wanted) => c.json({ wanted }))
   })
 
   routes.put('/tiles/:x/:y/:hash', requireScope(auth, 'report'), async (c) => {
@@ -413,9 +419,10 @@ export const createTelemetryRoutes = (
     const bytes = await readBoundedBody(c.req.raw, MAX_CANVAS_TILE_BYTES)
     if (bytes === null) return c.json({ error: 'invalid tile body' }, 400)
     const caller = c.get('caller')
-    try {
-      await uploadTile(
-        ports,
+    return runBackendHttp(
+      c,
+      runtime,
+      uploadTile(
         {
           wplaceUserId,
           displayName,
@@ -427,12 +434,9 @@ export const createTelemetryRoutes = (
           includeUnpublished: caller.scope === 'admin',
         },
         bytes,
-      )
-      return c.body(null, 204)
-    } catch (error) {
-      if (error instanceof RangeError) return c.json({ error: error.message }, 400)
-      throw error
-    }
+      ),
+      () => c.body(null, 204),
+    )
   })
 
   routes.post('/paints', requireScope(auth, 'report'), async (c) => {
@@ -442,10 +446,19 @@ export const createTelemetryRoutes = (
     ) as PaintEventValue | null
     if (event === null) return c.json({ error: 'invalid paint event' }, 400)
     const caller = c.get('caller')
-    const result = await recordPaint(ports, event, caller.tokenHash, caller.scope === 'admin')
-    return result === 'duplicate'
-      ? c.json({ accepted: false, duplicate: true })
-      : c.json({ accepted: true, partial: result === 'partial', receivedAt: millis(Date.now()) })
+    return runBackendHttp(
+      c,
+      runtime,
+      recordPaint(event, caller.tokenHash, caller.scope === 'admin'),
+      (result) =>
+        result === 'duplicate'
+          ? c.json({ accepted: false, duplicate: true })
+          : c.json({
+              accepted: true,
+              partial: result === 'partial',
+              receivedAt: millis(Date.now()),
+            }),
+    )
   })
 
   return routes

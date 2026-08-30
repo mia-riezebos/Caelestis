@@ -6,10 +6,13 @@ import type { BackendHttpError } from './errors.js'
 const mapBackendHttpError = (context: Context, error: BackendHttpError): Response => {
   switch (error._tag) {
     case 'SqlStoreReadError':
+    case 'TelemetryStorageError':
       // Hono's default error handler logged the rejected store call before returning this response.
       // Keep that signal while the failure moves into Effect's typed channel.
       console.error(error.cause)
       return context.text('Internal Server Error', 500)
+    case 'TelemetryValidationError':
+      return context.json({ error: error.message }, 400)
   }
 }
 

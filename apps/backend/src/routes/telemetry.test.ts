@@ -6,7 +6,7 @@ import {
   TILE_SIZE,
   TRANSPARENT_INDEX,
 } from '@caelestis/shared'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -125,6 +125,8 @@ const uploadCanvas = async (
 }
 
 describe('telemetry routes', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   it('requests missing template-covered tiles and serves server-backed progress after upload', async () => {
     const { app } = await harness()
     const templateId = await createPublishedTemplate(app)
@@ -196,6 +198,43 @@ describe('telemetry routes', () => {
       body: JSON.stringify({ ...offer, offers: [offer.offers[0], offer.offers[0]] }),
     })
     expect(duplicate.status).toBe(400)
+  })
+
+  it('keeps upload validation separate from typed storage failures', async () => {
+    const { app, blobs } = await harness()
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const now = Math.floor(Date.now() / 1_000)
+    const upload = (claimedHash: string) =>
+      app.request(`/telemetry/tiles/0/0/${claimedHash}`, {
+        method: 'PUT',
+        headers: {
+          ...bearer(reportToken),
+          'x-caelestis-season': '0',
+          'x-caelestis-observed-at': String(now),
+          'x-caelestis-wplace-user-id': '42',
+          'x-caelestis-display-name': 'Mia',
+        },
+        body: bytes,
+      })
+
+    const invalid = await upload('f'.repeat(64))
+    expect(invalid.status).toBe(400)
+    await expect(invalid.json()).resolves.toEqual({
+      error: 'tile bytes do not match their sha256',
+    })
+
+    const error = new Error('blob storage unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    blobs.put = async () => {
+      throw error
+    }
+    const unavailable = await upload(hash)
+    expect(unavailable.status).toBe(500)
+    expect(await unavailable.text()).toBe('Internal Server Error')
+    expect(consoleError).toHaveBeenCalledWith(error)
   })
 
   it('classifies accepted paints once and rejects read-only reporting', async () => {

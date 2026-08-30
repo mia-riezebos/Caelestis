@@ -6,4 +6,15 @@ export class SqlStoreReadError extends Data.TaggedError('SqlStoreReadError')<{
   readonly cause: unknown
 }> {}
 
-export type BackendHttpError = SqlStoreReadError
+/** A telemetry dependency rejected an otherwise valid operation. */
+export class TelemetryStorageError extends Data.TaggedError('TelemetryStorageError')<{
+  readonly operation: string
+  readonly cause: unknown
+}> {}
+
+/** Telemetry input passed HTTP parsing but failed domain validation. */
+export class TelemetryValidationError extends Data.TaggedError('TelemetryValidationError')<{
+  readonly message: string
+}> {}
+
+export type BackendHttpError = SqlStoreReadError | TelemetryStorageError | TelemetryValidationError
