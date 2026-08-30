@@ -133,4 +133,23 @@ describe('sync request observability', () => {
     })
     logged.mockRestore()
   })
+
+  it('keeps structured counts finite when a D1 adapter omits billing metadata', async () => {
+    const source = fakeDatabase()
+    source.prepare = () =>
+      ({
+        ...fakeStatement(),
+        all: async () => ({ success: true, meta: {}, results: [] }),
+      }) as unknown as D1PreparedStatement
+    const metrics = new SyncRequestMetrics(new Request('https://example.com/health'))
+    await meterD1Database(source, metrics).prepare('select').all()
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    metrics.finish(new Response(null, { status: 200 }))
+
+    expect(logged.mock.calls[0]?.[0]).toMatchObject({
+      d1: { queries: 1, rows_read: 0, rows_read_exact: 0, rows_written: 0 },
+    })
+    logged.mockRestore()
+  })
 })

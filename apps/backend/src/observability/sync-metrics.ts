@@ -68,13 +68,17 @@ class D1QueryMetrics {
 
   recordResult(result: D1Result<unknown>): void {
     this.queries++
-    this.exactRowsRead += result.meta.rows_read
-    this.rowsWritten += result.meta.rows_written
+    this.exactRowsRead += this.nonnegativeCount(result.meta.rows_read)
+    this.rowsWritten += this.nonnegativeCount(result.meta.rows_written)
   }
 
   recordRowsWithoutMeta(rows: number): void {
     this.queries++
     this.lowerBoundRowsRead += rows
+  }
+
+  private nonnegativeCount(value: unknown): number {
+    return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
   }
 
   snapshot() {
