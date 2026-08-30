@@ -35,6 +35,11 @@ let draft: {
   readonly id: number
   readonly kind: AllianceTemplateSurfaceKind
 } | null = null
+let pendingDraft: {
+  readonly id: number
+  readonly sequence: number
+  readonly previousKind: AllianceTemplateSurfaceKind | null
+} | null = null
 let memberSequence = 0
 let acceptedMemberSequence = 0
 let headquartersSequence = 0
@@ -141,10 +146,18 @@ const reconcile = (): void => {
   if (assetStage !== null && memberAllianceId !== null) {
     const frame = assetStage.querySelector<HTMLElement>(ARTBOARD_FRAME)
     if (frame !== null) {
+      // Wplace reuses this frame while switching picture and banner. Until the new draft metadata
+      // wins, the native canvas can still have the previous asset's dimensions and must not select
+      // the previous manifest for the new editor.
+      const canvasKind = assetKindFromCanvas(frame)
+      if (pendingDraft !== null && canvasKind === pendingDraft.previousKind) {
+        publish(null)
+        return
+      }
       // Wplace may reuse a cached draft without issuing the metadata request after a late dev
       // injection. The two asset canvases have fixed, disjoint dimensions, so their native
       // artboard canvas is a safe fallback for kind detection; the request still owns the draft id.
-      const kind = assetKindFromCanvas(frame) ?? draft?.kind ?? null
+      const kind = draft?.kind ?? canvasKind ?? null
       if (kind === null) {
         publish(null)
         return
@@ -231,27 +244,57 @@ const observeDraft = (
   requestedDraftId: number,
   requestAllianceEpoch: number,
 ): void => {
-  readJson(response, (body) => {
-    if (
-      requestAllianceEpoch !== allianceEpoch ||
-      sequence < acceptedDraftSequence ||
-      !isRecord(body)
-    )
-      return
-    const responseDraftId =
-      body.draftId === undefined ? requestedDraftId : positiveInteger(body.draftId)
-    if (responseDraftId !== requestedDraftId) return
-    const kind =
-      body.assetType === 'picture'
-        ? ('alliance-picture' as const)
-        : body.assetType === 'banner'
-          ? ('alliance-banner' as const)
-          : null
-    if (kind === null) return
-    acceptedDraftSequence = sequence
-    draft = { id: requestedDraftId, kind }
+  const finish = (): void => {
+    if (pendingDraft?.sequence !== sequence) return
+    pendingDraft = null
     queueReconcile()
-  })
+  }
+  if (!response.ok) {
+    finish()
+    return
+  }
+  try {
+    void response
+      .clone()
+      .json()
+      .then((body: unknown) => {
+        if (
+          requestAllianceEpoch !== allianceEpoch ||
+          sequence < acceptedDraftSequence ||
+          !isRecord(body)
+        )
+          return
+        const responseDraftId =
+          body.draftId === undefined ? requestedDraftId : positiveInteger(body.draftId)
+        if (responseDraftId !== requestedDraftId) return
+        const kind =
+          body.assetType === 'picture'
+            ? ('alliance-picture' as const)
+            : body.assetType === 'banner'
+              ? ('alliance-banner' as const)
+              : null
+        if (kind === null) return
+        acceptedDraftSequence = sequence
+        draft = { id: requestedDraftId, kind }
+      })
+      .catch(() => {})
+      .finally(finish)
+  } catch {
+    finish()
+  }
+}
+
+const selectDraftRequest = (id: number): { readonly sequence: number; readonly epoch: number } => {
+  const sequence = ++draftSequence
+  const previousKind =
+    active?.surface.kind === 'alliance-picture' || active?.surface.kind === 'alliance-banner'
+      ? active.surface.kind
+      : null
+  acceptedDraftSequence = sequence
+  draft = null
+  pendingDraft = { id, sequence, previousKind }
+  queueReconcile()
+  return { sequence, epoch: allianceEpoch }
 }
 
 const installFetchObserver = (realm: Window & typeof globalThis): (() => void) | null => {
@@ -269,6 +312,12 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
           readonly allianceEpoch: number
         }
       | null = null
+    let draftValidation: {
+      readonly pending: Promise<Response>
+      readonly sequence: number
+      readonly draftId: number
+      readonly allianceEpoch: number
+    } | null = null
     try {
       const raw = urlForFetchInput(args[0], realm, urlGetters)
       if (raw !== null) {
@@ -297,21 +346,26 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
             const sequence = ++headquartersSequence
             selectHeadquartersRequest(memberAllianceId, sequence)
             observation = { kind: 'hq', sequence }
-          } else if (url.searchParams.get('metadataOnly') === 'true') {
+          } else {
             const match = DRAFT_CANVAS.exec(url.pathname)
             const id = match === null ? null : positiveInteger(Number(match[1]))
-            if (id !== null) {
-              const sequence = ++draftSequence
-              acceptedDraftSequence = sequence
-              if (draft?.id !== id) {
-                draft = null
-                queueReconcile()
-              }
+            if (id !== null && url.searchParams.get('metadataOnly') === 'true') {
+              const selected = selectDraftRequest(id)
               observation = {
                 kind: 'draft',
-                sequence,
+                sequence: selected.sequence,
                 draftId: id,
-                allianceEpoch,
+                allianceEpoch: selected.epoch,
+              }
+            } else if (id !== null) {
+              const selected = selectDraftRequest(id)
+              const metadataUrl = new URL(url)
+              metadataUrl.searchParams.set('metadataOnly', 'true')
+              draftValidation = {
+                pending: previous.call(realm, metadataUrl.href, { credentials: 'include' }),
+                sequence: selected.sequence,
+                draftId: id,
+                allianceEpoch: selected.epoch,
               }
             }
           }
@@ -322,6 +376,22 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
     }
 
     const pending = previous.apply(this as never, args)
+    if (draftValidation !== null) {
+      void draftValidation.pending.then(
+        (response) =>
+          observeDraft(
+            response,
+            draftValidation.sequence,
+            draftValidation.draftId,
+            draftValidation.allianceEpoch,
+          ),
+        () => {
+          if (pendingDraft?.sequence !== draftValidation?.sequence) return
+          pendingDraft = null
+          queueReconcile()
+        },
+      )
+    }
     if (observation === null) return pending
     return pending.then((response) => {
       if (observation.kind === 'draft') {
@@ -387,6 +457,7 @@ export const resetAllianceSurfaceObserver = (): void => {
   memberAllianceId = null
   headquarters = null
   draft = null
+  pendingDraft = null
   memberSequence = 0
   acceptedMemberSequence = 0
   headquartersSequence = 0

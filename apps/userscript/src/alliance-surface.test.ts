@@ -284,6 +284,46 @@ describe('active alliance surface observation', () => {
     await pending
   })
 
+  it('validates an ordinary draft canvas request before changing picture and banner filters', async () => {
+    let finishPicture!: (response: Response) => void
+    const pictureMetadata = new Promise<Response>((resolve) => {
+      finishPicture = resolve
+    })
+    const nativeFetch = vi.fn<typeof fetch>((input) => {
+      const url = String(input)
+      if (url.endsWith('/alliance')) return json({ id: 535_245 })
+      if (url.includes('metadataOnly=true')) return pictureMetadata
+      return Promise.resolve(new Response(new Uint8Array([1, 2, 3])))
+    })
+    window.fetch = nativeFetch
+    installAllianceSurfaceObserver()
+    const dialog = stage('Alliance asset canvas')
+    const canvas = document.createElement('canvas')
+    canvas.width = 384
+    canvas.height = 128
+    dialog.querySelector('.artboard-frame')?.append(canvas)
+    await settle()
+    expect(activeAllianceSurface()?.surface.kind).toBe('alliance-banner')
+
+    await window.fetch('https://backend.wplace.live/alliance/assets/drafts/129/canvas')
+    await settle()
+    expect(activeAllianceSurface()).toBeNull()
+    expect(nativeFetch).toHaveBeenCalledWith(
+      'https://backend.wplace.live/alliance/assets/drafts/129/canvas?metadataOnly=true',
+      { credentials: 'include' },
+    )
+
+    finishPicture(
+      new Response(JSON.stringify({ assetType: 'picture', draftId: 129, width: 64, height: 64 })),
+    )
+    await vi.waitFor(() =>
+      expect(activeAllianceSurface()).toMatchObject({
+        surface: { kind: 'alliance-picture', allianceId: 535_245 },
+        draftId: 129,
+      }),
+    )
+  })
+
   it('notifies only when the active surface identity or DOM attachment changes', async () => {
     window.fetch = vi.fn<typeof fetch>(() => json({ allianceId: 535_245 }))
     const listener = vi.fn()
