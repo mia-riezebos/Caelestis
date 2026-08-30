@@ -12,6 +12,7 @@ import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
+import type { StatusReadModelPort } from '../status-read-model/port.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const TOKEN = 'a'.repeat(64)
@@ -20,11 +21,11 @@ const EVENT_ID = '01890f3e-7b2c-7abc-8def-0123456789ac'
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
-const harness = async () => {
+const harness = async (statusReadModel?: StatusReadModelPort) => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-  const context = makeBackendContext(blobs, sql, counters)
+  const context = makeBackendContext(blobs, sql, counters, statusReadModel)
   await sql.insertNode({
     id: NODE_ID,
     season: 0,
@@ -222,6 +223,7 @@ describe('telemetry routes', () => {
     })
     expect(status.status).toBe(200)
     await expect(status.json()).resolves.toEqual({
+      revision: 2,
       templates: [
         {
           templateId,
@@ -289,6 +291,41 @@ describe('telemetry routes', () => {
     expect(unavailable.status).toBe(500)
     expect(await unavailable.text()).toBe('Internal Server Error')
     expect(consoleError).toHaveBeenCalledWith(error)
+  })
+
+  it('keeps an accepted tile authoritative when projection repair fails', async () => {
+    const projectionError = new Error('read model unavailable')
+    const applyCommittedChange = vi.fn(async () => Promise.reject(projectionError))
+    const { app, sql } = await harness({
+      applyCommittedChange,
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+    })
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const now = seconds(Math.floor(Date.now() / 1_000))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(now),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+
+    expect(uploaded.status).toBe(204)
+    await expect(sql.readTemplateStatuses(0, false)).resolves.toHaveLength(1)
+    expect(applyCommittedChange).toHaveBeenCalledWith(0)
+    expect(consoleError).toHaveBeenCalledWith(projectionError)
   })
 
   it('clamps future tile observations to server receipt time', async () => {

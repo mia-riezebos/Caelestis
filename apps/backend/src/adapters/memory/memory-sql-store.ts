@@ -129,6 +129,10 @@ export class MemorySqlStore implements SqlStore {
   >()
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
+  private readonly statusRevisions = new Map<
+    number,
+    { revision: number; publicFingerprint: string; adminFingerprint: string }
+  >()
   private readonly canvasTiles = new Map<string, TileObservation>()
   private readonly serverOwnedCanvasTiles = new Set<string>()
   private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
@@ -1150,6 +1154,29 @@ export class MemorySqlStore implements SqlStore {
       })
     }
     return out.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async commitStatusProjectionRevision(
+    season: number,
+    publicFingerprint: string,
+    adminFingerprint: string,
+  ): Promise<number> {
+    if (
+      !Number.isSafeInteger(season) ||
+      season < 0 ||
+      !/^[0-9a-f]{64}$/.test(publicFingerprint) ||
+      !/^[0-9a-f]{64}$/.test(adminFingerprint)
+    ) {
+      throw new RangeError('invalid status projection revision metadata')
+    }
+    const held = this.statusRevisions.get(season)
+    const changed =
+      held === undefined ||
+      held.publicFingerprint !== publicFingerprint ||
+      held.adminFingerprint !== adminFingerprint
+    const revision = changed ? (held?.revision ?? 0) + 1 : held.revision
+    this.statusRevisions.set(season, { revision, publicFingerprint, adminFingerprint })
+    return revision
   }
 
   async evaluateTemplateAlarm(

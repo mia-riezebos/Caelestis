@@ -32,8 +32,13 @@ import {
   BlobStoreService,
   CounterStoreService,
   SqlStoreService,
+  StatusReadModelService,
 } from '../runtime/backend-runtime.js'
 import { TelemetryStorageError, TelemetryValidationError } from '../runtime/errors.js'
+import {
+  repairCommittedStatusProjection,
+  type StatusReadModelPort,
+} from '../status-read-model/port.js'
 import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
@@ -44,6 +49,10 @@ interface BlobStores {
 
 interface BlobSqlStores extends BlobStores {
   readonly sql: SqlStore
+}
+
+interface IngestStores extends BlobSqlStores {
+  readonly statusReadModel: StatusReadModelPort
 }
 
 interface TelemetryStores extends BlobSqlStores {
@@ -234,7 +243,7 @@ const readMismatchMaskPromise = async (
  * and viewer context.
  */
 const recordObservationPromise = async (
-  ports: BlobSqlStores,
+  ports: IngestStores,
   metadata: TileMetadata,
   bytes: Uint8Array,
   reservationId: string,
@@ -283,7 +292,7 @@ const recordObservationPromise = async (
 
 /** Reclassify bytes already held by the current canvas hash without another R2 upload or history fold. */
 const refreshAuthoritativeTilePromise = async (
-  ports: BlobSqlStores,
+  ports: IngestStores,
   metadata: TileMetadata,
   bytes: Uint8Array,
 ): Promise<void> => {
@@ -318,11 +327,12 @@ const refreshAuthoritativeTilePromise = async (
     false,
     true,
   )
+  await repairCommittedStatusProjection(ports.statusReadModel, metadata.season)
 }
 
 /** Process an offer immediately when the content-addressed bytes already exist. */
 const offerTilePromise = async (
-  ports: BlobSqlStores,
+  ports: IngestStores,
   metadata: TileMetadata,
 ): Promise<'ignored' | 'wanted' | 'recorded'> => {
   const targets = await ports.sql.listTelemetryTargets(
@@ -338,7 +348,7 @@ const offerTilePromise = async (
 }
 
 const uploadTilePromise = async (
-  ports: BlobSqlStores,
+  ports: IngestStores,
   metadata: TileMetadata,
   bytes: Uint8Array,
   options: {
@@ -367,6 +377,7 @@ const uploadTilePromise = async (
       ...(options.recordHistory === undefined ? {} : { recordHistory: options.recordHistory }),
       ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
     })
+    await repairCommittedStatusProjection(ports.statusReadModel, metadata.season)
   } catch (error) {
     await ports.sql.releaseTileBlobReservation(reservation.id)
     throw error
@@ -482,12 +493,17 @@ export const readMismatchMask = (
 export const refreshAuthoritativeTile = (
   metadata: TileMetadata,
   bytes: Uint8Array,
-): Effect.Effect<void, TelemetryStorageError, BlobStoreService | SqlStoreService> =>
+): Effect.Effect<
+  void,
+  TelemetryStorageError,
+  BlobStoreService | SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
     return yield* storage('refreshAuthoritativeTile', () =>
-      refreshAuthoritativeTilePromise({ blobs, sql }, metadata, bytes),
+      refreshAuthoritativeTilePromise({ blobs, sql, statusReadModel }, metadata, bytes),
     )
   })
 
@@ -497,18 +513,30 @@ export const offerTile = (
 ): Effect.Effect<
   'ignored' | 'wanted' | 'recorded',
   TelemetryStorageError,
-  BlobStoreService | SqlStoreService
+  BlobStoreService | SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    return yield* storage('offerTile', () => offerTilePromise({ blobs, sql }, metadata))
+    const statusReadModel = yield* StatusReadModelService
+    const result = yield* storage('offerTile', () =>
+      offerTilePromise({ blobs, sql, statusReadModel }, metadata),
+    )
+    if (result === 'recorded') {
+      yield* storage('applyCommittedStatusChange', () =>
+        repairCommittedStatusProjection(statusReadModel, metadata.season),
+      )
+    }
+    return result
   })
 
 export const offerTiles = (
   offers: readonly { readonly key: string; readonly metadata: TileMetadata }[],
-): Effect.Effect<readonly string[], TelemetryStorageError, BlobStoreService | SqlStoreService> =>
-  Effect.map(offerTilesWithOutcome(offers), (result) => result.wanted)
+): Effect.Effect<
+  readonly string[],
+  TelemetryStorageError,
+  BlobStoreService | SqlStoreService | StatusReadModelService
+> => Effect.map(offerTilesWithOutcome(offers), (result) => result.wanted)
 
 export interface TileOfferResult {
   readonly wanted: readonly string[]
@@ -520,16 +548,33 @@ export interface TileOfferResult {
 /** Preserve per-offer decisions for capacity metrics while keeping the wire response unchanged. */
 export const offerTilesWithOutcome = (
   offers: readonly { readonly key: string; readonly metadata: TileMetadata }[],
-): Effect.Effect<TileOfferResult, TelemetryStorageError, BlobStoreService | SqlStoreService> =>
+): Effect.Effect<
+  TileOfferResult,
+  TelemetryStorageError,
+  BlobStoreService | SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
+    const blobs = yield* BlobStoreService
+    const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
     const wanted: string[] = []
+    const changedSeasons = new Set<number>()
     let alreadyKnown = 0
     let rejected = 0
     for (const offer of offers) {
-      const outcome = yield* offerTile(offer.metadata)
+      const outcome = yield* storage('offerTile', () =>
+        offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata),
+      )
       if (outcome === 'wanted') wanted.push(offer.key)
-      else if (outcome === 'recorded') alreadyKnown++
-      else rejected++
+      else if (outcome === 'recorded') {
+        alreadyKnown++
+        changedSeasons.add(offer.metadata.season)
+      } else rejected++
+    }
+    for (const season of changedSeasons) {
+      yield* storage('applyCommittedStatusChange', () =>
+        repairCommittedStatusProjection(statusReadModel, season),
+      )
     }
     return { wanted, accepted: wanted.length, alreadyKnown, rejected }
   })
@@ -546,12 +591,15 @@ export const uploadTile = (
 ): Effect.Effect<
   void,
   TelemetryStorageError | TelemetryValidationError,
-  BlobStoreService | SqlStoreService
+  BlobStoreService | SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    return yield* upload(() => uploadTilePromise({ blobs, sql }, metadata, bytes, options))
+    const statusReadModel = yield* StatusReadModelService
+    return yield* upload(() =>
+      uploadTilePromise({ blobs, sql, statusReadModel }, metadata, bytes, options),
+    )
   })
 
 /** Classify one accepted paint while preserving claim, counter, and contribution ordering. */

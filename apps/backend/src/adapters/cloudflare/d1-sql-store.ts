@@ -1992,6 +1992,41 @@ export class D1SqlStore implements SqlStore {
     })
   }
 
+  async commitStatusProjectionRevision(
+    season: number,
+    publicFingerprint: string,
+    adminFingerprint: string,
+  ): Promise<number> {
+    if (
+      !Number.isSafeInteger(season) ||
+      season < 0 ||
+      !/^[0-9a-f]{64}$/.test(publicFingerprint) ||
+      !/^[0-9a-f]{64}$/.test(adminFingerprint)
+    ) {
+      throw new RangeError('invalid status projection revision metadata')
+    }
+    const row = await this.client
+      .prepare(
+        `INSERT INTO status_read_model_revisions (
+           season, revision, public_fingerprint, admin_fingerprint
+         ) VALUES (?1, 1, ?2, ?3)
+         ON CONFLICT (season) DO UPDATE SET
+           revision = revision + CASE
+             WHEN public_fingerprint <> excluded.public_fingerprint
+               OR admin_fingerprint <> excluded.admin_fingerprint
+             THEN 1 ELSE 0 END,
+           public_fingerprint = excluded.public_fingerprint,
+           admin_fingerprint = excluded.admin_fingerprint
+         RETURNING revision`,
+      )
+      .bind(season, publicFingerprint, adminFingerprint)
+      .first<{ revision: number }>()
+    if (row === null || !Number.isSafeInteger(row.revision) || row.revision < 1) {
+      throw new Error('status projection revision commit returned no revision')
+    }
+    return row.revision
+  }
+
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,

@@ -185,6 +185,48 @@ describe('telemetry read routes', () => {
     expect(consoleError).toHaveBeenCalledWith(error)
   })
 
+  it('reuses one revisioned projection while keeping public and admin status scopes separate', async () => {
+    const { app, sql } = await harness()
+    const draftId = await createTemplate(app, false)
+    const readToken = await mintToken(app, 'read')
+    const aggregate = vi.spyOn(sql, 'readTemplateStatuses')
+    await uploadCanvasTile(app, BOOTSTRAP, 1_750_032_000)
+
+    const publicFirst = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+    const publicAgain = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+    const admin = await app.request('/telemetry/status?season=0', {
+      headers: bearer(BOOTSTRAP),
+    })
+
+    await expect(publicFirst.json()).resolves.toEqual({ revision: 1, templates: [] })
+    await expect(publicAgain.json()).resolves.toEqual({ revision: 1, templates: [] })
+    await expect(admin.json()).resolves.toMatchObject({
+      revision: 1,
+      templates: [{ templateId: draftId }],
+    })
+    // The committed upload materializes both scopes once; three reads do no D1 aggregation.
+    expect(aggregate).toHaveBeenCalledTimes(2)
+
+    const published = await app.request(`/admin/templates/${draftId}`, {
+      method: 'PATCH',
+      headers: { ...bearer(BOOTSTRAP), 'content-type': 'application/json' },
+      body: JSON.stringify({ published: true }),
+    })
+    expect(published.status).toBe(200)
+    const publicAfterPublish = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+    await expect(publicAfterPublish.json()).resolves.toMatchObject({
+      revision: 2,
+      templates: [{ templateId: draftId }],
+    })
+    expect(aggregate).toHaveBeenCalledTimes(4)
+  })
+
   it('serves the server-classified mismatch mask for one visible template tile', async () => {
     const { app } = await harness()
     const templateId = await createPublishedTemplate(app)
