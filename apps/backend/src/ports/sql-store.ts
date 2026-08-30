@@ -1004,6 +1004,7 @@ export interface SqlStore {
   readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
+    options?: { readonly serverOwnedOnly?: boolean },
   ): Promise<readonly TemplateStatus[]>
 
   /** Atomically evaluate and persist one complete template snapshot. */

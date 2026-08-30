@@ -1104,7 +1104,10 @@ export class D1SqlStore implements SqlStore {
         tileX: versionTiles.tileX,
         tileY: versionTiles.tileY,
         hash: versionTiles.hash,
-        observedAt: templateTileStatuses.observedAtMs,
+        observedAt: sql<Millis | null>`CASE
+          WHEN ${templateTileStatuses.serverOwned} = 1 THEN ${templateTileStatuses.observedAtMs}
+          ELSE NULL
+        END`,
       })
       .from(versionTiles)
       .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
@@ -1822,6 +1825,7 @@ export class D1SqlStore implements SqlStore {
   async readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
+    options: { readonly serverOwnedOnly?: boolean } = {},
   ): Promise<readonly import('@caelestis/shared').TemplateStatus[]> {
     const rows = await this.database
       .select({
@@ -1847,6 +1851,7 @@ export class D1SqlStore implements SqlStore {
         and(
           eq(templates.season, season),
           includeUnpublished ? undefined : isNotNull(templates.publishedAt),
+          options.serverOwnedOnly === true ? eq(templateTileStatuses.serverOwned, true) : undefined,
         ),
       )
       .groupBy(templates.id, templateVersions.totalPixels, templateVersions.colourTotalsJson)

@@ -268,6 +268,13 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
       ],
     )
 
+    await expect(store.listAlarmTiles(1)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', observedAt: null }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual(
+      [],
+    )
+
     await store.recordTileObservation(
       observation({ tile, hash: 'e'.repeat(64), observedAt: millis(1_000) }),
       [
@@ -308,6 +315,9 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
       observedAt: 1_000,
     })
     await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual([
       expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
     ])
   })

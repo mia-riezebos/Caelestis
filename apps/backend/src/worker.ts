@@ -85,14 +85,12 @@ export default {
     }
     const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
     ctx.waitUntil(
-      Promise.all([
-        fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
-          // A prior template may already have persisted a probe when later scan work fails. Always
-          // reconcile the watcher so that durable work cannot be stranded until the next cron.
-          await env.ALARM_WATCHER.getByName('global').schedule()
-        }),
-        runTileBlobGc(ports, { mode: gcMode }),
-      ]).then(() => undefined),
+      fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
+        // A prior template may already have persisted a probe when later scan work fails. Always
+        // reconcile the watcher so that durable work cannot be stranded until the next cron.
+        await env.ALARM_WATCHER.getByName('global').schedule()
+      }),
     )
+    ctx.waitUntil(runTileBlobGc(ports, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>

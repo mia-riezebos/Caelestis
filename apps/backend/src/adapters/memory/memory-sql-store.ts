@@ -636,13 +636,15 @@ export class MemorySqlStore implements SqlStore {
 
   async listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]> {
     const tiles = await this.listManifestTiles(season, true)
-    return tiles.map((tile) => ({
-      ...tile,
-      observedAt:
-        this.templateTileStatuses.get(
-          `${tile.templateId}\u0000${tile.versionId}\u0000${tileKey({ x: tile.tileX, y: tile.tileY })}`,
-        )?.observedAt ?? null,
-    }))
+    return tiles.map((tile) => {
+      const key = `${tile.templateId}\u0000${tile.versionId}\u0000${tileKey({ x: tile.tileX, y: tile.tileY })}`
+      return {
+        ...tile,
+        observedAt: this.serverOwnedTemplateStatuses.has(key)
+          ? (this.templateTileStatuses.get(key)?.observedAt ?? null)
+          : null,
+      }
+    })
   }
 
   async listTelemetryTargets(
@@ -1037,6 +1039,7 @@ export class MemorySqlStore implements SqlStore {
   async readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
+    options: { readonly serverOwnedOnly?: boolean } = {},
   ): Promise<readonly TemplateStatus[]> {
     const out: TemplateStatus[] = []
     for (const [templateId, template] of this.templates) {
@@ -1047,9 +1050,14 @@ export class MemorySqlStore implements SqlStore {
         (!includeUnpublished && template.publishedAt === null)
       )
         continue
-      const statuses = [...this.templateTileStatuses.values()].filter(
-        (status) => status.templateId === templateId && status.versionId === version.versionId,
-      )
+      const statuses = [...this.templateTileStatuses.entries()]
+        .filter(
+          ([key, status]) =>
+            status.templateId === templateId &&
+            status.versionId === version.versionId &&
+            (options.serverOwnedOnly !== true || this.serverOwnedTemplateStatuses.has(key)),
+        )
+        .map(([, status]) => status)
       if (statuses.length === 0) continue
       const classified = new Map<
         number,
