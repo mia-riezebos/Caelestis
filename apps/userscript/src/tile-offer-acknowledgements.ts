@@ -57,7 +57,7 @@ export class TileOfferAcknowledgements {
   }
 
   started(serverUrl: string, owner: object, season: number, observation: string): void {
-    this.#remember(serverUrl, owner, season, observation, {
+    this.#remember(this.#server(serverUrl, owner, season), observation, {
       state: 'in-flight',
       // A thrown or abandoned request cannot suppress observations forever.
       expiresAt: this.#now() + this.#ttlMs,
@@ -65,27 +65,24 @@ export class TileOfferAcknowledgements {
   }
 
   retryable(serverUrl: string, owner: object, season: number, observation: string): void {
-    this.#remember(serverUrl, owner, season, observation, {
+    const server = this.#settlementServer(serverUrl, owner, season)
+    if (server === null) return
+    this.#remember(server, observation, {
       state: 'retryable',
       expiresAt: 0,
     })
   }
 
   acknowledged(serverUrl: string, owner: object, season: number, observation: string): void {
-    this.#remember(serverUrl, owner, season, observation, {
+    const server = this.#settlementServer(serverUrl, owner, season)
+    if (server === null) return
+    this.#remember(server, observation, {
       state: 'acknowledged',
       expiresAt: this.#now() + this.#ttlMs,
     })
   }
 
-  #remember(
-    serverUrl: string,
-    owner: object,
-    season: number,
-    observation: string,
-    receipt: TileOfferReceipt,
-  ): void {
-    const server = this.#server(serverUrl, owner, season)
+  #remember(server: ServerAcknowledgements, observation: string, receipt: TileOfferReceipt): void {
     server.receipts.delete(observation)
     while (server.receipts.size >= this.#maxReceiptsPerServer) {
       const oldest = server.receipts.keys().next()
@@ -93,6 +90,19 @@ export class TileOfferAcknowledgements {
       server.receipts.delete(oldest.value)
     }
     server.receipts.set(observation, receipt)
+  }
+
+  #settlementServer(
+    serverUrl: string,
+    owner: object,
+    season: number,
+  ): ServerAcknowledgements | null {
+    const existing = this.#servers.get(serverUrl)
+    if (existing === undefined) return this.#server(serverUrl, owner, season)
+    if (existing.owner !== owner || existing.season !== season) return null
+    this.#servers.delete(serverUrl)
+    this.#servers.set(serverUrl, existing)
+    return existing
   }
 
   #server(serverUrl: string, owner: object, season: number): ServerAcknowledgements {
