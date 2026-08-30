@@ -354,6 +354,35 @@ describe('server telemetry client', () => {
     })
   })
 
+  it('retains coverage for quiet tiles when one tile fills the recent replay cache', async () => {
+    const offeredTiles: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          offeredTiles.push(...body.offers.map((offer) => offer.tile))
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    harness.fetchedTile?.({ x: 2, y: 2 }, new Uint8Array([2]), 1_800_000_000)
+    for (let index = 0; index < 31; index++)
+      harness.fetchedTile?.({ x: 3, y: 2 }, new Uint8Array([3]), 1_800_000_000 + index)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    await vi.waitFor(() => expect(offeredTiles).toContain('1/2'))
+  })
+
   it('reports only covered tiles and reads progress back from the server', async () => {
     const requests: Array<{ url: string; init: RequestInit | undefined }> = []
     vi.stubGlobal(
@@ -519,6 +548,47 @@ describe('server telemetry client', () => {
     await vi.waitFor(() => expect(statusReadsAfterOffer).toBe(1))
   })
 
+  it('does not reoffer an observation after its requested upload succeeds', async () => {
+    let offers = 0
+    let uploads = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return Response.json({ wanted: ['1/2'] })
+        }
+        if (url.includes('/telemetry/tiles/1/2/')) {
+          uploads++
+          return Response.json({})
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, {
+      revision: 'manifest-1',
+      nodes: [],
+      templates: [template],
+    })
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+    await vi.waitFor(() => expect(uploads).toBe(1))
+    harness.serverContents?.(server, {
+      revision: 'manifest-1',
+      nodes: [],
+      templates: [template],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(offers).toBe(1)
+    expect(uploads).toBe(1)
+    expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-avoided', 1)
+  })
+
   it('reports distinct tile fetches even when the server just acknowledged the same content', async () => {
     const offers: unknown[] = []
     vi.stubGlobal(
@@ -574,6 +644,8 @@ describe('server telemetry client', () => {
     await vi.waitFor(() => expect(offers).toBe(1))
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
 
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
     acknowledge?.()
     await vi.waitFor(() => expect(offers).toBe(2))
   })
@@ -675,12 +747,13 @@ describe('server telemetry client', () => {
     harness.retiredServers.add(server)
     harness.state = { ...harness.state, servers: [replacement] }
     harness.serverContents?.(replacement, { nodes: [], templates: [template] })
-    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2))
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
     await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(account.loadAccount).toHaveBeenCalledOnce()
     expect(offers).toBe(0)
 
     finishAccountLoad?.()
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2))
     await vi.waitFor(() => expect(offers).toBe(2))
     await new Promise((resolve) => setTimeout(resolve, 350))
     expect(offers).toBe(2)
