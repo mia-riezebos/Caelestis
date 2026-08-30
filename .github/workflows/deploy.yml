@@ -48,6 +48,9 @@ jobs:
           pnpm test
           pnpm build
 
+      - name: Apply backend database migrations
+        run: pnpm --dir apps/backend exec wrangler d1 migrations apply DB --remote
+
       - name: Deploy backend
         run: pnpm --dir apps/backend exec wrangler deploy
 
