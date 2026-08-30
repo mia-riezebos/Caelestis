@@ -4,6 +4,9 @@ import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  define: {
+    __CAELESTIS_FRONTEND_VERSION__: JSON.stringify(process.env.GITHUB_SHA ?? 'development'),
+  },
   resolve: {
     // Component tests run in happy-dom and need Svelte's client entry point rather than its SSR
     // default. Production browser builds already select this condition themselves.
