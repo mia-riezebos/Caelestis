@@ -109,9 +109,7 @@ export const createTemplate = (
       const parent = yield* storage('readNode', () => sql.readNode(nodeId))
       if (parent === null) {
         return yield* Effect.fail(
-          new RequestValidationError({
-            message: `node does not exist: ${nodeId}`,
-          }),
+          new RequestValidationError({ message: `node does not exist: ${nodeId}` }),
         )
       }
       season = parent.season
@@ -221,9 +219,7 @@ export const patchTemplate = (
       return yield* Effect.fail(
         current === null
           ? new ResourceNotFoundError({ message: 'not found' })
-          : new ResourceConflictError({
-              message: 'template changed concurrently',
-            }),
+          : new ResourceConflictError({ message: 'template changed concurrently' }),
       )
     }
 
@@ -239,10 +235,7 @@ export const patchTemplate = (
       ...(input.published === undefined ? {} : { published: input.published }),
       ...(input.finished === undefined
         ? {}
-        : {
-            finished: input.finished,
-            finishedAt: input.finished ? now : null,
-          }),
+        : { finished: input.finished, finishedAt: input.finished ? now : null }),
       ...(input.finished === true
         ? { timelapseFrozen: true }
         : input.timelapseFrozen === undefined
@@ -275,9 +268,7 @@ export const deleteTemplate = (
     return yield* Effect.fail(
       current === null
         ? new ResourceNotFoundError({ message: 'not found' })
-        : new ResourceConflictError({
-            message: 'template changed concurrently',
-          }),
+        : new ResourceConflictError({ message: 'template changed concurrently' }),
     )
   })
 
