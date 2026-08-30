@@ -1,15 +1,15 @@
-import { millis, nodeSlug, uuidV7 } from '@caelestis/shared'
+import { nodeSlug } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
-import type { NodeRecord, Ports } from '../ports/index.js'
 import {
-  InvalidNodeParentError,
-  NodeNotEmptyError,
-  NodeNotFoundError,
-  NodePathConflictError,
-  NodePathTooLongError,
-  NodeSubtreeChangedError,
-} from '../ports/index.js'
+  countNodeSubtree,
+  createNode,
+  deleteNode,
+  listNodes,
+  patchNode,
+} from '../nodes/use-cases.js'
+import type { BackendRuntime } from '../runtime/backend-runtime.js'
+import { runBackendHttp } from '../runtime/hono.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 // Wplace's first and current canvas is season 0; later seasons increment from there.
@@ -42,12 +42,8 @@ const parseSeason = (value: unknown): number | null => {
  */
 const slug = nodeSlug
 
-const publicNode = ({ season: _season, description, ...node }: NodeRecord) =>
-  description === null ? node : { ...node, description }
-
-export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) => {
+export const createNodeRoutes = (runtime: BackendRuntime, auth: AuthOptions) => {
   const routes = new Hono()
-  const { sql } = ports
 
   routes.use('/*', requireScope(auth, 'admin'))
 
@@ -81,50 +77,23 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
 
     const segment = slug(name)
     if (segment.length === 0) return c.json({ error: 'name must contain a letter or number' }, 400)
-    let parentPath = ''
-    if (parentId !== null) {
-      const parent = await sql.readNode(parentId)
-      if (parent === null) return c.json({ error: 'parent node does not exist' }, 400)
-      if (parent.season !== parsedSeason) {
-        return c.json({ error: 'parent node belongs to a different season' }, 400)
-      }
-      parentPath = parent.path
-    }
-    // Not bounded here: the store composes the path it will actually store and bounds that, and a
-    // check on the path assembled from this read could only ever agree with it or be wrong.
-    const path = `${parentPath}/${segment}`
-
-    const node: NodeRecord = {
-      id: uuidV7(),
-      season: parsedSeason,
-      parentId,
-      path,
-      name,
-      description: description ?? null,
-      createdAt: millis(Date.now()),
-    }
-    let inserted: NodeRecord
-    try {
-      // The store composes the prefix from the parent row, so the record it answers with is the one
-      // to report — the path assembled here is only a bound check and a proposal.
-      inserted = await sql.insertNode(node)
-    } catch (error) {
-      if (
-        error instanceof NodePathConflictError ||
-        error instanceof InvalidNodeParentError ||
-        error instanceof NodePathTooLongError
-      ) {
-        return c.json({ error: error.message }, 400)
-      }
-      throw error
-    }
-    return c.json(publicNode(inserted), 201)
+    return runBackendHttp(
+      c,
+      runtime,
+      createNode({
+        season: parsedSeason,
+        parentId: parentId as string | null,
+        name,
+        ...(description === undefined ? {} : { description: description as string }),
+      }),
+      (inserted) => c.json(inserted, 201),
+    )
   })
 
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'))
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
-    return c.json((await sql.listNodes(season)).map(publicNode))
+    return runBackendHttp(c, runtime, listNodes(season), (nodes) => c.json(nodes))
   })
 
   routes.patch('/:id', async (c) => {
@@ -156,40 +125,16 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
       return c.json({ error: 'name must contain a letter or number' }, 400)
     }
 
-    const node = await sql.readNode(nodeId)
-    if (node === null) return c.json({ error: 'not found' }, 404)
-    const segment = requestedSegment ?? slug(node.name)
-
-    const nextParentId = parentId === undefined ? node.parentId : parentId
-    let parentPath = node.path.slice(0, node.path.lastIndexOf('/'))
-    if (parentId !== undefined) {
-      if (nextParentId === null) parentPath = ''
-      else {
-        const parent = await sql.readNode(nextParentId as string)
-        if (parent === null) return c.json({ error: 'parent node does not exist' }, 400)
-        parentPath = parent.path
-      }
-    }
-    const path = `${parentPath}/${segment}`
-    try {
-      if (parentId !== undefined) {
-        const moved = await sql.moveNode(nodeId, nextParentId as string | null, path, {
-          ...(name === undefined ? {} : { name: name as string }),
-        })
-        if (!moved) return c.json({ error: 'not found' }, 404)
-      } else if (name !== undefined) {
-        const renamed = await sql.renameNode(nodeId, name, segment)
-        if (renamed === null) return c.json({ error: 'not found' }, 404)
-      }
-    } catch (error) {
-      if (error instanceof InvalidNodeParentError) return c.json({ error: error.message }, 400)
-      if (error instanceof NodePathConflictError) return c.json({ error: error.message }, 409)
-      if (error instanceof NodePathTooLongError) return c.json({ error: error.message }, 400)
-      throw error
-    }
-    const updated = await sql.readNode(nodeId)
-    if (updated === null) return c.json({ error: 'not found' }, 404)
-    return c.json(publicNode(updated))
+    return runBackendHttp(
+      c,
+      runtime,
+      patchNode({
+        nodeId,
+        ...(name === undefined ? {} : { name: name as string }),
+        ...(parentId === undefined ? {} : { parentId: parentId as string | null }),
+      }),
+      (updated) => c.json(updated),
+    )
   })
 
   routes.get('/:id/subtree', async (c) => {
@@ -197,12 +142,7 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
     if (!UUID_V7.test(nodeId)) {
       return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
     }
-    try {
-      return c.json(await sql.countNodeSubtree(nodeId))
-    } catch (error) {
-      if (error instanceof NodeNotFoundError) return c.json({ error: 'not found' }, 404)
-      throw error
-    }
+    return runBackendHttp(c, runtime, countNodeSubtree(nodeId), (count) => c.json(count))
   })
 
   routes.delete('/:id', async (c) => {
@@ -216,30 +156,24 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
       if (expectedNodes === null || expectedNodes < 1 || expectedTemplates === null) {
         return c.json({ error: 'cascade requires non-negative expected counts' }, 400)
       }
-      try {
-        const deleted = await sql.deleteNodeCascade(nodeId, {
+      return runBackendHttp(
+        c,
+        runtime,
+        deleteNode(nodeId, {
           nodes: expectedNodes,
           templates: expectedTemplates,
-        })
-        // R2 and D1 have no shared transaction. Deleting blobs after the D1 commit can race a new
-        // reference and corrupt it; retaining content-addressed blobs is the safe interim until a
-        // durable, retryable garbage collector can prove a hash remains unreferenced.
-        return c.json({ nodes: deleted.nodes, templates: deleted.templates, chunks: 0 })
-      } catch (error) {
-        if (error instanceof NodeNotFoundError) return c.json({ error: 'not found' }, 404)
-        if (error instanceof NodeSubtreeChangedError) return c.json({ error: error.message }, 409)
-        throw error
-      }
+        }),
+        (deleted) => {
+          if (deleted === null) throw new Error('cascade deletion must return its counts')
+          // R2 and D1 have no shared transaction. Deleting blobs after the D1 commit can race a new
+          // reference and corrupt it; retaining content-addressed blobs is the safe interim until a
+          // durable, retryable garbage collector can prove a hash remains unreferenced.
+          return c.json({ nodes: deleted.nodes, templates: deleted.templates, chunks: 0 })
+        },
+      )
     }
 
-    if ((await sql.readNode(nodeId)) === null) return c.json({ error: 'not found' }, 404)
-    try {
-      await sql.deleteNode(nodeId)
-    } catch (error) {
-      if (error instanceof NodeNotEmptyError) return c.json({ error: error.message }, 409)
-      throw error
-    }
-    return c.body(null, 204)
+    return runBackendHttp(c, runtime, deleteNode(nodeId), () => c.body(null, 204))
   })
 
   return routes
