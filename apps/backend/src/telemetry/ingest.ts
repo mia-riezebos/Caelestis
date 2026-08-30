@@ -247,7 +247,11 @@ const recordObservationPromise = async (
   metadata: TileMetadata,
   bytes: Uint8Array,
   reservationId: string,
-  options: { readonly recordHistory?: boolean; readonly authoritative?: boolean } = {},
+  options: {
+    readonly recordHistory?: boolean
+    readonly authoritative?: boolean
+    readonly onCommitted?: () => void | Promise<void>
+  } = {},
 ): Promise<void> => {
   const canvas = await decodeCanvas(bytes)
   const targets = await ports.sql.listTelemetryTargets(
@@ -283,6 +287,7 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
+  await options.onCommitted?.()
   await ports.sql.foldTileHistory(
     metadata.season,
     metadata.tile,
@@ -334,6 +339,7 @@ const refreshAuthoritativeTilePromise = async (
 const offerTilePromise = async (
   ports: IngestStores,
   metadata: TileMetadata,
+  onCommitted?: () => void | Promise<void>,
 ): Promise<'ignored' | 'wanted' | 'recorded'> => {
   const targets = await ports.sql.listTelemetryTargets(
     metadata.season,
@@ -343,7 +349,9 @@ const offerTilePromise = async (
   if (targets.length === 0) return 'ignored'
   const held = await reserveTileBlob(ports, metadata.hash)
   if (held === null) return 'wanted'
-  await recordObservationPromise(ports, metadata, held.bytes, held.reservation.id)
+  await recordObservationPromise(ports, metadata, held.bytes, held.reservation.id, {
+    ...(onCommitted === undefined ? {} : { onCommitted }),
+  })
   return 'recorded'
 }
 
@@ -376,8 +384,8 @@ const uploadTilePromise = async (
     await recordObservationPromise(ports, metadata, bytes, reservation.id, {
       ...(options.recordHistory === undefined ? {} : { recordHistory: options.recordHistory }),
       ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
+      onCommitted: () => repairCommittedStatusProjection(ports.statusReadModel, metadata.season),
     })
-    await repairCommittedStatusProjection(ports.statusReadModel, metadata.season)
   } catch (error) {
     await ports.sql.releaseTileBlobReservation(reservation.id)
     throw error
@@ -519,15 +527,11 @@ export const offerTile = (
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
     const statusReadModel = yield* StatusReadModelService
-    const result = yield* storage('offerTile', () =>
-      offerTilePromise({ blobs, sql, statusReadModel }, metadata),
-    )
-    if (result === 'recorded') {
-      yield* storage('applyCommittedStatusChange', () =>
+    return yield* storage('offerTile', () =>
+      offerTilePromise({ blobs, sql, statusReadModel }, metadata, () =>
         repairCommittedStatusProjection(statusReadModel, metadata.season),
-      )
-    }
-    return result
+      ),
+    )
   })
 
 export const offerTiles = (
@@ -561,21 +565,28 @@ export const offerTilesWithOutcome = (
     const changedSeasons = new Set<number>()
     let alreadyKnown = 0
     let rejected = 0
-    for (const offer of offers) {
-      const outcome = yield* storage('offerTile', () =>
-        offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata),
-      )
-      if (outcome === 'wanted') wanted.push(offer.key)
-      else if (outcome === 'recorded') {
-        alreadyKnown++
-        changedSeasons.add(offer.metadata.season)
-      } else rejected++
-    }
-    for (const season of changedSeasons) {
-      yield* storage('applyCommittedStatusChange', () =>
-        repairCommittedStatusProjection(statusReadModel, season),
-      )
-    }
+    yield* Effect.acquireUseRelease(
+      Effect.void,
+      () =>
+        Effect.gen(function* () {
+          for (const offer of offers) {
+            const outcome = yield* storage('offerTile', () =>
+              offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata, () => {
+                changedSeasons.add(offer.metadata.season)
+              }),
+            )
+            if (outcome === 'wanted') wanted.push(offer.key)
+            else if (outcome === 'recorded') alreadyKnown++
+            else rejected++
+          }
+        }),
+      () =>
+        Effect.promise(async () => {
+          for (const season of changedSeasons) {
+            await repairCommittedStatusProjection(statusReadModel, season)
+          }
+        }),
+    )
     return { wanted, accepted: wanted.length, alreadyKnown, rejected }
   })
 
