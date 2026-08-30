@@ -10,7 +10,7 @@ import {
   WORLD_TILES,
 } from '@caelestis/shared'
 import type { AlarmProbe, Ports } from '../ports/index.js'
-import { MAX_CANVAS_TILE_BYTES, uploadTile } from './ingest.js'
+import { MAX_CANVAS_TILE_BYTES, refreshAuthoritativeTile, uploadTile } from './ingest.js'
 
 /**
  * The server's own tile mirror, run from the 6-hour cron.
@@ -35,8 +35,9 @@ export const FETCHER_USER_ID = 0
  * Workers cap subrequests per invocation. Template tiles are taken before any ring tile, so a
  * server with more coverage than budget degrades to "template tiles only", never the reverse.
  */
-export const MAX_FETCH_TILES_PER_RUN = 200
+export const MAX_FETCH_TILES_PER_RUN = 100
 export const MAX_ALARM_PROBES_PER_RUN = 25
+export const ALARM_FOLLOW_UP_RETRY_MILLISECONDS = 60_000
 
 export const ALARM_SCAN_INTERVAL_SECONDS = 6 * 60 * 60
 /** Cron delivery is not exact; keep a small overlap between adjacent bounded batches. */
@@ -162,7 +163,7 @@ export const fetchCanvasTiles = async (
       if (latest?.hash === hash) {
         unchanged++
         if (!ring) {
-          await uploadTile(
+          await refreshAuthoritativeTile(
             ports,
             {
               wplaceUserId: FETCHER_USER_ID,
@@ -175,7 +176,6 @@ export const fetchCanvasTiles = async (
               includeUnpublished: true,
             },
             bytes,
-            { requireCoverage: false, recordHistory: false, authoritative: true },
           )
           serverRefreshedTemplateTiles.add(tileKey(tile))
         }
@@ -297,7 +297,7 @@ export const fetchAlarmFollowUps = async (
       (row) => row.templateId === probe.templateId && row.versionId === probe.versionId,
     )
     if (template === undefined || tiles.length === 0) {
-      await ports.sql.clearAlarmProbe(probe.templateId, probe.alarmId)
+      await ports.sql.clearAlarmProbe(probe.templateId, probe.alarmId, probe.dueAt)
       failed++
       continue
     }
@@ -333,7 +333,7 @@ export const fetchAlarmFollowUps = async (
         const hash = await sha256Hex(bytes)
         const latest = await ports.sql.readLatestTile(probe.season, tile)
         if (latest?.hash === hash) {
-          await uploadTile(
+          await refreshAuthoritativeTile(
             ports,
             {
               wplaceUserId: FETCHER_USER_ID,
@@ -346,7 +346,6 @@ export const fetchAlarmFollowUps = async (
               includeUnpublished: true,
             },
             bytes,
-            { requireCoverage: false, recordHistory: false, authoritative: true },
           )
           continue
         }
@@ -372,6 +371,12 @@ export const fetchAlarmFollowUps = async (
     }
 
     if (!complete) {
+      await ports.sql.deferAlarmProbe(
+        probe.templateId,
+        probe.alarmId,
+        probe.dueAt,
+        millis(now * 1_000 + ALARM_FOLLOW_UP_RETRY_MILLISECONDS),
+      )
       failed++
       pending++
       continue
@@ -388,7 +393,15 @@ export const fetchAlarmFollowUps = async (
       status.correct + status.wrong + status.blank !== status.total ||
       !tiles.every((row) => row.observedAt !== null && row.observedAt >= probe.dueAt)
     ) {
-      if (batch.length === 0) failed++
+      if (batch.length === 0) {
+        await ports.sql.deferAlarmProbe(
+          probe.templateId,
+          probe.alarmId,
+          probe.dueAt,
+          millis(now * 1_000 + ALARM_FOLLOW_UP_RETRY_MILLISECONDS),
+        )
+        failed++
+      }
       pending++
       continue
     }
@@ -400,7 +413,12 @@ export const fetchAlarmFollowUps = async (
         correct: status.correct,
         observedAt: millis(now * 1_000),
       },
-      { kind: 'follow-up', alarmId: probe.alarmId, pixelsLost: probe.pixelsLost },
+      {
+        kind: 'follow-up',
+        alarmId: probe.alarmId,
+        pixelsLost: probe.pixelsLost,
+        dueAt: probe.dueAt,
+      },
       'unused',
     )
     evaluated++

@@ -102,6 +102,7 @@ describe('the 6-hour tile fetcher', () => {
     // A second run soon after: the template tile is refetched but its bytes have not changed, so
     // nothing new is stored; ring tiles are still fresh and are not even requested.
     requested.length = 0
+    const blobPut = vi.spyOn(ports.blobs, 'put')
     const second = await fetchCanvasTiles(ports, {
       season: 0,
       now: seconds(NOW + 21_600),
@@ -110,6 +111,7 @@ describe('the 6-hour tile fetcher', () => {
     expect(second).toMatchObject({ fetched: 0, unchanged: 1, fresh: 8, failed: 0 })
     expect(requested).toHaveLength(1)
     expect(requested[0]).toContain(`tiles/5/5.png`)
+    expect(blobPut).not.toHaveBeenCalled()
 
     // Once the ring goes stale it is fetched again — and being unchanged, still stores nothing.
     requested.length = 0
@@ -235,15 +237,15 @@ describe('the 6-hour tile fetcher', () => {
 
   it('spends its budget on template tiles before any ring tile', async () => {
     const { ports, sql, requested, fetchImpl } = harness()
-    // 250 distinct template tiles: over the 200-tile budget before the ring is even considered.
-    const tiles = Array.from({ length: 250 }, (_, i) => ({
+    // 150 distinct template tiles: over the conservative budget before the ring is considered.
+    const tiles = Array.from({ length: 150 }, (_, i) => ({
       x: 10 + (i % 50),
       y: 10 + Math.floor(i / 50),
     }))
     await sql.insertTemplateVersion(version('wide', tiles))
 
     const report = await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
-    expect(report.fetched).toBe(200)
+    expect(report.fetched).toBe(100)
     expect(report.deferred).toBeGreaterThan(0)
     const templateKeys = new Set<string>(tiles.map((tile) => tileKey(tile)))
     for (const url of requested) {

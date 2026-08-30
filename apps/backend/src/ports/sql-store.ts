@@ -599,6 +599,8 @@ export type AlarmEvaluationPhase =
       readonly kind: 'follow-up'
       readonly alarmId: string
       readonly pixelsLost: number
+      /** Identifies the exact durable probe generation this evaluation may consume. */
+      readonly dueAt: Millis
     }
 
 export interface AlarmPolicyResult {
@@ -1020,8 +1022,16 @@ export interface SqlStore {
 
   nextAlarmProbeAt(): Promise<Millis | null>
 
-  /** Drop a probe that could not produce a complete snapshot, if it still names this episode. */
-  clearAlarmProbe(templateId: string, alarmId: string): Promise<void>
+  /** Drop a probe only if it is still the exact generation the caller observed. */
+  clearAlarmProbe(templateId: string, alarmId: string, dueAt: Millis): Promise<void>
+
+  /** Move a failed probe behind other due work without touching a replacement generation. */
+  deferAlarmProbe(
+    templateId: string,
+    alarmId: string,
+    dueAt: Millis,
+    retryAt: Millis,
+  ): Promise<void>
 
   /** Claims an idempotency key. False means this paint event was already accepted. */
   claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>

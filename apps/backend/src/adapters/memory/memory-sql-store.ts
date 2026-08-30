@@ -1122,26 +1122,26 @@ export class MemorySqlStore implements SqlStore {
     alarmId: string,
   ): Promise<AlarmPolicyResult> {
     const previous = this.alarmStates.get(snapshot.templateId) ?? null
+    if (
+      phase.kind === 'follow-up' &&
+      (previous === null ||
+        previous.versionId !== snapshot.versionId ||
+        previous.alarm?.id !== phase.alarmId ||
+        previous.probeDueAt !== phase.dueAt ||
+        previous.probePixelsLost !== phase.pixelsLost)
+    ) {
+      return evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
+    }
     if (previous !== null && snapshot.observedAt < previous.evaluatedAt) {
       return { state: previous, scheduleFollowUp: false }
     }
     const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
-    const obsoleteFollowUp =
-      phase.kind === 'follow-up' &&
-      previous !== null &&
-      previous.alarm !== null &&
-      phase.alarmId !== previous.alarm.id
     const probe = result.scheduleFollowUp
       ? {
           probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
           probePixelsLost: result.state.alarm?.pixelsLost ?? null,
         }
-      : obsoleteFollowUp
-        ? {
-            probeDueAt: previous.probeDueAt,
-            probePixelsLost: previous.probePixelsLost,
-          }
-        : { probeDueAt: null, probePixelsLost: null }
+      : { probeDueAt: null, probePixelsLost: null }
     this.alarmStates.set(snapshot.templateId, {
       ...result.state,
       ...probe,
@@ -1208,14 +1208,25 @@ export class MemorySqlStore implements SqlStore {
     return next
   }
 
-  async clearAlarmProbe(templateId: string, alarmId: string): Promise<void> {
+  async clearAlarmProbe(templateId: string, alarmId: string, dueAt: Millis): Promise<void> {
     const state = this.alarmStates.get(templateId)
-    if (state?.alarm?.id !== alarmId) return
+    if (state?.alarm?.id !== alarmId || state.probeDueAt !== dueAt) return
     this.alarmStates.set(templateId, {
       ...state,
       probeDueAt: null,
       probePixelsLost: null,
     })
+  }
+
+  async deferAlarmProbe(
+    templateId: string,
+    alarmId: string,
+    dueAt: Millis,
+    retryAt: Millis,
+  ): Promise<void> {
+    const state = this.alarmStates.get(templateId)
+    if (state?.alarm?.id !== alarmId || state.probeDueAt !== dueAt) return
+    this.alarmStates.set(templateId, { ...state, probeDueAt: retryAt })
   }
 
   async claimPaintEvent(eventId: string, _wplaceUserId: number, _seenAt: Millis): Promise<boolean> {

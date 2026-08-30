@@ -258,6 +258,45 @@ const recordObservation = async (
   )
 }
 
+/** Reclassify bytes already held by the current canvas hash without another R2 upload or history fold. */
+export const refreshAuthoritativeTile = async (
+  ports: Ports,
+  metadata: TileMetadata,
+  bytes: Uint8Array,
+): Promise<void> => {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
+    throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
+  }
+  const actualHash = await sha256Hex(bytes)
+  if (actualHash !== metadata.hash) throw new RangeError('tile bytes do not match their sha256')
+  const canvas = await decodeCanvas(bytes)
+  const targets = await ports.sql.listTelemetryTargets(
+    metadata.season,
+    metadata.tile,
+    metadata.includeUnpublished,
+  )
+  const observedAt = millis(metadata.observedAt * 1_000)
+  const statuses = (
+    await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAt)))
+  )
+    .filter((result): result is ClassifiedTarget => result !== null)
+    .map((result) => result.status)
+  await ports.sql.recordTileObservation(
+    {
+      season: metadata.season,
+      tile: metadata.tile,
+      hash: metadata.hash,
+      observedAt,
+      reportedAt: metadata.observedAt,
+      reportedWithToken: metadata.tokenHash,
+      reportedByUserId: metadata.wplaceUserId,
+    },
+    statuses,
+    false,
+    true,
+  )
+}
+
 /** Process an offer immediately when the content-addressed bytes already exist. */
 export const offerTile = async (
   ports: Ports,

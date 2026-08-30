@@ -1,8 +1,8 @@
-import { type Millis, seconds } from '@caelestis/shared'
+import { type Millis, millis, seconds } from '@caelestis/shared'
 import type { Ports } from './ports/index.js'
-import { fetchAlarmFollowUps } from './telemetry/fetcher.js'
+import { ALARM_FOLLOW_UP_RETRY_MILLISECONDS, fetchAlarmFollowUps } from './telemetry/fetcher.js'
 
-export const ALARM_RETRY_DELAY_MILLISECONDS = 60_000
+export const ALARM_RETRY_DELAY_MILLISECONDS = ALARM_FOLLOW_UP_RETRY_MILLISECONDS
 export const ALARM_BATCH_DELAY_MILLISECONDS = 1_000
 
 interface AlarmStorage {
@@ -18,14 +18,16 @@ export const runAlarmWatcherCycle = async (
   storage: AlarmStorage,
   now: Millis,
   runFollowUps: FollowUpRunner = fetchAlarmFollowUps,
+  clock: () => Millis = () => millis(Date.now()),
 ): Promise<void> => {
   try {
     const probes = await ports.sql.listDueAlarmProbes(now)
     const report = await runFollowUps(ports, probes, {
       now: seconds(Math.floor(now / 1_000)),
     })
+    const decidedAt = clock()
     if (report.failed > 0) {
-      await storage.setAlarm(now + ALARM_RETRY_DELAY_MILLISECONDS)
+      await storage.setAlarm(decidedAt + ALARM_RETRY_DELAY_MILLISECONDS)
       return
     }
     const dueAt = await ports.sql.nextAlarmProbeAt()
@@ -34,11 +36,11 @@ export const runAlarmWatcherCycle = async (
       return
     }
     await storage.setAlarm(
-      report.pending > 0 ? Math.max(dueAt, now + ALARM_BATCH_DELAY_MILLISECONDS) : dueAt,
+      report.pending > 0 ? Math.max(dueAt, decidedAt + ALARM_BATCH_DELAY_MILLISECONDS) : dueAt,
     )
   } catch {
     // Cloudflare gives a throwing alarm only a bounded retry series. Keep the durable D1 probe and
     // own an indefinite, paced retry instead of stranding it until the next six-hour cron.
-    await storage.setAlarm(now + ALARM_RETRY_DELAY_MILLISECONDS)
+    await storage.setAlarm(clock() + ALARM_RETRY_DELAY_MILLISECONDS)
   }
 }

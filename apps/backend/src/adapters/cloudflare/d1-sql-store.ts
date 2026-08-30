@@ -1955,21 +1955,25 @@ export class D1SqlStore implements SqlStore {
         .limit(1)
         .then((rows) => rows[0])
       const previousState = previousRow === undefined ? null : storedAlarmState(previousRow)
+      if (
+        phase.kind === 'follow-up' &&
+        (previousRow === undefined ||
+          previousState === null ||
+          previousState.versionId !== snapshot.versionId ||
+          previousState.alarm?.id !== phase.alarmId ||
+          previousRow.probeDueAtMs !== phase.dueAt ||
+          previousRow.probePixelsLost !== phase.pixelsLost)
+      ) {
+        return evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
+      }
       if (previousRow !== undefined && snapshot.observedAt < previousRow.evaluatedAtMs) {
         return { state: previousState as TemplateAlarmState, scheduleFollowUp: false }
       }
       const result = evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
       const alarm = result.state.alarm
-      const obsoleteFollowUp =
-        phase.kind === 'follow-up' &&
-        previousState !== null &&
-        previousState.alarm !== null &&
-        phase.alarmId !== previousState.alarm.id
       const probeDueAt = result.scheduleFollowUp
         ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
-        : obsoleteFollowUp
-          ? (previousRow?.probeDueAtMs ?? null)
-          : null
+        : null
       const values = {
         templateId: snapshot.templateId,
         versionId: result.state.versionId,
@@ -1981,11 +1985,7 @@ export class D1SqlStore implements SqlStore {
         firstSeenMs: alarm?.firstSeen ?? null,
         lastSeenMs: alarm?.lastSeen ?? null,
         probeDueAtMs: probeDueAt,
-        probePixelsLost: result.scheduleFollowUp
-          ? (alarm?.pixelsLost ?? null)
-          : obsoleteFollowUp
-            ? (previousRow?.probePixelsLost ?? null)
-            : null,
+        probePixelsLost: result.scheduleFollowUp ? (alarm?.pixelsLost ?? null) : null,
         evaluatedAtMs: snapshot.observedAt,
         revision: (previousRow?.revision ?? -1) + 1,
       }
@@ -2083,7 +2083,7 @@ export class D1SqlStore implements SqlStore {
     return dueAt === undefined || dueAt === null ? null : (dueAt as Millis)
   }
 
-  async clearAlarmProbe(templateId: string, alarmId: string): Promise<void> {
+  async clearAlarmProbe(templateId: string, alarmId: string, dueAt: Millis): Promise<void> {
     await this.database
       .update(templateAlarmStates)
       .set({
@@ -2095,6 +2095,28 @@ export class D1SqlStore implements SqlStore {
         and(
           eq(templateAlarmStates.templateId, templateId),
           eq(templateAlarmStates.alarmId, alarmId),
+          eq(templateAlarmStates.probeDueAtMs, dueAt),
+        ),
+      )
+  }
+
+  async deferAlarmProbe(
+    templateId: string,
+    alarmId: string,
+    dueAt: Millis,
+    retryAt: Millis,
+  ): Promise<void> {
+    await this.database
+      .update(templateAlarmStates)
+      .set({
+        probeDueAtMs: retryAt,
+        revision: sql`${templateAlarmStates.revision} + 1`,
+      })
+      .where(
+        and(
+          eq(templateAlarmStates.templateId, templateId),
+          eq(templateAlarmStates.alarmId, alarmId),
+          eq(templateAlarmStates.probeDueAtMs, dueAt),
         ),
       )
   }

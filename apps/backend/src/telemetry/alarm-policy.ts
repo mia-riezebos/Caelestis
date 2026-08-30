@@ -31,6 +31,24 @@ export const evaluateAlarmSnapshot = (
   phase: AlarmEvaluationPhase,
   createId: () => string,
 ): AlarmPolicyResult => {
+  if (phase.kind === 'follow-up') {
+    if (previous === null) {
+      return {
+        state: {
+          templateId: snapshot.templateId,
+          versionId: snapshot.versionId,
+          total: snapshot.total,
+          peakCorrect: snapshot.correct,
+          alarm: null,
+        },
+        scheduleFollowUp: false,
+      }
+    }
+    if (previous.versionId !== snapshot.versionId || previous.alarm?.id !== phase.alarmId) {
+      return { state: previous, scheduleFollowUp: false }
+    }
+  }
+
   if (previous === null || previous.versionId !== snapshot.versionId) {
     return {
       state: {
@@ -57,9 +75,6 @@ export const evaluateAlarmSnapshot = (
   }
 
   const current = previous.alarm
-  if (phase.kind === 'follow-up' && (current === null || phase.alarmId !== current.id)) {
-    return { state: previous, scheduleFollowUp: false }
-  }
   if (current === null && pixelsLost < alarmThreshold(snapshot.total)) {
     return { state: { ...baseState, alarm: null }, scheduleFollowUp: false }
   }

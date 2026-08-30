@@ -83,7 +83,7 @@ describe('template alarm policy', () => {
     const stable = evaluateAlarmSnapshot(
       active,
       snapshot(59_900, FOLLOW_UP),
-      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: FOLLOW_UP },
       () => 'unused',
     )
     expect(stable.state.alarm?.kind).toBe('regression')
@@ -92,7 +92,7 @@ describe('template alarm policy', () => {
     const worsening = evaluateAlarmSnapshot(
       active,
       snapshot(59_899, FOLLOW_UP),
-      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: FOLLOW_UP },
       () => 'unused',
     )
     expect(worsening.state.alarm).toEqual({
@@ -152,7 +152,7 @@ describe('template alarm policy', () => {
       evaluateAlarmSnapshot(
         inactive,
         snapshot(59_800, FOLLOW_UP),
-        { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+        { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: FOLLOW_UP },
         () => 'must-not-be-used',
       ),
     ).toEqual({ state: inactive, scheduleFollowUp: false })

@@ -80,7 +80,7 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
       expect.objectContaining({ id: ALARM_ID, kind: 'regression', pixelsLost: 100 }),
     ])
     await expect(store.nextAlarmProbeAt()).resolves.toBe(PROBE_AT)
-    await store.clearAlarmProbe(TEMPLATE_ID, 'not-this-episode')
+    await store.clearAlarmProbe(TEMPLATE_ID, 'not-this-episode', PROBE_AT)
     await expect(store.nextAlarmProbeAt()).resolves.toBe(PROBE_AT)
     await expect(store.listDueAlarmProbes(millis(PROBE_AT - 1))).resolves.toEqual([])
     await expect(store.listDueAlarmProbes(PROBE_AT)).resolves.toEqual([
@@ -96,7 +96,7 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
 
     await store.evaluateTemplateAlarm(
       snapshot(59_899, PROBE_AT),
-      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: PROBE_AT },
       'unused',
     )
     await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
@@ -116,12 +116,25 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
     await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
     await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
 
-    await store.clearAlarmProbe(TEMPLATE_ID, ALARM_ID)
+    await store.clearAlarmProbe(TEMPLATE_ID, ALARM_ID, PROBE_AT)
 
     await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
     await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
       expect.objectContaining({ id: ALARM_ID, kind: 'regression' }),
     ])
+  })
+
+  it('defers a failed probe without letting its old generation clear the retry', async () => {
+    await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
+    const retryAt = millis(PROBE_AT + 60_000)
+
+    await store.deferAlarmProbe(TEMPLATE_ID, ALARM_ID, PROBE_AT, retryAt)
+    await store.clearAlarmProbe(TEMPLATE_ID, ALARM_ID, PROBE_AT)
+    await expect(store.nextAlarmProbeAt()).resolves.toBe(retryAt)
+
+    await store.clearAlarmProbe(TEMPLATE_ID, ALARM_ID, retryAt)
+    await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
   })
 
   it('does not let an overlapping scan overwrite a worsening follow-up', async () => {
@@ -131,7 +144,7 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
     await Promise.all([
       store.evaluateTemplateAlarm(
         snapshot(59_800, PROBE_AT),
-        { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+        { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: PROBE_AT },
         'unused',
       ),
       store.evaluateTemplateAlarm(
@@ -152,7 +165,7 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
     await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
     await store.evaluateTemplateAlarm(
       snapshot(59_800, PROBE_AT),
-      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: PROBE_AT },
       'unused',
     )
 
@@ -175,8 +188,8 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
     await store.evaluateTemplateAlarm(snapshot(59_800, newerAt), { kind: 'scan' }, 'alarm-new')
 
     await store.evaluateTemplateAlarm(
-      snapshot(59_700, millis(newerAt + 1)),
-      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+      snapshot(60_000, millis(newerAt + 1)),
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: PROBE_AT },
       'unused',
     )
 
@@ -184,6 +197,45 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
     await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
       expect.objectContaining({ id: 'alarm-new', kind: 'regression', pixelsLost: 200 }),
     ])
+  })
+
+  it('preserves a newer probe for the same alarm episode', async () => {
+    await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
+    const newerScanAt = millis(PROBE_AT + 1)
+    await store.evaluateTemplateAlarm(snapshot(59_800, newerScanAt), { kind: 'scan' }, 'unused')
+    const newerProbeAt = millis(newerScanAt + 10 * 60 * 1_000)
+
+    await store.evaluateTemplateAlarm(
+      snapshot(60_000, millis(newerScanAt + 1)),
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: PROBE_AT },
+      'unused',
+    )
+
+    await expect(store.nextAlarmProbeAt()).resolves.toBe(newerProbeAt)
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
+      expect.objectContaining({ id: ALARM_ID, kind: 'regression', pixelsLost: 200 }),
+    ])
+  })
+
+  it('ignores a previous-version follow-up after the current version was evaluated', async () => {
+    await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
+    await store.insertTemplateVersion(version(NEXT_VERSION_ID), { requireExisting: true })
+    await store.evaluateTemplateAlarm(
+      snapshot(20_000, PROBE_AT, NEXT_VERSION_ID),
+      { kind: 'scan' },
+      'unused',
+    )
+
+    await store.evaluateTemplateAlarm(
+      snapshot(60_000, millis(PROBE_AT + 1), VERSION_ID),
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100, dueAt: PROBE_AT },
+      'unused',
+    )
+
+    await expect(store.readActiveAlarms(1, true)).resolves.toEqual([])
+    await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
   })
 
   it('keeps unpublished alarms admin-only and resets the baseline on a new version', async () => {
