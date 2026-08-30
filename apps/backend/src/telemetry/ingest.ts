@@ -44,7 +44,12 @@ import {
   type StatusReadModelPort,
 } from '../status-read-model/port.js'
 import { decodedPixelCache } from './decoded-pixel-cache.js'
-import { readMismatchArtifact, writeMismatchArtifact } from './derived-classification.js'
+import {
+  createDerivedArtifactWriteBatch,
+  type DerivedArtifactWriteBatch,
+  readMismatchArtifact,
+  writeMismatchArtifact,
+} from './derived-classification.js'
 import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
@@ -340,6 +345,7 @@ const recordObservationPromise = async (
   options: {
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
+    readonly artifactWriteBatch?: DerivedArtifactWriteBatch
     readonly onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>
   } = {},
 ): Promise<void> => {
@@ -378,22 +384,6 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
-  // The D1 anchor is authoritative. Derived writes happen only after acceptance and cannot turn a
-  // committed upload into a failure; missing artifacts rebuild from the raw D1/R2 inputs on read.
-  await Promise.all(
-    classified.map(({ status, mask }) =>
-      persistMismatchArtifact(
-        ports.blobs,
-        {
-          templateId: status.templateId,
-          versionId: status.versionId,
-          tile: status.tile,
-          canvasHash: metadata.hash,
-        },
-        mask,
-      ),
-    ),
-  )
   const mutation: StatusProjectionMutation | null =
     committed.revision === null
       ? null
@@ -421,6 +411,23 @@ const recordObservationPromise = async (
           ),
         }
   await options.onCommitted?.(mutation)
+  // Publish the authoritative revision first. A caller processing many tiles owns one shared batch
+  // and flushes it only after its coalesced projection; standalone calls flush their local batch.
+  const ownsArtifactWriteBatch = options.artifactWriteBatch === undefined
+  const artifactWriteBatch =
+    options.artifactWriteBatch ?? createDerivedArtifactWriteBatch(ports.blobs)
+  for (const { status, mask } of classified) {
+    artifactWriteBatch.add(
+      {
+        templateId: status.templateId,
+        versionId: status.versionId,
+        tile: status.tile,
+        canvasHash: metadata.hash,
+      },
+      mask,
+    )
+  }
+  if (ownsArtifactWriteBatch) await artifactWriteBatch.flush()
   await ports.sql.foldTileHistory(
     metadata.season,
     metadata.tile,
@@ -434,6 +441,7 @@ const refreshAuthoritativeTilePromise = async (
   metadata: TileMetadata,
   bytes: Uint8Array,
   projectionBatch?: StatusProjectionBatch,
+  artifactWriteBatch?: DerivedArtifactWriteBatch,
 ): Promise<StatusProjectionChange | null> => {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
     throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
@@ -446,6 +454,7 @@ const refreshAuthoritativeTilePromise = async (
   await recordObservationPromise(ports, metadata, bytes, held.reservation.id, {
     recordHistory: false,
     authoritative: true,
+    ...(artifactWriteBatch === undefined ? {} : { artifactWriteBatch }),
     onCommitted: async (mutation) => {
       if (mutation === null) return
       if (projectionBatch !== undefined) projectionBatch.add(metadata.season, mutation)
@@ -465,7 +474,10 @@ const refreshAuthoritativeTilePromise = async (
 const offerTilePromise = async (
   ports: IngestStores,
   metadata: TileMetadata,
-  onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>,
+  options: {
+    readonly artifactWriteBatch?: DerivedArtifactWriteBatch
+    readonly onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>
+  } = {},
 ): Promise<'ignored' | 'wanted' | 'recorded'> => {
   const targets = await ports.sql.listTelemetryTargets(
     metadata.season,
@@ -476,7 +488,10 @@ const offerTilePromise = async (
   const held = await reserveTileBlob(ports, metadata.hash)
   if (held === null) return 'wanted'
   await recordObservationPromise(ports, metadata, held.bytes, held.reservation.id, {
-    ...(onCommitted === undefined ? {} : { onCommitted }),
+    ...(options.artifactWriteBatch === undefined
+      ? {}
+      : { artifactWriteBatch: options.artifactWriteBatch }),
+    ...(options.onCommitted === undefined ? {} : { onCommitted: options.onCommitted }),
   })
   return 'recorded'
 }
@@ -490,6 +505,7 @@ const uploadTilePromise = async (
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
     readonly projectionBatch?: StatusProjectionBatch
+    readonly artifactWriteBatch?: DerivedArtifactWriteBatch
   } = {},
 ): Promise<StatusProjectionChange | null> => {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
@@ -512,6 +528,9 @@ const uploadTilePromise = async (
     await recordObservationPromise(ports, metadata, bytes, reservation.id, {
       ...(options.recordHistory === undefined ? {} : { recordHistory: options.recordHistory }),
       ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
+      ...(options.artifactWriteBatch === undefined
+        ? {}
+        : { artifactWriteBatch: options.artifactWriteBatch }),
       onCommitted: async (mutation) => {
         if (mutation === null) return
         if (options.projectionBatch !== undefined)
@@ -636,7 +655,10 @@ export const readMismatchMask = (
 export const refreshAuthoritativeTile = (
   metadata: TileMetadata,
   bytes: Uint8Array,
-  options: { readonly projectionBatch?: StatusProjectionBatch } = {},
+  options: {
+    readonly projectionBatch?: StatusProjectionBatch
+    readonly artifactWriteBatch?: DerivedArtifactWriteBatch
+  } = {},
 ): Effect.Effect<
   StatusProjectionChange | null,
   TelemetryStorageError,
@@ -652,6 +674,7 @@ export const refreshAuthoritativeTile = (
         metadata,
         bytes,
         options.projectionBatch,
+        options.artifactWriteBatch,
       ),
     )
   })
@@ -669,9 +692,11 @@ export const offerTile = (
     const sql = yield* SqlStoreService
     const statusReadModel = yield* StatusReadModelService
     return yield* storage('offerTile', () =>
-      offerTilePromise({ blobs, sql, statusReadModel }, metadata, async (mutation) => {
-        if (mutation === null) return
-        await repairCommittedStatusProjection(statusReadModel, metadata.season, mutation)
+      offerTilePromise({ blobs, sql, statusReadModel }, metadata, {
+        onCommitted: async (mutation) => {
+          if (mutation === null) return
+          await repairCommittedStatusProjection(statusReadModel, metadata.season, mutation)
+        },
       }),
     )
   })
@@ -709,17 +734,21 @@ export const offerTilesWithOutcome = (
     let projection: StatusProjectionChange | null = null
     let alreadyKnown = 0
     let rejected = 0
+    const artifactWriteBatch = createDerivedArtifactWriteBatch(blobs)
     yield* Effect.acquireUseRelease(
       Effect.void,
       () =>
         Effect.gen(function* () {
           for (const offer of offers) {
             const outcome = yield* storage('offerTile', () =>
-              offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata, (mutation) => {
-                if (mutation === null) return
-                const seasonMutations = mutations.get(offer.metadata.season) ?? []
-                seasonMutations.push(mutation)
-                mutations.set(offer.metadata.season, seasonMutations)
+              offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata, {
+                artifactWriteBatch,
+                onCommitted: (mutation) => {
+                  if (mutation === null) return
+                  const seasonMutations = mutations.get(offer.metadata.season) ?? []
+                  seasonMutations.push(mutation)
+                  mutations.set(offer.metadata.season, seasonMutations)
+                },
               }),
             )
             if (outcome === 'wanted') wanted.push(offer.key)
@@ -729,12 +758,16 @@ export const offerTilesWithOutcome = (
         }),
       () =>
         Effect.promise(async () => {
-          for (const [season, seasonMutations] of mutations) {
-            projection = await applyStatusProjectionMutations(
-              statusReadModel,
-              season,
-              seasonMutations,
-            )
+          try {
+            for (const [season, seasonMutations] of mutations) {
+              projection = await applyStatusProjectionMutations(
+                statusReadModel,
+                season,
+                seasonMutations,
+              )
+            }
+          } finally {
+            await artifactWriteBatch.flush()
           }
         }),
     )
@@ -750,6 +783,7 @@ export const uploadTile = (
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
     readonly projectionBatch?: StatusProjectionBatch
+    readonly artifactWriteBatch?: DerivedArtifactWriteBatch
   } = {},
 ): Effect.Effect<
   StatusProjectionChange | null,
