@@ -7,10 +7,10 @@ test('five healthy clients retain a ninety-percent steady-state invocation reduc
   const report = projectSyncCapacity()
 
   assert.equal(report.scenario.clients, 5)
-  assert.equal(report.baseline.avoidableWorkerRequests, 14_660)
+  assert.equal(report.baseline.avoidableWorkerRequests, 14_645)
   assert.equal(report.projected.avoidableWorkerRequests, 975)
   assert.ok(report.projected.reductionPercent >= 90)
-  assert.equal(report.projected.maximumTileOfferBatchesForNinetyPercent, 491)
+  assert.equal(report.projected.maximumTileOfferBatchesForNinetyPercent, 489)
   assert.deepEqual(report.cache.outcomes, { miss: 2, stale: 192, hit: 776 })
   assert.equal(report.cache.projectionReads, 970)
   assert.equal(report.cache.authoritativeRebuilds, 194)
@@ -21,9 +21,9 @@ test('five healthy clients retain a ninety-percent steady-state invocation reduc
 
 test('the target fails once tile offers consume more than the remaining budget', () => {
   assert.ok(
-    projectSyncCapacity({ projectedTileOfferBatches: 491 }).projected.reductionPercent >= 90,
+    projectSyncCapacity({ projectedTileOfferBatches: 489 }).projected.reductionPercent >= 90,
   )
-  assert.ok(projectSyncCapacity({ projectedTileOfferBatches: 492 }).projected.reductionPercent < 90)
+  assert.ok(projectSyncCapacity({ projectedTileOfferBatches: 490 }).projected.reductionPercent < 90)
 })
 
 test('the Effect beta is exactly pinned for both runtime importers', async () => {

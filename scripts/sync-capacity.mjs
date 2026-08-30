@@ -2,10 +2,12 @@ const CLIENTS = 5
 const RECOVERY_INTERVAL_MINUTES = 15
 const RECOVERY_COHORTS_PER_DAY = 96
 const LIVE_RESOURCES = 2
+// The dashboard displays two-decimal `k` values. Use each bucket's lowest possible integer so the
+// 90% gate cannot pass only because a rounded baseline was treated as exact.
 const BASELINE = Object.freeze({
-  statusReads: 8_790,
-  manifestReads: 3_790,
-  tileOfferBatches: 2_080,
+  statusReads: 8_785,
+  manifestReads: 3_785,
+  tileOfferBatches: 2_075,
 })
 
 export const projectSyncCapacity = ({
@@ -56,7 +58,7 @@ export const projectSyncCapacity = ({
       recoveryReads,
       tileOfferBatches: projectedTileOfferBatches,
       avoidableWorkerRequests: projectedAvoidableWorkerRequests,
-      reductionPercent: Number((reduction * 100).toFixed(2)),
+      reductionPercent: Number((reduction * 100).toFixed(4)),
       maximumTileOfferBatchesForNinetyPercent: maximumTileOfferBatchesForTarget,
     },
     durableObject: {
