@@ -1,4 +1,5 @@
 import {
+  type AlarmsResponse,
   type CanvasTilesResponse,
   type ContributionsResponse,
   type HistoryBucket,
@@ -191,6 +192,18 @@ export const readStatus = (
       sql.readTemplateStatuses(season, includeUnpublished),
     )
     return { templates }
+  })
+
+export const readAlarms = (
+  season: number,
+  includeUnpublished: boolean,
+): Effect.Effect<AlarmsResponse, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const alarms = yield* sqlRead('readActiveAlarms', () =>
+      sql.readActiveAlarms(season, includeUnpublished),
+    )
+    return { alarms }
   })
 
 export const readHistory = (input: {

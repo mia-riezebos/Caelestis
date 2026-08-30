@@ -1,11 +1,15 @@
 import {
+  type Alarm,
+  type AlarmsResponse,
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   type PaintEvent,
   type StatusResponse,
   seconds,
   sha256Hex,
+  TELEMETRY_STATUS_POLL_MS,
   type TemplateStatus,
+  TILE_OFFER_BATCH_DELAY_MS,
   type TileCoord,
   type TileOffer,
   tileKey,
@@ -13,6 +17,7 @@ import {
 } from '@caelestis/shared'
 import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
+import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
 import { serverEndpoint } from './server-url.js'
 import {
@@ -28,14 +33,13 @@ import type { TemplateColourProgress, TemplateProgress } from './templates/misma
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
 import { accountIdentity, loadAccount } from './wplace-account.js'
 
-const OFFER_DELAY_MS = 250
-const STATUS_POLL_MS = 30_000
 const REQUEST_TIMEOUT_MS = 15_000
 const RETRIES = 3
 const MAX_RECENT_TILES = 32
 const MAX_RECENT_TILE_BYTES = 32 * 1_024 * 1_024
 const MAX_RECENT_PAINTS = 64
 const MAX_DEDUPE_VALUES = 4_096
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 interface OfferedTile extends TileOffer {
   readonly coord: TileCoord
@@ -45,6 +49,7 @@ interface OfferedTile extends TileOffer {
 interface ServerCoverage {
   readonly server: ConnectedServer
   readonly tiles: ReadonlySet<string>
+  readonly contents: ServerContents
 }
 
 interface ServerQueue {
@@ -73,7 +78,16 @@ const offered = new Map<string, ServerDedupe>()
 const reportedPaints = new Map<string, ServerDedupe>()
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const statuses = new Map<string, ServerStatus>()
+const alarms = new Map<
+  string,
+  {
+    readonly server: ConnectedServer
+    readonly contents: ServerContents
+    readonly value: Alarm
+  }
+>()
 const statusListeners = new Set<() => void>()
+const alarmListeners = new Set<() => void>()
 const recentTiles = new Map<string, OfferedTile>()
 const recentPaints: ObservedPaint[] = []
 let recentTileBytes = 0
@@ -245,7 +259,10 @@ const scheduleFlush = (serverUrl: string): void => {
   if (flushTimers.has(serverUrl)) return
   flushTimers.set(
     serverUrl,
-    setTimeout(() => void flushOffers(serverUrl).catch(reportTelemetryError), OFFER_DELAY_MS),
+    setTimeout(
+      () => void flushOffers(serverUrl).catch(reportTelemetryError),
+      TILE_OFFER_BATCH_DELAY_MS,
+    ),
   )
 }
 
@@ -379,9 +396,28 @@ const replayRecent = (server: ConnectedServer): void => {
 
 const rememberContents = (server: ConnectedServer, contents: ServerContents): void => {
   if (!isCurrentServerConnection(server)) return
-  coverage.set(server.url, { server, tiles: coverageFrom(contents) })
+  coverage.set(server.url, { server, tiles: coverageFrom(contents), contents })
   replayRecent(server)
-  void refreshStatus(server).catch(reportTelemetryError)
+  void refreshServerTelemetry(server).catch(reportTelemetryError)
+}
+
+const alarmFrom = (value: unknown): Alarm | null => {
+  if (typeof value !== 'object' || value === null) return null
+  const candidate = value as Partial<Alarm>
+  if (
+    typeof candidate.id !== 'string' ||
+    !UUID_V7.test(candidate.id) ||
+    typeof candidate.templateId !== 'string' ||
+    !UUID_V7.test(candidate.templateId) ||
+    (candidate.kind !== 'regression' && candidate.kind !== 'sustained-griefing') ||
+    ![candidate.pixelsLost, candidate.firstSeen, candidate.lastSeen].every(
+      (number) => Number.isSafeInteger(number) && Number(number) >= 0,
+    ) ||
+    Number(candidate.pixelsLost) === 0 ||
+    Number(candidate.firstSeen) > Number(candidate.lastSeen)
+  )
+    return null
+  return candidate as Alarm
 }
 
 const templateStatusFrom = (value: unknown): TemplateStatus | null => {
@@ -474,6 +510,127 @@ const refreshStatus = async (server: ConnectedServer): Promise<void> => {
   }
 }
 
+const refreshAlarms = async (server: ConnectedServer): Promise<void> => {
+  if (server.season === null || !isCurrentServerConnection(server)) return
+  const snapshot = coverage.get(server.url)
+  if (snapshot === undefined || !isCurrentServerConnection(snapshot.server)) return
+  const response = await fetchWithRetry(
+    serverEndpoint(server.url, `/telemetry/alarms?season=${server.season}`),
+    { headers: authHeaders(server) },
+  )
+  if (
+    response === null ||
+    !response.ok ||
+    !isCurrentServerConnection(server) ||
+    coverage.get(server.url) !== snapshot
+  )
+    return
+  const body = (await response.json().catch(() => null)) as Partial<AlarmsResponse> | null
+  if (body === null || !Array.isArray(body.alarms) || body.alarms.length > MAX_MANIFEST_TEMPLATES)
+    return
+  const parsed: Alarm[] = []
+  const templateIds = new Set<string>()
+  for (const raw of body.alarms) {
+    const alarm = alarmFrom(raw)
+    if (alarm === null || templateIds.has(alarm.templateId)) return
+    templateIds.add(alarm.templateId)
+    parsed.push(alarm)
+  }
+  let changed = false
+  const present = new Set<string>()
+  for (const alarm of parsed) {
+    const key = statusKey(server.url, alarm.templateId)
+    present.add(key)
+    const held = alarms.get(key)
+    if (
+      held?.contents !== snapshot.contents ||
+      JSON.stringify(held.value) !== JSON.stringify(alarm)
+    ) {
+      alarms.set(key, { server, contents: snapshot.contents, value: alarm })
+      changed = true
+    }
+  }
+  for (const key of [...alarms.keys()]) {
+    if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
+    alarms.delete(key)
+    changed = true
+  }
+  if (changed) notifyAlarmListeners()
+}
+
+const refreshServerTelemetry = async (server: ConnectedServer): Promise<void> => {
+  await Promise.all([refreshStatus(server), refreshAlarms(server)])
+}
+
+const notifyAlarmListeners = (): void => {
+  for (const listener of alarmListeners) {
+    try {
+      listener()
+    } catch (error) {
+      reportTelemetryError(error)
+    }
+  }
+}
+
+const alarmEnabled = (server: ConnectedServer, template: ServerTemplate): boolean => {
+  const hidden = new Set(getState().hiddenScopes)
+  if (
+    hidden.has(`server:${server.url}`) ||
+    hidden.has(`srv:${encodeURIComponent(server.url)}:${template.id}`)
+  )
+    return false
+  const contents = coverage.get(server.url)?.contents
+  const parents = new Map(contents?.nodes.map((node) => [node.id, node.parentId]) ?? [])
+  let nodeId = template.nodeId
+  for (let depth = 0; nodeId !== null && depth <= parents.size; depth++) {
+    if (hidden.has(`node:${encodeURIComponent(server.url)}:${nodeId}`)) return false
+    nodeId = parents.get(nodeId) ?? null
+  }
+  return true
+}
+
+export const serverAlarmFor = (
+  server: ConnectedServer,
+  template: Pick<ServerTemplate, 'id' | 'nodeId' | 'published'>,
+): Alarm | null => {
+  const known = alarms.get(statusKey(server.url, template.id))
+  const snapshot = coverage.get(server.url)
+  const current = snapshot?.contents.templates.find((candidate) => candidate.id === template.id)
+  if (
+    known === undefined ||
+    !isCurrentServerConnection(known.server) ||
+    snapshot === undefined ||
+    !isCurrentServerConnection(snapshot.server) ||
+    known.contents !== snapshot.contents ||
+    current === undefined ||
+    !alarmEnabled(server, current)
+  )
+    return null
+  return known.value
+}
+
+export const activeServerAlarms = (): readonly {
+  server: ConnectedServer
+  template: ServerTemplate
+  alarm: Alarm
+}[] => {
+  const active: Array<{ server: ConnectedServer; template: ServerTemplate; alarm: Alarm }> = []
+  for (const server of getState().servers) {
+    const contents = coverage.get(server.url)?.contents
+    if (server.status !== 'connected' || contents === undefined) continue
+    for (const template of contents.templates) {
+      const alarm = serverAlarmFor(server, template)
+      if (alarm !== null) active.push({ server, template, alarm })
+    }
+  }
+  return active
+}
+
+export const onServerAlarmChange = (listener: () => void): (() => void) => {
+  alarmListeners.add(listener)
+  return () => alarmListeners.delete(listener)
+}
+
 export const serverProgressFor = (
   server: ConnectedServer,
   template: Pick<ServerTemplate, 'id' | 'totalPixels'>,
@@ -527,19 +684,22 @@ export const installTelemetry = (): void => {
     observePaint(paint)
   })
   onStateChange(() => {
+    notifyAlarmListeners()
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
       replayRecent(server)
-      void refreshStatus(server).catch(reportTelemetryError)
+      void refreshServerTelemetry(server).catch(reportTelemetryError)
     }
   })
   setInterval(() => {
     for (const server of getState().servers) {
-      if (server.status === 'connected') void refreshStatus(server).catch(reportTelemetryError)
+      if (server.status === 'connected')
+        void refreshServerTelemetry(server).catch(reportTelemetryError)
     }
-  }, STATUS_POLL_MS)
+  }, TELEMETRY_STATUS_POLL_MS)
   for (const server of getState().servers) {
-    if (server.status === 'connected') void refreshStatus(server).catch(reportTelemetryError)
+    if (server.status === 'connected')
+      void refreshServerTelemetry(server).catch(reportTelemetryError)
   }
 }
 

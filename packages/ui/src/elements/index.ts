@@ -36,6 +36,8 @@ export type CaelestisTemplateState = HTMLElement & {
   finished: boolean
   frozen: boolean
   griefed: boolean
+  alarmKind: import('@caelestis/shared').AlarmKind | undefined
+  pixelsLost: number | undefined
   compact: boolean
 }
 

@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getHistory, getServer, patchTemplateLifecycle, probeAdminScope } from './client.js'
+import {
+  getAlarms,
+  getHistory,
+  getServer,
+  patchTemplateLifecycle,
+  probeAdminScope,
+} from './client.js'
 
 const stored = new Map<string, string>()
 
@@ -85,5 +91,15 @@ describe('API request recovery', () => {
     const historyUrl = String(fetch.mock.calls[0]?.[0])
     expect(historyUrl).toContain('maxResolution=900')
     expect(historyUrl).not.toMatch(/[?&]resolution=/)
+  })
+
+  it('reads active alarms for the selected season', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ alarms: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(getAlarms(7)).resolves.toEqual({ alarms: [] })
+    expect(fetch.mock.calls[0]?.[0]).toContain('/telemetry/alarms?season=7')
   })
 })

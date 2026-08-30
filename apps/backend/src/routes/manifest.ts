@@ -1,4 +1,9 @@
-import type { ServerInfo } from '@caelestis/shared'
+import {
+  type ServerInfo,
+  type TemplateSurface,
+  templateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { requireRuntimeScope } from '../auth/middleware.js'
@@ -9,12 +14,25 @@ import { resolveServerInfoEffect } from './server.js'
 
 // Wplace's first and current canvas is season 0; later seasons increment from there.
 const SEASON_NUMBER = /^(?:0|[1-9]\d*)$/
+const POSITIVE_NUMBER = /^[1-9]\d*$/
 
 const parseSeason = (value: string | undefined, fallback: number): number | null => {
   if (value === undefined) return fallback
   if (!SEASON_NUMBER.test(value)) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+const parseSurface = (
+  kind: string | undefined,
+  allianceId: string | undefined,
+): TemplateSurface | null => {
+  if (kind === undefined && allianceId === undefined) return WORLD_TEMPLATE_SURFACE
+  if (kind === 'world') return allianceId === undefined ? WORLD_TEMPLATE_SURFACE : null
+  if (kind === undefined || allianceId === undefined || !POSITIVE_NUMBER.test(allianceId))
+    return null
+  const parsedAllianceId = Number(allianceId)
+  return Number.isSafeInteger(parsedAllianceId) ? templateSurface(kind, parsedAllianceId) : null
 }
 
 export const createManifestRoutes = (
@@ -28,6 +46,13 @@ export const createManifestRoutes = (
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'), options.currentSeason)
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
+    const surface = parseSurface(c.req.query('surface'), c.req.query('allianceId'))
+    if (surface === null) {
+      return c.json(
+        { error: 'surface must be world or an alliance surface with a positive allianceId' },
+        400,
+      )
+    }
 
     return runBackendHttp(
       c,
@@ -38,6 +63,7 @@ export const createManifestRoutes = (
         return yield* assembleManifestEffect({
           server,
           season,
+          surface,
           includeUnpublished: c.get('caller').scope === 'admin',
         })
       }),

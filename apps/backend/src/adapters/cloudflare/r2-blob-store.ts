@@ -1,6 +1,6 @@
-import type { BlobNamespace, BlobStore } from '../../ports/index.js'
+import type { BlobListPage, BlobNamespace, BlobStore } from '../../ports/index.js'
 
-const objectKey = (namespace: BlobNamespace, hash: string): string => `${namespace}/${hash}`
+const objectKey = (namespace: BlobNamespace, key: string): string => `${namespace}/${key}`
 const DELETE_BATCH_SIZE = 1_000
 
 export class R2BlobStore implements BlobStore {
@@ -37,5 +37,21 @@ export class R2BlobStore implements BlobStore {
     )
 
     return new Set(objects.filter(({ object }) => object !== null).map(({ hash }) => hash))
+  }
+
+  async list(
+    namespace: BlobNamespace,
+    options: { cursor?: string; limit: number },
+  ): Promise<BlobListPage> {
+    const prefix = `${namespace}/`
+    const page = await this.bucket.list({
+      prefix,
+      ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      limit: options.limit,
+    })
+    return {
+      keys: page.objects.map((object) => object.key.slice(prefix.length)),
+      ...(page.truncated ? { cursor: page.cursor } : {}),
+    }
   }
 }

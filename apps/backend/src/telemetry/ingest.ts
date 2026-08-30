@@ -34,6 +34,7 @@ import {
   SqlStoreService,
 } from '../runtime/backend-runtime.js'
 import { TelemetryStorageError, TelemetryValidationError } from '../runtime/errors.js'
+import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
 
@@ -202,7 +203,7 @@ const readMismatchMaskPromise = async (
   if (target === undefined) return { kind: 'not-found' }
   const latest = await ports.sql.readLatestTile(query.season, query.tile)
   if (latest === null) return { kind: 'unobserved' }
-  const canvasBytes = await ports.blobs.get('tiles', latest.hash)
+  const canvasBytes = await readTileBlob(ports, latest.hash)
   if (canvasBytes === null) return { kind: 'unobserved' }
   const canvas = await decodeCanvas(canvasBytes).catch(() => null)
   if (canvas === null) return { kind: 'unobserved' }
@@ -224,6 +225,8 @@ const recordObservationPromise = async (
   ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   metadata: TileMetadata,
   bytes: Uint8Array,
+  reservationId: string,
+  options: { readonly recordHistory?: boolean; readonly authoritative?: boolean } = {},
 ): Promise<void> => {
   const canvas = await decodeCanvas(bytes)
   const targets = await ports.sql.listTelemetryTargets(
@@ -246,12 +249,63 @@ const recordObservationPromise = async (
     reportedByUserId: metadata.wplaceUserId,
   }
   await ports.sql.rememberPainter(metadata.wplaceUserId, metadata.displayName, millis(observedAtMs))
-  const recordHistory = targets.length === 0 || targets.some((target) => !target.finished)
-  await ports.sql.recordTileObservation(observation, statuses, recordHistory)
+  const recordHistory =
+    options.recordHistory ?? (targets.length === 0 || targets.some((target) => !target.finished))
+  const committed = await ports.sql.commitTileBlobReservation(
+    reservationId,
+    millis(Date.now()),
+    observation,
+    statuses,
+    recordHistory,
+    options.authoritative ?? false,
+  )
+  if (!committed) {
+    throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
+  }
   await ports.sql.foldTileHistory(
     metadata.season,
     metadata.tile,
     seconds(Math.floor(Date.now() / 1_000)),
+  )
+}
+
+/** Reclassify bytes already held by the current canvas hash without another upload or history fold. */
+/** @internal Shared promise implementation for service-backed background jobs. */
+export const refreshAuthoritativeTileWithStores = async (
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
+  metadata: TileMetadata,
+  bytes: Uint8Array,
+): Promise<void> => {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
+    throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
+  }
+  const actualHash = await sha256Hex(bytes)
+  if (actualHash !== metadata.hash) throw new RangeError('tile bytes do not match their sha256')
+  const canvas = await decodeCanvas(bytes)
+  const targets = await ports.sql.listTelemetryTargets(
+    metadata.season,
+    metadata.tile,
+    metadata.includeUnpublished,
+  )
+  const observedAt = millis(metadata.observedAt * 1_000)
+  const statuses = (
+    await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAt)))
+  )
+    .filter((result): result is ClassifiedTarget => result !== null)
+    .map((result) => result.status)
+  await ports.sql.recordTileObservation(
+    {
+      season: metadata.season,
+      tile: metadata.tile,
+      hash: metadata.hash,
+      observedAt,
+      reportedAt: metadata.observedAt,
+      reportedWithToken: metadata.tokenHash,
+      reportedByUserId: metadata.wplaceUserId,
+    },
+    statuses,
+    false,
+    true,
   )
 }
 
@@ -266,16 +320,22 @@ const offerTilePromise = async (
     metadata.includeUnpublished,
   )
   if (targets.length === 0) return 'ignored'
-  const bytes = await ports.blobs.get('tiles', metadata.hash)
-  if (bytes === null) return 'wanted'
-  await recordObservationPromise(ports, metadata, bytes)
+  const held = await reserveTileBlob(ports, metadata.hash)
+  if (held === null) return 'wanted'
+  await recordObservationPromise(ports, metadata, held.bytes, held.reservation.id)
   return 'recorded'
 }
 
-const uploadTilePromise = async (
+/** @internal Shared promise implementation for service-backed background jobs. */
+export const uploadTileWithStores = async (
   ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   metadata: TileMetadata,
   bytes: Uint8Array,
+  options: {
+    readonly requireCoverage?: boolean
+    readonly recordHistory?: boolean
+    readonly authoritative?: boolean
+  } = {},
 ): Promise<void> => {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
     throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
@@ -287,9 +347,20 @@ const uploadTilePromise = async (
     metadata.tile,
     metadata.includeUnpublished,
   )
-  if (targets.length === 0) throw new RangeError('tile is not covered by a visible template')
-  await ports.blobs.put('tiles', actualHash, bytes)
-  await recordObservationPromise(ports, metadata, bytes)
+  if (options.requireCoverage !== false && targets.length === 0) {
+    throw new RangeError('tile is not covered by a visible template')
+  }
+  const reservation = await reserveTileBlobUpload(ports, actualHash)
+  try {
+    await ports.blobs.put('tiles', reservation.blobKey, bytes)
+    await recordObservationPromise(ports, metadata, bytes, reservation.id, {
+      ...(options.recordHistory === undefined ? {} : { recordHistory: options.recordHistory }),
+      ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
+    })
+  } catch (error) {
+    await ports.sql.releaseTileBlobReservation(reservation.id)
+    throw error
+  }
 }
 
 const ourPaletteIndex = (wplaceIndex: number): number =>
@@ -317,7 +388,7 @@ const recordPaintPromise = async (
     const targets = await ports.sql.listTelemetryTargets(event.season, tile, includeUnpublished)
     if (targets.length === 0) continue
     const latest = await ports.sql.readLatestTile(event.season, tile)
-    const previousBytes = latest === null ? null : await ports.blobs.get('tiles', latest.hash)
+    const previousBytes = latest === null ? null : await readTileBlob(ports, latest.hash)
     const previous =
       previousBytes === null ? null : await decodeCanvas(previousBytes).catch(() => null)
 
@@ -397,17 +468,19 @@ export const readMismatchMask = (
     return yield* storage('readMismatchMask', () => readMismatchMaskPromise({ blobs, sql }, query))
   })
 
-/** Persist one server-accepted canvas observation through Effect services. */
-export const recordObservation = (
+/** Reclassify the current authoritative bytes without creating a history row. */
+export const refreshAuthoritativeTile = (
   metadata: TileMetadata,
   bytes: Uint8Array,
-): Effect.Effect<void, TelemetryStorageError, BlobStoreService | SqlStoreService> =>
+): Effect.Effect<
+  void,
+  TelemetryStorageError | TelemetryValidationError,
+  BlobStoreService | SqlStoreService
+> =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    return yield* storage('recordObservation', () =>
-      recordObservationPromise({ blobs, sql }, metadata, bytes),
-    )
+    return yield* upload(() => refreshAuthoritativeTileWithStores({ blobs, sql }, metadata, bytes))
   })
 
 /** Decide whether the server needs one offered tile, recording known bytes immediately. */
@@ -439,6 +512,11 @@ export const offerTiles = (
 export const uploadTile = (
   metadata: TileMetadata,
   bytes: Uint8Array,
+  options: {
+    readonly requireCoverage?: boolean
+    readonly recordHistory?: boolean
+    readonly authoritative?: boolean
+  } = {},
 ): Effect.Effect<
   void,
   TelemetryStorageError | TelemetryValidationError,
@@ -447,7 +525,7 @@ export const uploadTile = (
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    return yield* upload(() => uploadTilePromise({ blobs, sql }, metadata, bytes))
+    return yield* upload(() => uploadTileWithStores({ blobs, sql }, metadata, bytes, options))
   })
 
 /** Classify one accepted paint while preserving claim, counter, and contribution ordering. */

@@ -22,6 +22,7 @@
     app.manifest?.templates.find((entry) => entry.id === page.params.id) ?? null,
   )
   const status = $derived(template === null ? undefined : app.statuses.get(template.id))
+  const alarm = $derived(template === null ? undefined : app.alarms.get(template.id))
   const progress = $derived(template === null ? null : progressFromStatus(template, status))
   const folder = $derived(
     template?.nodeId == null
@@ -187,7 +188,13 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {#if !template.published}
         <span class="badge badge-warning badge-sm">unpublished</span>
       {/if}
-      <TemplateState finished={template.finished} frozen={template.timelapseFrozen} griefed={template.finished && progress.mismatched > 0} />
+      <TemplateState
+        finished={template.finished}
+        frozen={template.timelapseFrozen}
+        griefed={template.finished && progress.mismatched > 0}
+        alarmKind={alarm?.kind}
+        pixelsLost={alarm?.pixelsLost}
+      />
       <span class="text-sm tabular-nums text-base-content/50">
         {template.totalPixels.toLocaleString()} px ·
         {template.bbox.maxX - template.bbox.minX}×{template.bbox.maxY - template.bbox.minY}

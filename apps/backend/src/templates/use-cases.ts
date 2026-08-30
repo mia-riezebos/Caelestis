@@ -14,6 +14,7 @@ import {
   ResourceConflictError,
   ResourceNotFoundError,
 } from '../runtime/errors.js'
+import { readTileBlob } from '../telemetry/tile-blobs.js'
 import {
   type StoredTemplate,
   StoreTemplateError,
@@ -108,10 +109,18 @@ export const createTemplateVersion = (input: {
     if (existing === null) {
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
     }
+    if (existing.surface.kind === 'world' && (input.originX < 0 || input.originY < 0)) {
+      return yield* Effect.fail(
+        new RequestValidationError({
+          message: 'originX and originY must be non-negative integers',
+        }),
+      )
+    }
     return yield* store(
       'createTemplateVersion',
       {
         ...input,
+        surface: existing.surface,
         season: existing.season,
         nodeId: existing.nodeId,
         name: existing.name,
@@ -226,10 +235,17 @@ export const deleteTemplate = (
 export const readBlob = (
   namespace: 'chunks' | 'tiles',
   hash: string,
-): Effect.Effect<Uint8Array, ResourceNotFoundError | BackendStorageError, BlobStoreService> =>
+): Effect.Effect<
+  Uint8Array,
+  ResourceNotFoundError | BackendStorageError,
+  BlobStoreService | SqlStoreService
+> =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
-    const bytes = yield* storage('readBlob', () => blobs.get(namespace, hash))
+    const sql = yield* SqlStoreService
+    const bytes = yield* storage('readBlob', () =>
+      namespace === 'tiles' ? readTileBlob({ blobs, sql }, hash) : blobs.get(namespace, hash),
+    )
     if (bytes === null) {
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
     }

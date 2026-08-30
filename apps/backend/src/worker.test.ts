@@ -1,5 +1,11 @@
+import { Context } from 'effect'
 import { afterEach, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
+import {
+  BlobStoreService,
+  CounterStoreService,
+  SqlStoreService,
+} from './runtime/backend-runtime.js'
 import worker, { prepareBackendForEvent } from './worker.js'
 
 // `worker.ts` re-exports the Durable Object, whose module imports `cloudflare:workers` — absent
@@ -22,6 +28,7 @@ const BOOTSTRAP = 'bootstrap-secret'
 let d1: SqliteD1Database | null = null
 
 afterEach(() => {
+  vi.restoreAllMocks()
   d1?.close()
   d1 = null
 })
@@ -35,6 +42,7 @@ const env = () => {
     // `DurableObjectCounterStore` resolves its stub in the constructor, so the namespace has to
     // answer `getByName` even on a path that never calls the shard.
     TELEMETRY: { getByName: () => ({}) },
+    ALARM_WATCHER: { getByName: () => ({ schedule: async () => undefined }) },
     ADMIN_TOKEN: BOOTSTRAP,
   } as unknown as Env
 }
@@ -58,7 +66,18 @@ it('mints the first admin token with the configured ADMIN_TOKEN binding', async 
 
 it('derives binding-backed clients for every Worker event', () => {
   const configured = env()
-  expect(prepareBackendForEvent(configured)).not.toBe(prepareBackendForEvent(configured))
+  const first = prepareBackendForEvent(configured)
+  const second = prepareBackendForEvent(configured)
+
+  expect(Context.get(first.runtime.context, BlobStoreService)).not.toBe(
+    Context.get(second.runtime.context, BlobStoreService),
+  )
+  expect(Context.get(first.runtime.context, SqlStoreService)).not.toBe(
+    Context.get(second.runtime.context, SqlStoreService),
+  )
+  expect(Context.get(first.runtime.context, CounterStoreService)).not.toBe(
+    Context.get(second.runtime.context, CounterStoreService),
+  )
 })
 
 it('refuses a credential that is not the configured ADMIN_TOKEN', async () => {
@@ -132,4 +151,45 @@ it('mounts the runtime app beneath its configured base path', async () => {
   expect(mounted.status).toBe(200)
   await expect(mounted.json()).resolves.toEqual({ ok: true })
   expect(outside.status).toBe(404)
+})
+
+it('runs scheduled tile blob GC in configured dry-run mode without R2 deletion', async () => {
+  const hash = 'b'.repeat(64)
+  const list = vi.fn(async () => ({
+    objects: [{ key: `tiles/${hash}` }],
+    truncated: false,
+  }))
+  const remove = vi.fn(async () => undefined)
+  const backgrounds: Promise<unknown>[] = []
+  const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+  const configured = {
+    ...env(),
+    TILE_BLOB_GC_MODE: 'dry-run',
+    BLOBS: { list, delete: remove },
+  } as unknown as Env
+
+  await worker.scheduled({} as ScheduledController, configured, {
+    waitUntil: (promise: Promise<unknown>) => {
+      backgrounds.push(promise)
+    },
+  } as ExecutionContext)
+  await Promise.all(backgrounds)
+
+  expect(list).toHaveBeenCalledWith({ prefix: 'tiles/', limit: 10 })
+  expect(remove).not.toHaveBeenCalled()
+  expect(
+    d1?.sqlite.prepare('SELECT state FROM tile_blob_objects WHERE blob_key = ?').get(hash),
+  ).toEqual({ state: 'candidate' })
+  expect(log).toHaveBeenCalledWith(expect.stringContaining('"mode":"dry-run"'))
+  log.mockRestore()
+})
+
+it('refuses an unsupported scheduled tile blob GC mode', async () => {
+  await expect(
+    worker.scheduled(
+      {} as ScheduledController,
+      { ...env(), TILE_BLOB_GC_MODE: 'unsafe' } as unknown as Env,
+      { waitUntil: () => undefined } as unknown as ExecutionContext,
+    ),
+  ).rejects.toThrow(/Unsupported TILE_BLOB_GC_MODE/)
 })

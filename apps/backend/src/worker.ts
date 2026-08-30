@@ -8,7 +8,9 @@ import {
   makeBackendContext,
 } from './runtime/backend-runtime.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
+import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
+export { AlarmWatcher } from './alarm-watcher.js'
 export { TelemetryShard } from './telemetry-shard.js'
 
 /**
@@ -43,10 +45,20 @@ const requestAtBasePath = (request: Request, configured: string | undefined): Re
   return new Request(url, request)
 }
 
+const tileBlobGcMode = (value: string | undefined): TileBlobGcMode => {
+  if (value === undefined || value === 'dry-run') return 'dry-run'
+  if (value === 'delete') return 'delete'
+  throw new Error(`Unsupported TILE_BLOB_GC_MODE: ${JSON.stringify(value)}`)
+}
+
 export interface PreparedBackend {
   readonly app: App
   readonly runtime: BackendRuntime
   readonly season: number
+  readonly stores: {
+    readonly blobs: R2BlobStore
+    readonly sql: D1SqlStore
+  }
 }
 
 /** Prepare binding-derived adapters and their Effect Context for the current Worker event. */
@@ -55,16 +67,14 @@ export const prepareBackendForEvent = (env: Env): PreparedBackend => {
     throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
   }
   const season = parseSeason(env.SEASON) ?? 0
+  const blobs = new R2BlobStore(env.BLOBS)
+  const sql = new D1SqlStore(env.DB)
+  const counters = new DurableObjectCounterStore(env.TELEMETRY)
   const runtime = createBackendRuntime(
-    makeBackendContext(
-      new R2BlobStore(env.BLOBS),
-      new D1SqlStore(env.DB),
-      new DurableObjectCounterStore(env.TELEMETRY),
-      {
-        bootstrapAdminToken: env.ADMIN_TOKEN,
-        openAccess: env.OPEN_ACCESS === 'true',
-      },
-    ),
+    makeBackendContext(blobs, sql, counters, {
+      bootstrapAdminToken: env.ADMIN_TOKEN,
+      openAccess: env.OPEN_ACCESS === 'true',
+    }),
   )
   const app = createApp(runtime, {
     serverId: env.SERVER_ID,
@@ -77,6 +87,7 @@ export const prepareBackendForEvent = (env: Env): PreparedBackend => {
     app,
     runtime,
     season,
+    stores: { blobs, sql },
   }
 }
 
@@ -90,6 +101,14 @@ export default {
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
   async scheduled(_controller, env, ctx): Promise<void> {
     const prepared = prepareBackendForEvent(env)
-    ctx.waitUntil(prepared.runtime.run(fetchCanvasTiles({ season: prepared.season })))
+    const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
+    ctx.waitUntil(
+      prepared.runtime.run(fetchCanvasTiles({ season: prepared.season })).finally(async () => {
+        // A prior template may already have persisted a probe when later scan work fails. Always
+        // reconcile the watcher so durable work cannot be stranded until the next cron.
+        await env.ALARM_WATCHER.getByName('global').schedule()
+      }),
+    )
+    ctx.waitUntil(runTileBlobGc(prepared.stores, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>

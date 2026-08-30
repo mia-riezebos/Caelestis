@@ -22,6 +22,7 @@ const version = (
   hashes: readonly string[],
 ): TemplateVersionRecord => ({
   templateId,
+  surface: { kind: 'world', allianceId: null },
   season: 1,
   nodeId,
   name: templateId,

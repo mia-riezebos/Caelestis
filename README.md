@@ -119,6 +119,57 @@ Production deployments run from `.github/workflows/deploy.yml` after a push to `
 needs a `CLOUDFLARE_API_TOKEN` repository secret with access to the configured Workers, D1, and R2
 resources.
 
+### Cloudflare Free capacity
+
+Capacity depends more on how long clients stay open and how many rows the status query scans than
+on alliance membership alone. Against Cloudflare's current Free allowances of
+[100,000 Worker requests/day](https://developers.cloudflare.com/workers/platform/limits/),
+[100,000 Durable Object requests/day](https://developers.cloudflare.com/durable-objects/platform/pricing/),
+[5 million D1 rows read and 100,000 rows written/day](https://developers.cloudflare.com/d1/platform/pricing/),
+and [R2's monthly storage and operation allowances](https://developers.cloudflare.com/r2/pricing/),
+the 30-second status refresh makes D1 reads the first wall.
+
+| Workload | Daily estimate or measurement | Free-tier result |
+| --- | --- | --- |
+| Production, 2026-08-30: 3 reporting clients, 90 templates, 36 covered tiles | 20,779 Worker requests; 58 Durable Object requests; 7.32M D1 rows read; 14,719 D1 rows written | Over: D1 reads reached 146% |
+| 90-template periodic-status upper bound: 10 users active 8 hours | 9,600 status requests; 4.99M D1 rows read before paint, tile, or triggered status traffic | At most 10; 11 users exceed 5M on periodic status alone |
+| 10-template periodic-status upper bound: 89 users active 8 hours | 85,440 status requests; 4.96M D1 rows read before paint, tile, or triggered status traffic | At most 89; 90 users exceed 5M on periodic status alone |
+
+The scenario rows are hard upper bounds on who might fit, not claims that those user counts fit a
+real painting workload. They include only the guaranteed 30-second periodic status traffic and
+deliberately assume zero paint, tile, post-offer, and lifecycle traffic; any real work lowers the
+limit. D1 Insights does not retain the HTTP request ids needed to distinguish periodic status polls
+from refreshes after multi-tile offer batches. Using all status calls as an open-time clock therefore
+depresses per-hour paint and tile rates and is valid only as a backfit of the observed window, not as
+a scalable workload estimate.
+
+The observation command says so in `activeTimeCalibration.workloadRatesScalable`. Supply an
+independently measured total with `CAELESTIS_ACTIVE_USER_HOURS` to produce rates that can be scaled;
+without it, the variable-traffic upper bound is reported as unknown rather than promoted into a
+free-tier claim. Offer and upload D1 reads remain one baseline-preserving cost per accepted tile
+observation because the available analytics cannot separate their request counts.
+
+The first knob is the status path: lengthen its 30-second interval, or cache or precompute its
+result. Paint batching does not reduce periodic, post-offer, or lifecycle status reads. Per-template
+Durable Object sharding also does not extend account quotas; the measured single-object rate was
+only 0.00031 requests/second against the model's conservative 200 requests/second throughput budget.
+
+R2 was not the measured near-term wall: production held 71.4 MB of payload. The observation command
+now counts distinct content hashes rather than coordinate versions, matching the content-addressed
+store. Tile blobs still accumulate after SQL history compacts, so long-lived deployments need to
+watch the 10 GB storage allowance.
+
+Run the same read-only 24-hour comparison against the configured production resources with:
+
+```sh
+CAELESTIS_ACTIVE_USER_HOURS=... CLOUDFLARE_API_TOKEN=... pnpm capacity:observe
+```
+
+The active-user-hours input is optional for backfitting the observed window but required before
+scaling its paint and tile rates. The token is optional for the local model and D1 Insights portion;
+Cloudflare GraphQL comparisons, including R2 operation counts, are reported as unavailable rather
+than zero when it is absent.
+
 ## Userscript releases
 
 Userscript releases use Changesets. A user-facing userscript change should include a changeset for
