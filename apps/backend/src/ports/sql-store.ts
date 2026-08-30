@@ -1,4 +1,5 @@
 import {
+  type Alarm,
   type ContributionDay,
   type Millis,
   PALETTE_SIZE,
@@ -6,9 +7,13 @@ import {
   type Seconds,
   seconds,
   type TemplateStatus,
+  type TemplateSurface,
+  TILE_SIZE,
   type TileCoord,
   type TileHistoryFrame,
   TRANSPARENT_INDEX,
+  templateSurface,
+  templateSurfaceBounds,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -364,6 +369,9 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
   if (!Number.isSafeInteger(version.season) || version.season < 0) {
     fail(`season ${version.season} is not a non-negative integer`)
   }
+  if (templateSurface(version.surface.kind, version.surface.allianceId) === null) {
+    fail(`surface ${version.surface.kind}/${version.surface.allianceId} is invalid`)
+  }
   if (!isDigest(version.createdWithToken))
     fail(`createdWithToken ${version.createdWithToken} is not a sha256 digest`)
   if (
@@ -376,15 +384,26 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
   if (![minX, minY, maxX, maxY, version.totalPixels].every(Number.isSafeInteger)) {
     fail('bounding box and total pixels must be integers')
   }
-  // x wraps through zero so minX may exceed maxX; y does not. Zero width or height is not a
-  // placement. These are the same bounds `template_versions_pixel_bounds_check` states.
-  if (minX < 0 || minX >= WORLD_PIXELS || minY < 0 || minY >= WORLD_PIXELS) {
-    fail('bounding box minimum is outside the canvas')
+  const surfaceBounds = templateSurfaceBounds(version.surface)
+  if (surfaceBounds === null) {
+    // World x wraps through zero, so minX may exceed maxX; y does not.
+    if (minX < 0 || minX >= WORLD_PIXELS || minY < 0 || minY >= WORLD_PIXELS) {
+      fail('bounding box minimum is outside the canvas')
+    }
+    if (maxX < 1 || maxX > WORLD_PIXELS || maxY < 1 || maxY > WORLD_PIXELS) {
+      fail('bounding box maximum is outside the canvas')
+    }
+    if (minX === maxX || minY >= maxY) fail('bounding box covers no pixels')
+  } else if (
+    minX < surfaceBounds.minX ||
+    minY < surfaceBounds.minY ||
+    maxX > surfaceBounds.maxX ||
+    maxY > surfaceBounds.maxY ||
+    minX >= maxX ||
+    minY >= maxY
+  ) {
+    fail('bounding box is outside its alliance surface')
   }
-  if (maxX < 1 || maxX > WORLD_PIXELS || maxY < 1 || maxY > WORLD_PIXELS) {
-    fail('bounding box maximum is outside the canvas')
-  }
-  if (minX === maxX || minY >= maxY) fail('bounding box covers no pixels')
   if (version.totalPixels < 0) fail('total pixels is negative')
   if (version.colourTotals !== undefined) {
     const indices = new Set<number>()
@@ -406,14 +425,28 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
     }
     if (total !== version.totalPixels) fail('colour totals do not sum to total pixels')
   }
+  const minTile =
+    surfaceBounds === null
+      ? { x: 0, y: 0 }
+      : {
+          x: Math.floor(surfaceBounds.minX / TILE_SIZE),
+          y: Math.floor(surfaceBounds.minY / TILE_SIZE),
+        }
+  const maxTile =
+    surfaceBounds === null
+      ? { x: WORLD_TILES - 1, y: WORLD_TILES - 1 }
+      : {
+          x: Math.floor((surfaceBounds.maxX - 1) / TILE_SIZE),
+          y: Math.floor((surfaceBounds.maxY - 1) / TILE_SIZE),
+        }
   for (const chunk of version.chunks) {
     if (
       !Number.isSafeInteger(chunk.tileX) ||
       !Number.isSafeInteger(chunk.tileY) ||
-      chunk.tileX < 0 ||
-      chunk.tileX >= WORLD_TILES ||
-      chunk.tileY < 0 ||
-      chunk.tileY >= WORLD_TILES
+      chunk.tileX < minTile.x ||
+      chunk.tileX > maxTile.x ||
+      chunk.tileY < minTile.y ||
+      chunk.tileY > maxTile.y
     ) {
       fail(`chunk tile ${chunk.tileX}/${chunk.tileY} is outside the canvas`)
     }
@@ -463,6 +496,7 @@ export interface AccessTokenQuery {
 
 export interface TemplateVersionRecord {
   readonly templateId: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly nodeId: string | null
   readonly name: string
@@ -491,6 +525,7 @@ export interface TemplateVersionRecord {
 /** A template's own row: what it is called and where it sits, with no pixels attached. */
 export interface TemplateRecord {
   readonly id: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly nodeId: string | null
   readonly name: string
@@ -512,6 +547,7 @@ export interface TemplateDeletePrecondition {
 
 export interface NodeRecord {
   readonly id: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly parentId: string | null
   readonly path: string
@@ -541,12 +577,59 @@ export interface ManifestTemplateRecord {
   readonly updatedAt: Millis
 }
 
+/** One complete current-state observation used by the server-owned alarm policy. */
+export interface TemplateAlarmSnapshot {
+  readonly templateId: string
+  readonly versionId: string
+  readonly total: number
+  readonly correct: number
+  readonly observedAt: Millis
+}
+
+export interface TemplateAlarmState {
+  readonly templateId: string
+  readonly versionId: string
+  readonly total: number
+  readonly peakCorrect: number
+  readonly alarm: Alarm | null
+}
+
+export type AlarmEvaluationPhase =
+  | { readonly kind: 'scan' }
+  | {
+      readonly kind: 'follow-up'
+      readonly alarmId: string
+      readonly pixelsLost: number
+      /** Identifies the exact durable probe generation this evaluation may consume. */
+      readonly dueAt: Millis
+    }
+
+export interface AlarmPolicyResult {
+  readonly state: TemplateAlarmState
+  readonly scheduleFollowUp: boolean
+}
+
+/** A durable delayed recheck claimed by the alarm-watcher Durable Object. */
+export interface AlarmProbe {
+  readonly templateId: string
+  readonly versionId: string
+  readonly season: number
+  readonly alarmId: string
+  readonly pixelsLost: number
+  readonly dueAt: Millis
+}
+
 export interface ManifestTileRecord {
   readonly templateId: string
   readonly versionId: string
   readonly tileX: number
   readonly tileY: number
   readonly hash: string
+}
+
+/** A current template tile plus the age of the classification used by alarm evaluation. */
+export interface AlarmTileRecord extends ManifestTileRecord {
+  readonly observedAt: Millis | null
 }
 
 /** One current template chunk affected by a canvas tile observation or paint event. */
@@ -566,6 +649,36 @@ export interface TileObservation {
 }
 
 export type LatestTileObservation = Pick<TileObservation, 'season' | 'tile' | 'hash' | 'observedAt'>
+
+export type TileBlobObjectState = 'uploading' | 'active' | 'candidate' | 'deleting' | 'deleted'
+
+/** One physical R2 object carrying the bytes for a public content hash. */
+export interface TileBlobObject {
+  /** Key relative to `tiles/`. A suffix makes a restored generation immune to an older delete. */
+  readonly blobKey: string
+  readonly hash: string
+  readonly state: TileBlobObjectState
+  readonly discoveredAt: Millis
+  readonly deleteStartedAt: Millis | null
+  readonly deleteAttempts: number
+  readonly reclaimedAt: Millis | null
+}
+
+/** A live ingest claim. GC may not fence this hash until the claim commits or expires. */
+export interface TileBlobReservation {
+  readonly id: string
+  readonly hash: string
+  readonly blobKey: string
+  readonly expiresAt: Millis
+}
+
+export type TileBlobCandidateResult = 'candidate' | 'referenced' | 'deleting' | 'deleted'
+export type TileBlobClaimResult = 'claimed' | 'blocked' | 'missing'
+
+export interface TileBlobScanState {
+  readonly cursor?: string
+  readonly completedSweeps: number
+}
 
 export interface TemplateTileStatusRecord {
   readonly templateId: string
@@ -716,7 +829,7 @@ export interface SqlStore {
 
   readNode(nodeId: string): Promise<NodeRecord | null>
 
-  listNodes(season: number): Promise<readonly NodeRecord[]>
+  listNodes(season: number, surface?: TemplateSurface): Promise<readonly NodeRecord[]>
 
   /**
    * Rename a node and rewrite the paths of everything beneath it.
@@ -806,14 +919,17 @@ export interface SqlStore {
   deleteTemplate(templateId: string, expected: TemplateDeletePrecondition): Promise<boolean>
 
   listManifestTemplates(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTemplateRecord[]>
 
   listManifestTiles(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]>
+
+  /** Current template tiles ordered by callers for bounded, freshness-aware alarm scans. */
+  listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]>
 
   listTelemetryTargets(
     season: number,
@@ -827,7 +943,63 @@ export interface SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
+    /** Server fetches are authoritative even when a client clock put the current row in the future. */
+    forceCurrent?: boolean,
   ): Promise<void>
+
+  /** The preferred readable physical object for a hash, if one is registered and unfenced. */
+  readTileBlob(hash: string): Promise<TileBlobObject | null>
+
+  /**
+   * Reserve existing bytes for an observation. A candidate returns to active before its fence;
+   * a deleting hash refuses until its old physical key has been reconciled.
+   */
+  reserveTileBlob(
+    hash: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null>
+
+  /** Reuse an active/uploading generation, or reserve a fresh key before its bytes are written. */
+  reserveTileBlobUpload(
+    hash: string,
+    blobKey: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null>
+
+  /**
+   * Atomically verify the reservation, activate its object, and create both SQL reference kinds.
+   * False means the reservation expired or a deletion fence won first; no reference was created.
+   */
+  commitTileBlobReservation(
+    reservationId: string,
+    now: Millis,
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+    recordHistory?: boolean,
+    forceCurrent?: boolean,
+  ): Promise<boolean>
+
+  releaseTileBlobReservation(reservationId: string): Promise<void>
+
+  /** Record one object found by a bounded R2 scan and classify it against live SQL references. */
+  noteTileBlobObject(hash: string, blobKey: string, now: Millis): Promise<TileBlobCandidateResult>
+
+  /** Deleting rows come first so interrupted work resumes before new candidates start. */
+  listTileBlobDeletionWork(limit: number): Promise<readonly TileBlobObject[]>
+
+  /** Fence a candidate only after atomically rechecking both reference tables and reservations. */
+  claimTileBlobDeletion(blobKey: string, now: Millis): Promise<TileBlobClaimResult>
+
+  /** Finalize an idempotent R2 delete. Only a fenced row can become deleted. */
+  finishTileBlobDeletion(blobKey: string, reclaimedAt: Millis): Promise<void>
+
+  readTileBlobScanState(): Promise<TileBlobScanState>
+
+  writeTileBlobScanState(cursor: string | undefined): Promise<void>
 
   /** Fold the SQL history for one touched tile. Physical blob GC needs a separately safe protocol. */
   foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<void>
@@ -835,7 +1007,32 @@ export interface SqlStore {
   readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
+    options?: { readonly serverOwnedOnly?: boolean },
   ): Promise<readonly TemplateStatus[]>
+
+  /** Atomically evaluate and persist one complete template snapshot. */
+  evaluateTemplateAlarm(
+    snapshot: TemplateAlarmSnapshot,
+    phase: AlarmEvaluationPhase,
+    alarmId: string,
+  ): Promise<AlarmPolicyResult>
+
+  readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]>
+
+  listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]>
+
+  nextAlarmProbeAt(): Promise<Millis | null>
+
+  /** Drop a probe only if it is still the exact generation the caller observed. */
+  clearAlarmProbe(templateId: string, alarmId: string, dueAt: Millis): Promise<void>
+
+  /** Move a failed probe behind other due work without touching a replacement generation. */
+  deferAlarmProbe(
+    templateId: string,
+    alarmId: string,
+    dueAt: Millis,
+    retryAt: Millis,
+  ): Promise<void>
 
   /** Claims an idempotency key. False means this paint event was already accepted. */
   claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>
@@ -942,4 +1139,10 @@ export interface SqlStore {
    * smaller hash — and returned in bucket order.
    */
   readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]>
+}
+
+/** Exact drawing surface selected by one manifest request. */
+export interface TemplateManifestScope {
+  readonly season: number
+  readonly surface: TemplateSurface
 }

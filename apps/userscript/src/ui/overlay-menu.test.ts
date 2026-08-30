@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import type { ActiveAllianceSurface } from '../alliance-surface.js'
 import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
 import { PANEL_ID } from './toast.js'
@@ -64,11 +65,17 @@ const harness = vi.hoisted(() => ({
   appearanceOf: vi.fn((template: { appearance: Appearance }) => template.appearance),
   setAppearancePreview: vi.fn(),
   clearAppearancePreview: vi.fn(),
+  refreshAllianceManifest: vi.fn(async () => {}),
 }))
 
 beforeAll(() => registerCaelestisUi())
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
+vi.mock('../alliance-server-sync.js', () => ({
+  allianceManifestFor: (_server: unknown, surface: { kind: string }) =>
+    surface.kind === 'world' ? null : { templates: harness.serverTemplates },
+  refreshAllianceManifest: harness.refreshAllianceManifest,
+}))
 vi.mock('../main.js', () => ({
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
   screenProjection: () => ({
@@ -139,9 +146,11 @@ type Overrides = {
   originX?: number
   originY?: number
   width?: number
+  height?: number
   serverUrl?: string
   serverTemplateId?: string
   serverVersion?: string
+  surface?: { kind: 'alliance-headquarters'; allianceId: number }
 }
 
 const template = (overrides: Overrides = {}) => ({
@@ -149,10 +158,11 @@ const template = (overrides: Overrides = {}) => ({
   name: overrides.name ?? 'alpha.png',
   visible: overrides.visible ?? true,
   width: overrides.width ?? 10,
-  height: 10,
+  height: overrides.height ?? 10,
   originX: overrides.originX ?? 0,
   originY: overrides.originY ?? 0,
   appearance: { ...DEFAULT_APPEARANCE, ...overrides.appearance },
+  ...(overrides.surface === undefined ? {} : { surface: overrides.surface }),
   ...(overrides.serverUrl === undefined
     ? {}
     : {
@@ -307,6 +317,88 @@ afterEach(() => {
 })
 
 describe('the open menu tracks intended state, not a snapshot and not a lagging store', () => {
+  it('uses the same placement rail and follows an alliance artboard pan', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ surface, originX: -100, originY: -100, width: 20 }),
+    ])
+    harness.isMoving.mockReturnValue(true)
+    harness.movingId.mockReturnValue('a')
+    harness.placementSeq.mockReturnValue(1)
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 1_000, bottom: 700, width: 1_000, height: 700 }) as DOMRect
+    let frameLeft = 200
+    frame.getBoundingClientRect = () =>
+      ({
+        left: frameLeft,
+        top: 100,
+        right: frameLeft + 500,
+        bottom: 600,
+        width: 500,
+        height: 500,
+      }) as DOMRect
+    const active: ActiveAllianceSurface = {
+      surface,
+      stage,
+      frame,
+      draftId: null,
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+    }
+    const overlayMenu = await import('./overlay-menu.js')
+    const allianceRender = overlayMenu.renderAllianceOverlayControls
+
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+    const apply = document.querySelector<HTMLElement>('[data-caelestis-control="apply-move"]')
+    expect(apply).not.toBeNull()
+    expect(apply?.parentElement).toBe(dialog)
+    expect(floatingPosition(apply as HTMLElement).x).toBe(296)
+
+    frameLeft = 260
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+
+    expect(floatingPosition(apply as HTMLElement).x).toBe(356)
+
+    harness.isMoving.mockReturnValue(false)
+    harness.movingId.mockReturnValue(null)
+    harness.placementSeq.mockReturnValue(null)
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+    expect(gear('a').parentElement).toBe(dialog)
+    overlayMenu.toggleOverlayMenu('a', () =>
+      allianceRender(
+        vi.fn(),
+        active,
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      ),
+    )
+    await settle()
+    expect(menu().parentElement).toBe(dialog)
+  })
+
   it('builds the next edit on one the store has not acknowledged yet', async () => {
     // The store only publishes after the durable write resolves. Two clicks inside that window is
     // ordinary human speed, and reading the store would hand the second one a pre-Dot base.
@@ -333,6 +425,66 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
 
     // The second write must carry the first one's shape, not put it back to `full`.
     expect(appearanceWritten(1)).toMatchObject({ radius: 1, hiddenColours: [1] })
+  })
+
+  it('preserves a template write queue while another surface owns the controls', async () => {
+    const hq = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let call = 0
+    harness.setAppearance.mockImplementation(async () => {
+      if (++call === 1) await held
+      return true
+    })
+    harness.localTemplates.mockReturnValue([
+      template(),
+      template({ id: 'hq', name: 'hq.png', surface: hq }),
+    ])
+    rerender()
+    gear('a').click()
+    rerender()
+    await setRadius()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    overlayMenu.renderAllianceOverlayControls(
+      vi.fn(),
+      {
+        surface: hq,
+        stage,
+        frame,
+        draftId: null,
+        bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+      },
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+
+    rerender()
+    ;(await byKey('swatch:1')).click()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+
+    release()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledTimes(2)
   })
 
   it('composes a queued edit against the store the earlier write left behind', async () => {
@@ -838,6 +990,199 @@ describe('placement and geometry', () => {
       } as DOMRect
     }
   }
+
+  it('keeps alliance template controls inside the visible artboard while zoomed in', async () => {
+    menuMeasures(200, 240)
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ surface, originX: -100, originY: -100, width: 240, height: 320 }),
+    ])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 100, top: 150, right: 700, bottom: 650, width: 600, height: 500 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({
+        left: -900,
+        top: -800,
+        right: 3_100,
+        bottom: 3_200,
+        width: 4_000,
+        height: 4_000,
+      }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const rerender = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        rerender,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const viewport = { left: 104, top: 158, right: 696, bottom: 642 }
+    const controls = [
+      gear('a'),
+      ...document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]'),
+    ]
+    for (const control of controls) {
+      const position = floatingPosition(control)
+      expect(position.x).toBeGreaterThanOrEqual(viewport.left)
+      expect(position.x + RAIL_BUTTON).toBeLessThanOrEqual(viewport.right)
+      expect(position.y).toBeGreaterThanOrEqual(viewport.top)
+      expect(position.y + RAIL_BUTTON).toBeLessThanOrEqual(viewport.bottom)
+    }
+    const menuPosition = floatingPosition(menu())
+    expect(menuPosition.x).toBeGreaterThanOrEqual(viewport.left)
+    expect(menuPosition.x + 240).toBeLessThanOrEqual(viewport.right)
+    expect(menuPosition.y).toBeGreaterThanOrEqual(viewport.top)
+    expect(menuPosition.y + 200).toBeLessThanOrEqual(viewport.bottom)
+  })
+
+  it('hides alliance rails when the visible stage slice cannot fit them', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([template({ surface, originX: -100, originY: -125 })])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    let stageWidth = 600
+    const stageHeight = 80
+    stage.getBoundingClientRect = () =>
+      ({
+        left: 100,
+        top: 150,
+        right: 100 + stageWidth,
+        bottom: 150 + stageHeight,
+        width: stageWidth,
+        height: stageHeight,
+      }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 150, right: 700, bottom: 750, width: 600, height: 600 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const rerender = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        rerender,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+
+    rerender()
+    gear('a').click()
+    rerender()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
+
+    harness.isMoving.mockReturnValue(true)
+    harness.movingId.mockReturnValue('a')
+    harness.placementSeq.mockReturnValue(1)
+    rerender()
+    expect(document.querySelector('[data-caelestis-placement-action]')).toBeNull()
+
+    harness.isMoving.mockReturnValue(false)
+    harness.movingId.mockReturnValue(null)
+    harness.placementSeq.mockReturnValue(null)
+    stageWidth = 30
+    rerender()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+  })
+
+  it('ends a held alliance slider when the visible stage becomes too short', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([template({ surface, originY: -120 })])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    let stageHeight = 250
+    stage.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 250,
+        bottom: stageHeight,
+        width: 250,
+        height: stageHeight,
+      }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const rerender = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        rerender,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+
+    rerender()
+    overlayMenu.toggleOverlayMenu('a', rerender)
+    rerender()
+    // Drain the custom element's connection and remeasurement turns before starting the gesture.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    rerender()
+    await settle()
+    expect(overlayMenu.isOverlayMenuOpen('a')).toBe(true)
+    const currentMenu = document.getElementById('caelestis-overlay-menu')
+    expect(currentMenu).not.toBeNull()
+    const opacity = currentMenu?.shadowRoot?.querySelector<HTMLInputElement>(
+      '[data-caelestis-control="opacity"]',
+    )
+    if (opacity === null || opacity === undefined) throw new Error('no opacity control')
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
+    opacity.value = '0.9'
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
+    stageHeight = 80
+    rerender()
+
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ opacity: 0.9 }),
+    )
+  })
 
   it('remeasures after a custom-element menu first connects at zero height', async () => {
     let menuMeasurements = 0
@@ -1434,6 +1779,62 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
 })
 
 describe('the menu is ours and has a keyboard exit', () => {
+  it('offers move and delete from an alliance server manifest', async () => {
+    connectServerTemplate(false)
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ serverUrl: 'https://example.test', surface }),
+    ])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const draw = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        draw,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+    draw()
+    gear('a').click()
+    draw()
+
+    expect(await byKey('move')).not.toBeNull()
+    expect(await byKey('delete')).not.toBeNull()
+    expect(
+      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="move"]')
+        ?.parentElement,
+    ).toBe(dialog)
+    expect(
+      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="delete"]')
+        ?.parentElement,
+    ).toBe(dialog)
+
+    ;(await byKey('move')).click()
+    const persist = harness.beginServerMove.mock.calls[0]?.[2]
+    if (typeof persist !== 'function') throw new Error('server move did not receive persistence')
+    await persist(12, 34)
+    expect(harness.refreshAllianceManifest).toHaveBeenCalledWith(harness.servers[0], surface)
+    expect(harness.listServerContents).not.toHaveBeenCalled()
+  })
+
   it('offers move and delete for an unpublished server overlay an admin owns', async () => {
     connectServerTemplate(false)
     harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])

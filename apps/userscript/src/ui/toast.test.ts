@@ -2,6 +2,7 @@
 
 import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { showAmbientToast } from './notification-host.js'
 import { PANEL_ID, toast } from './toast.js'
 
 beforeEach(() => {
@@ -24,6 +25,26 @@ const shadow = (): ShadowRoot | null =>
   document.querySelector('caelestis-notifications')?.shadowRoot ?? null
 
 describe('toast', () => {
+  it('can announce a page-level warning while the panel is closed', async () => {
+    document.getElementById(PANEL_ID)?.remove()
+    showAmbientToast('Template regressed', 'warning')
+    await settle()
+
+    expect(shadow()?.textContent).toContain('Template regressed')
+  })
+
+  it('queues an ambient warning until document-start has a body', async () => {
+    document.body.remove()
+    showAmbientToast('Early regression', 'warning')
+    expect(document.querySelector('caelestis-notifications')).toBeNull()
+
+    document.documentElement.appendChild(document.createElement('body'))
+    document.dispatchEvent(new Event('DOMContentLoaded'))
+    await settle()
+
+    expect(shadow()?.textContent).toContain('Early regression')
+  })
+
   it('announces messages through one persistent status region', async () => {
     toast('Reading')
     toast('Published')

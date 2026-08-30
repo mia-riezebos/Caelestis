@@ -17,6 +17,7 @@ const NEXT_DAY = seconds(1_750_032_000 + 86_400)
 
 const version = (templateId: string, season = 1): TemplateVersionRecord => ({
   templateId,
+  surface: { kind: 'world', allianceId: null },
   season,
   nodeId: null,
   name: templateId,
@@ -249,6 +250,99 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     ).resolves.toEqual([])
   })
 
+  it('lets an authoritative server fetch replace a future-dated client observation', async () => {
+    const tile = { x: 0, y: 0 }
+    await store.insertTemplateVersion(version('template-1'))
+    await store.recordTileObservation(
+      observation({ tile, hash: 'f'.repeat(64), observedAt: millis(2_000) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(2_000),
+        },
+      ],
+    )
+
+    await expect(store.listAlarmTiles(1)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', observedAt: null }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual(
+      [],
+    )
+
+    await store.recordTileObservation(
+      observation({ tile, hash: 'e'.repeat(64), observedAt: millis(1_000) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 1,
+          wrong: 0,
+          blank: 0,
+          observedAt: millis(1_000),
+        },
+      ],
+      false,
+      true,
+    )
+
+    // A slower, older backend request must not roll the authoritative result backward.
+    await store.recordTileObservation(
+      observation({ tile, hash: 'a'.repeat(64), observedAt: millis(500) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(500),
+        },
+      ],
+      false,
+      true,
+    )
+
+    await expect(store.readLatestTile(1, tile)).resolves.toMatchObject({
+      hash: 'e'.repeat(64),
+      observedAt: 1_000,
+    })
+    await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
+
+    await store.recordTileObservation(
+      observation({ tile, hash: 'b'.repeat(64), observedAt: millis(3_000) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(3_000),
+        },
+      ],
+    )
+    await expect(store.listAlarmTiles(1)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', observedAt: 1_000 }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
+  })
+
   it('keeps the hash with the most distinct reporters per bucket, ties to the smaller hash', async () => {
     const tile = { x: 3, y: 4 }
     // Bucket one: two reporters agree on one hash, a third dissents — quorum wins.
@@ -463,5 +557,33 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
         toSeconds: now,
       }),
     ).resolves.toEqual([{ bucketStart: old.reportedAt, hash: old.hash, reporters: 1 }])
+  })
+
+  it('does not let a frozen alliance template preserve world tile history', async () => {
+    const now = seconds(1_800_000_000)
+    const templateId = 'frozen-alliance-template'
+    await store.insertTemplateVersion({
+      ...version(templateId),
+      surface: { kind: 'alliance-banner', allianceId: 535_245 },
+    })
+    await store.updateTemplate(templateId, { timelapseFrozenAt: millis(now * 1_000) }, millis(1))
+    const old = observation({
+      tile: { x: 0, y: 0 },
+      reportedAt: seconds(now - 90_000),
+      hash: 'e'.repeat(64),
+    })
+    await store.recordTileObservation(old, [])
+
+    await store.foldTileHistory(1, old.tile, now)
+
+    await expect(
+      store.readTileHistory({
+        season: 1,
+        tile: old.tile,
+        resolution: 0,
+        fromSeconds: seconds(now - 100_000),
+        toSeconds: now,
+      }),
+    ).resolves.toEqual([])
   })
 })

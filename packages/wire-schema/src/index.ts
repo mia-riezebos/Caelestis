@@ -1,10 +1,11 @@
 import type * as Shared from '@caelestis/shared'
 import {
-  MAX_PAINT_COUNT,
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  templateSurface,
+  templateSurfaceBounds,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -41,29 +42,6 @@ const MAX_MANIFEST_NODES = 100_000
  */
 const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_TEMPLATES = 100_000
-/**
- * Deliberately redundant, and it buys less than it looks like it does.
- *
- * The PaintEvent filters below already force every tile to carry a pixel and the event as a whole
- * to stay within MAX_PAINTED_PIXELS, so the tile count cannot exceed that on semantics alone.
- * Keeping the explicit cap documents the intended streaming-decoder limit; a multi-tile acceptance
- * test prevents it from accidentally collapsing the protocol to one tile per event.
- *
- * It is not a cost bound either, which an earlier version of this comment claimed: `isMaxLength` is
- * a refinement over the already-decoded array, so every element is validated before the length is
- * checked. Measured, an over-cap payload reports its error at index 100_000, and decode time stays
- * linear in what was *sent* — 800,000 tiles takes 1.6s whether the cap is 100,000 or four million.
- * Bounding the work would need a limit the decoder applies while reading, which Effect's array
- * combinator does not offer. What the cap does buy is an error naming the limit rather than a
- * per-item complaint, and a stated intent for whoever adds streaming decode later.
- */
-const MAX_PAINT_TILES = MAX_PAINT_COUNT
-// Both derive from the shared guardrail that `MAX_COUNTER_DELTA_VALUE` also derives from, so a
-// payload cannot pass this boundary and then be rejected by the CounterStore behind it. They were
-// restated here with a comment claiming a test pinned them to the backend's copy; no such test
-// existed and none could, since the two packages do not depend on each other.
-const MAX_PAINT_PIXELS_PER_TILE = MAX_PAINT_COUNT
-const MAX_PAINTED_PIXELS = MAX_PAINT_COUNT
 // 09-recon-palette has not recovered Wplace's complete index order yet. Keep this permissive until
 // that ticket establishes the real upper bound instead of deriving it from the incomplete palette.
 const MAX_PALETTE_INDEX = 65_535
@@ -141,17 +119,36 @@ const Millis = Schema.declare<Shared.Millis>(
   { description: 'a plausible Unix timestamp in milliseconds' },
 )
 
-const TileKey = Schema.declare<Shared.TileKey>(
-  (value): value is Shared.TileKey => {
+const isWorldTileKey = (value: unknown): value is Shared.TileKey => {
+  if (typeof value !== 'string') return false
+  const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
+  if (match === null) return false
+  const x = Number(match[1])
+  const y = Number(match[2])
+  return x < WORLD_TILES && y < WORLD_TILES
+}
+
+const TileKey = Schema.declare<Shared.TileKey>(isWorldTileKey, {
+  description: `a canonical tile key with coordinates from 0 to ${WORLD_TILES - 1}`,
+})
+
+const SurfaceChunkKey = Schema.declare<Shared.SurfaceChunkKey>(
+  (value): value is Shared.SurfaceChunkKey => {
     if (typeof value !== 'string') return false
-    const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
+    const match = /^(0|-?[1-9]\d*)\/(0|-?[1-9]\d*)$/.exec(value)
     if (match === null) return false
-    const x = Number(match[1])
-    const y = Number(match[2])
-    return x < WORLD_TILES && y < WORLD_TILES
+    return Number.isSafeInteger(Number(match[1])) && Number.isSafeInteger(Number(match[2]))
   },
-  { description: `a canonical tile key with coordinates from 0 to ${WORLD_TILES - 1}` },
+  { description: 'a canonical signed chunk-grid key' },
 )
+
+const TemplateSurface = Schema.Union([
+  Schema.Struct({ kind: Schema.Literals(['world']), allianceId: Schema.Null }),
+  Schema.Struct({
+    kind: Schema.Literals(['alliance-headquarters', 'alliance-picture', 'alliance-banner']),
+    allianceId: NonNegativeInteger.pipe(Schema.check(Schema.isGreaterThan(0))),
+  }),
+])
 
 const BoundingBoxStruct = Schema.Struct({
   minX: integerBetween(0, WORLD_PIXELS - 1),
@@ -272,13 +269,42 @@ export const Template = Schema.Struct({
   updatedAt: Millis,
 })
 
+const SurfaceBoundingBox = Schema.Struct({
+  minX: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+  minY: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+  maxX: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+  maxY: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+})
+
+const SurfaceChunk = Schema.Struct({
+  tile: SurfaceChunkKey,
+  hash: Hash,
+})
+
+const SurfaceTemplate = Schema.Struct({
+  id: Identifier,
+  nodeId: Schema.NullOr(Identifier),
+  name: Name,
+  version: Identifier,
+  bbox: SurfaceBoundingBox,
+  totalPixels: NonNegativeInteger,
+  chunks: boundedArray(SurfaceChunk, MAX_TEMPLATE_CHUNKS),
+  published: Schema.Boolean,
+  finished: Schema.Boolean,
+  finishedAt: Schema.NullOr(Millis),
+  timelapseFrozen: Schema.Boolean,
+  createdAt: Millis,
+  updatedAt: Millis,
+})
+
 const ManifestStruct = Schema.Struct({
   version: VersionToken,
   season: Season,
+  surface: Schema.optionalKey(TemplateSurface),
   server: ServerInfo,
   nodes: boundedArray(Node, MAX_MANIFEST_NODES),
-  templates: boundedArray(Template, MAX_MANIFEST_TEMPLATES),
-  tiles: boundedArray(TileKey, MAX_MANIFEST_TILES),
+  templates: boundedArray(SurfaceTemplate, MAX_MANIFEST_TEMPLATES),
+  tiles: boundedArray(SurfaceChunkKey, MAX_MANIFEST_TILES),
 })
 
 /** Split a validated tile key back into its coordinates. */
@@ -297,9 +323,9 @@ type XSpan = {
  * x wraps, so a bounding box with minX > maxX spans the antimeridian and covers TWO x ranges.
  * Splitting into non-wrapping spans first makes every later comparison ordinary.
  */
-const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
+const xSpans = (template: Schema.Schema.Type<typeof SurfaceTemplate>, wraps: boolean): XSpan[] => {
   const { minX, maxX } = template.bbox
-  return minX < maxX
+  return minX < maxX || !wraps
     ? [{ start: minX, end: maxX }]
     : [
         { start: minX, end: WORLD_PIXELS },
@@ -321,6 +347,43 @@ const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
 
 export const Manifest = ManifestStruct.pipe(
   Schema.check(
+    booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      const surface = templateSurface(
+        manifest.surface?.kind ?? 'world',
+        manifest.surface?.allianceId ?? null,
+      )
+      if (surface === null) return false
+      const bounds = templateSurfaceBounds(surface)
+      return manifest.templates.every((template) => {
+        const { minX, minY, maxX, maxY } = template.bbox
+        if (surface.kind === 'world') {
+          if (
+            minX < 0 ||
+            minX >= WORLD_PIXELS ||
+            minY < 0 ||
+            minY >= WORLD_PIXELS ||
+            maxX < 1 ||
+            maxX > WORLD_PIXELS ||
+            maxY < 1 ||
+            maxY > WORLD_PIXELS ||
+            minX === maxX ||
+            minY >= maxY
+          ) {
+            return false
+          }
+          return template.chunks.every(({ tile }) => isWorldTileKey(tile))
+        }
+        if (bounds === null) return false
+        return (
+          minX >= bounds.minX &&
+          minY >= bounds.minY &&
+          maxX <= bounds.maxX &&
+          maxY <= bounds.maxY &&
+          minX < maxX &&
+          minY < maxY
+        )
+      })
+    }, 'template bounds and chunk keys must belong to the selected drawing surface'),
     booleanFilter(
       (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
         // Ahead of every filter that flattens chunks, so an oversized manifest is refused before
@@ -423,7 +486,7 @@ export const Manifest = ManifestStruct.pipe(
           //
           // Summed over x spans because a wrapped box is two disjoint ranges and a row of chunks
           // can meet both, at opposite ends of the canvas.
-          const spans = xSpans(template)
+          const spans = xSpans(template, (manifest.surface?.kind ?? 'world') === 'world')
           const capacity = template.chunks.reduce((total, chunk) => {
             const { x, y } = parseTile(chunk.tile)
             const tileMinX = x * TILE_SIZE
@@ -453,7 +516,7 @@ export const Manifest = ManifestStruct.pipe(
           // A chunk is a full tile of painted pixels, so a chunk outside the box that declares the
           // template's extent is a contradiction: culling watches the bbox tiles and would never
           // fetch it, or would render it in the wrong place.
-          const spans = xSpans(template)
+          const spans = xSpans(template, (manifest.surface?.kind ?? 'world') === 'world')
           return template.chunks.every((chunk) => {
             const { x, y } = parseTile(chunk.tile)
             const tileMinX = x * TILE_SIZE
@@ -473,9 +536,9 @@ const TileLocalCoordinate = integerBetween(0, TILE_SIZE - 1)
 const PaletteIndex = integerBetween(0, MAX_PALETTE_INDEX)
 
 const PaintPixelsStruct = Schema.Struct({
-  x: boundedArray(TileLocalCoordinate, MAX_PAINT_PIXELS_PER_TILE),
-  y: boundedArray(TileLocalCoordinate, MAX_PAINT_PIXELS_PER_TILE),
-  colors: boundedArray(PaletteIndex, MAX_PAINT_PIXELS_PER_TILE),
+  x: Schema.Array(TileLocalCoordinate),
+  y: Schema.Array(TileLocalCoordinate),
+  colors: Schema.Array(PaletteIndex),
 })
 
 export const PaintPixels = PaintPixelsStruct.pipe(
@@ -488,8 +551,8 @@ export const PaintPixels = PaintPixelsStruct.pipe(
     /**
      * A coordinate may appear once. `submitted` is derived by counting these entries, and equal
      * `painted`/`submitted` means "classify and credit them all" — so without this a reporter
-     * claims one on-template pixel MAX_PAINT_PIXELS_PER_TILE times and is credited for every
-     * repeat. The same anti-double-count rule is already enforced on the server-authored side, for
+     * claims one on-template pixel many times and is credited for every repeat. The same
+     * anti-double-count rule is already enforced on the server-authored side, for
      * chunks within a template and for overlapping templates within a group; this is the
      * client-authored side of it.
      *
@@ -499,8 +562,8 @@ export const PaintPixels = PaintPixelsStruct.pipe(
     booleanFilter((pixels: Schema.Schema.Type<typeof PaintPixelsStruct>) => {
       const seen = new Set<number>()
       for (let index = 0; index < pixels.x.length; index += 1) {
-        // Pack into one number rather than a string key: the arrays run to 100_000 entries and
-        // both coordinates are bounded by TILE_SIZE, so this stays exact and allocation-free.
+        // Pack into one number rather than a string key. Both coordinates are bounded by TILE_SIZE,
+        // so this stays exact and allocation-free.
         seen.add((pixels.x[index] ?? 0) * TILE_SIZE + (pixels.y[index] ?? 0))
       }
       return seen.size === pixels.x.length
@@ -520,8 +583,8 @@ const PaintEventStruct = Schema.Struct({
   displayName: Name,
   season: Season,
   ts: Seconds,
-  tiles: boundedArray(PaintTile, MAX_PAINT_TILES),
-  painted: Schema.NullOr(integerBetween(0, MAX_PAINTED_PIXELS)),
+  tiles: Schema.Array(PaintTile),
+  painted: Schema.NullOr(NonNegativeInteger),
 })
 
 export const PaintEvent = PaintEventStruct.pipe(
@@ -539,14 +602,12 @@ export const PaintEvent = PaintEventStruct.pipe(
         event.tiles.length,
       'each tile may appear once per event',
     ),
-    // Without a total, the per-tile cap bounds nothing: MAX_PAINT_TILES tiles each holding
-    // MAX_PAINT_PIXELS_PER_TILE pixels is a ten-billion-pixel payload the schema would accept.
     booleanFilter((event: Schema.Schema.Type<typeof PaintEventStruct>) => {
       const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
       return (
-        submitted <= MAX_PAINTED_PIXELS && (event.painted === null || event.painted <= submitted)
+        Number.isSafeInteger(submitted) && (event.painted === null || event.painted <= submitted)
       )
-    }, `painted must not exceed the submitted pixels, of which there may be at most ${MAX_PAINTED_PIXELS}`),
+    }, 'painted must not exceed the submitted pixels'),
   ),
 )
 
@@ -858,6 +919,10 @@ export const Alarm = AlarmStruct.pipe(
   ),
 )
 
+export const AlarmsResponse = Schema.Struct({
+  alarms: boundedArray(Alarm, MAX_MANIFEST_TEMPLATES),
+})
+
 type Exact<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
     ? (<T>() => T extends B ? 1 : 2) extends <T>() => T extends A ? 1 : 2
@@ -893,6 +958,7 @@ assertExact<Exact<Schema.Schema.Type<typeof CanvasTilesResponse>, Shared.CanvasT
 assertExact<Exact<Schema.Schema.Type<typeof TileHistoryFrame>, Shared.TileHistoryFrame>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileHistoryResponse>, Shared.TileHistoryResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof Alarm>, Shared.Alarm>>()
+assertExact<Exact<Schema.Schema.Type<typeof AlarmsResponse>, Shared.AlarmsResponse>>()
 
 assertExact<Exact<Schema.Codec.Encoded<typeof ServerInfo>, Shared.ServerInfo>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof BoundingBox>, Shared.BoundingBox>>()
@@ -922,3 +988,4 @@ assertExact<Exact<Schema.Codec.Encoded<typeof CanvasTilesResponse>, Shared.Canva
 assertExact<Exact<Schema.Codec.Encoded<typeof TileHistoryFrame>, Shared.TileHistoryFrame>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileHistoryResponse>, Shared.TileHistoryResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof Alarm>, Shared.Alarm>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof AlarmsResponse>, Shared.AlarmsResponse>>()

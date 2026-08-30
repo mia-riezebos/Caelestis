@@ -1,8 +1,11 @@
 import { type Millis, millis, type Seconds, seconds } from '@caelestis/shared'
 import {
+  addCounters,
   type BucketStore,
   type CounterDelta,
   type CounterStore,
+  type CounterValues,
+  canAccumulateCounters,
   EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
   GRACE_SECONDS,
@@ -34,6 +37,8 @@ const expiresAt = (bucketStart: Seconds): Seconds => seconds(bucketStart + EXPIR
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
   placed > 0 || correct > 0 || repairs > 0
+
+const ZERO_COUNTERS: CounterValues = { placed: 0, correct: 0, repairs: 0 }
 
 const INITIAL_FLUSH_RETRY_DELAY_MILLISECONDS = 1_000
 const MAX_FLUSH_RETRY_DELAY_MILLISECONDS = 60_000
@@ -87,12 +92,19 @@ export class MemoryCounterStore implements CounterStore {
       const bucketStart = eventBucketStart(delta.occurredAt)
       const key = bucketKey(delta.templateId, bucketStart)
       const current = this.pending.get(key)
+      const outstanding = this.outstandingCounters(delta.templateId)
+      const cumulative = addCounters(
+        current ?? ZERO_COUNTERS,
+        this.flushBatch.get(key) ?? this.retained.get(key) ?? ZERO_COUNTERS,
+      )
+      if (!canAccumulateCounters(outstanding, delta) || !canAccumulateCounters(cumulative, delta)) {
+        this.droppedLateCount += 1
+        continue
+      }
       this.pending.set(key, {
         templateId: delta.templateId,
         bucketStart,
-        placed: (current?.placed ?? 0) + delta.placed,
-        correct: (current?.correct ?? 0) + delta.correct,
-        repairs: (current?.repairs ?? 0) + delta.repairs,
+        ...addCounters(current ?? ZERO_COUNTERS, delta),
       })
     }
 
@@ -256,6 +268,23 @@ export class MemoryCounterStore implements CounterStore {
         this.retained.delete(key)
       }
     }
+  }
+
+  private outstandingCounters(templateId: string): CounterValues {
+    let total = ZERO_COUNTERS
+    for (const counters of this.pending.values()) {
+      if (counters.templateId === templateId) total = addCounters(total, counters)
+    }
+    for (const [key, counters] of this.flushBatch) {
+      if (counters.templateId !== templateId) continue
+      const retained = this.retained.get(key)
+      total = addCounters(total, {
+        placed: counters.placed - (retained?.placed ?? 0),
+        correct: counters.correct - (retained?.correct ?? 0),
+        repairs: counters.repairs - (retained?.repairs ?? 0),
+      })
+    }
+    return total
   }
 
   private pruneZeroPending(): void {

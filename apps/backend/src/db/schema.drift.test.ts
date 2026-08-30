@@ -149,4 +149,134 @@ describe('the Drizzle schema and migration history agree', () => {
     })
     database.close()
   })
+
+  it('migrates existing templates onto the world surface', () => {
+    const database = new DatabaseSync(':memory:')
+    const surfaceIndex = migrations.findIndex(
+      ({ name }) => name === '0006_alliance-template-surfaces.sql',
+    )
+    expect(surfaceIndex).toBeGreaterThan(0)
+    database.exec(
+      migrations
+        .slice(0, surfaceIndex)
+        .map(({ sql }) => sql)
+        .join('\n')
+        .replaceAll('--> statement-breakpoint', ''),
+    )
+    database
+      .prepare(
+        `INSERT INTO templates (
+          id, season, node_id, name, current_version_id, published_at,
+          created_with_token, created_by_user_id, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, NULL, ?, NULL, NULL, ?, NULL, ?, ?)`,
+      )
+      .run('legacy', 1, 'Legacy', 'a'.repeat(64), 1_000, 1_000)
+    database
+      .prepare(
+        `INSERT INTO template_versions (
+          id, template_id, created_at_ms, created_with_token, created_by_user_id,
+          min_x, min_y, max_x, max_y, total_pixels,
+          bounds_north, bounds_south, bounds_west, bounds_east
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
+      )
+      .run('legacy-version', 'legacy', 1_000, 'a'.repeat(64), 0, 0, 1, 1, 1)
+    database
+      .prepare('INSERT INTO version_tiles (version_id, tile_x, tile_y, hash) VALUES (?, ?, ?, ?)')
+      .run('legacy-version', 0, 0, 'b'.repeat(64))
+    database
+      .prepare('UPDATE templates SET current_version_id = ? WHERE id = ?')
+      .run('legacy-version', 'legacy')
+    database
+      .prepare(
+        `INSERT INTO template_tile_statuses (
+          template_id, version_id, tile_x, tile_y, correct, wrong, blank,
+          colours_json, observed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('legacy', 'legacy-version', 0, 0, 1, 2, 3, '{}', 1_000)
+
+    for (const migration of migrations.slice(surfaceIndex)) {
+      database.exec(`BEGIN;\n${migration.sql.replaceAll('--> statement-breakpoint', '')}\nCOMMIT;`)
+    }
+
+    expect(
+      database
+        .prepare('SELECT surface_kind, alliance_id FROM templates WHERE id = ?')
+        .get('legacy'),
+    ).toEqual({ surface_kind: 'world', alliance_id: null })
+    expect(
+      database
+        .prepare('SELECT template_id, min_x, min_y FROM template_versions WHERE id = ?')
+        .get('legacy-version'),
+    ).toEqual({ template_id: 'legacy', min_x: 0, min_y: 0 })
+    expect(
+      database
+        .prepare('SELECT version_id, tile_x, tile_y FROM version_tiles WHERE version_id = ?')
+        .get('legacy-version'),
+    ).toEqual({ version_id: 'legacy-version', tile_x: 0, tile_y: 0 })
+    expect(
+      database
+        .prepare(
+          `SELECT template_id, version_id, correct, wrong, blank
+           FROM template_tile_statuses WHERE template_id = ?`,
+        )
+        .get('legacy'),
+    ).toEqual({
+      template_id: 'legacy',
+      version_id: 'legacy-version',
+      correct: 1,
+      wrong: 2,
+      blank: 3,
+    })
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    database.close()
+  })
+
+  it('migrates existing nodes onto the world surface', () => {
+    const database = new DatabaseSync(':memory:')
+    const surfaceIndex = migrations.findIndex(
+      ({ name }) => name === '0009_careful_steel_serpent.sql',
+    )
+    expect(surfaceIndex).toBeGreaterThan(0)
+    database.exec(
+      migrations
+        .slice(0, surfaceIndex)
+        .map(({ sql }) => sql)
+        .join('\n')
+        .replaceAll('--> statement-breakpoint', ''),
+    )
+    const insertNode = database.prepare(
+      `INSERT INTO nodes (
+        id, season, parent_id, path, name, description, delete_token, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
+    )
+    insertNode.run('legacy-node', 1, null, '/legacy', 'Legacy', 1_000)
+    insertNode.run('legacy-child', 1, 'legacy-node', '/legacy/child', 'Child', 1_001)
+    database
+      .prepare(
+        `INSERT INTO templates (
+          id, season, node_id, name, current_version_id, published_at,
+          created_with_token, created_by_user_id, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
+      )
+      .run('legacy-template', 1, 'legacy-child', 'Legacy template', '0'.repeat(64), 1_002, 1_002)
+
+    for (const migration of migrations.slice(surfaceIndex)) {
+      database.exec(`BEGIN;\n${migration.sql.replaceAll('--> statement-breakpoint', '')}\nCOMMIT;`)
+    }
+
+    expect(
+      database
+        .prepare('SELECT surface_kind, alliance_id FROM nodes WHERE id = ?')
+        .get('legacy-node'),
+    ).toEqual({ surface_kind: 'world', alliance_id: null })
+    expect(
+      database.prepare('SELECT parent_id FROM nodes WHERE id = ?').get('legacy-child'),
+    ).toEqual({ parent_id: 'legacy-node' })
+    expect(
+      database.prepare('SELECT node_id FROM templates WHERE id = ?').get('legacy-template'),
+    ).toEqual({ node_id: 'legacy-child' })
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    database.close()
+  })
 })

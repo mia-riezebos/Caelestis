@@ -1,0 +1,75 @@
+import { millis, seconds } from '@caelestis/shared'
+import { describe, expect, it } from 'vitest'
+import { MemoryCounterStore } from './memory-counter-store.js'
+import { MemorySqlStore } from './memory-sql-store.js'
+
+describe('MemoryCounterStore', () => {
+  it.each([
+    ['the same bucket', seconds(101)],
+    ['another pending bucket', seconds(121)],
+  ])('rejects an update that would overflow %s', async (_case, secondTimestamp) => {
+    const counters = new MemoryCounterStore(new MemorySqlStore(), () => millis(150_000))
+    await counters.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: Number.MAX_SAFE_INTEGER,
+        correct: Number.MAX_SAFE_INTEGER,
+        repairs: Number.MAX_SAFE_INTEGER,
+      },
+      {
+        templateId: 'template-a',
+        occurredAt: secondTimestamp,
+        placed: 2,
+        correct: 2,
+        repairs: 2,
+      },
+    ])
+
+    await expect(counters.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: Number.MAX_SAFE_INTEGER,
+        correct: Number.MAX_SAFE_INTEGER,
+        repairs: Number.MAX_SAFE_INTEGER,
+        flushedAt: null,
+      },
+    ])
+    await expect(counters.readDroppedLateCount()).resolves.toBe(1)
+  })
+
+  it('rejects a late update that would overflow a retained bucket', async () => {
+    const counters = new MemoryCounterStore(new MemorySqlStore(), () => millis(150_000))
+    await counters.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: Number.MAX_SAFE_INTEGER,
+        correct: Number.MAX_SAFE_INTEGER,
+        repairs: Number.MAX_SAFE_INTEGER,
+      },
+    ])
+    await counters.alarm()
+
+    await counters.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: 2,
+        correct: 2,
+        repairs: 2,
+      },
+    ])
+
+    await expect(counters.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: 0,
+        correct: 0,
+        repairs: 0,
+        flushedAt: millis(150_000),
+      },
+    ])
+    await expect(counters.readDroppedLateCount()).resolves.toBe(1)
+  })
+})

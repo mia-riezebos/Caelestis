@@ -1,4 +1,4 @@
-import { TRANSPARENT_INDEX } from '@caelestis/shared'
+import { sameTemplateSurface, TRANSPARENT_INDEX, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { log } from './debug.js'
 import { canvasPixelAt } from './main.js'
 import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
@@ -55,7 +55,9 @@ const overlayIndexAt = (x: number, y: number): number | null => {
   // Last match wins: the layer draws templates in this order, so the last one drawn is the one on
   // top, and the one on top is the one being pointed at.
   let found: number | null = null
-  for (const template of displayTemplates()) {
+  for (const template of displayTemplates().filter((candidate) =>
+    sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
+  )) {
     if (!isTemplateVisible(template)) continue
     const localX = sourceXAt(template, x)
     const localY = y - template.originY

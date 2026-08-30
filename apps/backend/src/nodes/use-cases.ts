@@ -1,4 +1,4 @@
-import { millis, nodeSlug, uuidV7 } from '@caelestis/shared'
+import { millis, nodeSlug, type TemplateSurface, uuidV7 } from '@caelestis/shared'
 import { Effect } from 'effect'
 import type { NodeDeletion, NodeRecord } from '../ports/index.js'
 import {
@@ -29,11 +29,12 @@ const storage = <A>(operation: string, run: () => Promise<A>) =>
     catch: (cause) => new BackendStorageError({ operation, cause }),
   })
 
-export const publicNode = ({ season: _season, description, ...node }: NodeRecord) =>
+export const publicNode = ({ season: _season, surface: _surface, description, ...node }: NodeRecord) =>
   description === null ? node : { ...node, description }
 
 export const createNode = (input: {
   readonly season: number
+  readonly surface: TemplateSurface
   readonly parentId: string | null
   readonly name: string
   readonly description?: string
@@ -54,11 +55,20 @@ export const createNode = (input: {
           new RequestValidationError({ message: 'parent node belongs to a different season' }),
         )
       }
+      if (
+        parent.surface.kind !== input.surface.kind ||
+        parent.surface.allianceId !== input.surface.allianceId
+      ) {
+        return yield* Effect.fail(
+          new RequestValidationError({ message: 'parent node belongs to a different surface' }),
+        )
+      }
       parentPath = parent.path
     }
 
     const node: NodeRecord = {
       id: uuidV7(),
+      surface: input.surface,
       season: input.season,
       parentId: input.parentId,
       path: `${parentPath}/${segment}`,
@@ -80,10 +90,11 @@ export const createNode = (input: {
 
 export const listNodes = (
   season: number,
+  surface: TemplateSurface,
 ): Effect.Effect<readonly ReturnType<typeof publicNode>[], BackendStorageError, SqlStoreService> =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
-    const nodes = yield* storage('listNodes', () => sql.listNodes(season))
+    const nodes = yield* storage('listNodes', () => sql.listNodes(season, surface))
     return nodes.map(publicNode)
   })
 

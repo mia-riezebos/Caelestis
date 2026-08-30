@@ -213,6 +213,14 @@ describe('server cache persistence', () => {
     expect(get).toHaveBeenCalledTimes(2)
     requests.get('https://second.example.com')?.onsuccess?.(new Event('success'))
     transaction.oncomplete?.(new Event('complete'))
-    await expect(loading).resolves.toEqual([first])
+    await expect(loading).resolves.toEqual([
+      {
+        ...first,
+        templates: first.templates.map((template) => ({
+          ...template,
+          surface: { kind: 'world', allianceId: null },
+        })),
+      },
+    ])
   })
 })

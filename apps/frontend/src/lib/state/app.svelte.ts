@@ -1,4 +1,5 @@
 import type {
+  Alarm,
   CanvasTileSummary,
   Manifest,
   ServerInfo,
@@ -7,6 +8,7 @@ import type {
 } from '@caelestis/shared'
 import {
   ApiError,
+  getAlarms,
   getCanvas,
   getManifest,
   getServer,
@@ -25,6 +27,7 @@ class AppState {
   server = $state<ServerInfo | null>(null)
   manifest = $state<Manifest | null>(null)
   statuses = $state<ReadonlyMap<string, TemplateStatus>>(new Map())
+  alarms = $state<ReadonlyMap<string, Alarm>>(new Map())
   canvas = $state<ReadonlyMap<TileKey, CanvasTileSummary>>(new Map())
   loading = $state(false)
   isAdmin = $state(false)
@@ -33,7 +36,7 @@ class AppState {
   error = $state<string | null>(null)
 
   tree = $derived.by<TemplateTree | null>(() =>
-    this.manifest === null ? null : buildTree(this.manifest, this.statuses),
+    this.manifest === null ? null : buildTree(this.manifest, this.statuses, this.alarms),
   )
 
   /** Bumped per load, so a slow older load can never overwrite a newer one's answers. */
@@ -48,6 +51,7 @@ class AppState {
     // manifest as if it were this server's — that reads as "my template is missing".
     this.manifest = null
     this.statuses = new Map()
+    this.alarms = new Map()
     this.canvas = new Map()
     this.isAdmin = false
     try {
@@ -64,14 +68,18 @@ class AppState {
       if (generation !== this.generation) return
       this.manifest = manifest
       // Status and canvas refine the picture; the tree already renders without them.
-      const [status, canvas, admin] = await Promise.allSettled([
+      const [status, alarms, canvas, admin] = await Promise.allSettled([
         getStatus(manifest.season),
+        getAlarms(manifest.season),
         getCanvas(manifest.season),
         probeAdminScope(manifest.season),
       ])
       if (generation !== this.generation) return
       if (status.status === 'fulfilled') {
         this.statuses = new Map(status.value.templates.map((t) => [t.templateId, t]))
+      }
+      if (alarms.status === 'fulfilled') {
+        this.alarms = new Map(alarms.value.alarms.map((alarm) => [alarm.templateId, alarm]))
       }
       if (canvas.status === 'fulfilled') {
         this.canvas = new Map(canvas.value.tiles.map((t) => [t.tile, t]))

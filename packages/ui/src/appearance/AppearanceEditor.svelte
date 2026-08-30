@@ -83,6 +83,7 @@
     </fieldset>
   </section>
 
+  {#if model.showMarkers !== false}
   <section>
     <SectionHeader title="Markers" icon={compact ? undefined : 'search'} expanded={expanded.markers} onToggle={compact ? () => toggleGroup('markers') : undefined}>
       {#snippet actions()}
@@ -155,6 +156,7 @@
     {/if}
     </fieldset>
   </section>
+  {/if}
 
   <section>
     <SectionHeader title="Colours" icon={compact ? undefined : 'palette'} expanded={expanded.colours} onToggle={compact ? () => toggleGroup('colours') : undefined}>

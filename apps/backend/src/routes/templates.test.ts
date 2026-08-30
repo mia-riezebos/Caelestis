@@ -19,6 +19,7 @@ const harness = async () => {
   }
   await sql.insertNode({
     id: NODE_ID,
+    surface: { kind: 'world', allianceId: null },
     season: 1,
     parentId: null,
     path: '/templates',
@@ -105,6 +106,50 @@ describe('template routes', () => {
     ).json()) as { templates: Array<{ nodeId: string | null }> }
     expect(manifest.templates).toHaveLength(1)
     expect(manifest.templates[0]?.nodeId).toBeNull()
+  })
+
+  it('stores a signed headquarters placement with its alliance identity', async () => {
+    const { app, sql } = await harness()
+    const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
+    const form = templateForm(png)
+    form.delete('nodeId')
+    form.set('season', '1')
+    form.set('surfaceKind', 'alliance-headquarters')
+    form.set('allianceId', '535245')
+    form.set('originX', '-1')
+    form.set('originY', '-1')
+
+    const response = await app.request('/admin/templates', {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(response.status).toBe(201)
+    const body = (await response.json()) as { templateId: string; chunks: Array<{ tile: string }> }
+    expect(body.chunks.map(({ tile }) => tile)).toEqual(['-1/-1', '0/-1'])
+    expect((await sql.readTemplate(body.templateId))?.surface).toEqual({
+      kind: 'alliance-headquarters',
+      allianceId: 535245,
+    })
+  })
+
+  it('requires an alliance id for an alliance surface', async () => {
+    const { app } = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const form = templateForm(png)
+    form.set('surfaceKind', 'alliance-picture')
+
+    const response = await app.request('/admin/templates', {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({
+      error: 'surfaceKind must be world or an alliance surface with a positive allianceId',
+    })
   })
 
   it('404s an unknown chunk hash', async () => {

@@ -53,7 +53,11 @@ vi.mock('./paint-palette.js', () => ({
   paintPaletteProgress: vi.fn(() => []),
   refreshPaintPaletteFocus: vi.fn(),
 }))
-vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: vi.fn(() => false) }))
+vi.mock('./overlay-peek.js', () => ({
+  isOverlayPeekActive: vi.fn(() => false),
+  onOverlayPeekChange: vi.fn(),
+  setOverlayPeekActive: vi.fn(() => false),
+}))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
 vi.mock('./server-mismatch.js', () => ({ serverMismatchMemoryBytes: vi.fn(() => 0) }))
 vi.mock('./state.js', () => ({
@@ -86,6 +90,7 @@ vi.mock('./templates/mismatch-worker.js', () => ({ mismatchWorkerMemoryBytes: vi
 vi.mock('./templates/nearest.js', () => ({ focusedTemplate: vi.fn(() => null) }))
 vi.mock('./templates/server-sync.js', () => ({ installServerSync: vi.fn() }))
 vi.mock('./telemetry.js', () => ({ installTelemetry: vi.fn() }))
+vi.mock('./alarms.js', () => ({ installAlarmNotifications: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
   capturedPixelMemoryBytes: vi.fn(() => 0),
   captureTilePixels: vi.fn(),

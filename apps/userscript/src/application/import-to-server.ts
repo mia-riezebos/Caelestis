@@ -1,3 +1,4 @@
+import { type TemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import type { ConnectedServer } from '../state.js'
 import { isCurrentServerConnection, uploadTemplate } from '../state.js'
 import type { ImportedTemplate } from '../templates/import.js'
@@ -20,6 +21,7 @@ const uploadAdmitted = async (
   templateIds: readonly string[],
   rerender: () => void,
   refreshServer: RefreshServer,
+  surface: TemplateSurface,
 ): Promise<void> => {
   let uploaded = 0
   const failures: string[] = []
@@ -52,6 +54,7 @@ const uploadAdmitted = async (
       originX: template.originX,
       originY: template.originY,
       png,
+      surface,
     })
     if (!result.ok) {
       failures.push(`${template.name}: ${result.message}`)
@@ -88,6 +91,7 @@ export const importTemplatesToServer = async (
   reservation: MoveReservation | null,
   rerender: () => void,
   refreshServer: RefreshServer,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<void> => {
   if (!server.isAdmin) {
     reservation?.release()
@@ -110,7 +114,7 @@ export const importTemplatesToServer = async (
   try {
     for (const template of imported) {
       try {
-        await addLocalTemplate(template)
+        await addLocalTemplate(template, surface)
         admitted.push(template.id)
       } catch (error) {
         failures.push(`${template.name}: ${String(error)}`)
@@ -123,7 +127,7 @@ export const importTemplatesToServer = async (
     if (first.source === 'image') {
       const started = reservation?.start(first.id, () => {
         rerender()
-        void uploadAdmitted(server, nodeId, admitted, rerender, refreshServer)
+        void uploadAdmitted(server, nodeId, admitted, rerender, refreshServer, surface)
       })
       if (started !== true) {
         for (const templateId of admitted) await removeLocalTemplate(templateId)
@@ -135,7 +139,7 @@ export const importTemplatesToServer = async (
       return
     }
 
-    await uploadAdmitted(server, nodeId, admitted, rerender, refreshServer)
+    await uploadAdmitted(server, nodeId, admitted, rerender, refreshServer, surface)
   } finally {
     reservation?.release()
   }

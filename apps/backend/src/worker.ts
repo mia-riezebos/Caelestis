@@ -4,7 +4,9 @@ import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { createApp } from './app.js'
 import type { Ports } from './ports/index.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
+import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
+export { AlarmWatcher } from './alarm-watcher.js'
 export { TelemetryShard } from './telemetry-shard.js'
 
 /**
@@ -37,6 +39,12 @@ const requestAtBasePath = (request: Request, configured: string | undefined): Re
   if (url.pathname !== configured && !url.pathname.startsWith(`${configured}/`)) return null
   url.pathname = url.pathname.slice(configured.length) || '/'
   return new Request(url, request)
+}
+
+const tileBlobGcMode = (value: string | undefined): TileBlobGcMode => {
+  if (value === undefined || value === 'dry-run') return 'dry-run'
+  if (value === 'delete') return 'delete'
+  throw new Error(`Unsupported TILE_BLOB_GC_MODE: ${JSON.stringify(value)}`)
 }
 
 export default {
@@ -75,6 +83,14 @@ export default {
       sql: new D1SqlStore(env.DB),
       counters: new DurableObjectCounterStore(env.TELEMETRY),
     }
-    ctx.waitUntil(fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }))
+    const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
+    ctx.waitUntil(
+      fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
+        // A prior template may already have persisted a probe when later scan work fails. Always
+        // reconcile the watcher so that durable work cannot be stranded until the next cron.
+        await env.ALARM_WATCHER.getByName('global').schedule()
+      }),
+    )
+    ctx.waitUntil(runTileBlobGc(ports, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>

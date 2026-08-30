@@ -127,6 +127,60 @@ const uploadCanvas = async (
 describe('telemetry routes', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('serves active alarms with read scope and hides unpublished templates from readers', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const now = millis(Date.now())
+    const versionId = (await sql.readTemplate(templateId))?.currentVersionId
+    expect(versionId).toBeDefined()
+    const snapshot = (correct: number) => ({
+      templateId,
+      versionId: versionId ?? '',
+      total: 100_000,
+      correct,
+      observedAt: now,
+    })
+    await sql.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, EVENT_ID)
+    await sql.evaluateTemplateAlarm(snapshot(59_900), { kind: 'scan' }, EVENT_ID)
+
+    const active = await app.request('/telemetry/alarms?season=0', {
+      headers: bearer(readToken),
+    })
+    expect(active.status).toBe(200)
+    await expect(active.json()).resolves.toEqual({
+      alarms: [
+        expect.objectContaining({
+          id: EVENT_ID,
+          templateId,
+          kind: 'regression',
+          pixelsLost: 100,
+        }),
+      ],
+    })
+
+    await sql.setTemplatePublishedAt(templateId, null, millis(now + 1))
+    const hidden = await app.request('/telemetry/alarms?season=0', {
+      headers: bearer(readToken),
+    })
+    await expect(hidden.json()).resolves.toEqual({ alarms: [] })
+    const admin = await app.request('/telemetry/alarms?season=0', {
+      headers: bearer(BOOTSTRAP),
+    })
+    await expect(admin.json()).resolves.toEqual({
+      alarms: [expect.objectContaining({ id: EVENT_ID })],
+    })
+  })
+
+  it('validates alarm season and requires read scope', async () => {
+    const { app } = await harness()
+    expect((await app.request('/telemetry/alarms?season=-1')).status).toBe(401)
+    const readToken = await mintToken(app, 'read')
+    expect(
+      (await app.request('/telemetry/alarms?season=-1', { headers: bearer(readToken) })).status,
+    ).toBe(400)
+  })
+
   it('requests missing template-covered tiles and serves server-backed progress after upload', async () => {
     const { app } = await harness()
     const templateId = await createPublishedTemplate(app)
@@ -235,6 +289,35 @@ describe('telemetry routes', () => {
     expect(unavailable.status).toBe(500)
     expect(await unavailable.text()).toBe('Internal Server Error')
     expect(consoleError).toHaveBeenCalledWith(error)
+  })
+
+  it('clamps future tile observations to server receipt time', async () => {
+    const { app, sql } = await harness()
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const receivedAfter = Math.floor(Date.now() / 1_000)
+
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(receivedAfter + 86_400),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+
+    expect(uploaded.status).toBe(204)
+    await expect(sql.readLatestTile(0, { x: 0, y: 0 })).resolves.toEqual(
+      expect.objectContaining({ observedAt: expect.any(Number) }),
+    )
+    expect((await sql.readLatestTile(0, { x: 0, y: 0 }))?.observedAt).toBeLessThanOrEqual(
+      Date.now() + 5 * 60 * 1_000,
+    )
   })
 
   it('classifies accepted paints once and rejects read-only reporting', async () => {

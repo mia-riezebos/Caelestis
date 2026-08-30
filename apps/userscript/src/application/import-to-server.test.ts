@@ -62,6 +62,19 @@ beforeEach(() => {
 })
 
 describe('server file import', () => {
+  it('keeps the selected alliance scope through staging and upload', async () => {
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    const { importTemplatesToServer } = await import('./import-to-server.js')
+
+    await importTemplatesToServer([imported()], server, null, null, vi.fn(), vi.fn(), surface)
+
+    expect(store.addLocalTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'local-template' }),
+      surface,
+    )
+    expect(state.uploadTemplate).toHaveBeenCalledWith(server, expect.objectContaining({ surface }))
+  })
+
   it('uploads a positioned import directly into the selected server folder', async () => {
     const refresh = vi.fn(async () => undefined)
     const rerender = vi.fn()

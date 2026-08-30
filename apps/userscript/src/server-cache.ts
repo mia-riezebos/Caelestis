@@ -1,3 +1,4 @@
+import { type TemplateSurface, templateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { warn } from './debug.js'
 import {
   MAX_MANIFEST_CHUNKS,
@@ -57,6 +58,8 @@ export interface ServerTemplate {
     readonly maxY: number
   }
   readonly chunks: readonly { readonly tile: string; readonly hash: string }[]
+  /** Absent only in legacy world cache entries and test fixtures. */
+  readonly surface?: TemplateSurface
 }
 
 const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefined => {
@@ -66,8 +69,13 @@ const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefi
   for (const raw of value) {
     if (typeof raw !== 'object' || raw === null) return undefined
     const candidate = raw as Partial<ServerTemplate>
+    const surface =
+      candidate.surface === undefined
+        ? WORLD_TEMPLATE_SURFACE
+        : templateSurface(candidate.surface.kind, candidate.surface.allianceId)
     const bbox = candidate.bbox
     if (
+      surface === null ||
       typeof candidate.id !== 'string' ||
       (candidate.nodeId !== null && typeof candidate.nodeId !== 'string') ||
       typeof candidate.name !== 'string' ||
@@ -94,7 +102,7 @@ const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefi
       )
     )
       return undefined
-    templates.push(candidate as ServerTemplate)
+    templates.push({ ...(candidate as ServerTemplate), surface })
   }
   return templates
 }

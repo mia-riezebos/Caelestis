@@ -1,9 +1,15 @@
-import { TRANSPARENT_INDEX } from '@caelestis/shared'
+import {
+  type TemplateSurface,
+  TRANSPARENT_INDEX,
+  templateSurfaceBounds,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
+import { activeAllianceSurface } from '../alliance-surface.js'
 import { viewportCentre } from '../main.js'
 import { claimedHiddenFor } from './colour-filter.js'
 import {
   appearanceOf,
-  displayTemplates,
+  displayTemplatesForSurface,
   isTemplateVisible,
   type PlacedTemplate,
 } from './local-store.js'
@@ -39,13 +45,52 @@ export interface FocusedTemplateOptions {
   readonly restoreHiddenAtCentre?: boolean
 }
 
+interface FocusContext {
+  readonly surface: TemplateSurface
+  readonly centre: { readonly x: number; readonly y: number }
+}
+
+/** Surface coordinate at the centre of the currently visible canvas, including artboard pan/zoom. */
+const focusContext = (): FocusContext | null => {
+  const alliance = activeAllianceSurface()
+  if (alliance === null) {
+    const centre = viewportCentre()
+    return centre === null ? null : { surface: WORLD_TEMPLATE_SURFACE, centre }
+  }
+  const bounds = alliance.bounds ?? templateSurfaceBounds(alliance.surface)
+  if (bounds === null) return null
+  const frame = alliance.frame.getBoundingClientRect()
+  const stage = alliance.stage.getBoundingClientRect()
+  const visibleLeft = Math.max(frame.left, stage.left)
+  const visibleTop = Math.max(frame.top, stage.top)
+  const visibleRight = Math.min(frame.right, stage.right)
+  const visibleBottom = Math.min(frame.bottom, stage.bottom)
+  if (
+    frame.width <= 0 ||
+    frame.height <= 0 ||
+    visibleRight <= visibleLeft ||
+    visibleBottom <= visibleTop
+  )
+    return null
+  const screenX = (visibleLeft + visibleRight) / 2
+  const screenY = (visibleTop + visibleBottom) / 2
+  return {
+    surface: alliance.surface,
+    centre: {
+      x: bounds.minX + ((screenX - frame.left) / frame.width) * (bounds.maxX - bounds.minX),
+      y: bounds.minY + ((screenY - frame.top) / frame.height) * (bounds.maxY - bounds.minY),
+    },
+  }
+}
+
 export const focusedTemplate = (options: FocusedTemplateOptions = {}): PlacedTemplate | null => {
-  const centre = viewportCentre()
-  if (centre === null) return null
+  const context = focusContext()
+  if (context === null) return null
+  const { centre, surface } = context
   let containingVisible: PlacedTemplate | null = null
   let containingHidden: PlacedTemplate | null = null
   let nearestVisible: { template: PlacedTemplate; distance: number } | null = null
-  for (const template of displayTemplates()) {
+  for (const template of displayTemplatesForSurface(surface)) {
     const visible = isTemplateVisible(template)
     const sourceX = sourceXAt(template, centre.x)
     const sourceY = centre.y - template.originY
@@ -64,7 +109,10 @@ export const focusedTemplate = (options: FocusedTemplateOptions = {}): PlacedTem
       else if (!template.visible) containingHidden = template
     }
     if (!visible) continue
-    const dx = wrappedDeltaX(centre.x, horizontalCentre(template))
+    const dx =
+      surface.kind === 'world'
+        ? wrappedDeltaX(centre.x, horizontalCentre(template))
+        : template.originX + template.width / 2 - centre.x
     const dy = template.originY + template.height / 2 - centre.y
     // Squared, because only the ordering matters and a square root per template does not change it.
     const distance = dx * dx + dy * dy

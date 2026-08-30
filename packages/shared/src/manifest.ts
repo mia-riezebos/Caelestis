@@ -1,5 +1,8 @@
-import type { TileKey } from './tiles.js'
+import type { TemplateSurface } from './template-surface.js'
 import type { Millis } from './time.js'
+
+/** Canonical chunk-grid coordinate. World keys are non-negative; centred surfaces may be signed. */
+export type SurfaceChunkKey = `${number}/${number}`
 
 /**
  * A server's manifest is the only thing a client needs before it can decide whether to touch a
@@ -10,6 +13,8 @@ export interface Manifest {
   /** Opaque, changes whenever anything below changes. Surfaced to the user as a "what changed" diff. */
   readonly version: string
   readonly season: number
+  /** Absent means the world canvas, preserving the v1 manifest representation. */
+  readonly surface?: TemplateSurface
   readonly server: ServerInfo
   readonly nodes: readonly Node[]
   readonly templates: readonly Template[]
@@ -17,7 +22,7 @@ export interface Manifest {
    * Union of every tile any template touches, including templates the user has disabled.
    * Including disabled ones means toggling never forces a manifest refetch.
    */
-  readonly tiles: readonly TileKey[]
+  readonly tiles: readonly SurfaceChunkKey[]
 }
 
 export interface ServerInfo {
@@ -85,7 +90,7 @@ export interface BoundingBox {
  * template only invalidates the tiles that actually changed.
  */
 export interface Chunk {
-  readonly tile: TileKey
+  readonly tile: SurfaceChunkKey
   /** sha256 of the stored indexed PNG; also its storage key. */
   readonly hash: string
 }

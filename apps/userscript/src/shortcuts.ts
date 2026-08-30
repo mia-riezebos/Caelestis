@@ -47,7 +47,7 @@ export const currentShortcutPlatform = (): ShortcutPlatform =>
  * Kept DOM-shape based so the shortcut matcher stays testable without constructing a browser
  * document. Real keyboard event targets expose exactly these two properties.
  */
-const isTyping = (target: EventTarget | null): boolean => {
+const isTypingTarget = (target: EventTarget | null): boolean => {
   if (target === null || typeof target !== 'object') return false
   const element = target as EventTarget & { isContentEditable?: boolean; tagName?: unknown }
   if (element.isContentEditable === true) return true
@@ -57,13 +57,19 @@ const isTyping = (target: EventTarget | null): boolean => {
   )
 }
 
+const isTypingEvent = (
+  event: Pick<KeyboardEvent, 'target'> & Partial<Pick<KeyboardEvent, 'composedPath'>>,
+): boolean =>
+  isTypingTarget(event.target) ||
+  event.composedPath?.().some((target) => isTypingTarget(target)) === true
+
 /** Resolve a non-typing keydown to one of Caelestis's deliberately few shortcuts. */
 export const shortcutFor = (
   event: Pick<KeyboardEvent, 'altKey' | 'code' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
-    Partial<Pick<KeyboardEvent, 'repeat' | 'shiftKey'>>,
+    Partial<Pick<KeyboardEvent, 'composedPath' | 'repeat' | 'shiftKey'>>,
   platform = currentShortcutPlatform(),
 ): Shortcut | null => {
-  if (isTyping(event.target)) return null
+  if (isTypingEvent(event)) return null
   const command = platform === 'mac' ? event.metaKey : event.ctrlKey
   const foreignCommand = platform === 'mac' ? event.ctrlKey : event.metaKey
   if (command || foreignCommand) {
