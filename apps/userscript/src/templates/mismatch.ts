@@ -1217,15 +1217,16 @@ const requestScan = (
   const wrong = job.collectMarkers !== false && job.collectWrong !== false
   const unpainted = job.collectMarkers !== false && job.collectUnpainted !== false
   const pending = inFlight.get(cacheKey)
-  if (
+  const sameSnapshot =
     pending?.source === source &&
     pending.templateSource === templateSource &&
     pending.signature === asked &&
-    pending.patches === patchesAtStart &&
-    (pending.markers || !markers) &&
-    (!wrong || pending.wrong) &&
-    (!unpainted || pending.unpainted)
-  ) {
+    pending.patches === patchesAtStart
+  if (pending !== undefined && sameSnapshot) {
+    // Let a narrow answer land before asking the worker for a broader projection. Replacing the
+    // owner here discarded the unpainted-only reply, so the selected-colour guide waited for the
+    // slower wrong-colour scan whenever both marker styles were enabled. The next render requests
+    // only whichever projection the cached narrow answer still lacks.
     if (pending.markers) stale.delete(cacheKey)
     staleProgress.delete(cacheKey)
     return
@@ -1261,15 +1262,24 @@ const requestScan = (
     if (markers) {
       stale.delete(cacheKey)
       staleProgress.delete(cacheKey)
+      const held = cache.get(cacheKey)
+      const compatible =
+        held?.source === source && held.templateSource === templateSource && held.key === key
+          ? held
+          : undefined
       store(
         cacheKey,
         source,
         templateSource,
         key,
         progressSignature(template),
-        outcome,
-        wrong,
-        unpainted,
+        {
+          ...outcome,
+          wrong: wrong ? outcome.wrong : (compatible?.wrong ?? outcome.wrong),
+          unpainted: unpainted ? outcome.unpainted : (compatible?.unpainted ?? outcome.unpainted),
+        },
+        wrong || compatible?.wrongComplete === true,
+        unpainted || compatible?.unpaintedComplete === true,
       )
     } else {
       rememberProgress(cacheKey, { templateSource, ...outcome }, progressSignature(template))
@@ -1320,6 +1330,13 @@ const mismatchAnswer = (
       return answerFrom(existing, kind, template)
     }
     if (hasWorker()) {
+      const compatible =
+        existing?.source === serverMask.packed &&
+        existing.templateSource === template.indices &&
+        existing.key === key &&
+        !stale.has(cacheKey)
+          ? existing
+          : undefined
       requestScan(
         template,
         serverMask.packed,
@@ -1331,8 +1348,8 @@ const mismatchAnswer = (
           serverMask,
           true,
           true,
-          collection.wrong,
-          collection.unpainted,
+          collection.wrong && compatible?.wrongComplete !== true,
+          collection.unpainted && compatible?.unpaintedComplete !== true,
         ),
       )
       return existing === undefined || !satisfies(existing, collection)
@@ -1388,12 +1405,27 @@ const mismatchAnswer = (
   }
 
   if (hasWorker()) {
+    const compatible =
+      existing?.source === pixels &&
+      existing.templateSource === template.indices &&
+      existing.key === key &&
+      !stale.has(cacheKey)
+        ? existing
+        : undefined
     requestScan(
       template,
       pixels,
       cacheKey,
       key,
-      buildJob(template, tile, pixels, true, true, collection.wrong, collection.unpainted),
+      buildJob(
+        template,
+        tile,
+        pixels,
+        true,
+        true,
+        collection.wrong && compatible?.wrongComplete !== true,
+        collection.unpainted && compatible?.unpaintedComplete !== true,
+      ),
     )
     return existing === undefined || !satisfies(existing, collection)
       ? null

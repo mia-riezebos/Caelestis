@@ -153,7 +153,7 @@ const context = (): WebGL2RenderingContext => {
     bufferData: vi.fn(),
     vertexAttribIPointer: vi.fn(),
     useProgram: vi.fn(),
-    getUniformLocation: vi.fn(() => ({})),
+    getUniformLocation: vi.fn((_program: unknown, name: string) => name),
     uniform2f: vi.fn(),
     uniform1f: vi.fn(),
     uniform1ui: vi.fn(),
@@ -403,6 +403,7 @@ describe('marker work selection', () => {
     expect(fixture.selectedFade).toHaveBeenCalledWith('2', 1, expect.any(Number))
     expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 1)
     expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 2)
+    expect(gl.uniform1f).toHaveBeenCalledWith('u_fade', 0.5)
     markerLayer.onRemove(null, gl)
   })
 })
