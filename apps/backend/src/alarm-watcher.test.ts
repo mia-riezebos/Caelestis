@@ -6,9 +6,9 @@ import { ALARM_RETRY_DELAY_MILLISECONDS, runAlarmWatcherCycle } from './alarm-wa
 import type { SqlStore } from './ports/index.js'
 import { BlobStoreService, SqlStoreService } from './runtime/backend-runtime.js'
 
-const run = <A>(
+const run = <A, E>(
   sql: SqlStore,
-  effect: Effect.Effect<A, never, BlobStoreService | SqlStoreService>,
+  effect: Effect.Effect<A, E, BlobStoreService | SqlStoreService>,
 ) =>
   Effect.runPromise(
     effect.pipe(
@@ -30,6 +30,22 @@ describe('alarm watcher', () => {
         runAlarmWatcherCycle({ setAlarm }, millis(100_000), undefined, () => millis(100_000)),
       ),
     ).resolves.toBeUndefined()
+
+    expect(setAlarm).toHaveBeenCalledWith(100_000 + ALARM_RETRY_DELAY_MILLISECONDS)
+  })
+
+  it('preserves the platform retry when fallback scheduling also fails', async () => {
+    const setAlarm = vi.fn(async () => Promise.reject(new Error('alarm storage unavailable')))
+    const sql = {
+      listDueAlarmProbes: vi.fn(async () => Promise.reject(new Error('D1 unavailable'))),
+    } as unknown as SqlStore
+
+    await expect(
+      run(
+        sql,
+        runAlarmWatcherCycle({ setAlarm }, millis(100_000), undefined, () => millis(100_000)),
+      ),
+    ).rejects.toThrow(/alarm storage unavailable/)
 
     expect(setAlarm).toHaveBeenCalledWith(100_000 + ALARM_RETRY_DELAY_MILLISECONDS)
   })

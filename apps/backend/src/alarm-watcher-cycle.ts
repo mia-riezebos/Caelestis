@@ -32,7 +32,7 @@ export const runAlarmWatcherCycle = (
   now: Millis,
   runFollowUps: FollowUpRunner = fetchAlarmFollowUps,
   clock: () => Millis = () => millis(Date.now()),
-): Effect.Effect<void, never, BlobStoreService | SqlStoreService> => {
+): Effect.Effect<void, unknown, BlobStoreService | SqlStoreService> => {
   const cycle = Effect.gen(function* () {
     const sql = yield* SqlStoreService
     const probes = yield* attempt(() => sql.listDueAlarmProbes(now))
@@ -59,7 +59,7 @@ export const runAlarmWatcherCycle = (
 
   return Effect.catch(cycle, () =>
     // Cloudflare gives a throwing alarm only a bounded retry series. Keep the durable D1 probe and
-    // own an indefinite, paced retry instead of stranding it until the next six-hour cron.
-    Effect.ignore(attempt(() => storage.setAlarm(clock() + ALARM_RETRY_DELAY_MILLISECONDS))),
+    // own a paced retry. If even that write fails, reject so the platform's native retry remains.
+    attempt(() => storage.setAlarm(clock() + ALARM_RETRY_DELAY_MILLISECONDS)),
   )
 }
