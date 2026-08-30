@@ -1,4 +1,5 @@
 import type { ServerInfo } from '@caelestis/shared'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { Ports } from './ports/index.js'
@@ -8,7 +9,8 @@ import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
-import { createBackendRuntime } from './runtime/backend-runtime.js'
+import { type BackendRuntime, createBackendRuntime } from './runtime/backend-runtime.js'
+import { runBackendHttp } from './runtime/hono.js'
 
 /**
  * The Hono app, deliberately free of any runtime binding.
@@ -31,14 +33,8 @@ export interface AppOptions {
   readonly currentSeason?: number | undefined
 }
 
-export const createApp = (ports: Ports, options: AppOptions = {}) => {
+export const createAppWithRuntime = (runtime: BackendRuntime, options: AppOptions = {}) => {
   const app = new Hono()
-  const auth = {
-    sql: ports.sql,
-    bootstrapAdminToken: options.bootstrapAdminToken,
-    openAccess: options.openAccess,
-  }
-  const runtime = createBackendRuntime(ports, auth)
   // `??` guards `undefined` and nothing else, and every one of these is a wrangler.toml var an
   // operator edits by hand. A non-UUIDv7 id, an empty name or an empty description all passed
   // through and then failed the wire schema — so the deployment's own manifest became undecodable
@@ -89,19 +85,31 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   // rather than a promise to be kept.
   app.use('/*', cors({ origin: '*', exposeHeaders: ['ETag'], maxAge: 86_400 }))
 
-  app.get('/health', (c) => c.json({ ok: true }))
+  app.get('/health', (c) =>
+    runBackendHttp(c, runtime, Effect.succeed({ ok: true as const }), (health) => c.json(health)),
+  )
   app.route('/server', createServerRoutes(runtime, server))
-  app.route('/admin/server', createServerAdminRoutes(ports, auth))
+  app.route('/admin/server', createServerAdminRoutes(runtime))
   app.route('/manifest', createManifestRoutes(runtime, { server, currentSeason }))
 
-  app.route('/admin/tokens', createTokenRoutes(auth))
+  app.route('/admin/tokens', createTokenRoutes(runtime))
   app.route('/admin/nodes', createNodeRoutes(runtime))
   app.route('/admin/templates', createTemplateRoutes(runtime))
   app.route('/chunks', createChunkRoutes(runtime))
   app.route('/tiles', createTileRoutes(runtime))
-  app.route('/telemetry', createTelemetryRoutes(runtime, auth, { currentSeason }))
+  app.route('/telemetry', createTelemetryRoutes(runtime, { currentSeason }))
 
   return app
 }
+
+/** Compatibility constructor for tests and adapters until #158 removes the global Ports bag. */
+export const createApp = (ports: Ports, options: AppOptions = {}) =>
+  createAppWithRuntime(
+    createBackendRuntime(ports, {
+      bootstrapAdminToken: options.bootstrapAdminToken,
+      openAccess: options.openAccess,
+    }),
+    options,
+  )
 
 export type App = ReturnType<typeof createApp>

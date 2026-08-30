@@ -11,7 +11,7 @@ import {
 import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScope } from '../auth/middleware.js'
+import { requireRuntimeScope } from '../auth/middleware.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -128,12 +128,11 @@ const readBoundedBody = async (request: Request, limit: number): Promise<Uint8Ar
 
 export const createTelemetryRoutes = (
   runtime: BackendRuntime,
-  auth: AuthOptions,
   options: { readonly currentSeason: number },
 ) => {
   const routes = new Hono()
 
-  routes.get('/status', requireScope(auth, 'read'), (c) => {
+  routes.get('/status', requireRuntimeScope(runtime, 'read'), (c) => {
     const season =
       c.req.query('season') === undefined
         ? options.currentSeason
@@ -149,7 +148,7 @@ export const createTelemetryRoutes = (
 
   routes.get(
     '/templates/:templateId/versions/:versionId/tiles/:x/:y/mismatches',
-    requireScope(auth, 'read'),
+    requireRuntimeScope(runtime, 'read'),
     async (c) => {
       const templateId = c.req.param('templateId')
       const versionId = c.req.param('versionId')
@@ -192,7 +191,7 @@ export const createTelemetryRoutes = (
     },
   )
 
-  routes.get('/history', requireScope(auth, 'read'), (c) => {
+  routes.get('/history', requireRuntimeScope(runtime, 'read'), (c) => {
     const templateIds = parseTemplateIds(c.req.query('templateIds'))
     if (templateIds === null) {
       return c.json(
@@ -239,7 +238,7 @@ export const createTelemetryRoutes = (
     )
   })
 
-  routes.get('/contributions', requireScope(auth, 'read'), (c) => {
+  routes.get('/contributions', requireRuntimeScope(runtime, 'read'), (c) => {
     const templateIds = parseTemplateIds(c.req.query('templateIds'))
     if (templateIds === null) {
       return c.json(
@@ -263,7 +262,7 @@ export const createTelemetryRoutes = (
     )
   })
 
-  routes.get('/leaderboard', requireScope(auth, 'read'), (c) => {
+  routes.get('/leaderboard', requireRuntimeScope(runtime, 'read'), (c) => {
     const season =
       c.req.query('season') === undefined
         ? options.currentSeason
@@ -307,7 +306,7 @@ export const createTelemetryRoutes = (
     )
   })
 
-  routes.get('/canvas', requireScope(auth, 'read'), (c) => {
+  routes.get('/canvas', requireRuntimeScope(runtime, 'read'), (c) => {
     const season =
       c.req.query('season') === undefined
         ? options.currentSeason
@@ -318,7 +317,7 @@ export const createTelemetryRoutes = (
 
   // GET here, PUT with a trailing `:hash` above — Hono matches on method and path together, so the
   // two never collide, and `history` is not a valid hash so nothing shadows the upload either.
-  routes.get('/tiles/:x/:y/history', requireScope(auth, 'read'), (c) => {
+  routes.get('/tiles/:x/:y/history', requireRuntimeScope(runtime, 'read'), (c) => {
     const x = wholeNumber(c.req.param('x'))
     const y = wholeNumber(c.req.param('y'))
     if (x === null || y === null || x >= WORLD_TILES || y >= WORLD_TILES) {
@@ -358,7 +357,7 @@ export const createTelemetryRoutes = (
     )
   })
 
-  routes.post('/tiles/offers', requireScope(auth, 'report'), async (c) => {
+  routes.post('/tiles/offers', requireRuntimeScope(runtime, 'report'), async (c) => {
     const body = decoded(
       TileOfferBatch,
       await c.req.json().catch(() => null),
@@ -391,7 +390,7 @@ export const createTelemetryRoutes = (
     return runBackendHttp(c, runtime, offerTiles(offers), (wanted) => c.json({ wanted }))
   })
 
-  routes.put('/tiles/:x/:y/:hash', requireScope(auth, 'report'), async (c) => {
+  routes.put('/tiles/:x/:y/:hash', requireRuntimeScope(runtime, 'report'), async (c) => {
     const x = wholeNumber(c.req.param('x'))
     const y = wholeNumber(c.req.param('y'))
     const hash = c.req.param('hash')
@@ -439,7 +438,7 @@ export const createTelemetryRoutes = (
     )
   })
 
-  routes.post('/paints', requireScope(auth, 'report'), async (c) => {
+  routes.post('/paints', requireRuntimeScope(runtime, 'report'), async (c) => {
     const event = decoded(
       PaintEvent,
       await c.req.json().catch(() => null),

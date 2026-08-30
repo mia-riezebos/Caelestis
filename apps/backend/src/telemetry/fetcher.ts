@@ -6,8 +6,9 @@ import {
   tileKey,
   WORLD_TILES,
 } from '@caelestis/shared'
-import type { Ports } from '../ports/index.js'
-import { createBackendRuntime } from '../runtime/backend-runtime.js'
+import { Effect } from 'effect'
+import { BlobStoreService, SqlStoreService } from '../runtime/backend-runtime.js'
+import { BackendStorageError } from '../runtime/errors.js'
 import { MAX_CANVAS_TILE_BYTES, recordObservation } from './ingest.js'
 
 /**
@@ -52,101 +53,121 @@ export interface FetchReport {
 const wplaceTileUrl = (season: number, tile: TileCoord): string =>
   `https://backend.wplace.live/files/s${season}/tiles/${tile.x}/${tile.y}.png`
 
-export const fetchCanvasTiles = async (
-  ports: Ports,
-  options: {
-    readonly season: number
-    readonly now?: Seconds
-    readonly fetchImpl?: typeof fetch
-  },
-): Promise<FetchReport> => {
-  const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
-  const fetchImpl = options.fetchImpl ?? fetch
-  const { season } = options
-  const runtime = createBackendRuntime(ports)
+const storage = <A>(operation: string, run: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) => new BackendStorageError({ operation, cause }),
+  })
 
-  // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
-  // admin's draft deserves the same timelapse the published version will show.
-  const manifestTiles = await ports.sql.listManifestTiles(season, true)
-  const templateTiles = new Map<string, TileCoord>()
-  for (const row of manifestTiles) {
-    const tile = { x: row.tileX, y: row.tileY }
-    templateTiles.set(tileKey(tile), tile)
-  }
-  const ringTiles = new Map<string, TileCoord>()
-  for (const tile of templateTiles.values()) {
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const y = tile.y + dy
-        if (y < 0 || y >= WORLD_TILES) continue
-        const neighbour = { x: (tile.x + dx + WORLD_TILES) % WORLD_TILES, y }
-        const key = tileKey(neighbour)
-        if (!templateTiles.has(key) && !ringTiles.has(key)) ringTiles.set(key, neighbour)
+type FetchOutcome = 'fetched' | 'unchanged' | 'fresh' | 'failed'
+
+export const fetchCanvasTiles = (options: {
+  readonly season: number
+  readonly now?: Seconds
+  readonly fetchImpl?: typeof fetch
+}): Effect.Effect<FetchReport, BackendStorageError, BlobStoreService | SqlStoreService> =>
+  Effect.gen(function* () {
+    const blobs = yield* BlobStoreService
+    const sql = yield* SqlStoreService
+    const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
+    const fetchImpl = options.fetchImpl ?? fetch
+    const { season } = options
+
+    // Unpublished templates' tiles are fetched too: storage visibility is not read visibility.
+    const manifestTiles = yield* storage('listManifestTiles', () =>
+      sql.listManifestTiles(season, true),
+    )
+    const templateTiles = new Map<string, TileCoord>()
+    for (const row of manifestTiles) {
+      const tile = { x: row.tileX, y: row.tileY }
+      templateTiles.set(tileKey(tile), tile)
+    }
+    const ringTiles = new Map<string, TileCoord>()
+    for (const tile of templateTiles.values()) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const y = tile.y + dy
+          if (y < 0 || y >= WORLD_TILES) continue
+          const neighbour = { x: (tile.x + dx + WORLD_TILES) % WORLD_TILES, y }
+          const key = tileKey(neighbour)
+          if (!templateTiles.has(key) && !ringTiles.has(key)) ringTiles.set(key, neighbour)
+        }
       }
     }
-  }
 
-  const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
-  const work: { tile: TileCoord; ring: boolean }[] = [
-    ...[...templateTiles.values()].map((tile) => ({ tile, ring: false })),
-    ...[...ringTiles.values()].map((tile) => ({ tile, ring: true })),
-  ]
+    const tokenHash = yield* storage('hashFetcherToken', () =>
+      sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher')),
+    )
+    const work: { tile: TileCoord; ring: boolean }[] = [
+      ...[...templateTiles.values()].map((tile) => ({ tile, ring: false })),
+      ...[...ringTiles.values()].map((tile) => ({ tile, ring: true })),
+    ]
 
-  let fetched = 0
-  let unchanged = 0
-  let fresh = 0
-  let failed = 0
-  const budgeted = work.slice(0, MAX_FETCH_TILES_PER_RUN)
-  for (const { tile, ring } of budgeted) {
-    const latest = await ports.sql.readLatestTile(season, tile)
-    if (
-      ring &&
-      latest !== null &&
-      now * 1_000 - latest.observedAt < RING_STALENESS_SECONDS * 1_000
-    ) {
-      fresh++
-      continue
-    }
-    try {
-      const response = await fetchImpl(wplaceTileUrl(season, tile), {
-        headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
-      })
-      if (!response.ok) {
-        failed++
+    let fetched = 0
+    let unchanged = 0
+    let fresh = 0
+    let failed = 0
+    const budgeted = work.slice(0, MAX_FETCH_TILES_PER_RUN)
+    for (const { tile, ring } of budgeted) {
+      // A store read failure aborts the run as before; an individual upstream/blob/record failure
+      // is counted so one unreachable canvas tile cannot starve the rest.
+      const latest = yield* storage('readLatestTile', () => sql.readLatestTile(season, tile))
+      if (
+        ring &&
+        latest !== null &&
+        now * 1_000 - latest.observedAt < RING_STALENESS_SECONDS * 1_000
+      ) {
+        fresh++
         continue
       }
-      const bytes = new Uint8Array(await response.arrayBuffer())
-      if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
-        failed++
-        continue
-      }
-      const hash = await sha256Hex(bytes)
-      if (latest?.hash === hash) {
-        unchanged++
-        continue
-      }
-      await ports.blobs.put('tiles', hash, bytes)
-      await runtime.run(
-        recordObservation(
-          {
-            wplaceUserId: FETCHER_USER_ID,
-            displayName: FETCHER_DISPLAY_NAME,
-            tokenHash,
-            season,
-            tile,
-            hash,
-            observedAt: now,
-            includeUnpublished: true,
-          },
-          bytes,
-        ),
+
+      const outcome = yield* Effect.catch(
+        Effect.gen(function* () {
+          const response = yield* storage('fetchCanvasTile', () =>
+            fetchImpl(wplaceTileUrl(season, tile), {
+              headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
+            }),
+          )
+          if (!response.ok) return 'failed'
+          const bytes = new Uint8Array(
+            yield* storage('readCanvasTileBody', () => response.arrayBuffer()),
+          )
+          if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) return 'failed'
+          const hash = yield* storage('hashCanvasTile', () => sha256Hex(bytes))
+          if (latest?.hash === hash) return 'unchanged'
+          yield* storage('storeCanvasTile', () => blobs.put('tiles', hash, bytes))
+          yield* recordObservation(
+            {
+              wplaceUserId: FETCHER_USER_ID,
+              displayName: FETCHER_DISPLAY_NAME,
+              tokenHash,
+              season,
+              tile,
+              hash,
+              observedAt: now,
+              includeUnpublished: true,
+            },
+            bytes,
+          )
+          return 'fetched'
+        }),
+        () => Effect.succeed<FetchOutcome>('failed'),
       )
-      fetched++
-    } catch {
-      // One unreachable tile must not starve the rest of the run.
-      failed++
+      switch (outcome) {
+        case 'fetched':
+          fetched++
+          break
+        case 'unchanged':
+          unchanged++
+          break
+        case 'fresh':
+          fresh++
+          break
+        case 'failed':
+          failed++
+          break
+      }
     }
-  }
 
-  return { fetched, unchanged, fresh, failed, deferred: work.length - budgeted.length }
-}
+    return { fetched, unchanged, fresh, failed, deferred: work.length - budgeted.length }
+  })
