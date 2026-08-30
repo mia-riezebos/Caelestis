@@ -383,9 +383,7 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
             draftValidation.allianceEpoch,
           ),
         () => {
-          if (pendingDraft?.sequence !== draftValidation?.sequence) return
-          pendingDraft = null
-          queueReconcile()
+          // Keep the reused canvas unscoped until Wplace proves the new asset kind.
         },
       )
     }
