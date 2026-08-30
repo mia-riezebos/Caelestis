@@ -53,7 +53,11 @@ jobs:
         run: pnpm --dir apps/backend exec wrangler d1 migrations apply DB --remote
 
       - name: Deploy backend
-        run: pnpm --dir apps/backend exec wrangler deploy --define "__CAELESTIS_DEPLOYMENT_VERSION__:\"$CAELESTIS_BUILD_ID\""
+        run: |
+          userscript_version_json="$(node -p "JSON.stringify(require('./apps/userscript/package.json').version)")"
+          pnpm --dir apps/backend exec wrangler deploy \
+            --define "__CAELESTIS_DEPLOYMENT_VERSION__:\"$CAELESTIS_BUILD_ID\"" \
+            --define "__CAELESTIS_USERSCRIPT_VERSION__:$userscript_version_json"
 
       - name: Deploy frontend
         run: pnpm --dir apps/frontend exec wrangler deploy

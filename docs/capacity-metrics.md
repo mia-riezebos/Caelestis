@@ -62,7 +62,8 @@ The metrics layer stores no URL query, raw route parameter, authorization value,
 username, user agent, tile coordinate, hash, or pixel payload. Unknown paths collapse to `other`.
 Client metadata uses a short vendor media type in the CORS-safelisted `Accept` header so anonymous
 cross-origin reads do not gain a preflight. The backend admits only explicitly known userscript
-releases and the frontend build ID shared through deployment CI; all caller-supplied alternatives
+releases and the frontend build ID shared through deployment CI; the deployed userscript version is
+read from its package after Changesets have applied release bumps. All caller-supplied alternatives
 collapse to `unknown`.
 
 ## Repeatable queries

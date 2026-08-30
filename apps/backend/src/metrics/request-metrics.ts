@@ -206,8 +206,12 @@ export const measureRequest = async (
     typeof __CAELESTIS_DEPLOYMENT_VERSION__ === 'string'
       ? __CAELESTIS_DEPLOYMENT_VERSION__.slice(0, 12)
       : 'development'
+  const userscriptVersion =
+    typeof __CAELESTIS_USERSCRIPT_VERSION__ === 'string'
+      ? __CAELESTIS_USERSCRIPT_VERSION__
+      : '0.5.4'
   const clientVersion =
-    (client.client === 'userscript' && client.version === '0.5.4') ||
+    (client.client === 'userscript' && client.version === userscriptVersion) ||
     (client.client === 'frontend' && client.version === deploymentVersion)
       ? client.version
       : 'unknown'
