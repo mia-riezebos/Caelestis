@@ -129,7 +129,12 @@ export const serverConnectionSignal = (server: ConnectedServer): AbortSignal => 
 const retireServerConnection = (server: ConnectedServer): void => {
   const lifetime = serverConnectionLifetimes.get(server)
   if (lifetime === undefined) return
-  serverConnectionControllers.get(lifetime)?.abort(new Error('server connection retired'))
+  let controller = serverConnectionControllers.get(lifetime)
+  if (controller === undefined) {
+    controller = new AbortController()
+    serverConnectionControllers.set(lifetime, controller)
+  }
+  controller.abort(new Error('server connection retired'))
 }
 
 /** The saved token remains sealed in state; only a currently accepted token leaves in a request. */
