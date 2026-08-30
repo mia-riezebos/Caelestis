@@ -4,6 +4,7 @@ import {
   sha256Hex,
   type TileCoord,
   tileKey,
+  WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
 import type { Ports } from '../ports/index.js'
@@ -65,7 +66,10 @@ export const fetchCanvasTiles = async (
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
   // admin's draft deserves the same timelapse the published version will show.
-  const manifestTiles = await ports.sql.listManifestTiles(season, true)
+  const manifestTiles = await ports.sql.listManifestTiles(
+    { season, surface: WORLD_TEMPLATE_SURFACE },
+    true,
+  )
   const templateTiles = new Map<string, TileCoord>()
   for (const row of manifestTiles) {
     const tile = { x: row.tileX, y: row.tileY }

@@ -65,6 +65,22 @@ describe('server and manifest routes', () => {
       template('01890f3a-6b7c-7def-8123-456789abcde3', '01890f3a-6b7c-7def-8123-456789abcde4', 1),
     )
     await sql.setTemplatePublishedAt(published.templateId, createdAt, createdAt)
+    const allianceTemplate: TemplateVersionRecord = {
+      ...template(
+        '01890f3a-6b7c-7def-8123-456789abcde5',
+        '01890f3a-6b7c-7def-8123-456789abcde6',
+        0,
+      ),
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      bbox: { minX: -1, minY: -1, maxX: 1, maxY: 0 },
+      chunks: [
+        { tileX: -1, tileY: -1, hash: 'c'.repeat(64) },
+        { tileX: 0, tileY: -1, hash: 'd'.repeat(64) },
+      ],
+      totalPixels: 2,
+    }
+    await sql.insertTemplateVersion(allianceTemplate)
+    await sql.setTemplatePublishedAt(allianceTemplate.templateId, createdAt, createdAt)
     await sql.insertAccessToken({
       tokenHash: await hashToken(MEMBER),
       label: 'Member',
@@ -146,6 +162,52 @@ describe('server and manifest routes', () => {
     expect(other.status).toBe(200)
     expect(((await other.json()) as { season: number }).season).toBe(99)
     expect((await app.request('/manifest?season=abc', bearer(MEMBER))).status).toBe(400)
+  })
+
+  it('selects one alliance surface without leaking world or another alliance', async () => {
+    const response = await app.request(
+      '/manifest?surface=alliance-headquarters&allianceId=535245',
+      bearer(MEMBER),
+    )
+
+    expect(response.status).toBe(200)
+    const manifest = (await response.json()) as {
+      surface?: { kind: string; allianceId: number }
+      templates: Array<{ id: string; chunks: Array<{ tile: string }> }>
+      tiles: string[]
+    }
+    expect(manifest.surface).toEqual({
+      kind: 'alliance-headquarters',
+      allianceId: 535245,
+    })
+    expect(manifest.templates.map(({ id }) => id)).toEqual(['01890f3a-6b7c-7def-8123-456789abcde5'])
+    expect(manifest.tiles).toEqual(['-1/-1', '0/-1'])
+
+    const other = await app.request(
+      '/manifest?surface=alliance-headquarters&allianceId=1',
+      bearer(MEMBER),
+    )
+    expect(((await other.json()) as { templates: unknown[] }).templates).toEqual([])
+    const world = (await (await app.request('/manifest', bearer(MEMBER))).json()) as {
+      surface?: unknown
+      templates: Array<{ id: string }>
+    }
+    expect(world.surface).toBeUndefined()
+    expect(world.templates.some(({ id }) => id === '01890f3a-6b7c-7def-8123-456789abcde5')).toBe(
+      false,
+    )
+  })
+
+  it('rejects incomplete or contradictory surface selectors', async () => {
+    for (const query of [
+      'surface=alliance-headquarters',
+      'allianceId=535245',
+      'surface=world&allianceId=535245',
+      'surface=alliance-avatar&allianceId=535245',
+      'surface=alliance-picture&allianceId=0',
+    ]) {
+      expect((await app.request(`/manifest?${query}`, bearer(MEMBER))).status).toBe(400)
+    }
   })
 
   it('authenticates manifests, varies by scope, and answers a matching ETag with 304', async () => {

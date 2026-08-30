@@ -64,6 +64,7 @@ export {
   type TelemetryTarget,
   type TemplateDeletePrecondition,
   TemplateIdentityError,
+  type TemplateManifestScope,
   TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,

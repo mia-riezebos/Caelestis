@@ -870,12 +870,12 @@ export interface SqlStore {
   deleteTemplate(templateId: string, expected: TemplateDeletePrecondition): Promise<boolean>
 
   listManifestTemplates(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTemplateRecord[]>
 
   listManifestTiles(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]>
 
@@ -1059,4 +1059,10 @@ export interface SqlStore {
    * smaller hash — and returned in bucket order.
    */
   readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]>
+}
+
+/** Exact drawing surface selected by one manifest request. */
+export interface TemplateManifestScope {
+  readonly season: number
+  readonly surface: TemplateSurface
 }

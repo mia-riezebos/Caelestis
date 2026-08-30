@@ -4,6 +4,8 @@ import {
   PALETTE_SIZE,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  templateSurface,
+  templateSurfaceBounds,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -117,17 +119,36 @@ const Millis = Schema.declare<Shared.Millis>(
   { description: 'a plausible Unix timestamp in milliseconds' },
 )
 
-const TileKey = Schema.declare<Shared.TileKey>(
-  (value): value is Shared.TileKey => {
+const isWorldTileKey = (value: unknown): value is Shared.TileKey => {
+  if (typeof value !== 'string') return false
+  const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
+  if (match === null) return false
+  const x = Number(match[1])
+  const y = Number(match[2])
+  return x < WORLD_TILES && y < WORLD_TILES
+}
+
+const TileKey = Schema.declare<Shared.TileKey>(isWorldTileKey, {
+  description: `a canonical tile key with coordinates from 0 to ${WORLD_TILES - 1}`,
+})
+
+const SurfaceChunkKey = Schema.declare<Shared.SurfaceChunkKey>(
+  (value): value is Shared.SurfaceChunkKey => {
     if (typeof value !== 'string') return false
-    const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
+    const match = /^(0|-?[1-9]\d*)\/(0|-?[1-9]\d*)$/.exec(value)
     if (match === null) return false
-    const x = Number(match[1])
-    const y = Number(match[2])
-    return x < WORLD_TILES && y < WORLD_TILES
+    return Number.isSafeInteger(Number(match[1])) && Number.isSafeInteger(Number(match[2]))
   },
-  { description: `a canonical tile key with coordinates from 0 to ${WORLD_TILES - 1}` },
+  { description: 'a canonical signed chunk-grid key' },
 )
+
+const TemplateSurface = Schema.Union([
+  Schema.Struct({ kind: Schema.Literals(['world']), allianceId: Schema.Null }),
+  Schema.Struct({
+    kind: Schema.Literals(['alliance-headquarters', 'alliance-picture', 'alliance-banner']),
+    allianceId: NonNegativeInteger.pipe(Schema.check(Schema.isGreaterThan(0))),
+  }),
+])
 
 const BoundingBoxStruct = Schema.Struct({
   minX: integerBetween(0, WORLD_PIXELS - 1),
@@ -248,13 +269,42 @@ export const Template = Schema.Struct({
   updatedAt: Millis,
 })
 
+const SurfaceBoundingBox = Schema.Struct({
+  minX: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+  minY: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+  maxX: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+  maxY: integerBetween(-WORLD_PIXELS, WORLD_PIXELS),
+})
+
+const SurfaceChunk = Schema.Struct({
+  tile: SurfaceChunkKey,
+  hash: Hash,
+})
+
+const SurfaceTemplate = Schema.Struct({
+  id: Identifier,
+  nodeId: Schema.NullOr(Identifier),
+  name: Name,
+  version: Identifier,
+  bbox: SurfaceBoundingBox,
+  totalPixels: NonNegativeInteger,
+  chunks: boundedArray(SurfaceChunk, MAX_TEMPLATE_CHUNKS),
+  published: Schema.Boolean,
+  finished: Schema.Boolean,
+  finishedAt: Schema.NullOr(Millis),
+  timelapseFrozen: Schema.Boolean,
+  createdAt: Millis,
+  updatedAt: Millis,
+})
+
 const ManifestStruct = Schema.Struct({
   version: VersionToken,
   season: Season,
+  surface: Schema.optionalKey(TemplateSurface),
   server: ServerInfo,
   nodes: boundedArray(Node, MAX_MANIFEST_NODES),
-  templates: boundedArray(Template, MAX_MANIFEST_TEMPLATES),
-  tiles: boundedArray(TileKey, MAX_MANIFEST_TILES),
+  templates: boundedArray(SurfaceTemplate, MAX_MANIFEST_TEMPLATES),
+  tiles: boundedArray(SurfaceChunkKey, MAX_MANIFEST_TILES),
 })
 
 /** Split a validated tile key back into its coordinates. */
@@ -273,9 +323,9 @@ type XSpan = {
  * x wraps, so a bounding box with minX > maxX spans the antimeridian and covers TWO x ranges.
  * Splitting into non-wrapping spans first makes every later comparison ordinary.
  */
-const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
+const xSpans = (template: Schema.Schema.Type<typeof SurfaceTemplate>, wraps: boolean): XSpan[] => {
   const { minX, maxX } = template.bbox
-  return minX < maxX
+  return minX < maxX || !wraps
     ? [{ start: minX, end: maxX }]
     : [
         { start: minX, end: WORLD_PIXELS },
@@ -297,6 +347,43 @@ const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
 
 export const Manifest = ManifestStruct.pipe(
   Schema.check(
+    booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      const surface = templateSurface(
+        manifest.surface?.kind ?? 'world',
+        manifest.surface?.allianceId ?? null,
+      )
+      if (surface === null) return false
+      const bounds = templateSurfaceBounds(surface)
+      return manifest.templates.every((template) => {
+        const { minX, minY, maxX, maxY } = template.bbox
+        if (surface.kind === 'world') {
+          if (
+            minX < 0 ||
+            minX >= WORLD_PIXELS ||
+            minY < 0 ||
+            minY >= WORLD_PIXELS ||
+            maxX < 1 ||
+            maxX > WORLD_PIXELS ||
+            maxY < 1 ||
+            maxY > WORLD_PIXELS ||
+            minX === maxX ||
+            minY >= maxY
+          ) {
+            return false
+          }
+          return template.chunks.every(({ tile }) => isWorldTileKey(tile))
+        }
+        if (bounds === null) return false
+        return (
+          minX >= bounds.minX &&
+          minY >= bounds.minY &&
+          maxX <= bounds.maxX &&
+          maxY <= bounds.maxY &&
+          minX < maxX &&
+          minY < maxY
+        )
+      })
+    }, 'template bounds and chunk keys must belong to the selected drawing surface'),
     booleanFilter(
       (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
         // Ahead of every filter that flattens chunks, so an oversized manifest is refused before
@@ -399,7 +486,7 @@ export const Manifest = ManifestStruct.pipe(
           //
           // Summed over x spans because a wrapped box is two disjoint ranges and a row of chunks
           // can meet both, at opposite ends of the canvas.
-          const spans = xSpans(template)
+          const spans = xSpans(template, (manifest.surface?.kind ?? 'world') === 'world')
           const capacity = template.chunks.reduce((total, chunk) => {
             const { x, y } = parseTile(chunk.tile)
             const tileMinX = x * TILE_SIZE
@@ -429,7 +516,7 @@ export const Manifest = ManifestStruct.pipe(
           // A chunk is a full tile of painted pixels, so a chunk outside the box that declares the
           // template's extent is a contradiction: culling watches the bbox tiles and would never
           // fetch it, or would render it in the wrong place.
-          const spans = xSpans(template)
+          const spans = xSpans(template, (manifest.surface?.kind ?? 'world') === 'world')
           return template.chunks.every((chunk) => {
             const { x, y } = parseTile(chunk.tile)
             const tileMinX = x * TILE_SIZE

@@ -49,6 +49,7 @@ import {
   type TelemetryTarget,
   type TemplateDeletePrecondition,
   TemplateIdentityError,
+  type TemplateManifestScope,
   TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
@@ -555,14 +556,15 @@ export class MemorySqlStore implements SqlStore {
   }
 
   async listManifestTemplates(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTemplateRecord[]> {
     const records: ManifestTemplateRecord[] = []
     for (const [id, template] of this.templates) {
       const version = this.templateVersions.get(template.currentVersionId)
       if (
-        template.season !== season ||
+        template.season !== scope.season ||
+        !sameTemplateSurface(template.surface, scope.surface) ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       ) {
@@ -587,14 +589,15 @@ export class MemorySqlStore implements SqlStore {
   }
 
   async listManifestTiles(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]> {
     const records: ManifestTileRecord[] = []
     for (const [templateId, template] of this.templates) {
       const version = this.templateVersions.get(template.currentVersionId)
       if (
-        template.season !== season ||
+        template.season !== scope.season ||
+        !sameTemplateSurface(template.surface, scope.surface) ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       ) {
@@ -621,6 +624,7 @@ export class MemorySqlStore implements SqlStore {
       const version = this.templateVersions.get(template.currentVersionId)
       if (
         template.season !== season ||
+        template.surface.kind !== 'world' ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       )

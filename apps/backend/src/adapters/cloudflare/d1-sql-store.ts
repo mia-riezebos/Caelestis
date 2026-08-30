@@ -80,6 +80,7 @@ import {
   type TelemetryTarget,
   type TemplateDeletePrecondition,
   TemplateIdentityError,
+  type TemplateManifestScope,
   TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
@@ -971,9 +972,16 @@ export class D1SqlStore implements SqlStore {
   }
 
   async listManifestTemplates(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTemplateRecord[]> {
+    const scoped = and(
+      eq(templates.season, scope.season),
+      eq(templates.surfaceKind, scope.surface.kind),
+      scope.surface.kind === 'world'
+        ? isNull(templates.allianceId)
+        : eq(templates.allianceId, scope.surface.allianceId),
+    )
     const rows = await this.database
       .select({
         id: templates.id,
@@ -993,11 +1001,7 @@ export class D1SqlStore implements SqlStore {
       })
       .from(templates)
       .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
-      .where(
-        includeUnpublished
-          ? eq(templates.season, season)
-          : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
-      )
+      .where(includeUnpublished ? scoped : and(scoped, isNotNull(templates.publishedAt)))
 
     return rows.map((row) => ({
       id: row.id,
@@ -1016,9 +1020,16 @@ export class D1SqlStore implements SqlStore {
   }
 
   async listManifestTiles(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]> {
+    const scoped = and(
+      eq(templates.season, scope.season),
+      eq(templates.surfaceKind, scope.surface.kind),
+      scope.surface.kind === 'world'
+        ? isNull(templates.allianceId)
+        : eq(templates.allianceId, scope.surface.allianceId),
+    )
     return this.database
       .select({
         templateId: templates.id,
@@ -1036,11 +1047,7 @@ export class D1SqlStore implements SqlStore {
           eq(templates.currentVersionId, templateVersions.id),
         ),
       )
-      .where(
-        includeUnpublished
-          ? eq(templates.season, season)
-          : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
-      )
+      .where(includeUnpublished ? scoped : and(scoped, isNotNull(templates.publishedAt)))
   }
 
   async listTelemetryTargets(
@@ -1073,6 +1080,8 @@ export class D1SqlStore implements SqlStore {
       .where(
         and(
           eq(templates.season, season),
+          eq(templates.surfaceKind, 'world'),
+          isNull(templates.allianceId),
           eq(versionTiles.tileX, tile.x),
           eq(versionTiles.tileY, tile.y),
           includeUnpublished ? undefined : isNotNull(templates.publishedAt),
