@@ -608,6 +608,30 @@ describe('TelemetryShard', () => {
     ).toEqual({ count: 0 })
   })
 
+  it('accepts counter values above the old arbitrary paint-report cap', async () => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: 100_001,
+        correct: 100_001,
+        repairs: 100_001,
+      },
+    ])
+
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: 100_001,
+        correct: 100_001,
+        repairs: 100_001,
+        flushedAt: null,
+      },
+    ])
+    await expect(harness.shard.readDroppedLateCount()).resolves.toBe(0)
+  })
+
   it('drops deltas past MAX_COUNTER_DELTAS_PER_RECORD rather than writing them', async () => {
     const harness = await makeHarness(millis(150_000))
     await harness.shard.record(

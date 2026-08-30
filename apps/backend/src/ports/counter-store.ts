@@ -1,4 +1,4 @@
-import { MAX_PAINT_COUNT, type Millis, type Seconds, seconds } from '@caelestis/shared'
+import { type Millis, type Seconds, seconds } from '@caelestis/shared'
 
 /**
  * Live contribution counters. Durable Object today, a counters table later.
@@ -33,9 +33,6 @@ export const RETENTION_SECONDS: Seconds = seconds(3_600)
 export const FLUSHABLE_AFTER_SECONDS: Seconds = seconds(RESOLUTION_SECONDS + GRACE_SECONDS)
 export const EXPIRES_AFTER_SECONDS: Seconds = seconds(FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS)
 
-/** Per-delta guardrail, shared with the wire schemas so a payload cannot pass one and fail the other. */
-export const MAX_COUNTER_DELTA_VALUE = MAX_PAINT_COUNT
-
 /** Prevent unbounded identifiers from creating permanent rows in the shared stores. */
 export const MAX_TEMPLATE_ID_LENGTH = 64
 
@@ -57,7 +54,7 @@ export interface CounterDelta {
    * is exclusive.
    */
   readonly occurredAt: Seconds
-  /** Non-negative integer no greater than MAX_COUNTER_DELTA_VALUE. */
+  /** Non-negative safe integer. */
   readonly placed: number
   /** Non-negative integer no greater than placed. */
   readonly correct: number

@@ -3,7 +3,6 @@ import {
   type CounterDelta,
   EXPIRES_AFTER_SECONDS,
   GRACE_SECONDS,
-  MAX_COUNTER_DELTA_VALUE,
   MAX_TEMPLATE_ID_LENGTH,
   RESOLUTION_SECONDS,
 } from './counter-store.js'
@@ -13,9 +12,6 @@ export const EVENT_TIME_SKEW_SECONDS = GRACE_SECONDS
 
 const isNonNegativeSafeInteger = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0
-
-const isBoundedCounter = (value: unknown): value is number =>
-  isNonNegativeSafeInteger(value) && value <= MAX_COUNTER_DELTA_VALUE
 
 /**
  * Runtime validation for the CounterStore wire contract.
@@ -49,9 +45,9 @@ export const isValidCounterDelta = (delta: unknown, nowSeconds: Seconds): delta 
   ) {
     return false
   }
-  if (!isBoundedCounter(candidate.placed)) return false
-  if (!isBoundedCounter(candidate.correct)) return false
-  if (!isBoundedCounter(candidate.repairs)) return false
+  if (!isNonNegativeSafeInteger(candidate.placed)) return false
+  if (!isNonNegativeSafeInteger(candidate.correct)) return false
+  if (!isNonNegativeSafeInteger(candidate.repairs)) return false
   if (candidate.repairs > candidate.correct || candidate.correct > candidate.placed) return false
   if (!Number.isSafeInteger(candidate.occurredAt)) return false
 
