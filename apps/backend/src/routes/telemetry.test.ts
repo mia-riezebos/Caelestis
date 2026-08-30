@@ -45,7 +45,7 @@ const harness = async (statusReadModel?: StatusReadModelPort) => {
 
 const mintToken = async (
   app: Awaited<ReturnType<typeof harness>>['app'],
-  scope: 'read' | 'report',
+  scope: 'read' | 'report' | 'admin',
 ): Promise<string> => {
   const response = await app.request('/admin/tokens', {
     method: 'POST',
@@ -127,6 +127,63 @@ const uploadCanvas = async (
 
 describe('telemetry routes', () => {
   afterEach(() => vi.restoreAllMocks())
+
+  it('authenticates and scope-binds live upgrades before resolving a season object', async () => {
+    const blobs = new MemoryBlobStore()
+    const sql = new MemorySqlStore()
+    const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
+    const connectStatusLive = vi.fn(async () => new Response(null, { status: 204 }))
+    const app = createApp(makeBackendContext(blobs, sql, counters), {
+      bootstrapAdminToken: BOOTSTRAP,
+      currentSeason: 7,
+      connectStatusLive,
+    })
+    const readToken = await mintToken(app, 'read')
+    const adminToken = await mintToken(app, 'admin')
+    const upgrade = (token: string) => ({
+      upgrade: 'websocket',
+      'sec-websocket-protocol': `caelestis.live.v1, caelestis.auth.${token}`,
+    })
+
+    await expect((await app.request('/server')).json()).resolves.toMatchObject({ liveSync: 1 })
+    expect(
+      (
+        await app.request('/telemetry/live?season=99&scope=public', {
+          headers: upgrade(readToken),
+        })
+      ).status,
+    ).toBe(404)
+    expect(connectStatusLive).not.toHaveBeenCalled()
+
+    expect(
+      (
+        await app.request('/telemetry/live?season=7&scope=admin', {
+          headers: upgrade(readToken),
+        })
+      ).status,
+    ).toBe(403)
+    expect(connectStatusLive).not.toHaveBeenCalled()
+
+    const publicResponse = await app.request('/telemetry/live?season=7&scope=public&revision=4', {
+      headers: upgrade(readToken),
+    })
+    expect(publicResponse.status).toBe(204)
+    expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
+      season: 7,
+      scope: 'public',
+      lastRevision: 4,
+    })
+
+    const adminResponse = await app.request('/telemetry/live?season=7&scope=admin', {
+      headers: upgrade(adminToken),
+    })
+    expect(adminResponse.status).toBe(204)
+    expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
+      season: 7,
+      scope: 'admin',
+      lastRevision: null,
+    })
+  })
 
   it('serves active alarms with read scope and hides unpublished templates from readers', async () => {
     const { app, sql } = await harness()

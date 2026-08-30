@@ -21,6 +21,7 @@ describe('status read-model Durable Object', () => {
   const objectState = (
     held: Map<string, unknown>,
     maximumValueBytes = Number.POSITIVE_INFINITY,
+    sockets: readonly WebSocket[] = [],
   ) => {
     const storage = (target: Map<string, unknown>) => ({
       get: async <A>(key: string) => target.get(key) as A | undefined,
@@ -33,6 +34,7 @@ describe('status read-model Durable Object', () => {
       delete: async (key: string) => target.delete(key),
     })
     return {
+      getWebSockets: (tag?: string) => (tag === undefined || tag === 'status' ? sockets : []),
       storage: {
         ...storage(held),
         transaction: async (run: (transaction: ReturnType<typeof storage>) => Promise<void>) => {
@@ -133,5 +135,64 @@ describe('status read-model Durable Object', () => {
 
     expect(() => object.reconcileSnapshot(-1, 'public')).toThrow('non-negative')
     expect(get).not.toHaveBeenCalled()
+  })
+
+  it('reconstructs hibernating subscriber scope from serialized socket attachments', async () => {
+    database = new SqliteD1Database()
+    const held = new Map<string, unknown>()
+    const socket = (attachment: unknown) =>
+      ({
+        deserializeAttachment: () => attachment,
+        send: vi.fn(),
+        close: vi.fn(),
+      }) as unknown as WebSocket
+    const publicSocket = socket({ season: 8, scope: 'public', lastRevision: 2 })
+    const adminSocket = socket({ season: 8, scope: 'admin', lastRevision: 2 })
+    const otherSeason = socket({ season: 9, scope: 'public', lastRevision: 2 })
+    const missingAttachment = socket(undefined)
+    const state = objectState(held, Number.POSITIVE_INFINITY, [
+      publicSocket,
+      adminSocket,
+      otherSeason,
+      missingAttachment,
+    ])
+
+    const initial = new StatusReadModelObject(state, { DB: database } as unknown as Env)
+    await initial.reconcileSnapshot(8, 'public')
+    const recovered = new StatusReadModelObject(state, { DB: database } as unknown as Env)
+    await recovered.applyCommittedChange(8, {
+      baseRevision: 1,
+      revision: 2,
+      changes: [
+        {
+          templateId: '01890f3e-7b2c-7abc-8def-000000000008',
+          published: true,
+          total: 1,
+          previous: null,
+          current: { correct: 1, wrong: 0, blank: 0, observedAt: millis(1_750_000_000_000) },
+        },
+      ],
+    })
+    await recovered.notifyManifestChange(8)
+
+    for (const subscriber of [publicSocket, adminSocket]) {
+      expect(subscriber.send).toHaveBeenCalledWith(expect.stringContaining('"type":"status-delta"'))
+      expect(subscriber.send).toHaveBeenCalledWith(JSON.stringify({ type: 'manifest-reconcile' }))
+    }
+    expect(otherSeason.send).not.toHaveBeenCalled()
+    expect(missingAttachment.send).not.toHaveBeenCalled()
+  })
+
+  it('rejects missing internal routing headers before creating a socket pair', async () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const response = await object.fetch(
+      new Request('https://object.test/', { headers: { upgrade: 'websocket' } }),
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.text()).resolves.toBe('Invalid season')
   })
 })

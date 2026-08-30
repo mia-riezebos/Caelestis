@@ -90,6 +90,12 @@ export interface StatusDelta {
   readonly removedTemplateIds: readonly string[]
 }
 
+export type LiveSyncServerEvent =
+  | { readonly type: 'ready'; readonly revision: number }
+  | { readonly type: 'status-delta'; readonly delta: StatusDelta }
+  | { readonly type: 'status-reconcile'; readonly revision: number }
+  | { readonly type: 'manifest-reconcile' }
+
 /** Successful tile uploads carry their authoritative progress change instead of requiring a read. */
 export interface TileUploadResponse {
   readonly status?: StatusDelta

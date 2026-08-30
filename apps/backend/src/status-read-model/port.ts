@@ -18,6 +18,8 @@ export interface StatusReadModelPort {
     season: number,
     scope: StatusVisibilityScope,
   ) => Promise<StatusSnapshotRead>
+  /** Optional on portable adapters; production uses it to wake hibernating manifest subscribers. */
+  readonly notifyManifestChange?: (season: number) => Promise<void>
 }
 
 /** Projection failure never changes the outcome of the authoritative write that preceded it. */
@@ -31,6 +33,18 @@ export const repairCommittedStatusProjection = async (
   } catch (error) {
     console.error(error)
     return null
+  }
+}
+
+/** Manifest publication is reconstructible and must never roll back its authoritative mutation. */
+export const publishManifestChange = async (
+  readModel: StatusReadModelPort,
+  season: number,
+): Promise<void> => {
+  try {
+    await readModel.notifyManifestChange?.(season)
+  } catch (error) {
+    console.error(error)
   }
 }
 

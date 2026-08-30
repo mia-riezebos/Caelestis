@@ -660,6 +660,7 @@ export const installServerSync = (): void => {
   lastConnected = getState().servers.filter((server) => server.status === 'connected')
   registerServerSyncResource({
     id: 'world-manifest',
+    live: true,
     scope: (server) => (server.status === 'connected' && server.season !== null ? 'world' : null),
     refresh: async (server, reason) => {
       const contents = await listServerContents(server, undefined, reason)

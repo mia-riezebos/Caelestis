@@ -16,7 +16,10 @@ import {
   ResourceConflictError,
   ResourceNotFoundError,
 } from '../runtime/errors.js'
-import { repairCommittedStatusProjection } from '../status-read-model/port.js'
+import {
+  publishManifestChange,
+  repairCommittedStatusProjection,
+} from '../status-read-model/port.js'
 
 type NodeError =
   | RequestValidationError
@@ -38,9 +41,14 @@ export const createNode = (input: {
   readonly parentId: string | null
   readonly name: string
   readonly description?: string
-}): Effect.Effect<ReturnType<typeof publicNode>, NodeError, SqlStoreService> =>
+}): Effect.Effect<
+  ReturnType<typeof publicNode>,
+  NodeError,
+  SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
     const segment = nodeSlug(input.name)
     let parentPath = ''
     if (input.parentId !== null) {
@@ -76,6 +84,7 @@ export const createNode = (input: {
           ? new RequestValidationError({ message: cause.message })
           : new BackendStorageError({ operation: 'insertNode', cause }),
     })
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, input.season))
     return publicNode(inserted)
   })
 
@@ -92,9 +101,14 @@ export const patchNode = (input: {
   readonly nodeId: string
   readonly name?: string
   readonly parentId?: string | null
-}): Effect.Effect<ReturnType<typeof publicNode>, NodeError, SqlStoreService> =>
+}): Effect.Effect<
+  ReturnType<typeof publicNode>,
+  NodeError,
+  SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
     const node = yield* storage('readNode', () => sql.readNode(input.nodeId))
     if (node === null) {
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
@@ -144,6 +158,7 @@ export const patchNode = (input: {
     if (updated === null) {
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
     }
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, updated.season))
     return publicNode(updated)
   })
 
@@ -195,6 +210,7 @@ export const deleteNodeCascade = (
     if (deleted.templates > 0) {
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, node.season))
     }
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, node.season))
     return deleted
   })
 
@@ -203,10 +219,11 @@ export const deleteEmptyNode = (
 ): Effect.Effect<
   void,
   ResourceNotFoundError | ResourceConflictError | BackendStorageError,
-  SqlStoreService
+  SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
     const node = yield* storage('readNode', () => sql.readNode(nodeId))
     if (node === null) {
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
@@ -218,4 +235,5 @@ export const deleteEmptyNode = (
           ? new ResourceConflictError({ message: cause.message })
           : new BackendStorageError({ operation: 'deleteNode', cause }),
     })
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, node.season))
   })

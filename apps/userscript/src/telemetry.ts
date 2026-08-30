@@ -555,7 +555,10 @@ const notifyStatusListeners = (): void => {
   }
 }
 
-const applyStatusDelta = (server: ConnectedServer, delta: StatusDelta): void => {
+const applyStatusDelta = (
+  server: ConnectedServer,
+  delta: StatusDelta,
+): ReturnType<typeof applyServerSyncDelta> =>
   applyServerSyncDelta(
     server,
     'world',
@@ -576,7 +579,6 @@ const applyStatusDelta = (server: ConnectedServer, delta: StatusDelta): void => 
       if (changed) notifyStatusListeners()
     },
   )
-}
 
 const refreshStatus = async (
   server: ConnectedServer,
@@ -843,8 +845,15 @@ export const installTelemetry = (): void => {
   })
   registerServerSyncResource({
     id: 'telemetry-status',
+    live: true,
     scope: (server) => (server.status === 'connected' && server.season !== null ? 'world' : null),
     refresh: refreshStatus,
+    applyLiveEvent: (server, event) => {
+      const delta = statusDeltaFrom(event)
+      if (delta === null) return false
+      applyStatusDelta(server, delta)
+      return true
+    },
   })
   registerServerSyncResource({
     id: 'telemetry-alarms',
