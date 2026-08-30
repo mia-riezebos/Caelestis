@@ -1,10 +1,19 @@
-import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
+import {
+  nodeSlug,
+  sameTemplateSurface,
+  type TemplateSurface,
+  templateSurfaceBounds,
+  WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import type {
   TemplateTreeIntent,
   TreeContextMenuModel,
   TreeIcon,
   TreeOperationModel,
 } from '@caelestis/ui/elements'
+import { refreshAllianceManifest } from '../alliance-server-sync.js'
+import { activeAllianceSurface } from '../alliance-surface.js'
 import { warn } from '../debug.js'
 import { createLocalFolder, removeLocalFolder } from '../local-folders.js'
 import { viewportCentre } from '../main.js'
@@ -982,6 +991,7 @@ export const openContextMenu = (
   target: TreeTarget,
   event: MouseEvent,
   rerender: () => void,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): void => {
   const templateId = localTemplateId(target)
   const rename: readonly [TreeIcon, string, () => void] = [
@@ -1060,14 +1070,16 @@ export const openContextMenu = (
           ]
       : templateId === null
         ? [
-            ['createFolder', 'New folder', () => void createFolder(target, rerender)],
-            ['uploadFile', 'Import template', () => void importTemplate(target, rerender)],
+            ['createFolder', 'New folder', () => void createFolder(target, rerender, surface)],
+            ['uploadFile', 'Import template', () => void importTemplate(target, rerender, surface)],
             ...(folderPublication === null ? [] : [folderPublication]),
             rename,
             remove,
           ]
         : [
-            ['search', 'Go to', () => goToLocalTemplate(templateId)],
+            ...(surface.kind === 'world'
+              ? ([['search', 'Go to', () => goToLocalTemplate(templateId)]] as const)
+              : []),
             ['download', 'Export .wplace', () => void exportTemplate(target)],
             [
               'move',
@@ -1102,7 +1114,36 @@ export const openContextMenu = (
   rerender()
 }
 
-export const importTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+const importCentre = (surface: TemplateSurface): { x: number; y: number } => {
+  if (surface.kind === 'world') return viewportCentre() ?? { x: 0, y: 0 }
+  const active = activeAllianceSurface()
+  const bounds =
+    active !== null && sameTemplateSurface(active.surface, surface)
+      ? (active.bounds ?? templateSurfaceBounds(surface))
+      : templateSurfaceBounds(surface)
+  return bounds === null
+    ? { x: 0, y: 0 }
+    : { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 }
+}
+
+const refreshEditedSurface = async (
+  server: ConnectedServer,
+  surface: TemplateSurface,
+  rerender: () => void,
+): Promise<void> => {
+  if (surface.kind === 'world') {
+    await refreshCurrentNodes(server, rerender, true)
+    return
+  }
+  await refreshAllianceManifest(server, surface)
+  rerender()
+}
+
+export const importTemplate = async (
+  target: TreeTarget,
+  rerender: () => void,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): Promise<void> => {
   const picker = document.createElement('input')
   picker.type = 'file'
   picker.accept = '.wplace,.json,image/png,image/*'
@@ -1110,7 +1151,7 @@ export const importTemplate = async (target: TreeTarget, rerender: () => void): 
     void (async () => {
       const file = picker.files?.[0]
       if (file === undefined) return
-      const centre = viewportCentre() ?? { x: 0, y: 0 }
+      const centre = importCentre(surface)
       try {
         toast(`Reading ${file.name}…`)
         const imported = await importFile(file, centre)
@@ -1132,7 +1173,8 @@ export const importTemplate = async (target: TreeTarget, rerender: () => void): 
             target.nodeId ?? null,
             reservation,
             rerender,
-            (server, render) => refreshCurrentNodes(server, render, true),
+            (server, render) => refreshEditedSurface(server, surface, render),
+            surface,
           )
           return
         }
@@ -1148,7 +1190,7 @@ export const importTemplate = async (target: TreeTarget, rerender: () => void): 
         try {
           for (const template of imported) {
             try {
-              await addLocalTemplate(template)
+              await addLocalTemplate(template, surface)
               admitted.push(template.id)
               if (folderId !== null && !(await setTemplateFolder(template.id, folderId)))
                 failed.push(`${template.name} was imported, but not into that folder`)
@@ -1179,7 +1221,7 @@ export const importTemplate = async (target: TreeTarget, rerender: () => void): 
           } else {
             // It already knows where it belongs, so go and look at it — centred on the template and
             // zoomed to fit it, in-game. Changing the URL would reload and throw the import away.
-            navigateTo(centreOf(first))
+            if (surface.kind === 'world') navigateTo(centreOf(first))
           }
         } catch (error) {
           rerender()
@@ -1216,6 +1258,7 @@ export const copyToServer = async (
 ): Promise<void> => {
   const template = templateById(templateId)
   if (template === undefined) return
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
   if (copySetupRunning) return
   const targets = getState().servers.filter(
     (server) => server.isAdmin && (onlyServerUrl === undefined || server.url === onlyServerUrl),
@@ -1253,7 +1296,8 @@ export const copyToServer = async (
   try {
     listed = await Promise.all(
       targets.map(
-        async (server) => [server, await listServerNodes(server, setupController.signal)] as const,
+        async (server) =>
+          [server, await listServerNodes(server, setupController.signal, surface)] as const,
       ),
     )
   } finally {
@@ -1350,7 +1394,8 @@ export const copyToServer = async (
             template.name,
             server,
             nodeId,
-            (connected) => refreshCurrentNodes(connected, rerender, true),
+            (connected) =>
+              refreshEditedSurface(connected, template.surface ?? WORLD_TEMPLATE_SURFACE, rerender),
             {
               beforeUpload: (png) => {
                 if (cancelled || operation?.model.id !== id) return false
@@ -1406,14 +1451,24 @@ const expandForNewChild = (key: string): void => {
   setState({ collapsed: collapsed.filter((one) => one !== key) })
 }
 
-export const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+export const createFolder = async (
+  target: TreeTarget,
+  rerender: () => void,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): Promise<void> => {
   const { server, nodeId } = target
   if (isLocalTarget(target)) {
     // Nested under whichever Local folder was clicked, or at the top when it was Local itself.
     const parentId = localFolderIdOf(target)
     expandForNewChild(target.key)
-    const taken = new Set(getState().localFolders.map((folder) => folder.name.toLowerCase()))
-    const folder = createLocalFolder(parentId, freeFolderName(taken))
+    const taken = new Set(
+      getState()
+        .localFolders.filter((folder) =>
+          sameTemplateSurface(folder.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+        )
+        .map((folder) => folder.name.toLowerCase()),
+    )
+    const folder = createLocalFolder(parentId, freeFolderName(taken), surface)
     if (folder === null) {
       toast(
         `Could not save that folder. Local supports up to ${MAX_LOCAL_FOLDERS.toLocaleString()}.`,
@@ -1431,7 +1486,7 @@ export const createFolder = async (target: TreeTarget, rerender: () => void): Pr
   }
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
-  const listed = await listServerNodes(server)
+  const listed = await listServerNodes(server, undefined, surface)
   if (listed.status !== 'ok') {
     toast(serverNodesFailure(listed), 'error')
     return
@@ -1446,16 +1501,16 @@ export const createFolder = async (target: TreeTarget, rerender: () => void): Pr
   const siblings = existing.filter((node) => node.parentId === nodeId)
   const name = freeFolderName(new Set(siblings.map((node) => nodeSlug(node.name))), nodeSlug)
   expandForNewChild(target.key)
-  const result = await createNode(server, name, nodeId)
+  const result = await createNode(server, name, nodeId, undefined, surface)
   if (!result.ok) {
     toast(result.message, 'error')
-    await refreshCurrentNodes(server, rerender, true)
+    await refreshEditedSurface(server, surface, rerender)
     return
   }
   // Refresh before rendering: the row we are about to put into rename mode does not exist in the
   // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
   startRenaming(nodeTreeKey(server, result.node.id))
-  await refreshCurrentNodes(server, rerender, true)
+  await refreshEditedSurface(server, surface, rerender)
 }
 
 const MAX_DESTINATIONS = 2_000

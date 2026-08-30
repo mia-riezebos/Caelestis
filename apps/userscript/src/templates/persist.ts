@@ -1,4 +1,4 @@
-import { WORLD_PIXELS } from '@caelestis/shared'
+import { type TemplateSurface, WORLD_PIXELS } from '@caelestis/shared'
 import { warn } from '../debug.js'
 import { isStoredBlob, isUint8Array, type StoredBlob } from '../page-world.js'
 import type { Appearance, AppearanceGroup } from './appearance.js'
@@ -56,6 +56,8 @@ const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
 }
 
 export interface StoredTemplate extends ImportedTemplate {
+  /** Exact drawing surface. Records written before alliance support are world-scoped. */
+  readonly surface?: TemplateSurface
   readonly visible: boolean
   readonly everPlaced: boolean
   /** Null means "follow the global appearance"; absent means the same, from before this was stored. */

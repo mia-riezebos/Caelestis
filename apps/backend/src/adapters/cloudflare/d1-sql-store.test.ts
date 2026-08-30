@@ -1,4 +1,4 @@
-import { millis, seconds } from '@caelestis/shared'
+import { millis, seconds, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
 import {
@@ -25,6 +25,7 @@ const templateVersion = (
   overrides: Partial<TemplateVersionRecord> = {},
 ): TemplateVersionRecord => ({
   templateId: 'template-1',
+  surface: { kind: 'world', allianceId: null },
   season: 1,
   nodeId: 'node-1',
   name: 'Template',
@@ -52,12 +53,31 @@ describe('D1SqlStore', () => {
 
   afterEach(() => d1.close())
 
+  it('uses hash indexes for tile blob reference checks', () => {
+    for (const [table, indexName] of [
+      ['tile_history', 'tile_history_sha256_idx'],
+      ['canvas_tiles', 'canvas_tiles_sha256_idx'],
+    ] as const) {
+      const plan = d1.sqlite
+        .prepare(`EXPLAIN QUERY PLAN SELECT 1 FROM ${table} WHERE sha256 = ? LIMIT 1`)
+        .all('a'.repeat(64)) as Array<{ detail: string }>
+      expect(plan.some(({ detail }) => detail.includes(`USING COVERING INDEX ${indexName}`))).toBe(
+        true,
+      )
+    }
+  })
+
   it('counts the old path in characters, not UTF-16 units, when moving a subtree', async () => {
     // SQLite's `length()` and `substr()` count characters; JavaScript's `.length` counts UTF-16
     // units, and an astral character is two of them. Deriving the SQL offset in JavaScript therefore
     // cut one unit too far into every descendant for each astral character in the ancestor's path —
     // silently, and only against real D1, since the memory store slices in the same units it counts.
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      description: null,
+      createdAt: millis(1_000),
+    }
     await store.insertNode({ ...base, id: 'r', parentId: null, path: '/𝐀', name: '𝐀' })
     await store.insertNode({ ...base, id: 'k', parentId: 'r', path: '/𝐀/x', name: 'x' })
     await store.renameNode('r', 'Plain', 'plain')
@@ -66,7 +86,12 @@ describe('D1SqlStore', () => {
   })
 
   it('retries a parent-only move from a rename that lands before its batch', async () => {
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      description: null,
+      createdAt: millis(1_000),
+    }
     await store.insertNode({
       ...base,
       id: 'destination',
@@ -95,7 +120,12 @@ describe('D1SqlStore', () => {
   })
 
   it('renames under the live parent when a move lands before its batch', async () => {
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      description: null,
+      createdAt: millis(1_000),
+    }
     await store.insertNode({
       ...base,
       id: 'old-parent',
@@ -135,7 +165,12 @@ describe('D1SqlStore', () => {
   })
 
   it('uses the live subtree path when a rename lands before cascade deletion', async () => {
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      description: null,
+      createdAt: millis(1_000),
+    }
     await store.insertNode({ ...base, id: 'root', parentId: null, path: '/root', name: 'Root' })
     await store.insertNode({
       ...base,
@@ -162,7 +197,12 @@ describe('D1SqlStore', () => {
     // row — which a rename may have lengthened since. D1 hit `nodes_path_check` and let a bare error
     // escape as a 500; the memory store had no length guard at all and stored a path the wire
     // refuses.
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      description: null,
+      createdAt: millis(1_000),
+    }
     await store.insertNode({
       ...base,
       id: 'p',
@@ -186,7 +226,12 @@ describe('D1SqlStore', () => {
     // `lower()` in SQLite folds ASCII and nothing else, so `/QUÉBEC` and `/québec` are two distinct
     // paths to the database. The memory store used `toLowerCase()`, which folds `É`, and refused a
     // rename production would have accepted.
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      description: null,
+      createdAt: millis(1_000),
+    }
     await store.insertNode({ ...base, id: 'a', parentId: null, path: '/QUÉBEC', name: 'QUÉBEC' })
     await store.insertNode({ ...base, id: 'b', parentId: null, path: '/other', name: 'Other' })
 
@@ -198,6 +243,7 @@ describe('D1SqlStore', () => {
     // primary-key collision came back as "node path is already taken" — the wrong reason, the wrong
     // recovery, and a different class of error than the memory store gives for the same input.
     const node = {
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       description: null,
@@ -223,6 +269,7 @@ describe('D1SqlStore', () => {
     const nodeId = '01890f3a-6b7c-7def-8123-456789abcde1'
     store.readNode = async () => ({
       id: nodeId,
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/gone',
@@ -243,6 +290,7 @@ describe('D1SqlStore', () => {
     // neither, so a duplicate folder name surfaced as a 500. Only reproducible against real D1,
     // which is why it belongs in this file and not beside the memory adapter.
     const node = {
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/duplicate',
@@ -259,7 +307,9 @@ describe('D1SqlStore', () => {
 
   it('writes a template, version, tile index and current pointer in one batch', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+      .prepare(
+        "INSERT INTO nodes VALUES ('node-1', 1, 'world', NULL, NULL, '/node-1', 'Node', NULL, NULL, 1)",
+      )
       .run()
     const version = templateVersion()
 
@@ -281,7 +331,9 @@ describe('D1SqlStore', () => {
 
   it('rolls the whole template write back when one tile row fails', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+      .prepare(
+        "INSERT INTO nodes VALUES ('node-1', 1, 'world', NULL, NULL, '/node-1', 'Node', NULL, NULL, 1)",
+      )
       .run()
     const firstTile = { tileX: 0, tileY: 0, hash: 'a'.repeat(64) }
     const duplicateTile = { tileX: 0, tileY: 0, hash: 'b'.repeat(64) }
@@ -335,6 +387,7 @@ describe('D1SqlStore', () => {
   it('stores current tile anchors and aggregates only the current template version', async () => {
     await store.insertNode({
       id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/node',
@@ -446,6 +499,7 @@ describe('D1SqlStore', () => {
   it('recovers a legacy version colour histogram from complete classified tile rows', async () => {
     await store.insertNode({
       id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/node',
@@ -598,8 +652,16 @@ describe('D1SqlStore', () => {
     // and no author — only its versions recorded one. Attribution is the same pair a report is
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700, NULL, NULL);
+      INSERT INTO nodes VALUES ('attr-node', 1, 'world', NULL, NULL, '/attr', 'Attr', NULL, NULL, 1);
+      INSERT INTO templates (
+        id, season, surface_kind, alliance_id, node_id, name, current_version_id, published_at,
+        created_with_token, created_by_user_id, created_at_ms, updated_at_ms,
+        timelapse_frozen_at_ms, finished_at_ms
+      ) VALUES (
+        'attr-t', 1, 'world', NULL, 'attr-node', 'T', NULL, NULL,
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700,
+        NULL, NULL
+      );
       INSERT INTO template_versions (
         id, template_id, created_at_ms, created_with_token, created_by_user_id,
         min_x, min_y, max_x, max_y, total_pixels
@@ -638,12 +700,13 @@ describe('D1SqlStore', () => {
       hash: index.toString(16).padStart(64, '0'),
     }))
     d1.sqlite.exec(
-      "INSERT INTO nodes VALUES ('bulk-node', 1, NULL, '/bulk', 'Bulk', NULL, NULL, 1)",
+      "INSERT INTO nodes VALUES ('bulk-node', 1, 'world', NULL, NULL, '/bulk', 'Bulk', NULL, NULL, 1)",
     )
     const before = d1.batchStatements
 
     await store.insertTemplateVersion({
       templateId: 'bulk-t',
+      surface: { kind: 'world', allianceId: null },
       season: 1,
       nodeId: 'bulk-node',
       name: 'Bulk',
@@ -663,7 +726,13 @@ describe('D1SqlStore', () => {
   })
 
   it('replaces an existing template without validating its stale submitted folder or name', async () => {
-    const base = { season: 1, parentId: null, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      parentId: null,
+      description: null,
+      createdAt: millis(1_000),
+    }
     await store.insertNode({ ...base, id: 'node-1', path: '/old', name: 'Old' })
     await store.insertNode({ ...base, id: 'node-2', path: '/new', name: 'New' })
     await store.insertTemplateVersion(templateVersion())
@@ -684,7 +753,9 @@ describe('D1SqlStore', () => {
   })
 
   it('deletes contribution rows before their template', async () => {
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+    d1.sqlite.exec(
+      "INSERT INTO nodes VALUES ('node-1', 1, 'world', NULL, NULL, '/node-1', 'Node', NULL, NULL, 1)",
+    )
     await store.insertTemplateVersion(templateVersion())
     d1.sqlite
       .prepare('INSERT INTO contributions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -702,7 +773,9 @@ describe('D1SqlStore', () => {
   })
 
   it('keeps a newer template revision when deletion presents a stale precondition', async () => {
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+    d1.sqlite.exec(
+      "INSERT INTO nodes VALUES ('node-1', 1, 'world', NULL, NULL, '/node-1', 'Node', NULL, NULL, 1)",
+    )
     await store.insertTemplateVersion(templateVersion())
     await store.insertTemplateVersion(
       templateVersion({ versionId: 'version-2', createdAt: millis(2_000) }),
@@ -725,7 +798,12 @@ describe('D1SqlStore', () => {
   })
 
   it('deletes a subtree whose root path exceeds D1s LIKE pattern limit', async () => {
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const base = {
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      description: null,
+      createdAt: millis(1_000),
+    }
     const path = `/${'deep'.repeat(15)}`
     await store.insertNode({ ...base, id: 'deep-root', parentId: null, path, name: 'Deep root' })
     await store.insertNode({
@@ -783,14 +861,29 @@ describe('D1SqlStore', () => {
   // whole suite green. A client asking for a manifest is the actor.
   it('lists only published templates of the asked-for season', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+      .prepare(
+        "INSERT INTO nodes VALUES ('node-1', 1, 'world', NULL, NULL, '/node-1', 'Node', NULL, NULL, 1)",
+      )
       .run()
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, NULL, 1)")
+      .prepare(
+        "INSERT INTO nodes VALUES ('node-2', 2, 'world', NULL, NULL, '/node-2', 'Other', NULL, NULL, 1)",
+      )
       .run()
     await store.insertTemplateVersion(templateVersion())
     await store.insertTemplateVersion(
       templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({
+        templateId: 'alliance',
+        versionId: 'version-alliance',
+        nodeId: null,
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        bbox: { minX: -1, minY: -1, maxX: 0, maxY: 0 },
+        totalPixels: 1,
+        chunks: [{ tileX: -1, tileY: -1, hash: 'c'.repeat(64) }],
+      }),
     )
     await store.insertTemplateVersion(
       templateVersion({
@@ -801,27 +894,59 @@ describe('D1SqlStore', () => {
       }),
     )
     await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('alliance', millis(5_000), millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const ids = async (includeUnpublished: boolean): Promise<string[]> =>
-      (await store.listManifestTemplates(1, includeUnpublished)).map((row) => row.id).sort()
+      (
+        await store.listManifestTemplates(
+          { season: 1, surface: WORLD_TEMPLATE_SURFACE },
+          includeUnpublished,
+        )
+      )
+        .map((row) => row.id)
+        .sort()
 
     await expect(ids(false)).resolves.toEqual(['template-1'])
     // The same call including drafts still refuses the other season. Sorted, because the query has
     // no ORDER BY — the assembler sorts these itself, so row order here is SQLite's to choose.
     await expect(ids(true)).resolves.toEqual(['draft', 'template-1'])
+    await expect(
+      store.listManifestTemplates(
+        {
+          season: 1,
+          surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        },
+        false,
+      ),
+    ).resolves.toMatchObject([{ id: 'alliance' }])
   })
 
   it('lists only tiles of published templates of the asked-for season', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+      .prepare(
+        "INSERT INTO nodes VALUES ('node-1', 1, 'world', NULL, NULL, '/node-1', 'Node', NULL, NULL, 1)",
+      )
       .run()
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, NULL, 1)")
+      .prepare(
+        "INSERT INTO nodes VALUES ('node-2', 2, 'world', NULL, NULL, '/node-2', 'Other', NULL, NULL, 1)",
+      )
       .run()
     await store.insertTemplateVersion(templateVersion())
     await store.insertTemplateVersion(
       templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({
+        templateId: 'alliance',
+        versionId: 'version-alliance',
+        nodeId: null,
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        bbox: { minX: -1, minY: -1, maxX: 0, maxY: 0 },
+        totalPixels: 1,
+        chunks: [{ tileX: -1, tileY: -1, hash: 'c'.repeat(64) }],
+      }),
     )
     await store.insertTemplateVersion(
       templateVersion({
@@ -832,16 +957,33 @@ describe('D1SqlStore', () => {
       }),
     )
     await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('alliance', millis(5_000), millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const owners = async (includeUnpublished: boolean): Promise<string[]> =>
       [
-        ...new Set((await store.listManifestTiles(1, includeUnpublished)).map((t) => t.templateId)),
+        ...new Set(
+          (
+            await store.listManifestTiles(
+              { season: 1, surface: WORLD_TEMPLATE_SURFACE },
+              includeUnpublished,
+            )
+          ).map((t) => t.templateId),
+        ),
       ].sort()
 
     await expect(owners(false)).resolves.toEqual(['template-1'])
     // Both arms carry the season predicate, and only this one carries it alone: without the call
     // below, deleting it leaks the other season's tiles while everything stays green.
     await expect(owners(true)).resolves.toEqual(['draft', 'template-1'])
+    await expect(
+      store.listManifestTiles(
+        {
+          season: 1,
+          surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        },
+        false,
+      ),
+    ).resolves.toMatchObject([{ templateId: 'alliance', tileX: -1, tileY: -1 }])
   })
 })

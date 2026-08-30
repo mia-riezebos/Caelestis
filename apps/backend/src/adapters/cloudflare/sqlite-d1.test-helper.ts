@@ -89,6 +89,11 @@ class SqliteD1Statement {
     return result(this.statement.all(...this.bindings) as T[])
   }
 
+  async first<T = Record<string, unknown>>(): Promise<T | null> {
+    this.refusePatternsD1WouldRefuse()
+    return (this.statement.get(...this.bindings) as T | undefined) ?? null
+  }
+
   async raw<T = unknown[]>(): Promise<T[]> {
     this.refusePatternsD1WouldRefuse()
     this.statement.setReturnArrays(true)

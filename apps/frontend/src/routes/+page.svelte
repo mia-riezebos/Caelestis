@@ -5,6 +5,10 @@ import { Skeleton } from '$lib/components/ui/skeleton'
 import { app } from '$lib/state/app.svelte'
 
 const tree = $derived(app.tree)
+const activeAlarms = $derived([...app.alarms.values()])
+const sustainedAlarms = $derived(
+  activeAlarms.filter((alarm) => alarm.kind === 'sustained-griefing').length,
+)
 </script>
 
 {#if app.error !== null}
@@ -20,6 +24,14 @@ const tree = $derived(app.tree)
   </div>
 {:else}
   <div class="flex flex-col gap-4">
+    {#if activeAlarms.length > 0}
+      <div class="alert alert-error" role="status">
+        <span>
+          {activeAlarms.length} active {activeAlarms.length === 1 ? 'template warning' : 'template warnings'}{#if sustainedAlarms > 0}
+            · {sustainedAlarms} sustained {sustainedAlarms === 1 ? 'griefing alarm' : 'griefing alarms'}{/if}
+        </span>
+      </div>
+    {/if}
     {#each tree.folders as folder (folder.node.id)}
       <FolderSection {folder} canvas={app.canvas} />
     {/each}

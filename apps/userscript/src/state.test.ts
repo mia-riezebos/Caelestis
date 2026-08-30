@@ -213,6 +213,123 @@ describe('server state boundaries', () => {
     expect(getState().serverTemplatePreferences).toEqual([])
   })
 
+  it('keeps alliance appearance defaults isolated by canvas and away from the world', async () => {
+    const persist = vi.fn()
+    vi.stubGlobal('GM_setValue', persist)
+    const { getState, getSurfaceAppearance, setState, setSurfaceAppearance } = await import(
+      './state.js'
+    )
+    const headquarters = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    const picture = { kind: 'alliance-picture', allianceId: 535_245 } as const
+
+    setState({ appearance: { ...getState().appearance, opacity: 0.25 } })
+    expect(getSurfaceAppearance(headquarters).opacity).toBe(0.85)
+
+    expect(
+      setSurfaceAppearance(headquarters, {
+        ...getSurfaceAppearance(headquarters),
+        opacity: 0.5,
+      }),
+    ).toBe(true)
+
+    expect(getSurfaceAppearance(headquarters).opacity).toBe(0.5)
+    expect(getSurfaceAppearance(picture).opacity).toBe(0.85)
+    expect(getState().appearance.opacity).toBe(0.25)
+    expect(JSON.parse(String(persist.mock.calls.at(-1)?.[1])).allianceSurfaceAppearances).toEqual([
+      expect.objectContaining({
+        surface: headquarters,
+        appearance: expect.objectContaining({ opacity: 0.5 }),
+      }),
+    ])
+  })
+
+  it('restores only valid saved alliance appearance scopes', async () => {
+    const appearance = {
+      size: 0.6,
+      radius: 0,
+      translateX: 0,
+      translateY: 0,
+      rotation: 0,
+      opacity: 0.4,
+      contrastOutline: true,
+      contrastOutlineSize: 0.4,
+      hiddenColours: [],
+      markMismatch: false,
+      markUnpainted: false,
+      unpaintedLimit: 0.05,
+      markerColour: '#ff00ff',
+      markerSize: 9,
+      markSelectedColour: false,
+      selectedMarkerColour: '#00e5ff',
+      selectedMarkerSize: 9,
+      dimOthers: true,
+      otherOpacity: 0.15,
+      otherColour: null,
+    }
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() =>
+        JSON.stringify({
+          allianceSurfaceAppearances: [
+            {
+              surface: { kind: 'alliance-banner', allianceId: 535_245 },
+              appearance,
+            },
+            { surface: { kind: 'world' }, appearance },
+            { surface: { kind: 'alliance-picture', allianceId: -1 }, appearance },
+          ],
+        }),
+      ),
+    )
+    const { getSurfaceAppearance, loadState } = await import('./state.js')
+
+    loadState()
+
+    expect(getSurfaceAppearance({ kind: 'alliance-banner', allianceId: 535_245 }).opacity).toBe(0.4)
+    expect(getSurfaceAppearance({ kind: 'alliance-picture', allianceId: 535_245 }).opacity).toBe(
+      0.85,
+    )
+  })
+
+  it('restores legacy and alliance Local folder scopes', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() =>
+        JSON.stringify({
+          localFolders: [
+            { id: 'legacy', parentId: null, name: 'Legacy', visible: true },
+            {
+              id: 'hq',
+              parentId: null,
+              name: 'HQ',
+              visible: true,
+              surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+            },
+            {
+              id: 'invalid',
+              parentId: null,
+              name: 'Invalid',
+              visible: true,
+              surface: { kind: 'alliance-banner', allianceId: -1 },
+            },
+          ],
+        }),
+      ),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState().localFolders).toEqual([
+      expect.objectContaining({
+        id: 'legacy',
+        surface: { kind: 'world', allianceId: null },
+      }),
+      expect.objectContaining({
+        id: 'hq',
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      }),
+    ])
+  })
+
   it('does not accept a visibility scope when durable storage refuses it', async () => {
     vi.stubGlobal(
       'GM_setValue',
@@ -1407,6 +1524,101 @@ describe('server state boundaries', () => {
     })
   })
 
+  it('creates and lists server folders for the exact alliance surface', async () => {
+    const node = {
+      id: NODE_A,
+      parentId: null,
+      path: '/alliance-folder',
+      name: 'Alliance folder',
+      createdAt: 1_800_000_000_000,
+    }
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(node), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([node]), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { createNode, listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    setState({ servers: [server] })
+
+    await expect(createNode(server, 'Alliance folder', null, undefined, surface)).resolves.toEqual({
+      ok: true,
+      node,
+    })
+    await expect(listServerNodes(server, undefined, surface)).resolves.toEqual({
+      status: 'ok',
+      nodes: [node],
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      season: 0,
+      surfaceKind: 'alliance-banner',
+      allianceId: 535245,
+      parentId: null,
+    })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://example.com/backend/admin/nodes?season=0&surface=alliance-banner&allianceId=535245',
+    )
+  })
+
+  it('rejects alliance folders returned to a replaced server connection', async () => {
+    let finish!: (response: Response) => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finish = resolve
+          }),
+      ),
+    )
+    const { listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    setState({ servers: [server] })
+
+    const listed = listServerNodes(server, undefined, surface)
+    setState({ servers: [{ ...server, token: 'new-token' }] })
+    finish(new Response(JSON.stringify([]), { status: 200 }))
+
+    await expect(listed).resolves.toEqual({ status: 'unreachable' })
+  })
+
+  it('does not request alliance folders through an already replaced connection', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    const { listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    setState({ servers: [{ ...server, token: 'new-token' }] })
+
+    await expect(listServerNodes(server, undefined, surface)).resolves.toEqual({
+      status: 'unreachable',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('rejects an oversized body before parsing it', async () => {
     vi.stubGlobal(
       'fetch',
@@ -1496,5 +1708,48 @@ describe('server state boundaries', () => {
       message: 'Error: request timed out',
       ambiguous: true,
     })
+  })
+
+  it('sends alliance identity with a scoped upload', async () => {
+    const uploadedBodies: (BodyInit | null | undefined)[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        uploadedBodies.push(init?.body)
+        return new Response(
+          JSON.stringify({
+            templateId: TEMPLATE_A,
+            versionId: '019fed50-87a1-7523-a88c-bdeafad49684',
+          }),
+          { status: 200 },
+        )
+      }),
+    )
+    const { setState, uploadTemplate } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+
+    await expect(
+      uploadTemplate(server, {
+        nodeId: null,
+        name: 'Alliance banner',
+        originX: 0,
+        originY: 0,
+        png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+        surface: { kind: 'alliance-banner', allianceId: 535_245 },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    const uploadedForm = uploadedBodies[0]
+    expect(uploadedForm).toBeInstanceOf(FormData)
+    if (!(uploadedForm instanceof FormData)) throw new Error('expected multipart upload')
+    expect(uploadedForm.get('surfaceKind')).toBe('alliance-banner')
+    expect(uploadedForm.get('allianceId')).toBe('535245')
   })
 })

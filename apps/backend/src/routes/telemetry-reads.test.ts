@@ -34,6 +34,7 @@ const harness = async () => {
   const ports: Ports = { blobs, sql, counters }
   await sql.insertNode({
     id: NODE_ID,
+    surface: { kind: 'world', allianceId: null },
     season: 0,
     parentId: null,
     path: '/templates',
@@ -624,7 +625,7 @@ describe('telemetry read routes', () => {
   })
 
   it('serves mirrored tile blobs by hash like template chunks', async () => {
-    const { app } = await harness()
+    const { app, blobs, sql } = await harness()
     await createPublishedTemplate(app)
     const readToken = await mintToken(app, 'read')
     const reportToken = await mintToken(app, 'report')
@@ -635,6 +636,11 @@ describe('telemetry read routes', () => {
     expect(response.headers.get('content-type')).toBe('image/png')
     expect(response.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
     expect(await sha256Hex(new Uint8Array(await response.arrayBuffer()))).toBe(hash)
+    const object = await sql.readTileBlob(hash)
+    expect(object?.blobKey).toMatch(new RegExp(`^${hash}/`))
+    await expect(blobs.hasAll('tiles', [hash, object?.blobKey ?? 'missing'])).resolves.toEqual(
+      new Set([object?.blobKey]),
+    )
 
     const absent = await app.request(`/tiles/${'b'.repeat(64)}`, { headers: bearer(readToken) })
     expect(absent.status).toBe(404)

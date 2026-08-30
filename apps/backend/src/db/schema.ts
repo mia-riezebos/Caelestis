@@ -1,4 +1,4 @@
-import type { Millis, Seconds } from '@caelestis/shared'
+import type { Millis, Seconds, TemplateSurfaceKind } from '@caelestis/shared'
 import { WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { sql } from 'drizzle-orm'
 import {
@@ -40,6 +40,13 @@ export const nodes = sqliteTable(
   {
     id: text('id').primaryKey(),
     season: integer('season').notNull(),
+    surfaceKind: text('surface_kind', {
+      enum: ['world', 'alliance-headquarters', 'alliance-picture', 'alliance-banner'],
+    })
+      .$type<TemplateSurfaceKind>()
+      .notNull()
+      .default('world'),
+    allianceId: integer('alliance_id'),
     parentId: text('parent_id').references((): AnySQLiteColumn => nodes.id),
     path: text('path').notNull(),
     name: text('name').notNull(),
@@ -48,9 +55,9 @@ export const nodes = sqliteTable(
     deleteToken: text('delete_token'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
-  // Within a season, path is the prefix-rollup key and subtree-rewrite key. Two nodes sharing one
-  // path make a rollup attribute one group's templates to another, and make the documented
-  // prefix-matched subtree move rewrites both subtrees when either one is renamed.
+  // Within a season and drawing surface, path is the prefix-rollup key and subtree-rewrite key. Two
+  // nodes sharing one path make a rollup attribute one group's templates to another, and make the
+  // documented prefix-matched subtree move rewrite both subtrees when either one is renamed.
   // Lowercase, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
   // a subtree move matched on `<old>/` rewrites the other one's descendants too.
   //
@@ -59,7 +66,18 @@ export const nodes = sqliteTable(
   // with it leaves that row pointing at a prefix that no longer exists. The move has to rebuild the
   // path from its length: `<new> || substr(path, length(<old>) + 1)`.
   (table) => [
-    uniqueIndex('nodes_season_path_idx').on(table.season, sql`lower(${table.path})`),
+    uniqueIndex('nodes_world_path_idx')
+      .on(table.season, sql`lower(${table.path})`)
+      .where(sql`${table.surfaceKind} = 'world'`),
+    uniqueIndex('nodes_alliance_surface_path_idx')
+      .on(table.season, table.surfaceKind, table.allianceId, sql`lower(${table.path})`)
+      .where(sql`${table.surfaceKind} <> 'world'`),
+    check(
+      'nodes_surface_check',
+      sql`(${table.surfaceKind} = 'world' AND ${table.allianceId} IS NULL)
+        OR (${table.surfaceKind} IN ('alliance-headquarters', 'alliance-picture', 'alliance-banner')
+          AND typeof(${table.allianceId}) = 'integer' AND ${table.allianceId} > 0)`,
+    ),
     // The wire's NodePath states this shape, and that schema validates the manifest *response* —
     // nothing stood between a create-or-rename-group route and this column, and `nodes` was the one
     // table in this file carrying no CHECK at all.
@@ -128,15 +146,17 @@ export const templateVersions = sqliteTable(
     ),
     check(
       'template_versions_pixel_bounds_check',
-      // x wraps through zero, so min_x > max_x is a legal antimeridian span; y does not wrap.
-      // Zero width and zero height are rejected: a template covering no pixels is not a placement.
+      // The table is shared by world coordinates and the centred alliance HQ. SQLite CHECKs cannot
+      // consult the parent template's surface, so this is the safe outer envelope; the store
+      // validates the exact surface-specific bounds before insertion. World x may wrap through zero,
+      // hence min_x > max_x remains legal here, while y never wraps.
       sql`typeof(${table.minX}) = 'integer' AND typeof(${table.minY}) = 'integer'
         AND typeof(${table.maxX}) = 'integer' AND typeof(${table.maxY}) = 'integer'
         AND typeof(${table.totalPixels}) = 'integer'
-        AND ${table.minX} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
-        AND ${table.minY} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
-        AND ${table.maxX} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
-        AND ${table.maxY} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
+        AND ${table.minX} BETWEEN -1000 AND ${sql.raw(String(WORLD_PIXELS - 1))}
+        AND ${table.minY} BETWEEN -1000 AND ${sql.raw(String(WORLD_PIXELS - 1))}
+        AND ${table.maxX} BETWEEN -999 AND ${sql.raw(String(WORLD_PIXELS))}
+        AND ${table.maxY} BETWEEN -999 AND ${sql.raw(String(WORLD_PIXELS))}
         AND ${table.minX} <> ${table.maxX}
         AND ${table.minY} < ${table.maxY}
         AND ${table.totalPixels} >= 0`,
@@ -153,6 +173,13 @@ export const templates = sqliteTable(
   {
     id: text('id').primaryKey(),
     season: integer('season').notNull(),
+    surfaceKind: text('surface_kind', {
+      enum: ['world', 'alliance-headquarters', 'alliance-picture', 'alliance-banner'],
+    })
+      .$type<TemplateSurfaceKind>()
+      .notNull()
+      .default('world'),
+    allianceId: integer('alliance_id'),
     nodeId: text('node_id').references(() => nodes.id),
     name: text('name').notNull(),
     currentVersionId: text('current_version_id'),
@@ -202,6 +229,13 @@ export const templates = sqliteTable(
   // Expressed as a composite key against (id, template_id), which is why template_versions carries
   // a unique index on that pair: SQLite requires a foreign key's parent columns to be unique.
   (table) => [
+    check(
+      'templates_surface_check',
+      sql`(${table.surfaceKind} = 'world' AND ${table.allianceId} IS NULL)
+        OR (${table.surfaceKind} IN ('alliance-headquarters', 'alliance-picture', 'alliance-banner')
+          AND typeof(${table.allianceId}) = 'integer' AND ${table.allianceId} > 0)`,
+    ),
+    index('templates_surface_idx').on(table.season, table.surfaceKind, table.allianceId),
     // Same shape rule the reporter columns carry, for the same reason: an author record outlives
     // the credential it names, so the digest is constrained and its existence is not.
     check(
@@ -237,9 +271,11 @@ export const versionTiles = sqliteTable(
     ),
     check(
       'version_tiles_coordinate_check',
+      // Alliance HQ uses the same 1,000px chunk grid centred on zero, so its western/northern half
+      // is chunk -1. The store still validates exact per-surface ranges before this outer envelope.
       sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
-        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
-        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+        AND ${table.tileX} BETWEEN -1 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN -1 AND ${sql.raw(String(WORLD_TILES - 1))}`,
     ),
     primaryKey({ columns: [table.versionId, table.tileX, table.tileY] }),
     index('version_tiles_tile_idx').on(table.tileX, table.tileY),
@@ -507,6 +543,7 @@ export const tileHistory = sqliteTable(
         table.reportedByUserId,
       ],
     }),
+    index('tile_history_sha256_idx').on(table.sha256),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
     check(
       'tile_history_season_check',
@@ -560,9 +597,12 @@ export const canvasTiles = sqliteTable(
     tileY: integer('tile_y').notNull(),
     sha256: text('sha256').notNull(),
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+    /** Distinguishes the backend mirror from client reports when resolving clock skew. */
+    serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.season, table.tileX, table.tileY] }),
+    index('canvas_tiles_sha256_idx').on(table.sha256),
     check(
       'canvas_tiles_season_check',
       sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0`,
@@ -577,6 +617,86 @@ export const canvasTiles = sqliteTable(
       'canvas_tiles_sha256_check',
       sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
         AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
+export type TileBlobObjectState = 'uploading' | 'active' | 'candidate' | 'deleting' | 'deleted'
+
+/**
+ * Durable state for each physical tile object.
+ *
+ * `sha256` remains the public content identity. `blob_key` is the physical R2 key relative to the
+ * `tiles/` namespace and changes after a deletion. A delete can therefore finish late without
+ * removing bytes restored by a later ingest.
+ */
+export const tileBlobObjects = sqliteTable(
+  'tile_blob_objects',
+  {
+    blobKey: text('blob_key').primaryKey(),
+    sha256: text('sha256').notNull(),
+    state: text('state').$type<TileBlobObjectState>().notNull(),
+    discoveredAtMs: integer('discovered_at_ms').$type<Millis>().notNull(),
+    deleteStartedAtMs: integer('delete_started_at_ms').$type<Millis>(),
+    deleteAttempts: integer('delete_attempts').notNull().default(0),
+    reclaimedAtMs: integer('reclaimed_at_ms').$type<Millis>(),
+  },
+  (table) => [
+    index('tile_blob_objects_hash_state_idx').on(table.sha256, table.state),
+    check(
+      'tile_blob_objects_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+    check(
+      'tile_blob_objects_key_check',
+      sql`${table.blobKey} = ${table.sha256} OR substr(${table.blobKey}, 1, length(${table.sha256}) + 1) = ${table.sha256} || '/'`,
+    ),
+    check(
+      'tile_blob_objects_state_check',
+      sql`${table.state} IN ('uploading', 'active', 'candidate', 'deleting', 'deleted')`,
+    ),
+    check(
+      'tile_blob_objects_attempts_check',
+      sql`typeof(${table.deleteAttempts}) = 'integer' AND ${table.deleteAttempts} >= 0`,
+    ),
+  ],
+)
+
+/** In-flight ingest claims. A deletion fence and a live reservation are mutually exclusive. */
+export const tileBlobReservations = sqliteTable(
+  'tile_blob_reservations',
+  {
+    id: text('id').primaryKey(),
+    sha256: text('sha256').notNull(),
+    blobKey: text('blob_key')
+      .notNull()
+      .references(() => tileBlobObjects.blobKey, { onDelete: 'cascade' }),
+    expiresAtMs: integer('expires_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    index('tile_blob_reservations_hash_expiry_idx').on(table.sha256, table.expiresAtMs),
+    check(
+      'tile_blob_reservations_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
+/** The opaque R2 cursor that makes each scheduled namespace scan continue where the last stopped. */
+export const tileBlobGcState = sqliteTable(
+  'tile_blob_gc_state',
+  {
+    id: integer('id').primaryKey(),
+    cursor: text('cursor'),
+    completedSweeps: integer('completed_sweeps').notNull().default(0),
+  },
+  (table) => [
+    check('tile_blob_gc_state_single_row_check', sql`${table.id} = 1`),
+    check(
+      'tile_blob_gc_state_sweeps_check',
+      sql`typeof(${table.completedSweeps}) = 'integer' AND ${table.completedSweeps} >= 0`,
     ),
   ],
 )
@@ -598,6 +718,8 @@ export const templateTileStatuses = sqliteTable(
     blank: integer('blank').notNull(),
     coloursJson: text('colours_json').notNull(),
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+    /** Distinguishes backend classification from client-reported classification. */
+    serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
@@ -613,6 +735,91 @@ export const templateTileStatuses = sqliteTable(
       sql`typeof(${table.correct}) = 'integer' AND typeof(${table.wrong}) = 'integer'
         AND typeof(${table.blank}) = 'integer'
         AND ${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
+    ),
+  ],
+)
+
+/** Last backend-owned classification per current template chunk, independent of client freshness. */
+export const templateAlarmTileStatuses = sqliteTable(
+  'template_alarm_tile_statuses',
+  {
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id')
+      .notNull()
+      .references(() => templateVersions.id, { onDelete: 'cascade' }),
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    correct: integer('correct').notNull(),
+    wrong: integer('wrong').notNull(),
+    blank: integer('blank').notNull(),
+    coloursJson: text('colours_json').notNull(),
+    observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
+    index('template_alarm_tile_statuses_version_idx').on(table.versionId),
+    check(
+      'template_alarm_tile_statuses_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+    check(
+      'template_alarm_tile_statuses_counter_check',
+      sql`typeof(${table.correct}) = 'integer' AND typeof(${table.wrong}) = 'integer'
+        AND typeof(${table.blank}) = 'integer'
+        AND ${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
+    ),
+  ],
+)
+
+/** Version-local high-water state and the one active alarm episode a template may own. */
+export const templateAlarmStates = sqliteTable(
+  'template_alarm_states',
+  {
+    templateId: text('template_id')
+      .primaryKey()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id').notNull(),
+    total: integer('total').notNull(),
+    peakCorrect: integer('peak_correct').notNull(),
+    alarmId: text('alarm_id'),
+    kind: text('kind', { enum: ['regression', 'sustained-griefing'] }),
+    pixelsLost: integer('pixels_lost'),
+    firstSeenMs: integer('first_seen_ms').$type<Millis>(),
+    lastSeenMs: integer('last_seen_ms').$type<Millis>(),
+    probeDueAtMs: integer('probe_due_at_ms').$type<Millis>(),
+    probePixelsLost: integer('probe_pixels_lost'),
+    /** Rejects a delayed evaluation whose evidence predates the state already persisted. */
+    evaluatedAtMs: integer('evaluated_at_ms').$type<Millis>().notNull().default(sql`0`),
+    /** Optimistic compare-and-swap guard for overlapping cron and follow-up evaluations. */
+    revision: integer('revision').notNull().default(0),
+  },
+  (table) => [
+    index('template_alarm_states_probe_due_idx').on(table.probeDueAtMs),
+    check(
+      'template_alarm_states_counter_check',
+      sql`typeof(${table.total}) = 'integer' AND ${table.total} >= 0
+        AND typeof(${table.peakCorrect}) = 'integer'
+        AND ${table.peakCorrect} BETWEEN 0 AND ${table.total}`,
+    ),
+    check(
+      'template_alarm_states_episode_check',
+      sql`(${table.alarmId} IS NULL AND ${table.kind} IS NULL AND ${table.pixelsLost} IS NULL
+          AND ${table.firstSeenMs} IS NULL AND ${table.lastSeenMs} IS NULL
+          AND ${table.probeDueAtMs} IS NULL AND ${table.probePixelsLost} IS NULL)
+        OR (${table.alarmId} IS NOT NULL
+          AND ${table.kind} IN ('regression', 'sustained-griefing')
+          AND typeof(${table.pixelsLost}) = 'integer' AND ${table.pixelsLost} > 0
+          AND typeof(${table.firstSeenMs}) = 'integer'
+          AND typeof(${table.lastSeenMs}) = 'integer'
+          AND ${table.firstSeenMs} <= ${table.lastSeenMs}
+          AND ((${table.probeDueAtMs} IS NULL AND ${table.probePixelsLost} IS NULL)
+            OR (typeof(${table.probeDueAtMs}) = 'integer'
+              AND typeof(${table.probePixelsLost}) = 'integer'
+              AND ${table.probePixelsLost} > 0)))`,
     ),
   ],
 )

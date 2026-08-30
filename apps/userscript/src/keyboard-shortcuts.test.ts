@@ -27,6 +27,8 @@ const harness = vi.hoisted(() => ({
   setLocalVisible: vi.fn(async () => true),
   setOwnsGroup: vi.fn(async () => true),
   setState: vi.fn(),
+  surfaceAppearance: { opacity: 0.85, contrastOutline: false } as Record<string, unknown>,
+  setSurfaceAppearance: vi.fn(() => true),
   refreshMenu: vi.fn(),
   toggleMenu: vi.fn(),
   togglePanel: vi.fn(),
@@ -36,8 +38,25 @@ const harness = vi.hoisted(() => ({
   undoPaint: vi.fn(() => true),
   redoPaint: vi.fn(() => true),
   toggleShortcutHelp: vi.fn(),
+  moving: false,
+  allianceActive: false,
+  allianceEditorActive: false,
+  allianceStage: null as HTMLElement | null,
 }))
 
+vi.mock('./alliance-surface.js', () => ({
+  activeAllianceEditorStage: () =>
+    harness.allianceActive || harness.allianceEditorActive
+      ? (harness.allianceStage ?? document.body)
+      : null,
+  activeAllianceSurface: () =>
+    harness.allianceActive
+      ? {
+          surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+          stage: harness.allianceStage ?? document.body,
+        }
+      : null,
+}))
 vi.mock('./map-handle.js', () => ({
   getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
 }))
@@ -48,7 +67,9 @@ vi.mock('./paint-palette.js', () => ({
 vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: harness.setPeek }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: harness.appearance, onlySelectedColour: false }),
+  getSurfaceAppearance: () => harness.surfaceAppearance,
   setState: harness.setState,
+  setSurfaceAppearance: harness.setSurfaceAppearance,
 }))
 vi.mock('./templates/local-store.js', () => ({
   appearanceOf: () => harness.appearance,
@@ -59,6 +80,7 @@ vi.mock('./templates/local-store.js', () => ({
   setOwnsGroup: harness.setOwnsGroup,
 }))
 vi.mock('./templates/nearest.js', () => ({ focusedTemplate: harness.focus }))
+vi.mock('./templates/move.js', () => ({ isMoving: () => harness.moving }))
 vi.mock('./ui/overlay-menu.js', () => ({
   refreshOverlayMenu: harness.refreshMenu,
   toggleOverlayMenu: harness.toggleMenu,
@@ -84,7 +106,12 @@ const press = (key: string, init: KeyboardEventInit = {}): KeyboardEvent => {
 beforeEach(async () => {
   vi.clearAllMocks()
   harness.peek = false
+  harness.moving = false
+  harness.allianceActive = false
+  harness.allianceEditorActive = false
+  harness.allianceStage = null
   harness.appearance = { opacity: 0.85, markMismatch: false, markSelectedColour: false }
+  harness.surfaceAppearance = { opacity: 0.85, contrastOutline: false }
   harness.focused = { id: 'focused', visible: true, owns: ['markers'] }
   harness.focus.mockImplementation(() => harness.focused)
   const { installKeyboardShortcuts } = await import('./keyboard-shortcuts.js')
@@ -126,6 +153,120 @@ describe('keyboard shortcut actions', () => {
     expect(harness.toggleAppearanceBoolean).toHaveBeenCalledWith('focused', 'markSelectedColour')
     expect(harness.setOwnsGroup).toHaveBeenCalledWith('focused', 'pixels', true)
     expect(harness.setAppearance).toHaveBeenCalledWith('focused', { opacity: 0.6 })
+  })
+
+  it('handles an alliance-modal shortcut before Wplace stops its propagation', () => {
+    harness.allianceActive = true
+    const modalControl = document.createElement('button')
+    const wplaceHandler = vi.fn((event: Event) => event.stopPropagation())
+    modalControl.addEventListener('keydown', wplaceHandler)
+    document.body.append(modalControl)
+    const event = new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true })
+
+    modalControl.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(harness.toggleMenu).toHaveBeenCalledWith('focused', expect.any(Function))
+    expect(wplaceHandler).not.toHaveBeenCalled()
+  })
+
+  it('scopes native paint actions to the alliance dialog and blocks world-only shortcuts', () => {
+    harness.allianceActive = true
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    const stage = document.createElement('div')
+    dialog.append(stage)
+    document.body.append(dialog)
+    harness.allianceStage = stage
+
+    expect(press('b').defaultPrevented).toBe(true)
+    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
+    for (const key of ['a', 'd', 'f', 'l', 's', 'w', 'x']) {
+      expect(press(key).defaultPrevented).toBe(true)
+    }
+
+    expect(harness.paintAction).toHaveBeenCalledWith(dialog)
+    expect(harness.cancelPaint).toHaveBeenCalledWith(dialog)
+    expect(harness.undoPaint).toHaveBeenCalledWith(dialog)
+    expect(harness.cycleColour).not.toHaveBeenCalled()
+    expect(harness.navigateColour).not.toHaveBeenCalled()
+    expect(harness.toggleAppearanceBoolean).not.toHaveBeenCalled()
+    expect(harness.setState).not.toHaveBeenCalled()
+    expect(harness.toggleTheme).not.toHaveBeenCalled()
+  })
+
+  it('isolates every surface action while alliance asset metadata is unresolved', () => {
+    harness.allianceEditorActive = true
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    const stage = document.createElement('div')
+    dialog.append(stage)
+    document.body.append(dialog)
+    harness.allianceStage = stage
+
+    expect(press('b').defaultPrevented).toBe(true)
+    for (const key of ['1', 'a', 'c', 'd', 'f', 'g', 'l', 'r', 's', 't', 'v', 'w', 'x']) {
+      expect(press(key).defaultPrevented).toBe(true)
+    }
+
+    expect(harness.paintAction).toHaveBeenCalledWith(dialog)
+    expect(harness.togglePanel).not.toHaveBeenCalled()
+    expect(harness.toggleMenu).not.toHaveBeenCalled()
+    expect(harness.setLocalVisible).not.toHaveBeenCalled()
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+    expect(harness.setSurfaceAppearance).not.toHaveBeenCalled()
+    expect(harness.setPeek).not.toHaveBeenCalled()
+    expect(harness.toggleTheme).not.toHaveBeenCalled()
+  })
+
+  it('claims native shortcuts from the editor snapshot when controls vanish or are absent', () => {
+    harness.allianceEditorActive = true
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    const stage = document.createElement('div')
+    dialog.append(stage)
+    document.body.append(dialog)
+    harness.allianceStage = stage
+    const worldHandler = vi.fn()
+    window.addEventListener('keydown', worldHandler)
+
+    harness.paintAction.mockReturnValueOnce(false)
+    harness.cancelPaint.mockReturnValueOnce(false)
+    harness.undoPaint.mockReturnValueOnce(false)
+    harness.redoPaint.mockReturnValueOnce(false)
+    expect(press('b').defaultPrevented).toBe(true)
+    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
+    expect(press('z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true)
+
+    harness.paintAction.mockImplementationOnce(() => {
+      harness.allianceEditorActive = false
+      dialog.remove()
+      return true
+    })
+    expect(press('b').defaultPrevented).toBe(true)
+    expect(worldHandler).not.toHaveBeenCalled()
+    window.removeEventListener('keydown', worldHandler)
+  })
+
+  it('leaves placement confirm and cancel with the active placement', () => {
+    harness.moving = true
+
+    expect(press('Escape').defaultPrevented).toBe(false)
+    expect(harness.cancelPaint).not.toHaveBeenCalled()
+  })
+
+  it('leaves shortcuts inactive when a shared shadow field owns the key', () => {
+    const input = Object.assign(new EventTarget(), { tagName: 'INPUT' })
+    const host = Object.assign(new EventTarget(), { tagName: 'CAELESTIS-SETTINGS' })
+    const event = new KeyboardEvent('keydown', { key: 't', cancelable: true })
+    Object.defineProperty(event, 'composedPath', { value: () => [input, host, window] })
+
+    window.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(harness.toggleMenu).not.toHaveBeenCalled()
   })
 
   it('cycles remaining colours and delegates paint commit, cancel, and theme to Wplace', () => {

@@ -1,4 +1,4 @@
-import { latLngToCanvasPixel, PALETTE_SIZE } from '@caelestis/shared'
+import { latLngToCanvasPixel, PALETTE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import type { CaelestisPaletteProgress } from '@caelestis/ui/elements'
 import { count, warn } from './debug.js'
 import { getMap } from './map-handle.js'
@@ -84,6 +84,9 @@ let lastNavigation: { readonly index: number; readonly target: ColourNavigationT
 export const navigateFocusedColour = async (index: number, cycle = false): Promise<boolean> => {
   const template = focusedTemplate()
   if (template === null) return false
+  // Alliance surfaces do not use the world MapLibre camera. Until their paint-accounting adapter
+  // supplies an artboard navigation target, never let F move the world beneath the active editor.
+  if ((template.surface ?? WORLD_TEMPLATE_SURFACE).kind !== 'world') return false
   const map = getMap()
   if (map === null) return false
   const reference = latLngToCanvasPixel(map.getCenter())

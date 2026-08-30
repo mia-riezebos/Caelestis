@@ -1,4 +1,4 @@
-import { TILE_SIZE } from '@caelestis/shared'
+import { sameTemplateSurface, TILE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { isOverlayPeekActive } from '../overlay-peek.js'
@@ -466,7 +466,9 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }[] = []
   const progressOnly: PlacedTemplate[] = []
   const markerKeys = new Set<string>()
-  for (const template of displayTemplates()) {
+  for (const template of displayTemplates().filter((candidate) =>
+    sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
+  )) {
     const appearance = appearanceOf(template)
     const mismatchKey = `mismatch:${template.id}`
     const selectedKey = `selected:${template.id}`

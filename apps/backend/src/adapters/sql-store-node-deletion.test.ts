@@ -1,4 +1,4 @@
-import { millis } from '@caelestis/shared'
+import { millis, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { NodeRecord, SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
@@ -7,6 +7,7 @@ import { MemorySqlStore } from './memory/memory-sql-store.js'
 
 const node = (id: string, path: string, parentId: string | null, season = 1): NodeRecord => ({
   id,
+  surface: WORLD_TEMPLATE_SURFACE,
   season,
   parentId,
   path,
@@ -22,6 +23,7 @@ const version = (
   hashes: readonly string[],
 ): TemplateVersionRecord => ({
   templateId,
+  surface: { kind: 'world', allianceId: null },
   season: 1,
   nodeId,
   name: templateId,

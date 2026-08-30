@@ -1,4 +1,9 @@
-import { WPLACE_PALETTE } from '@caelestis/shared'
+import {
+  sameTemplateSurface,
+  type TemplateSurface,
+  WORLD_TEMPLATE_SURFACE,
+  WPLACE_PALETTE,
+} from '@caelestis/shared'
 import type {
   TemplateTreeIntent,
   TemplateTreeModel,
@@ -6,6 +11,7 @@ import type {
   TreeEntryModel,
   TreeRowModel,
 } from '@caelestis/ui/elements'
+import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
 import { goToLocalTemplate, goToServerTemplate } from '../application/tree-navigation.js'
 import {
   hasRefreshedServer,
@@ -30,7 +36,7 @@ import {
   setScopeVisible,
   setState,
 } from '../state.js'
-import { serverColourProgressFor, serverProgressFor } from '../telemetry.js'
+import { serverAlarmFor, serverColourProgressFor, serverProgressFor } from '../telemetry.js'
 import {
   isServerTemplate,
   localTemplates,
@@ -147,7 +153,13 @@ const localFolderId = (target: TreeTarget): string | null =>
 const refreshCurrentSnapshot = async (
   server: ConnectedServer,
   rerender: () => void,
+  surface: TemplateSurface,
 ): Promise<void> => {
+  if (surface.kind !== 'world') {
+    await refreshAllianceManifest(server, surface)
+    rerender()
+    return
+  }
   let current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined) return
   let result = await refreshServerSnapshot(current, rerender, true)
@@ -162,6 +174,7 @@ const renameTarget = async (
   target: TreeTarget,
   name: string,
   rerender: () => void,
+  surface: TemplateSurface,
 ): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
@@ -182,7 +195,7 @@ const renameTarget = async (
   if (target.server !== null && target.templateId !== undefined) {
     const result = await patchTemplate(target.server, target.templateId, { name })
     if (!result.ok) reportTreeError(result.message)
-    await refreshCurrentSnapshot(target.server, rerender)
+    await refreshCurrentSnapshot(target.server, rerender, surface)
     return
   }
   if (target.server !== null && target.nodeId === null) {
@@ -198,7 +211,7 @@ const renameTarget = async (
   }
   const result = await renameNodeOnServer(target.server, target.nodeId, name)
   if (!result.ok) reportTreeError(result.message)
-  await refreshCurrentSnapshot(target.server, rerender)
+  await refreshCurrentSnapshot(target.server, rerender, surface)
 }
 
 interface RenderBudget {
@@ -347,6 +360,7 @@ const buildTree = <Result>(
   callbacks: TreeCallbacks,
   rerender: () => void,
   query = '',
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Result => {
   const dropInLocal = async (
     draggedKey: string,
@@ -376,7 +390,11 @@ const buildTree = <Result>(
     return null
   }
   const servers = getState().servers
-  const drawnTemplates = localTemplates()
+  const drawnTemplates = localTemplates().filter((template) =>
+    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+  )
+  const scopedRowsFor = (server: ConnectedServer) =>
+    surface.kind === 'world' ? rowsFor(server) : (allianceManifestFor(server, surface) ?? undefined)
   const localOnly = drawnTemplates.filter((template) => !isServerTemplate(template))
   const drawnByServer = new Map<string, Map<string, PlacedTemplate>>()
   for (const template of drawnTemplates) {
@@ -454,43 +472,50 @@ const buildTree = <Result>(
     }
     // Only where the code can actually act. Offering create to someone who will only ever get a
     // 403 is worse than not offering it — Local always can, since nothing gates it.
-    const canEdit = isLocal || (server?.isAdmin ?? false)
+    const canCreate = isLocal || (server?.isAdmin ?? false)
+    const canRearrange = surface.kind === 'world' && canCreate
     // Published only, same as every folder rollup below: an admin's unpublished drafts are listed
     // and metered individually, but never counted into the server's aggregate.
     const serverTemplates =
       server === undefined
         ? []
-        : (rowsFor(server)?.templates ?? []).filter((template) => template.published)
+        : (scopedRowsFor(server)?.templates ?? []).filter((template) => template.published)
     const readParentProgress = (): TemplateProgress | undefined =>
-      isLocal
-        ? sumProgress(localOnly.map((template) => pixelAccounting.read(template).progress))
-        : server === undefined
-          ? undefined
-          : sumProgress(serverTemplates.map((template) => serverTemplateProgress(server, template)))
+      surface.kind !== 'world'
+        ? undefined
+        : isLocal
+          ? sumProgress(localOnly.map((template) => pixelAccounting.read(template).progress))
+          : server === undefined
+            ? undefined
+            : sumProgress(
+                serverTemplates.map((template) => serverTemplateProgress(server, template)),
+              )
     const parentProgress = readParentProgress()
     const parentColourProgress: (() => readonly TemplateColourProgress[] | undefined) | undefined =
-      isLocal
-        ? localOnly.length === 0
-          ? undefined
-          : () =>
-              completeColourProgress(
-                readParentProgress(),
-                localOnly.map((template) => pixelAccounting.read(template).colours),
+      surface.kind !== 'world'
+        ? undefined
+        : isLocal
+          ? localOnly.length === 0
+            ? undefined
+            : () =>
+                completeColourProgress(
+                  readParentProgress(),
+                  localOnly.map((template) => pixelAccounting.read(template).colours),
+                )
+          : server === undefined ||
+              serverTemplates.length === 0 ||
+              !serverTemplates.every(
+                (template) => serverTemplateColourProgress(server, template) !== undefined,
               )
-        : server === undefined ||
-            serverTemplates.length === 0 ||
-            !serverTemplates.every(
-              (template) => serverTemplateColourProgress(server, template) !== undefined,
-            )
-          ? undefined
-          : () =>
-              completeColourProgress(
-                readParentProgress(),
-                serverTemplates.flatMap((template) => {
-                  const colours = serverTemplateColourProgress(server, template)
-                  return colours === undefined ? [] : [colours]
-                }),
-              )
+            ? undefined
+            : () =>
+                completeColourProgress(
+                  readParentProgress(),
+                  serverTemplates.flatMap((template) => {
+                    const colours = serverTemplateColourProgress(server, template)
+                    return colours === undefined ? [] : [colours]
+                  }),
+                )
 
     output.row({
       key,
@@ -529,12 +554,12 @@ const buildTree = <Result>(
         }
         // Landing just under a server's own row means its top level, which is otherwise
         // unreachable: every other destination is a folder, and "no folder" has no other row.
-        if (parentKey === key && server !== undefined && canEdit) {
+        if (parentKey === key && server !== undefined && canRearrange) {
           return await callbacks.onDropInServer(server, null, draggedKey, beforeKey)
         }
         return null
       },
-      canReparent: canEdit && !isLocal,
+      canReparent: canRearrange && !isLocal,
       // A category is a group like a folder is: switching it off takes everything under it off
       // the canvas, and leaves every row inside saying exactly what it said before.
       checked: isScopeVisible(key),
@@ -544,9 +569,11 @@ const buildTree = <Result>(
         }
         rerender()
       },
-      onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
-      onRename: canEdit ? (value) => void renameTarget(target, value, rerender) : undefined,
-      actions: canEdit
+      onContextMenu: canRearrange ? (event) => callbacks.onContextMenu(target, event) : undefined,
+      onRename: canRearrange
+        ? (value) => void renameTarget(target, value, rerender, surface)
+        : undefined,
+      actions: canCreate
         ? [
             {
               icon: 'createFolder',
@@ -564,21 +591,23 @@ const buildTree = <Result>(
     if (!isExpanded(key) && needle === '') continue
 
     if (server !== undefined) {
-      const rows = rowsFor(server)
+      const rows = scopedRowsFor(server)
       if (rows === undefined && server.status === 'connected') {
         if (!hasRefreshedServer(server)) {
           // Exactly one automatic attempt per verified connection. A failed request records an
           // error and waits for the explicit Retry button instead of scheduling itself forever.
-          void refreshServerSnapshot(server, rerender)
+          if (surface.kind === 'world') void refreshServerSnapshot(server, rerender)
         }
         if (isServerRefreshing(server)) {
-          output.notice('Loading folders…', 1)
+          output.notice(surface.kind === 'world' ? 'Loading folders…' : 'Loading templates…', 1)
         } else {
-          const message = serverSnapshotError(server) ?? 'Could not load this server.'
-          output.notice(message, 1, [], {
-            label: 'Retry',
-            run: () => void refreshServerSnapshot(server, rerender, true),
-          })
+          if (surface.kind === 'world') {
+            const message = serverSnapshotError(server) ?? 'Could not load this server.'
+            output.notice(message, 1, [], {
+              label: 'Retry',
+              run: () => void refreshServerSnapshot(server, rerender, true),
+            })
+          }
         }
         continue
       } else if (rows !== undefined) {
@@ -632,20 +661,21 @@ const buildTree = <Result>(
               createdAt: node.createdAt,
               visible: isScopeVisible(nodeScopeKey(server.url, node.id)),
               setVisible: (on) => setScopeVisible(nodeScopeKey(server.url, node.id), on),
-              canReparent: canEdit,
-              ...(canEdit ? { onDropAt: intoServer } : {}),
-              ...(canEdit
+              canReparent: canRearrange,
+              ...(canRearrange ? { onDropAt: intoServer } : {}),
+              ...(canRearrange
                 ? {
                     onContextMenu: (event: MouseEvent) =>
                       callbacks.onContextMenu(nodeTarget, event),
                   }
                 : {}),
-              ...(canEdit
+              ...(canCreate
                 ? {
-                    onRename: (value: string) => void renameTarget(nodeTarget, value, rerender),
+                    onRename: (value: string) =>
+                      void renameTarget(nodeTarget, value, rerender, surface),
                   }
                 : {}),
-              ...(canEdit
+              ...(canCreate
                 ? {
                     actions: [
                       {
@@ -668,9 +698,12 @@ const buildTree = <Result>(
         for (const template of published) {
           const templateKey = serverTemplateTreeKey(server, template.id)
           const drawn = drawnById.get(template.id)
-          const colourProgress = serverTemplateColourProgress(server, template)
-          const progress = serverTemplateProgress(server, template)
-          const visibilityKey = serverTemplateKey(server.url, template.id)
+          const colourProgress =
+            surface.kind === 'world' ? serverTemplateColourProgress(server, template) : undefined
+          const progress =
+            surface.kind === 'world' ? serverTemplateProgress(server, template) : undefined
+          const visibilityKey = serverTemplateKey(server.url, template.id, surface)
+          const alarm = serverAlarmFor(server, template)
           const templateTarget: TreeTarget = {
             server,
             nodeId: template.nodeId,
@@ -690,12 +723,15 @@ const buildTree = <Result>(
               createdAt: template.updatedAt,
               muted: !template.published,
               ...(template.published ? {} : { excludeFromRollup: true as const }),
-              progress,
-              progressReader: () => serverTemplateProgress(server, template),
+              ...(progress === undefined ? {} : { progress }),
+              ...(progress === undefined
+                ? {}
+                : { progressReader: () => serverTemplateProgress(server, template) }),
               lifecycle: {
                 finished: template.finished === true,
                 frozen: template.timelapseFrozen === true,
-                griefed: template.finished === true && progress.mismatched > 0,
+                griefed: template.finished === true && (progress?.mismatched ?? 0) > 0,
+                ...(alarm === null ? {} : { alarmKind: alarm.kind, pixelsLost: alarm.pixelsLost }),
               },
               ...(colourProgress === undefined
                 ? {}
@@ -703,14 +739,18 @@ const buildTree = <Result>(
                     colourProgress: () =>
                       serverTemplateColourProgress(server, template) ?? colourProgress,
                   }),
-              progressSortable: true,
-              leadingActions: [
-                {
-                  icon: 'search',
-                  label: 'Go to',
-                  run: () => goToServerTemplate(template.bbox),
-                },
-              ],
+              ...(progress === undefined ? {} : { progressSortable: true as const }),
+              ...(surface.kind === 'world'
+                ? {
+                    leadingActions: [
+                      {
+                        icon: 'search' as const,
+                        label: 'Go to',
+                        run: () => goToServerTemplate(template.bbox),
+                      },
+                    ],
+                  }
+                : {}),
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: async (on) => {
                 // A drawn server row owns the dual commit: live bitmaps and the durable scope either
@@ -719,12 +759,18 @@ const buildTree = <Result>(
                   ? setScopeVisible(visibilityKey, on)
                   : await setLocalVisible(drawn.id, on)
               },
-              canReparent: canEdit,
-              ...(canEdit ? { onDropAt: intoServer } : {}),
-              onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(templateTarget, event),
-              ...(canEdit
+              canReparent: canRearrange,
+              ...(canRearrange ? { onDropAt: intoServer } : {}),
+              ...(surface.kind === 'world'
                 ? {
-                    onRename: (value: string) => void renameTarget(templateTarget, value, rerender),
+                    onContextMenu: (event: MouseEvent) =>
+                      callbacks.onContextMenu(templateTarget, event),
+                  }
+                : {}),
+              ...(canCreate
+                ? {
+                    onRename: (value: string) =>
+                      void renameTarget(templateTarget, value, rerender, surface),
                   }
                 : {}),
             },
@@ -773,7 +819,9 @@ const buildTree = <Result>(
       // listed under the server publishing them, not here.
       const mine = localOnly
       const entries: Array<{ parentId: string | null; item: TreeItem }> = []
-      for (const folder of getState().localFolders) {
+      for (const folder of getState().localFolders.filter((candidate) =>
+        sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+      )) {
         const folderTarget: TreeTarget = {
           server: null,
           nodeId: null,
@@ -792,7 +840,7 @@ const buildTree = <Result>(
             canReparent: true,
             onDropAt: dropInLocal,
             onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
-            onRename: (value) => void renameTarget(folderTarget, value, rerender),
+            onRename: (value) => void renameTarget(folderTarget, value, rerender, surface),
             actions: [
               {
                 icon: 'createFolder',
@@ -829,20 +877,25 @@ const buildTree = <Result>(
             progressSortable: true,
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),
-            canReparent: true,
-            onDropAt: dropInLocal,
-            onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
-            onRename: (value) => void renameTarget(templateTarget, value, rerender),
-            leadingActions: [
-              {
-                icon: 'search',
-                label: 'Go to',
-                run: () => goToLocalTemplate(template.id),
-              },
-            ],
+            canReparent: surface.kind === 'world',
+            ...(surface.kind === 'world' ? { onDropAt: dropInLocal } : {}),
+            onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(templateTarget, event),
+            onRename: (value: string) =>
+              void renameTarget(templateTarget, value, rerender, surface),
+            ...(surface.kind === 'world'
+              ? {
+                  leadingActions: [
+                    {
+                      icon: 'search' as const,
+                      label: 'Go to',
+                      run: () => goToLocalTemplate(template.id),
+                    },
+                  ],
+                }
+              : {}),
             actions: [
               {
-                icon: 'uploadFile',
+                icon: 'uploadFile' as const,
                 label: 'Copy to a server',
                 run: () => callbacks.onCopyToServer(template.id),
               },
@@ -906,13 +959,15 @@ const buildTree = <Result>(
     )
   }
 
-  output.action(
-    'add-server',
-    0,
-    servers.length === 0 ? 'Add a server' : 'Add another server',
-    servers.length === 0 ? 'Add a server' : 'Add another server',
-    callbacks.onAddServer,
-  )
+  if (surface.kind === 'world') {
+    output.action(
+      'add-server',
+      0,
+      servers.length === 0 ? 'Add a server' : 'Add another server',
+      servers.length === 0 ? 'Add a server' : 'Add another server',
+      callbacks.onAddServer,
+    )
+  }
 
   return output.finish()
 }
@@ -943,6 +998,7 @@ export const templateTreeAdapter = (
   callbacks: TreeCallbacks,
   rerender: () => void,
   query = '',
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): TemplateTreeAdapter => {
   const entries: TreeEntryModel[] = []
   const rows = new Map<string, TreeRowOptions>()
@@ -1032,7 +1088,7 @@ export const templateTreeAdapter = (
     finish: () => undefined,
   }
 
-  buildTree(output, callbacks, rerender, query)
+  buildTree(output, callbacks, rerender, query, surface)
 
   const siblingRows = new Map<string, TreeRowModel[]>()
   for (const entry of entries) {

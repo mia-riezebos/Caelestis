@@ -6,6 +6,7 @@
 
   const icons: Record<RailControlModel['id'], IconName> = {
     panel: 'extension',
+    'alliance-panel': 'extension',
     colour: 'palette',
     mismatch: 'bug',
     'overlay-menu': 'kebab',

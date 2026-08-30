@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TRANSPARENT_INDEX } from './palette.js'
-import { SliceError, sliceTemplate } from './slice.js'
+import { SliceError, sliceTemplate, sliceTemplateForSurface } from './slice.js'
 import { TILE_SIZE, WORLD_PIXELS } from './tiles.js'
 
 const T = TRANSPARENT_INDEX
@@ -217,5 +217,41 @@ describe('rejections', () => {
   it('rejects a template running past the south edge', () => {
     const { indices, width, height } = image([[1], [2]])
     expect(() => sliceTemplate(indices, width, height, 0, WORLD_PIXELS - 1)).toThrow(/south edge/)
+  })
+})
+
+describe('alliance surfaces', () => {
+  it('keeps centred headquarters coordinates signed across the zero boundary', () => {
+    const { indices, width, height } = image([[1, 2]])
+    const result = sliceTemplateForSurface(indices, width, height, -1, -1, {
+      kind: 'alliance-headquarters',
+      allianceId: 535_245,
+    })
+
+    expect(result.bbox).toEqual({ minX: -1, minY: -1, maxX: 1, maxY: 0 })
+    expect(result.chunks.map(({ tileX, tileY }) => [tileX, tileY])).toEqual([
+      [-1, -1],
+      [0, -1],
+    ])
+    expect(result.chunks.map(({ indices: chunk }) => [...chunk])).toEqual([[1], [2]])
+  })
+
+  it.each([
+    ['picture', 'alliance-picture' as const, 64, 64],
+    ['banner', 'alliance-banner' as const, 384, 128],
+  ])('accepts an image ending exactly on the %s edge', (_label, kind, width, height) => {
+    const indices = new Uint8Array(width * height).fill(1)
+    expect(
+      sliceTemplateForSurface(indices, width, height, 0, 0, { kind, allianceId: 1 }).bbox,
+    ).toEqual({ minX: 0, minY: 0, maxX: width, maxY: height })
+  })
+
+  it('rejects an asset outside its fixed canvas', () => {
+    expect(() =>
+      sliceTemplateForSurface(new Uint8Array([1, 2]), 2, 1, 63, 0, {
+        kind: 'alliance-picture',
+        allianceId: 1,
+      }),
+    ).toThrow(/outside the alliance-picture canvas/)
   })
 })

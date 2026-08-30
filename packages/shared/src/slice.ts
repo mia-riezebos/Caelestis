@@ -1,4 +1,5 @@
 import { TRANSPARENT_INDEX } from './palette.js'
+import { type TemplateSurface, templateSurfaceBounds } from './template-surface.js'
 import { TILE_SIZE, WORLD_PIXELS } from './tiles.js'
 
 /**
@@ -148,4 +149,57 @@ export const sliceTemplate = (
   }
 
   return { bbox, totalPixels, chunks }
+}
+
+/**
+ * Slice an upload for its drawing surface. World placement retains its historical wrap-aware
+ * validation; alliance surfaces use their small, linear coordinate spaces, including signed HQ
+ * coordinates around the canvas centre.
+ */
+export const sliceTemplateForSurface = (
+  indices: Uint8Array,
+  width: number,
+  height: number,
+  originX: number,
+  originY: number,
+  surface: TemplateSurface,
+): SliceResult => {
+  if (surface.kind === 'world') return sliceTemplate(indices, width, height, originX, originY)
+  if (indices.length !== width * height) {
+    throw new SliceError(`expected ${width * height} indices, received ${indices.length}`)
+  }
+  if (!Number.isSafeInteger(originX) || !Number.isSafeInteger(originY)) {
+    throw new SliceError('origin must be whole canvas pixels')
+  }
+  const bounds = templateSurfaceBounds(surface)
+  if (
+    bounds === null ||
+    originX < bounds.minX ||
+    originY < bounds.minY ||
+    originX + width > bounds.maxX ||
+    originY + height > bounds.maxY
+  ) {
+    throw new SliceError(`template image is outside the ${surface.kind} canvas`)
+  }
+
+  // The slicing algorithm itself is coordinate-system agnostic. Translate into the world helper's
+  // positive space, then translate its bbox and chunk indices back. Bounds are at most 2,000px, so
+  // the offset remains far inside the world canvas and cannot trigger its edge checks.
+  const offsetX = -bounds.minX
+  const offsetY = -bounds.minY
+  const sliced = sliceTemplate(indices, width, height, originX + offsetX, originY + offsetY)
+  return {
+    ...sliced,
+    bbox: {
+      minX: sliced.bbox.minX - offsetX,
+      minY: sliced.bbox.minY - offsetY,
+      maxX: sliced.bbox.maxX - offsetX,
+      maxY: sliced.bbox.maxY - offsetY,
+    },
+    chunks: sliced.chunks.map((chunk) => ({
+      ...chunk,
+      tileX: Math.floor((chunk.tileX * TILE_SIZE - offsetX) / TILE_SIZE),
+      tileY: Math.floor((chunk.tileY * TILE_SIZE - offsetY) / TILE_SIZE),
+    })),
+  }
 }
