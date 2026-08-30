@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   tileInterest: null as ((tile: { x: number; y: number }) => boolean) | null,
   acceptedPaint: null as ((paint: unknown) => void) | null,
   stateListeners: [] as Array<() => void>,
+  retiredServers: new WeakSet<object>(),
   state: {
     shareTiles: true,
     reportPaints: true,
@@ -38,7 +39,7 @@ vi.mock('./state.js', () => ({
   activeServerToken: (server: ConnectedServer) =>
     server.tokenUsable === false ? null : server.token,
   getState: () => harness.state,
-  isCurrentServerConnection: () => true,
+  isCurrentServerConnection: (server: object) => !harness.retiredServers.has(server),
   serverConnectionIdentity: (server: object) => server,
   serverConnectionSignal: () => new AbortController().signal,
   onServerContents: (listener: (server: unknown, contents: unknown) => void) => {
@@ -142,6 +143,7 @@ beforeEach(() => {
   harness.tileInterest = null
   harness.acceptedPaint = null
   harness.stateListeners = []
+  harness.retiredServers = new WeakSet<object>()
   coordinator.resources.clear()
   coordinator.snapshots = []
   harness.state = { shareTiles: true, reportPaints: true, servers: [server], hiddenScopes: [] }
@@ -533,6 +535,48 @@ describe('server telemetry client', () => {
     const bytes = new Uint8Array([1, 2, 3])
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
     await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(0)
+
+    finishAccountLoad?.()
+    await vi.waitFor(() => expect(offers).toBe(1))
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+  })
+
+  it('does not let a retired account-load completion clear its replacement fence', async () => {
+    let offers = 0
+    let finishAccountLoad: (() => void) | undefined
+    const accountLoad = new Promise<void>((resolve) => {
+      finishAccountLoad = resolve
+    })
+    account.loadAccount.mockImplementation(() => accountLoad)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+
+    const replacement = { ...server }
+    harness.retiredServers.add(server)
+    harness.state = { ...harness.state, servers: [replacement] }
+    harness.serverContents?.(replacement, { nodes: [], templates: [template] })
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2))
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
     await new Promise((resolve) => setTimeout(resolve, 350))
     expect(offers).toBe(0)

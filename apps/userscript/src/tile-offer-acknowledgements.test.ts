@@ -48,6 +48,20 @@ describe('tile offer acknowledgements', () => {
     expect(receipts.decision('https://one.example', owner, 1, '1/2\u0000hash')).toBe('retry')
   })
 
+  it('does not let a retired owner settle the replacement connection receipt', () => {
+    const receipts = book()
+    const retired = {}
+    const replacement = {}
+    receipts.started('https://one.example', retired, 1, '1/2\u0000hash')
+    receipts.started('https://one.example', replacement, 1, '1/2\u0000hash')
+
+    receipts.retryable('https://one.example', retired, 1, '1/2\u0000hash')
+    receipts.acknowledged('https://one.example', retired, 1, '1/2\u0000hash')
+    expect(receipts.decision('https://one.example', replacement, 1, '1/2\u0000hash')).toBe(
+      'pending',
+    )
+  })
+
   it('starts uncertain after a client restart', () => {
     const owner = {}
     const beforeRestart = book()
