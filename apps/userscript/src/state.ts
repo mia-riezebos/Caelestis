@@ -102,6 +102,7 @@ export const sameServerConnection = (left: ConnectedServer, right: ConnectedServ
  * row remains configured inherit the token in {@link upsertServer}.
  */
 const serverConnectionLifetimes = new WeakMap<ConnectedServer, object>()
+const serverConnectionControllers = new WeakMap<object, AbortController>()
 
 const serverConnectionLifetime = (server: ConnectedServer): object => {
   const existing = serverConnectionLifetimes.get(server)
@@ -114,6 +115,22 @@ const serverConnectionLifetime = (server: ConnectedServer): object => {
 /** Opaque owner for sharing reads without exposing credentials in a cache key. */
 export const serverConnectionIdentity = (server: ConnectedServer): object =>
   serverConnectionLifetime(server)
+
+export const serverConnectionSignal = (server: ConnectedServer): AbortSignal => {
+  const lifetime = serverConnectionLifetime(server)
+  let controller = serverConnectionControllers.get(lifetime)
+  if (controller === undefined) {
+    controller = new AbortController()
+    serverConnectionControllers.set(lifetime, controller)
+  }
+  return controller.signal
+}
+
+const retireServerConnection = (server: ConnectedServer): void => {
+  const lifetime = serverConnectionLifetimes.get(server)
+  if (lifetime === undefined) return
+  serverConnectionControllers.get(lifetime)?.abort(new Error('server connection retired'))
+}
 
 /** The saved token remains sealed in state; only a currently accepted token leaves in a request. */
 export const activeServerToken = (server: ConnectedServer): string | null =>
@@ -653,10 +670,9 @@ export const upsertServer = (server: ConnectedServer): boolean => {
     current?.lastVerified != null &&
     (candidate.info === null || candidate.info.id === current.lastVerified.serverId)
   const next = canRetainIdentity ? { ...candidate, lastVerified: current.lastVerified } : candidate
-  const lifetime =
-    current !== undefined && sameServerConnection(current, candidate)
-      ? serverConnectionLifetime(current)
-      : {}
+  const retainsLifetime = current !== undefined && sameServerConnection(current, candidate)
+  if (current !== undefined && !retainsLifetime) retireServerConnection(current)
+  const lifetime = retainsLifetime ? serverConnectionLifetime(current) : {}
   serverConnectionLifetimes.set(server, lifetime)
   serverConnectionLifetimes.set(candidate, lifetime)
   serverConnectionLifetimes.set(next, lifetime)
@@ -672,6 +688,8 @@ export const removeServer = (url: string): void => {
   // Request ids are process-wide and monotonic, so an old response can never tie a request made
   // after this URL reconnects. Only the answer belonging to the ended connection is forgotten.
   latestManifestResponse.delete(url)
+  const current = getState().servers.find((server) => server.url === url)
+  if (current !== undefined) retireServerConnection(current)
   setState({
     servers: getState().servers.filter((s) => s.url !== url),
     customOrder: getState().customOrder.filter((candidate) => candidate !== key),
@@ -1476,6 +1494,7 @@ export const listServerContents = async (
                     ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
                     authorization: `Bearer ${activeServerToken(server)}`,
                   },
+            signal: serverConnectionSignal(server),
           },
           () => isCurrentServerConnection(server),
         )

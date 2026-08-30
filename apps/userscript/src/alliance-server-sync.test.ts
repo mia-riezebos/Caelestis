@@ -58,6 +58,7 @@ vi.mock('./state.js', () => ({
   isCurrentServerConnection: (server: MockServer) =>
     state.current.servers.find((candidate) => candidate.url === server.url) === server,
   serverConnectionIdentity: (server: object) => server,
+  serverConnectionSignal: () => new AbortController().signal,
   onStateChange: (listener: (next: { servers: readonly MockServer[] }) => void) => {
     state.listener = listener
   },

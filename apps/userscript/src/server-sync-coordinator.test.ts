@@ -180,4 +180,28 @@ describe('server sync coordinator', () => {
     releases.shift()?.()
     await vi.waitFor(() => expect(active).toBe(0))
   })
+
+  it('keeps targeted resources on their server and reconciliation reason', async () => {
+    const second = { ...server, url: 'https://second.example.test' }
+    state.current = { servers: [server, second] }
+    const { installServerSyncCoordinator, registerServerSyncResource, requestServerSync } =
+      await import('./server-sync-coordinator.js')
+    const status = vi.fn(async () => ({ status: 'unchanged' as const }))
+    const alarms = vi.fn(async () => ({ status: 'unchanged' as const }))
+    registerServerSyncResource({ id: 'status', scope: () => 'world', refresh: status })
+    registerServerSyncResource({ id: 'alarms', scope: () => 'world', refresh: alarms })
+    installServerSyncCoordinator()
+    await vi.advanceTimersByTimeAsync(0)
+    status.mockClear()
+    alarms.mockClear()
+
+    requestServerSync('post-offer', 'status', server)
+    requestServerSync('manifest-applied', 'alarms', server)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(status).toHaveBeenCalledOnce()
+    expect(status).toHaveBeenCalledWith(server, 'post-offer')
+    expect(alarms).toHaveBeenCalledOnce()
+    expect(alarms).toHaveBeenCalledWith(server, 'manifest-applied')
+  })
 })

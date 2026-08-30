@@ -23,6 +23,7 @@ import {
   isCurrentServerConnection,
   onStateChange,
   serverConnectionIdentity,
+  serverConnectionSignal,
   type State,
   sameServerConnection,
 } from './state.js'
@@ -146,7 +147,11 @@ const readServer = async (
             ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
             ...(token === null ? {} : { authorization: `Bearer ${token}` }),
           },
-          signal: AbortSignal.any([signal, AbortSignal.timeout(MANIFEST_TIMEOUT_MS)]),
+          signal: AbortSignal.any([
+            signal,
+            serverConnectionSignal(server),
+            AbortSignal.timeout(MANIFEST_TIMEOUT_MS),
+          ]),
         }),
     )
     if (!response.ok || !requestCurrent()) {
