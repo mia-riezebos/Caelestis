@@ -54,7 +54,7 @@
     emit({ type: 'resize-preview', width })
   }
 
-  const title = $derived(model.view === 'tree' ? 'Caelestis' : model.view === 'settings' ? 'Settings' : 'Appearance')
+  const title = $derived(model.view === 'tree' ? (model.title ?? 'Caelestis') : model.view === 'settings' ? 'Settings' : 'Appearance')
 </script>
 
 <svelte:window onpointermove={pointermove} onpointerup={commit} onpointercancel={commit} />
@@ -88,9 +88,11 @@
     <Button label="Appearance" title="Appearance" kind="ghost" size="compact" iconOnly pressed={model.view === 'appearance'} onclick={() => navigate('appearance')}>
       <Icon name="palette" />
     </Button>
-    <Button label="Settings" title="Settings" kind="ghost" size="compact" iconOnly pressed={model.view === 'settings'} onclick={() => navigate('settings')}>
-      <Icon name="settings" />
-    </Button>
+    {#if model.showSettings !== false}
+      <Button label="Settings" title="Settings" kind="ghost" size="compact" iconOnly pressed={model.view === 'settings'} onclick={() => navigate('settings')}>
+        <Icon name="settings" />
+      </Button>
+    {/if}
     <Button label="Close" title="Close" kind="ghost" size="compact" iconOnly onclick={() => emit({ type: 'close' })}>
       <Icon name="close" />
     </Button>

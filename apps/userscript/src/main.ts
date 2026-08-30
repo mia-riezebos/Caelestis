@@ -12,7 +12,7 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
-import { installAllianceOverlayLayer } from './gl/artboard-layer.js'
+import { installAllianceOverlayLayer, repaintAllianceOverlayLayer } from './gl/artboard-layer.js'
 import {
   installOverlayLayer,
   overlayGpuMemoryBytes,
@@ -116,6 +116,7 @@ const repaintMap = (): void => {
 export const redraw = (): void => {
   repaint()
   repaintMap()
+  repaintAllianceOverlayLayer()
 }
 
 /** Keep the GL layer attached across delayed map creation, style reloads, and SPA map replacement. */

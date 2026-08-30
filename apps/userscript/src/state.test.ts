@@ -213,6 +213,84 @@ describe('server state boundaries', () => {
     expect(getState().serverTemplatePreferences).toEqual([])
   })
 
+  it('keeps alliance appearance defaults isolated by canvas and away from the world', async () => {
+    const persist = vi.fn()
+    vi.stubGlobal('GM_setValue', persist)
+    const { getState, getSurfaceAppearance, setState, setSurfaceAppearance } = await import(
+      './state.js'
+    )
+    const headquarters = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    const picture = { kind: 'alliance-picture', allianceId: 535_245 } as const
+
+    setState({ appearance: { ...getState().appearance, opacity: 0.25 } })
+    expect(getSurfaceAppearance(headquarters).opacity).toBe(0.85)
+
+    expect(
+      setSurfaceAppearance(headquarters, {
+        ...getSurfaceAppearance(headquarters),
+        opacity: 0.5,
+      }),
+    ).toBe(true)
+
+    expect(getSurfaceAppearance(headquarters).opacity).toBe(0.5)
+    expect(getSurfaceAppearance(picture).opacity).toBe(0.85)
+    expect(getState().appearance.opacity).toBe(0.25)
+    expect(JSON.parse(String(persist.mock.calls.at(-1)?.[1])).allianceSurfaceAppearances).toEqual([
+      expect.objectContaining({
+        surface: headquarters,
+        appearance: expect.objectContaining({ opacity: 0.5 }),
+      }),
+    ])
+  })
+
+  it('restores only valid saved alliance appearance scopes', async () => {
+    const appearance = {
+      size: 0.6,
+      radius: 0,
+      translateX: 0,
+      translateY: 0,
+      rotation: 0,
+      opacity: 0.4,
+      contrastOutline: true,
+      contrastOutlineSize: 0.4,
+      hiddenColours: [],
+      markMismatch: false,
+      markUnpainted: false,
+      unpaintedLimit: 0.05,
+      markerColour: '#ff00ff',
+      markerSize: 9,
+      markSelectedColour: false,
+      selectedMarkerColour: '#00e5ff',
+      selectedMarkerSize: 9,
+      dimOthers: true,
+      otherOpacity: 0.15,
+      otherColour: null,
+    }
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() =>
+        JSON.stringify({
+          allianceSurfaceAppearances: [
+            {
+              surface: { kind: 'alliance-banner', allianceId: 535_245 },
+              appearance,
+            },
+            { surface: { kind: 'world' }, appearance },
+            { surface: { kind: 'alliance-picture', allianceId: -1 }, appearance },
+          ],
+        }),
+      ),
+    )
+    const { getSurfaceAppearance, loadState } = await import('./state.js')
+
+    loadState()
+
+    expect(getSurfaceAppearance({ kind: 'alliance-banner', allianceId: 535_245 }).opacity).toBe(0.4)
+    expect(getSurfaceAppearance({ kind: 'alliance-picture', allianceId: 535_245 }).opacity).toBe(
+      0.85,
+    )
+  })
+
   it('does not accept a visibility scope when durable storage refuses it', async () => {
     vi.stubGlobal(
       'GM_setValue',

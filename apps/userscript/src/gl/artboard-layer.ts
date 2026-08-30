@@ -367,13 +367,13 @@ const reconcileRenderer = (): void => {
   renderer?.requestRender()
 }
 
-const repaintRenderer = (): void => renderer?.requestRender()
+export const repaintAllianceOverlayLayer = (): void => renderer?.requestRender()
 
 /** Attach one independent WebGL canvas inside whichever Wplace alliance artboard is open. */
 export const installAllianceOverlayLayer = (): void => {
   onActiveAllianceSurfaceChange(reconcileRenderer)
-  onLocalChange(repaintRenderer)
-  onLocalPreviewChange(repaintRenderer)
-  onStateChange(repaintRenderer)
+  onLocalChange(repaintAllianceOverlayLayer)
+  onLocalPreviewChange(repaintAllianceOverlayLayer)
+  onStateChange(repaintAllianceOverlayLayer)
   reconcileRenderer()
 }

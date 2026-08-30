@@ -957,13 +957,15 @@ const buildTree = <Result>(
     )
   }
 
-  output.action(
-    'add-server',
-    0,
-    servers.length === 0 ? 'Add a server' : 'Add another server',
-    servers.length === 0 ? 'Add a server' : 'Add another server',
-    callbacks.onAddServer,
-  )
+  if (surface.kind === 'world') {
+    output.action(
+      'add-server',
+      0,
+      servers.length === 0 ? 'Add a server' : 'Add another server',
+      servers.length === 0 ? 'Add a server' : 'Add another server',
+      callbacks.onAddServer,
+    )
+  }
 
   return output.finish()
 }

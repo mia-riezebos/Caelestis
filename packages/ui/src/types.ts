@@ -78,6 +78,8 @@ export type PanelView = 'tree' | 'settings' | 'appearance'
 
 export interface PanelModel {
   readonly view: PanelView
+  readonly title?: string
+  readonly showSettings?: boolean
   readonly width: number
   readonly minWidth: number
   readonly maxWidth: number
@@ -193,6 +195,7 @@ export type SettingsIntent =
 
 export type RailControlId =
   | 'panel'
+  | 'alliance-panel'
   | 'colour'
   | 'mismatch'
   | 'overlay-menu'

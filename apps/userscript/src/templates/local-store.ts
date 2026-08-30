@@ -14,8 +14,8 @@ import { leaseLocalFolder, localFolderChainVisible } from '../local-folders.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
 import {
   type ConnectedServer,
-  getGlobalAppearance,
   getState,
+  getSurfaceAppearance,
   isScopeVisible,
   type LocalFolder,
   serverTemplatePreference,
@@ -489,8 +489,7 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
  * turning every hidden colour back on at the moment of detaching.
  */
 export const appearanceOf = (template: PlacedTemplate): Appearance => {
-  const state = getState()
-  const global: Appearance = { ...getGlobalAppearance(), hiddenColours: state.hiddenColours }
+  const global = getSurfaceAppearance(template.surface ?? WORLD_TEMPLATE_SURFACE)
   const own = template.appearance
   if (own === null || template.owns.length === 0) return global
 

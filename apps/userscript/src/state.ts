@@ -1,4 +1,9 @@
-import { PALETTE_SIZE } from '@caelestis/shared'
+import {
+  PALETTE_SIZE,
+  type TemplateSurface,
+  templateSurface,
+  templateSurfaceKey,
+} from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
 import type { ServerTemplate } from './server-cache.js'
@@ -130,6 +135,12 @@ export interface ServerTemplatePreference {
   readonly owns: readonly AppearanceGroup[]
 }
 
+/** Browser-owned defaults for one alliance artboard, isolated from the world and other assets. */
+export interface AllianceSurfaceAppearance {
+  readonly surface: Exclude<TemplateSurface, { readonly kind: 'world' }>
+  readonly appearance: Appearance
+}
+
 export type ColourPreset = 'all' | 'free' | 'premium' | 'owned'
 export type ColourNavigationOrder = 'unpainted-first' | 'mismatched-first'
 
@@ -152,6 +163,7 @@ export interface State {
   readonly localFolders: readonly LocalFolder[]
   readonly hiddenScopes: readonly string[]
   readonly serverTemplatePreferences: readonly ServerTemplatePreference[]
+  readonly allianceSurfaceAppearances: readonly AllianceSurfaceAppearance[]
   readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
@@ -170,6 +182,7 @@ const DEFAULT_STATE: State = {
   localFolders: [],
   hiddenScopes: [],
   serverTemplatePreferences: [],
+  allianceSurfaceAppearances: [],
   appearance: DEFAULT_APPEARANCE,
   reportPaints: true,
   shareTiles: true,
@@ -180,6 +193,7 @@ const MAX_CUSTOM_ORDER = 200_000
 export const MAX_CONNECTED_SERVERS = 32
 /** At most every admitted overlay for every configured server may retain a local preference. */
 export const MAX_SERVER_TEMPLATE_PREFERENCES = MAX_CONNECTED_SERVERS * 64
+export const MAX_ALLIANCE_SURFACE_APPEARANCES = MAX_CONNECTED_SERVERS * 3
 /** As many browser-local folders as a reload will restore. Written past, the rest is dropped. */
 export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
@@ -424,6 +438,22 @@ export const loadState = (): State => {
         if (serverTemplatePreferences.length >= MAX_SERVER_TEMPLATE_PREFERENCES) break
       }
     }
+    const allianceSurfaceAppearances: AllianceSurfaceAppearance[] = []
+    const appearanceSurfaces = new Set<string>()
+    if (Array.isArray(stored.allianceSurfaceAppearances)) {
+      for (const candidate of stored.allianceSurfaceAppearances) {
+        if (!isRecord(candidate) || !isRecord(candidate.surface)) continue
+        const surface = templateSurface(candidate.surface.kind, candidate.surface.allianceId)
+        if (surface === null || surface.kind === 'world') continue
+        const key = templateSurfaceKey(surface)
+        if (appearanceSurfaces.has(key)) continue
+        const appearance = normaliseAppearance(candidate.appearance)
+        if (appearance === null) continue
+        appearanceSurfaces.add(key)
+        allianceSurfaceAppearances.push({ surface, appearance })
+        if (allianceSurfaceAppearances.length >= MAX_ALLIANCE_SURFACE_APPEARANCES) break
+      }
+    }
     state = {
       ...DEFAULT_STATE,
       servers,
@@ -441,6 +471,7 @@ export const loadState = (): State => {
       localFolders,
       hiddenScopes,
       serverTemplatePreferences,
+      allianceSurfaceAppearances,
       appearance:
         normaliseAppearance(
           storedRaw.legacyPalette
@@ -465,6 +496,7 @@ export const getState = (): State => state
 
 /** The global appearance currently shown on the map, including an uncommitted slider gesture. */
 let globalAppearancePreview: Appearance | null = null
+const allianceAppearancePreviews = new Map<string, Appearance>()
 
 export const getGlobalAppearance = (): Appearance => globalAppearancePreview ?? state.appearance
 
@@ -473,8 +505,56 @@ export const previewGlobalAppearance = (appearance: Appearance | null): void => 
   globalAppearancePreview = appearance
 }
 
+/** The defaults inherited by templates on this exact canvas. */
+export const getSurfaceAppearance = (surface: TemplateSurface): Appearance => {
+  if (surface.kind === 'world') {
+    return { ...getGlobalAppearance(), hiddenColours: state.hiddenColours }
+  }
+  const key = templateSurfaceKey(surface)
+  return (
+    allianceAppearancePreviews.get(key) ??
+    state.allianceSurfaceAppearances.find(
+      (candidate) => templateSurfaceKey(candidate.surface) === key,
+    )?.appearance ??
+    DEFAULT_APPEARANCE
+  )
+}
+
+/** Preview one canvas's inherited appearance without leaking it into the world renderer. */
+export const previewSurfaceAppearance = (
+  surface: TemplateSurface,
+  appearance: Appearance | null,
+): void => {
+  if (surface.kind === 'world') {
+    previewGlobalAppearance(appearance)
+    return
+  }
+  const key = templateSurfaceKey(surface)
+  if (appearance === null) allianceAppearancePreviews.delete(key)
+  else allianceAppearancePreviews.set(key, appearance)
+}
+
+/** Persist one alliance canvas's inherited appearance independently of every other canvas. */
+export const setSurfaceAppearance = (
+  surface: Exclude<TemplateSurface, { readonly kind: 'world' }>,
+  appearance: Appearance,
+): boolean => {
+  const key = templateSurfaceKey(surface)
+  const preferences = state.allianceSurfaceAppearances
+  const index = preferences.findIndex((candidate) => templateSurfaceKey(candidate.surface) === key)
+  if (index === -1 && preferences.length >= MAX_ALLIANCE_SURFACE_APPEARANCES) return false
+  allianceAppearancePreviews.delete(key)
+  return commitState({
+    allianceSurfaceAppearances:
+      index === -1
+        ? [...preferences, { surface, appearance }]
+        : preferences.map((candidate, at) => (at === index ? { surface, appearance } : candidate)),
+  })
+}
+
 export const setState = (patch: Partial<State>): State => {
   if (patch.appearance !== undefined) globalAppearancePreview = null
+  if (patch.allianceSurfaceAppearances !== undefined) allianceAppearancePreviews.clear()
   state = { ...state, ...patch }
   writeRaw(JSON.stringify(state))
   notifyStateListeners()

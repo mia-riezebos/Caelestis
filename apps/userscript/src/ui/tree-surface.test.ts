@@ -78,5 +78,8 @@ describe('surface-scoped template tree', () => {
     expect(adapter.model.entries).not.toContainEqual(
       expect.objectContaining({ type: 'action', key: 'local-import' }),
     )
+    expect(adapter.model.entries).not.toContainEqual(
+      expect.objectContaining({ type: 'action', key: 'add-server' }),
+    )
   })
 })
