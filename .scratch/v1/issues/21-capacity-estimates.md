@@ -1,7 +1,7 @@
 # Capacity estimates & free-tier ceiling
 
 Type: task
-Status: in progress
+Status: resolved
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/22
 
@@ -59,7 +59,7 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
       250 ms tile-offer batching, and lack of physical tile-blob GC.
 - [x] A repeatable read-only command compares a production window with the corresponding model
       inputs and Cloudflare usage metrics.
-- [ ] The README gives one measured free-tier scenario, the first limit it reaches, and the first
+- [x] The README gives one measured free-tier scenario, the first limit it reaches, and the first
       knob to turn.
 
 ## TODOs
@@ -67,7 +67,7 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
 - [x] Reconcile the capacity contract with the current telemetry pipeline and Cloudflare limits.
 - [x] Implement and test the capacity model for Workers, Durable Objects, D1, and R2.
 - [x] Add a repeatable live measurement command and compare a production window with the model.
-- [ ] Document the measured ceiling and first knob in the README, then run repository validation.
+- [x] Document the measured ceiling and first knob in the README, then run repository validation.
 
 ## Notes
 
@@ -86,8 +86,9 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
 - The model uses Poisson occupancy for active time buckets and fixed-window request batching. It
   reports logical D1 mutations and a conservative table-plus-index ceiling, including the full
   lifetime cost of each decay-ladder row. Live analytics supplies the actual billed count.
-- Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 7
-  tests; backend, shared, and userscript type checks passed after building workspace outputs.
+- Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 8
+  tests and `pnpm test:capacity` passed 5 tests. Backend, shared, and userscript type checks passed
+  after building workspace outputs.
 - `pnpm capacity:observe` uses read-only D1 SQL, D1 Insights, and Cloudflare GraphQL analytics. Its
   2026-08-30 production window measured 20,779 Worker requests, 58 Durable Object invocations,
   7,319,387 D1 rows read, 14,719 D1 rows written, 136 R2 Class A operations, 15,474 R2 Class B
@@ -105,3 +106,5 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
   - https://developers.cloudflare.com/d1/platform/pricing/
   - https://developers.cloudflare.com/d1/observability/metrics-analytics/
   - https://developers.cloudflare.com/r2/pricing/
+- Final validation passed: `pnpm lint`, `pnpm check`, `pnpm test`, `pnpm build`, and
+  `git diff --check`.

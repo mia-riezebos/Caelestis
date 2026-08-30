@@ -119,6 +119,48 @@ Production deployments run from `.github/workflows/deploy.yml` after a push to `
 needs a `CLOUDFLARE_API_TOKEN` repository secret with access to the configured Workers, D1, and R2
 resources.
 
+### Cloudflare Free capacity
+
+Capacity depends more on how long clients stay open and how many rows the status query scans than
+on alliance membership alone. Against Cloudflare's current Free allowances of
+[100,000 Worker requests/day](https://developers.cloudflare.com/workers/platform/limits/),
+[100,000 Durable Object requests/day](https://developers.cloudflare.com/durable-objects/platform/pricing/),
+[5 million D1 rows read and 100,000 rows written/day](https://developers.cloudflare.com/d1/platform/pricing/),
+and [R2's monthly storage and operation allowances](https://developers.cloudflare.com/r2/pricing/),
+the 30-second status refresh makes D1 reads the first wall.
+
+| Workload | Daily estimate or measurement | Free-tier result |
+| --- | --- | --- |
+| Production, 2026-08-30: 3 reporting clients open 23.3 hours on average, 90 templates, 36 covered tiles | 20,779 Worker requests; 58 Durable Object requests; 7.32M D1 rows read; 14,719 D1 rows written | Over: D1 reads reached 146% |
+| Same 90-template shape: 8 users active 8 hours | 8,377 modeled Worker requests; 3.99M D1 rows read; at most 13,577 D1 rows written | Fits, with little read headroom |
+| Smaller 10-template/4-tile shape: 80 users active 8 hours | 77,651 modeled Worker requests; 4.44M D1 rows read; at most 19,271 D1 rows written | Fits before non-telemetry traffic |
+
+The projections use the production paint and tile-fetch rates, scale status-query reads with the
+template set, and exclude unrelated dashboard and manifest traffic. Treat roughly 8 users with 90
+templates or 80 users with 10 templates as upper bounds, not targets. A 100-user, eight-hour day at
+the current 90-template shape would make 96,000 status requests and scan about 49.9 million D1 rows
+before any other traffic.
+
+The first knob is the status path: lengthen its 30-second refresh interval, or cache or precompute
+its result. A five-minute interval cuts its request and row-read cost by 10, but the measured
+production workload would still leave only about 1.9 million D1 rows/day for growth. Paint batching
+does not reduce status-query reads. Per-template Durable Object sharding also does not extend
+account quotas; the measured single-object rate was only 0.00031 requests/second against the model's
+conservative 200 requests/second throughput budget.
+
+R2 is not the near-term wall at the measured 135 distinct tile versions/day. At 70–125 KB per
+version, tile blobs grow by about 9.5–16.9 MB/day. They currently accumulate even after SQL history
+compacts, so long-lived deployments still need to watch the 10 GB storage allowance.
+
+Run the same read-only 24-hour comparison against the configured production resources with:
+
+```sh
+CLOUDFLARE_API_TOKEN=... pnpm capacity:observe
+```
+
+The token is optional for the local model and D1 Insights portion; Cloudflare GraphQL comparisons
+are reported as unavailable when it is absent.
+
 ## Userscript releases
 
 Userscript releases use Changesets. A user-facing userscript change should include a changeset for
