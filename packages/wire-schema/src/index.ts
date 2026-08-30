@@ -1,6 +1,5 @@
 import type * as Shared from '@caelestis/shared'
 import {
-  MAX_PAINT_COUNT,
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   TILE_SIZE,
@@ -41,29 +40,6 @@ const MAX_MANIFEST_NODES = 100_000
  */
 const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_TEMPLATES = 100_000
-/**
- * Deliberately redundant, and it buys less than it looks like it does.
- *
- * The PaintEvent filters below already force every tile to carry a pixel and the event as a whole
- * to stay within MAX_PAINTED_PIXELS, so the tile count cannot exceed that on semantics alone.
- * Keeping the explicit cap documents the intended streaming-decoder limit; a multi-tile acceptance
- * test prevents it from accidentally collapsing the protocol to one tile per event.
- *
- * It is not a cost bound either, which an earlier version of this comment claimed: `isMaxLength` is
- * a refinement over the already-decoded array, so every element is validated before the length is
- * checked. Measured, an over-cap payload reports its error at index 100_000, and decode time stays
- * linear in what was *sent* — 800,000 tiles takes 1.6s whether the cap is 100,000 or four million.
- * Bounding the work would need a limit the decoder applies while reading, which Effect's array
- * combinator does not offer. What the cap does buy is an error naming the limit rather than a
- * per-item complaint, and a stated intent for whoever adds streaming decode later.
- */
-const MAX_PAINT_TILES = MAX_PAINT_COUNT
-// Both derive from the shared guardrail that `MAX_COUNTER_DELTA_VALUE` also derives from, so a
-// payload cannot pass this boundary and then be rejected by the CounterStore behind it. They were
-// restated here with a comment claiming a test pinned them to the backend's copy; no such test
-// existed and none could, since the two packages do not depend on each other.
-const MAX_PAINT_PIXELS_PER_TILE = MAX_PAINT_COUNT
-const MAX_PAINTED_PIXELS = MAX_PAINT_COUNT
 // 09-recon-palette has not recovered Wplace's complete index order yet. Keep this permissive until
 // that ticket establishes the real upper bound instead of deriving it from the incomplete palette.
 const MAX_PALETTE_INDEX = 65_535
@@ -473,9 +449,9 @@ const TileLocalCoordinate = integerBetween(0, TILE_SIZE - 1)
 const PaletteIndex = integerBetween(0, MAX_PALETTE_INDEX)
 
 const PaintPixelsStruct = Schema.Struct({
-  x: boundedArray(TileLocalCoordinate, MAX_PAINT_PIXELS_PER_TILE),
-  y: boundedArray(TileLocalCoordinate, MAX_PAINT_PIXELS_PER_TILE),
-  colors: boundedArray(PaletteIndex, MAX_PAINT_PIXELS_PER_TILE),
+  x: Schema.Array(TileLocalCoordinate),
+  y: Schema.Array(TileLocalCoordinate),
+  colors: Schema.Array(PaletteIndex),
 })
 
 export const PaintPixels = PaintPixelsStruct.pipe(
@@ -488,8 +464,8 @@ export const PaintPixels = PaintPixelsStruct.pipe(
     /**
      * A coordinate may appear once. `submitted` is derived by counting these entries, and equal
      * `painted`/`submitted` means "classify and credit them all" — so without this a reporter
-     * claims one on-template pixel MAX_PAINT_PIXELS_PER_TILE times and is credited for every
-     * repeat. The same anti-double-count rule is already enforced on the server-authored side, for
+     * claims one on-template pixel many times and is credited for every repeat. The same
+     * anti-double-count rule is already enforced on the server-authored side, for
      * chunks within a template and for overlapping templates within a group; this is the
      * client-authored side of it.
      *
@@ -499,8 +475,8 @@ export const PaintPixels = PaintPixelsStruct.pipe(
     booleanFilter((pixels: Schema.Schema.Type<typeof PaintPixelsStruct>) => {
       const seen = new Set<number>()
       for (let index = 0; index < pixels.x.length; index += 1) {
-        // Pack into one number rather than a string key: the arrays run to 100_000 entries and
-        // both coordinates are bounded by TILE_SIZE, so this stays exact and allocation-free.
+        // Pack into one number rather than a string key. Both coordinates are bounded by TILE_SIZE,
+        // so this stays exact and allocation-free.
         seen.add((pixels.x[index] ?? 0) * TILE_SIZE + (pixels.y[index] ?? 0))
       }
       return seen.size === pixels.x.length
@@ -520,8 +496,8 @@ const PaintEventStruct = Schema.Struct({
   displayName: Name,
   season: Season,
   ts: Seconds,
-  tiles: boundedArray(PaintTile, MAX_PAINT_TILES),
-  painted: Schema.NullOr(integerBetween(0, MAX_PAINTED_PIXELS)),
+  tiles: Schema.Array(PaintTile),
+  painted: Schema.NullOr(NonNegativeInteger),
 })
 
 export const PaintEvent = PaintEventStruct.pipe(
@@ -539,14 +515,12 @@ export const PaintEvent = PaintEventStruct.pipe(
         event.tiles.length,
       'each tile may appear once per event',
     ),
-    // Without a total, the per-tile cap bounds nothing: MAX_PAINT_TILES tiles each holding
-    // MAX_PAINT_PIXELS_PER_TILE pixels is a ten-billion-pixel payload the schema would accept.
     booleanFilter((event: Schema.Schema.Type<typeof PaintEventStruct>) => {
       const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
       return (
-        submitted <= MAX_PAINTED_PIXELS && (event.painted === null || event.painted <= submitted)
+        Number.isSafeInteger(submitted) && (event.painted === null || event.painted <= submitted)
       )
-    }, `painted must not exceed the submitted pixels, of which there may be at most ${MAX_PAINTED_PIXELS}`),
+    }, 'painted must not exceed the submitted pixels'),
   ),
 )
 
