@@ -632,6 +632,87 @@ describe('TelemetryShard', () => {
     await expect(harness.shard.readDroppedLateCount()).resolves.toBe(0)
   })
 
+  it.each([
+    ['the same bucket', seconds(101)],
+    ['another pending bucket', seconds(121)],
+  ])('rejects an update that would overflow %s', async (_case, secondTimestamp) => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: Number.MAX_SAFE_INTEGER,
+        correct: Number.MAX_SAFE_INTEGER,
+        repairs: Number.MAX_SAFE_INTEGER,
+      },
+      {
+        templateId: 'template-a',
+        occurredAt: secondTimestamp,
+        placed: 2,
+        correct: 2,
+        repairs: 2,
+      },
+    ])
+
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: Number.MAX_SAFE_INTEGER,
+        correct: Number.MAX_SAFE_INTEGER,
+        repairs: Number.MAX_SAFE_INTEGER,
+        flushedAt: null,
+      },
+    ])
+    await expect(harness.shard.readDroppedLateCount()).resolves.toBe(1)
+
+    await harness.deliverAlarm()
+    expect(sumBuckets(harness.d1Buckets())).toEqual({
+      placed: Number.MAX_SAFE_INTEGER,
+      correct: Number.MAX_SAFE_INTEGER,
+      repairs: Number.MAX_SAFE_INTEGER,
+    })
+  })
+
+  it('rejects a late update that would overflow a retained bucket', async () => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: Number.MAX_SAFE_INTEGER,
+        correct: Number.MAX_SAFE_INTEGER,
+        repairs: Number.MAX_SAFE_INTEGER,
+      },
+    ])
+    await harness.deliverAlarm()
+
+    await harness.shard.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: 2,
+        correct: 2,
+        repairs: 2,
+      },
+    ])
+
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: 0,
+        correct: 0,
+        repairs: 0,
+        flushedAt: millis(150_000),
+      },
+    ])
+    await expect(harness.shard.readDroppedLateCount()).resolves.toBe(1)
+    expect(sumBuckets(harness.d1Buckets())).toEqual({
+      placed: Number.MAX_SAFE_INTEGER,
+      correct: Number.MAX_SAFE_INTEGER,
+      repairs: Number.MAX_SAFE_INTEGER,
+    })
+  })
+
   it('drops deltas past MAX_COUNTER_DELTAS_PER_RECORD rather than writing them', async () => {
     const harness = await makeHarness(millis(150_000))
     await harness.shard.record(

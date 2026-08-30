@@ -62,6 +62,8 @@ export interface CounterDelta {
   readonly repairs: number
 }
 
+export type CounterValues = Pick<CounterDelta, 'placed' | 'correct' | 'repairs'>
+
 /**
  * Counters accumulated **since the last flush** — not lifetime totals.
  *

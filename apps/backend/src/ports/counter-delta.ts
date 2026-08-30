@@ -1,6 +1,7 @@
 import { type Seconds, seconds } from '@caelestis/shared'
 import {
   type CounterDelta,
+  type CounterValues,
   EXPIRES_AFTER_SECONDS,
   GRACE_SECONDS,
   MAX_TEMPLATE_ID_LENGTH,
@@ -12,6 +13,19 @@ export const EVENT_TIME_SKEW_SECONDS = GRACE_SECONDS
 
 const isNonNegativeSafeInteger = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0
+
+/** Whether adding one valid delta preserves the counter store's exact-number contract. */
+export const canAccumulateCounters = (current: CounterValues, addition: CounterValues): boolean =>
+  addition.placed <= Number.MAX_SAFE_INTEGER - current.placed &&
+  addition.correct <= Number.MAX_SAFE_INTEGER - current.correct &&
+  addition.repairs <= Number.MAX_SAFE_INTEGER - current.repairs
+
+/** Add counters after `canAccumulateCounters` has accepted them. */
+export const addCounters = (left: CounterValues, right: CounterValues): CounterValues => ({
+  placed: left.placed + right.placed,
+  correct: left.correct + right.correct,
+  repairs: left.repairs + right.repairs,
+})
 
 /**
  * Runtime validation for the CounterStore wire contract.

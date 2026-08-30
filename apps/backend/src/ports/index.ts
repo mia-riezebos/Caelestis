@@ -1,8 +1,14 @@
 export type { BlobListPage, BlobNamespace, BlobStore } from './blob-store.js'
-export { EVENT_TIME_SKEW_SECONDS, isValidCounterDelta } from './counter-delta.js'
+export {
+  addCounters,
+  canAccumulateCounters,
+  EVENT_TIME_SKEW_SECONDS,
+  isValidCounterDelta,
+} from './counter-delta.js'
 export {
   type CounterDelta,
   type CounterStore,
+  type CounterValues,
   EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
   FLUSHABLE_AFTER_SECONDS,

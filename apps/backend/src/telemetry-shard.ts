@@ -2,7 +2,10 @@ import { DurableObject } from 'cloudflare:workers'
 import { type Millis, millis, type Seconds, seconds } from '@caelestis/shared'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import {
+  addCounters,
   type CounterDelta,
+  type CounterValues,
+  canAccumulateCounters,
   EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
   FLUSHABLE_AFTER_SECONDS,
@@ -29,13 +32,16 @@ const flushRetryDelay = (failureCount: number): number =>
  * Row shapes for `storage.sql.exec<T>`, which constrains `T` to `Record<string, SqlStorageValue>` —
  * hence the index signature on each.
  */
-interface CounterRow {
+interface CounterValuesRow {
   readonly [column: string]: SqlStorageValue
-  readonly template_id: string
-  readonly bucket_start_s: Seconds
   readonly placed: number
   readonly correct: number
   readonly repairs: number
+}
+
+interface CounterRow extends CounterValuesRow {
+  readonly template_id: string
+  readonly bucket_start_s: Seconds
 }
 
 interface FlushedAtRow {
@@ -90,6 +96,8 @@ export class TelemetryShard extends DurableObject<Env> {
 
     const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)
     let droppedLate = deltas.length - boundedDeltas.length
+    const outstandingByTemplate = new Map<string, CounterValues>()
+    const cumulativeByBucket = new Map<string, CounterValues>()
 
     for (const delta of boundedDeltas) {
       // Keep one operational counter for all rejected input: both malformed and out-of-window
@@ -101,6 +109,16 @@ export class TelemetryShard extends DurableObject<Env> {
       if (!hasActivity(delta)) continue
 
       const bucketStart = eventBucketStart(delta.occurredAt)
+      const key = `${delta.templateId}\u0000${bucketStart}`
+      const outstanding =
+        outstandingByTemplate.get(delta.templateId) ??
+        this.readOutstandingCounters(delta.templateId)
+      const cumulative =
+        cumulativeByBucket.get(key) ?? this.readCumulativeBucket(delta.templateId, bucketStart)
+      if (!canAccumulateCounters(outstanding, delta) || !canAccumulateCounters(cumulative, delta)) {
+        droppedLate += 1
+        continue
+      }
       this.ctx.storage.sql.exec(
         `
           INSERT INTO pending_counters (
@@ -117,6 +135,8 @@ export class TelemetryShard extends DurableObject<Env> {
         delta.correct,
         delta.repairs,
       )
+      outstandingByTemplate.set(delta.templateId, addCounters(outstanding, delta))
+      cumulativeByBucket.set(key, addCounters(cumulative, delta))
     }
 
     this.pruneZeroPending()
@@ -427,6 +447,79 @@ export class TelemetryShard extends DurableObject<Env> {
         FLUSH_BATCH_LIMIT,
       )
       .toArray()
+  }
+
+  /** Current unflushed amount exposed by `readPending` for one template. */
+  private readOutstandingCounters(templateId: string): CounterValues {
+    return this.ctx.storage.sql
+      .exec<CounterValuesRow>(
+        `
+          SELECT
+            COALESCE(SUM(placed), 0) AS placed,
+            COALESCE(SUM(correct), 0) AS correct,
+            COALESCE(SUM(repairs), 0) AS repairs
+          FROM (
+            SELECT placed, correct, repairs
+            FROM pending_counters
+            WHERE template_id = ?1
+            UNION ALL
+            SELECT
+              batch.placed - COALESCE(retained.placed, 0),
+              batch.correct - COALESCE(retained.correct, 0),
+              batch.repairs - COALESCE(retained.repairs, 0)
+            FROM flush_batch AS batch
+            LEFT JOIN retained_counters AS retained
+              ON retained.template_id = batch.template_id
+             AND retained.bucket_start_s = batch.bucket_start_s
+            WHERE batch.template_id = ?1
+          )
+        `,
+        templateId,
+      )
+      .one()
+  }
+
+  /** Full cumulative bucket value after pending work eventually joins retained or flushing work. */
+  private readCumulativeBucket(templateId: string, bucketStart: Seconds): CounterValues {
+    return this.ctx.storage.sql
+      .exec<CounterValuesRow>(
+        `
+          SELECT
+            COALESCE((
+              SELECT placed FROM pending_counters
+              WHERE template_id = ?1 AND bucket_start_s = ?2
+            ), 0) + COALESCE(
+              (SELECT placed FROM flush_batch
+               WHERE template_id = ?1 AND bucket_start_s = ?2),
+              (SELECT placed FROM retained_counters
+               WHERE template_id = ?1 AND bucket_start_s = ?2),
+              0
+            ) AS placed,
+            COALESCE((
+              SELECT correct FROM pending_counters
+              WHERE template_id = ?1 AND bucket_start_s = ?2
+            ), 0) + COALESCE(
+              (SELECT correct FROM flush_batch
+               WHERE template_id = ?1 AND bucket_start_s = ?2),
+              (SELECT correct FROM retained_counters
+               WHERE template_id = ?1 AND bucket_start_s = ?2),
+              0
+            ) AS correct,
+            COALESCE((
+              SELECT repairs FROM pending_counters
+              WHERE template_id = ?1 AND bucket_start_s = ?2
+            ), 0) + COALESCE(
+              (SELECT repairs FROM flush_batch
+               WHERE template_id = ?1 AND bucket_start_s = ?2),
+              (SELECT repairs FROM retained_counters
+               WHERE template_id = ?1 AND bucket_start_s = ?2),
+              0
+            ) AS repairs
+        `,
+        templateId,
+        bindSeconds(bucketStart),
+      )
+      .one()
   }
 
   private pruneRetained(nowSeconds: Seconds): void {
