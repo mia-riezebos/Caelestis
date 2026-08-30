@@ -307,11 +307,7 @@ describe('server state boundaries', () => {
     )
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
-    const adminProbeUrl = new URL(String(fetchMock.mock.calls[2]?.[0]))
-    expect(adminProbeUrl.origin + adminProbeUrl.pathname).toBe(
-      'https://example.com/backend/admin/nodes',
-    )
-    expect(adminProbeUrl.searchParams.get('season')).toBe('0')
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/backend/admin/nodes?season=0')
   })
 
   it('accepts chunks on both runs of an antimeridian-wrapped template', async () => {
@@ -1124,9 +1120,9 @@ describe('server state boundaries', () => {
       }),
     )
     expect(refreshed).toHaveBeenCalledOnce()
-    const reconnectHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
-    expect(reconnectHeaders.get('authorization')).toBe('Bearer keep-me')
-    expect(reconnectHeaders.get('x-caelestis-client')).toBe('userscript')
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
+      authorization: 'Bearer keep-me',
+    })
   })
 
   it('uses open access without deleting a rejected persisted token', async () => {
@@ -1150,13 +1146,10 @@ describe('server state boundaries', () => {
       }),
     )
     expect(activeServerToken(connected)).toBeNull()
-    const rejectedHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
-    expect(rejectedHeaders.get('authorization')).toBe('Bearer stale-code')
-    expect(rejectedHeaders.get('x-caelestis-sync-mode')).toBe('recovery')
-    const openHeaders = new Headers(fetchMock.mock.calls[2]?.[1]?.headers)
-    expect(openHeaders.get('authorization')).toBeNull()
-    const openUrl = new URL(String(fetchMock.mock.calls[2]?.[0]))
-    expect(openUrl.searchParams.get('__caelestis_client')).toBe('userscript')
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
+      authorization: 'Bearer stale-code',
+    })
+    expect(fetchMock.mock.calls[2]?.[1]?.headers).toEqual({})
   })
 
   it('publishes each stored-server refresh as soon as that server settles', async () => {
@@ -1195,7 +1188,7 @@ describe('server state boundaries', () => {
     let serverRequests = 0
     const fetchMock = vi.fn<typeof fetch>((input) => {
       const url = String(input)
-      if (!new URL(url).pathname.endsWith('/server')) {
+      if (!url.endsWith('/server')) {
         const response = url.includes('/manifest')
           ? new Response(JSON.stringify(manifest), { status: 200 })
           : new Response(JSON.stringify({ nodes: [] }), { status: 200 })

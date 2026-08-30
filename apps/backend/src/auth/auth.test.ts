@@ -4,20 +4,19 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { AccessToken } from '../ports/index.js'
-import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
+import type { AccessToken, Ports } from '../ports/index.js'
 import { hashToken, mintToken, SCOPES, type Scope, satisfiesScope, TOKEN_LENGTH } from './tokens.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 
 const harness = () => {
   const sql = new MemorySqlStore()
-  const blobs = new MemoryBlobStore()
-  const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-  const runtime = createBackendRuntime(
-    makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
-  )
-  return { sql, app: createApp(runtime) }
+  const ports: Ports = {
+    blobs: new MemoryBlobStore(),
+    sql,
+    counters: new MemoryCounterStore(sql, () => millis(Date.now())),
+  }
+  return { sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
 const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
@@ -451,16 +450,17 @@ describe('the bootstrap credential', () => {
     // `length > 0` arm: `bearerToken` rejects an empty token first, so that arm is unreachable —
     // see the note on it.
     const sql = new MemorySqlStore()
-    const blobs = new MemoryBlobStore()
-    const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
+    const ports: Ports = {
+      blobs: new MemoryBlobStore(),
+      sql,
+      counters: new MemoryCounterStore(sql, () => millis(Date.now())),
+    }
     // A nonempty credential, because `bearer('')` is rejected by the parser before the bootstrap
     // comparison runs at all — so an empty presentation cannot tell whether an unset secret is
     // matching everything. This is the regression that mattered: with no ADMIN_TOKEN configured,
     // any bearer value must be refused, not treated as the operator.
     for (const bootstrapAdminToken of [undefined, '']) {
-      const app = createApp(
-        createBackendRuntime(makeBackendContext(blobs, sql, counters, { bootstrapAdminToken })),
-      )
+      const app = createApp(ports, { bootstrapAdminToken })
       const response = await app.request('/admin/tokens', bearer('ABCDEFGHJKMNPQRSTVWXYZ2345'))
       expect(response.status).toBe(401)
     }
@@ -571,16 +571,15 @@ describe('the bootstrap credential in the list', () => {
 
   it('is absent when the server has no bootstrap path', async () => {
     const sql = new MemorySqlStore()
-    const blobs = new MemoryBlobStore()
-    const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-    const app = createApp(
-      createBackendRuntime(
-        makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
-      ),
-    )
+    const ports: Ports = {
+      blobs: new MemoryBlobStore(),
+      sql,
+      counters: new MemoryCounterStore(sql, () => millis(Date.now())),
+    }
+    const app = createApp(ports, { bootstrapAdminToken: BOOTSTRAP })
     const minted = await mint(app, 'real', 'admin')
     // A server whose only admin is a stored token must not claim an environment one it does not have.
-    const other = createApp(createBackendRuntime(makeBackendContext(blobs, sql, counters)))
+    const other = createApp(ports, {})
     const response = await other.request('/admin/tokens', bearer(minted.body.token as string))
     const body = (await response.json()) as { tokens: { label: string }[] }
     expect(body.tokens.map((one) => one.label)).toEqual(['real'])

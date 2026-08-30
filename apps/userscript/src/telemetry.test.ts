@@ -89,39 +89,6 @@ afterEach(() => {
 })
 
 describe('server telemetry client', () => {
-  it('keeps anonymous status polling CORS-simple while attributing it in the query', async () => {
-    const openServer: ConnectedServer = {
-      ...server,
-      info: { id: 'server', name: 'Templates', auth: 'none' },
-      token: null,
-      tokenUsable: false,
-    }
-    harness.state = { ...harness.state, servers: [openServer] }
-    const requests: Array<{ input: string; init: RequestInit | undefined }> = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        requests.push({ input: String(input), init })
-        return Response.json({ templates: [] })
-      }),
-    )
-
-    const { installTelemetry } = await import('./telemetry.js')
-    installTelemetry()
-
-    await vi.waitFor(() =>
-      expect(requests.some(({ input }) => input.includes('/telemetry/status'))).toBe(true),
-    )
-    const status = requests.find(({ input }) => input.includes('/telemetry/status'))
-    const url = new URL(status?.input ?? 'https://invalid.example')
-    expect(url.searchParams.get('__caelestis_client')).toBe('userscript')
-    expect(url.searchParams.get('__caelestis_sync_mode')).toBe('recovery')
-    expect(url.searchParams.get('__caelestis_sync_reason')).toBe('connect')
-    const headers = new Headers(status?.init?.headers)
-    expect(headers.get('authorization')).toBeNull()
-    expect([...headers.keys()].some((name) => name.startsWith('x-caelestis-'))).toBe(false)
-  })
-
   it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
     vi.stubGlobal(
       'fetch',

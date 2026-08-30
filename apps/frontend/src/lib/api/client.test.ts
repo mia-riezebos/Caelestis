@@ -3,9 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getAlarms,
   getHistory,
-  getManifest,
   getServer,
-  getStatus,
   patchTemplateLifecycle,
   probeAdminScope,
 } from './client.js'
@@ -103,26 +101,5 @@ describe('API request recovery', () => {
 
     await expect(getAlarms(7)).resolves.toEqual({ alarms: [] })
     expect(fetch.mock.calls[0]?.[0]).toContain('/telemetry/alarms?season=7')
-  })
-
-  it('attributes frontend recovery and response-applied reads', async () => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(new Response('{}'))
-      .mockResolvedValueOnce(new Response('{"templates":[]}'))
-    vi.stubGlobal('fetch', fetch)
-
-    await getManifest()
-    await getStatus(0)
-
-    const manifestHeaders = new Headers(fetch.mock.calls[0]?.[1]?.headers)
-    expect(manifestHeaders.get('x-caelestis-client')).toBe('frontend')
-    expect(manifestHeaders.get('x-caelestis-client-version')).toBe(__CAELESTIS_FRONTEND_VERSION__)
-    expect(manifestHeaders.get('x-caelestis-sync-mode')).toBe('recovery')
-    expect(manifestHeaders.get('x-caelestis-sync-reason')).toBe('page-load')
-
-    const statusHeaders = new Headers(fetch.mock.calls[1]?.[1]?.headers)
-    expect(statusHeaders.get('x-caelestis-sync-mode')).toBe('response-applied')
-    expect(statusHeaders.get('x-caelestis-sync-reason')).toBe('manifest-applied')
   })
 })

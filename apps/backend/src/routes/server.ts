@@ -1,11 +1,7 @@
 import type { ServerInfo } from '@caelestis/shared'
-import { Effect } from 'effect'
 import { Hono } from 'hono'
-import { requireRuntimeScope } from '../auth/middleware.js'
-import type { SqlStore } from '../ports/index.js'
-import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
-import { BackendStorageError, SqlStoreReadError } from '../runtime/errors.js'
-import { runBackendHttp } from '../runtime/hono.js'
+import { type AuthOptions, requireScope } from '../auth/middleware.js'
+import type { Ports } from '../ports/index.js'
 
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4096
@@ -18,40 +14,19 @@ const MAX_DESCRIPTION_LENGTH = 4096
  * deployment begins with; anything set here wins for as long as it is set.
  */
 export const resolveServerInfo = async (
-  ports: { readonly sql: SqlStore },
+  ports: Pick<Ports, 'sql'>,
   base: ServerInfo,
 ): Promise<ServerInfo> => {
   const settings = await ports.sql.readServerSettings()
-  return mergeServerInfo(base, settings)
-}
-
-const mergeServerInfo = (
-  base: ServerInfo,
-  settings: { readonly name: string | null; readonly description: string | null },
-): ServerInfo => {
   const description = settings.description ?? base.description
   const resolved = { id: base.id, name: settings.name ?? base.name, auth: base.auth }
   return description === undefined || description === null ? resolved : { ...resolved, description }
 }
 
-export const resolveServerInfoEffect = (
-  base: ServerInfo,
-): Effect.Effect<ServerInfo, SqlStoreReadError, SqlStoreService> =>
-  Effect.gen(function* () {
-    const sql = yield* SqlStoreService
-    const settings = yield* Effect.tryPromise({
-      try: () => sql.readServerSettings(),
-      catch: (cause) => new SqlStoreReadError({ operation: 'readServerSettings', cause }),
-    })
-    return mergeServerInfo(base, settings)
-  })
-
-export const createServerRoutes = (runtime: BackendRuntime, base: ServerInfo) => {
+export const createServerRoutes = (ports: Pick<Ports, 'sql'>, base: ServerInfo) => {
   const routes = new Hono()
   // Public, and deliberately so: this is how a userscript decides whether it needs a token at all.
-  routes.get('/', (c) =>
-    runBackendHttp(c, runtime, resolveServerInfoEffect(base), (server) => c.json(server)),
-  )
+  routes.get('/', async (c) => c.json(await resolveServerInfo(ports, base)))
   return routes
 }
 
@@ -61,22 +36,10 @@ export const createServerRoutes = (runtime: BackendRuntime, base: ServerInfo) =>
  * Its own route under `/admin` rather than a method on the public one, so the read stays reachable
  * without a credential while the write never is.
  */
-const updateServerInfo = (patch: {
-  readonly name?: string
-  readonly description?: string | null
-}): Effect.Effect<void, BackendStorageError, SqlStoreService> =>
-  Effect.gen(function* () {
-    const sql = yield* SqlStoreService
-    return yield* Effect.tryPromise({
-      try: () => sql.writeServerSettings(patch),
-      catch: (cause) => new BackendStorageError({ operation: 'writeServerSettings', cause }),
-    })
-  })
-
-export const createServerAdminRoutes = (runtime: BackendRuntime) => {
+export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) => {
   const routes = new Hono()
 
-  routes.use('/*', requireRuntimeScope(runtime, 'admin'))
+  routes.use('/*', requireScope(auth, 'admin'))
 
   routes.patch('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
@@ -104,17 +67,13 @@ export const createServerAdminRoutes = (runtime: BackendRuntime) => {
       return c.json({ error: 'patch must set at least one of name, description' }, 400)
     }
 
-    return runBackendHttp(
-      c,
-      runtime,
-      updateServerInfo({
-        ...(name === undefined ? {} : { name: (name as string).trim() }),
-        ...(description === undefined
-          ? {}
-          : { description: description === null ? null : (description as string) }),
-      }),
-      () => c.json({ ok: true }),
-    )
+    await ports.sql.writeServerSettings({
+      ...(name === undefined ? {} : { name: (name as string).trim() }),
+      ...(description === undefined
+        ? {}
+        : { description: description === null ? null : (description as string) }),
+    })
+    return c.json({ ok: true })
   })
 
   return routes

@@ -1,13 +1,8 @@
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
-import { type App, createApp } from './app.js'
-import { meterD1Database, SyncRequestMetrics } from './observability/sync-metrics.js'
-import {
-  type BackendRuntime,
-  createBackendRuntime,
-  makeBackendContext,
-} from './runtime/backend-runtime.js'
+import { createApp } from './app.js'
+import type { Ports } from './ports/index.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
@@ -52,81 +47,50 @@ const tileBlobGcMode = (value: string | undefined): TileBlobGcMode => {
   throw new Error(`Unsupported TILE_BLOB_GC_MODE: ${JSON.stringify(value)}`)
 }
 
-export interface PreparedBackend {
-  readonly app: App
-  readonly runtime: BackendRuntime
-  readonly season: number
-  readonly stores: {
-    readonly blobs: R2BlobStore
-    readonly sql: D1SqlStore
-  }
-}
-
-/** Prepare binding-derived adapters and their Effect Context for the current Worker event. */
-export const prepareBackendForEvent = (
-  env: Env,
-  requestMetrics?: SyncRequestMetrics,
-): PreparedBackend => {
-  if (env.SHARD_STRATEGY !== 'single') {
-    throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
-  }
-  const season = parseSeason(env.SEASON) ?? 0
-  const blobs = new R2BlobStore(env.BLOBS)
-  const sql = new D1SqlStore(
-    requestMetrics === undefined ? env.DB : meterD1Database(env.DB, requestMetrics),
-  )
-  const counters = new DurableObjectCounterStore(env.TELEMETRY)
-  const runtime = createBackendRuntime(
-    makeBackendContext(blobs, sql, counters, {
-      bootstrapAdminToken: env.ADMIN_TOKEN,
-      openAccess: env.OPEN_ACCESS === 'true',
-    }),
-  )
-  const app = createApp(runtime, {
-    serverId: env.SERVER_ID,
-    serverName: env.SERVER_NAME,
-    serverDescription: env.SERVER_DESCRIPTION,
-    currentSeason: season,
-    openAccess: env.OPEN_ACCESS === 'true',
-    requestMetrics,
-  })
-  return {
-    app,
-    runtime,
-    season,
-    stores: { blobs, sql },
-  }
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (env.SHARD_STRATEGY !== 'single') {
+      throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
+    }
+
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
     if (mountedRequest === null) return new Response('Not Found', { status: 404 })
-    const metrics = new SyncRequestMetrics(mountedRequest, {
-      userscript: [env.USERSCRIPT_BUILD_ID],
-      frontend: [env.FRONTEND_BUILD_ID],
-    })
-    try {
-      const response = await prepareBackendForEvent(env, metrics).app.fetch(mountedRequest)
-      metrics.finish(response)
-      return response
-    } catch (error) {
-      metrics.finish(new Response(null, { status: 500 }))
-      throw error
+
+    const ports: Ports = {
+      blobs: new R2BlobStore(env.BLOBS),
+      sql: new D1SqlStore(env.DB),
+      counters: new DurableObjectCounterStore(env.TELEMETRY),
     }
+
+    return createApp(ports, {
+      bootstrapAdminToken: env.ADMIN_TOKEN,
+      serverId: env.SERVER_ID,
+      serverName: env.SERVER_NAME,
+      serverDescription: env.SERVER_DESCRIPTION,
+      // Both were reachable only from tests. Without the season, every deployment answered as
+      // season 0 — a later-season server served season 0's manifest, which for a fresh one is empty,
+      // and `ServerInfo` carries no season for a client to notice. Without openAccess, a server
+      // could not be opened at all.
+      currentSeason: parseSeason(env.SEASON),
+      openAccess: env.OPEN_ACCESS === 'true',
+    }).fetch(mountedRequest)
   },
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
   async scheduled(_controller, env, ctx): Promise<void> {
-    const prepared = prepareBackendForEvent(env)
+    const ports: Ports = {
+      blobs: new R2BlobStore(env.BLOBS),
+      sql: new D1SqlStore(env.DB),
+      counters: new DurableObjectCounterStore(env.TELEMETRY),
+    }
     const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
     ctx.waitUntil(
-      prepared.runtime.run(fetchCanvasTiles({ season: prepared.season })).finally(async () => {
+      fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
         // A prior template may already have persisted a probe when later scan work fails. Always
-        // reconcile the watcher so durable work cannot be stranded until the next cron.
+        // reconcile the watcher so that durable work cannot be stranded until the next cron.
         await env.ALARM_WATCHER.getByName('global').schedule()
       }),
     )
-    ctx.waitUntil(runTileBlobGc(prepared.stores, { mode: gcMode }).then(() => undefined))
+    ctx.waitUntil(runTileBlobGc(ports, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>

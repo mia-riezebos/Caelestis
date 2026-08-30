@@ -51,9 +51,6 @@ BASE_PATH = "/backend"
 # The first production rollout only inventories candidates. Change this only after its logs have
 # been reviewed; `delete` enables fenced physical R2 reclamation.
 TILE_BLOB_GC_MODE = "dry-run"
-# CI overrides these with the userscript version and deployment commit. Local builds stay bounded.
-USERSCRIPT_BUILD_ID = "development"
-FRONTEND_BUILD_ID = "development"
 
 [observability]
 enabled = true

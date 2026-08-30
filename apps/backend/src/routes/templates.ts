@@ -1,26 +1,28 @@
 import {
   type Millis,
   millis,
+  PngError,
+  SliceError,
   type TemplateSurface,
   templateSurface,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { Hono } from 'hono'
-import { requireRuntimeScope } from '../auth/middleware.js'
-import type { BackendRuntime } from '../runtime/backend-runtime.js'
-import { runBackendHttp } from '../runtime/hono.js'
+import { type AuthOptions, requireScope } from '../auth/middleware.js'
+import type { Ports } from '../ports/index.js'
 import {
-  createTemplate,
-  createTemplateVersion,
-  deleteTemplate,
-  patchTemplate,
-  readBlob,
-} from '../templates/use-cases.js'
+  InvalidNodeParentError,
+  NodeNotFoundError,
+  TemplateIdentityError,
+  TemplateNotFoundError,
+} from '../ports/index.js'
+import { readTileBlob } from '../telemetry/tile-blobs.js'
+import { StoreTemplateError, storeTemplate } from '../templates/store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const WHOLE_NUMBER = /^(0|[1-9]\d*)$/
-const INTEGER = /^-?(?:0|[1-9]\d*)$/
+const INTEGER = /^(?:0|-?[1-9]\d*)$/
 const MAX_NAME_LENGTH = 256
 
 const isValidName = (name: string): boolean => name.length > 0 && name.length <= MAX_NAME_LENGTH
@@ -45,10 +47,10 @@ const parseSurface = (kind: unknown, allianceId: unknown): TemplateSurface | nul
   return parsedAllianceId === null ? null : templateSurface(kind, parsedAllianceId)
 }
 
-export const createTemplateRoutes = (runtime: BackendRuntime) => {
+export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) => {
   const routes = new Hono()
 
-  routes.use('/*', requireRuntimeScope(runtime, 'admin'))
+  routes.use('/*', requireScope(auth, 'admin'))
 
   routes.post('/', async (c) => {
     if (!c.req.header('content-type')?.toLowerCase().startsWith('multipart/form-data')) {
@@ -73,8 +75,13 @@ export const createTemplateRoutes = (runtime: BackendRuntime) => {
     if (nodeId !== null && (typeof nodeId !== 'string' || !UUID_V7.test(nodeId))) {
       return c.json({ error: 'nodeId must be a canonical lowercase UUIDv7 or omitted' }, 400)
     }
-    const season = parseWholeNumber(rawSeason)
-    if (season === null && !(rawSeason === undefined && typeof nodeId === 'string')) {
+    let season = parseWholeNumber(rawSeason)
+    if (season === null && rawSeason === undefined && typeof nodeId === 'string') {
+      const parent = await ports.sql.readNode(nodeId)
+      if (parent === null) return c.json({ error: `node does not exist: ${nodeId}` }, 400)
+      season = parent.season
+    }
+    if (season === null) {
       return c.json({ error: 'season must be a non-negative integer for a root template' }, 400)
     }
     if (typeof name !== 'string' || !isValidName(name)) {
@@ -104,14 +111,11 @@ export const createTemplateRoutes = (runtime: BackendRuntime) => {
       )
     }
 
-    const caller = c.get('caller')
-    const bytes = new Uint8Array(await png.arrayBuffer())
-    return runBackendHttp(
-      c,
-      runtime,
-      createTemplate({
+    try {
+      const caller = c.get('caller')
+      const result = await storeTemplate(ports, {
         surface,
-        ...(season === null ? {} : { season }),
+        season,
         nodeId,
         name,
         // Always a digest, bootstrap included — `templates_created_with_token_check` requires 64 hex
@@ -122,10 +126,20 @@ export const createTemplateRoutes = (runtime: BackendRuntime) => {
         createdByUserId: null,
         originX: parsedOriginX,
         originY: parsedOriginY,
-        png: bytes,
-      }),
-      (result) => c.json(result, 201),
-    )
+        png: new Uint8Array(await png.arrayBuffer()),
+      })
+      return c.json(result, 201)
+    } catch (error) {
+      if (
+        error instanceof PngError ||
+        error instanceof SliceError ||
+        error instanceof StoreTemplateError ||
+        error instanceof NodeNotFoundError
+      ) {
+        return c.json({ error: error.message }, 400)
+      }
+      throw error
+    }
   })
 
   /**
@@ -153,27 +167,56 @@ export const createTemplateRoutes = (runtime: BackendRuntime) => {
 
     const { png, originX, originY } = body
     if (!(png instanceof File)) return c.json({ error: 'png must be a file part' }, 400)
-    const parsedOriginX = parseInteger(originX)
-    const parsedOriginY = parseInteger(originY)
+    const existing = await ports.sql.readTemplate(templateId)
+    if (existing === null) return c.json({ error: 'not found' }, 404)
+    const parsedOriginX =
+      existing.surface.kind === 'world' ? parseWholeNumber(originX) : parseInteger(originX)
+    const parsedOriginY =
+      existing.surface.kind === 'world' ? parseWholeNumber(originY) : parseInteger(originY)
     if (parsedOriginX === null || parsedOriginY === null) {
-      return c.json({ error: 'originX and originY must be integers' }, 400)
+      return c.json(
+        {
+          error:
+            existing.surface.kind === 'world'
+              ? 'originX and originY must be non-negative integers'
+              : 'originX and originY must be integers',
+        },
+        400,
+      )
     }
 
-    const caller = c.get('caller')
-    const bytes = new Uint8Array(await png.arrayBuffer())
-    return runBackendHttp(
-      c,
-      runtime,
-      createTemplateVersion({
+    try {
+      const caller = c.get('caller')
+      const result = await storeTemplate(ports, {
         templateId,
+        surface: existing.surface,
+        season: existing.season,
+        nodeId: existing.nodeId,
+        name: existing.name,
         createdWithToken: caller.tokenHash,
         createdByUserId: null,
         originX: parsedOriginX,
         originY: parsedOriginY,
-        png: bytes,
-      }),
-      (result) => c.json(result, 201),
-    )
+        png: new Uint8Array(await png.arrayBuffer()),
+      })
+      return c.json(result, 201)
+    } catch (error) {
+      if (
+        error instanceof PngError ||
+        error instanceof SliceError ||
+        error instanceof StoreTemplateError ||
+        error instanceof NodeNotFoundError
+      ) {
+        return c.json({ error: error.message }, 400)
+      }
+      if (error instanceof TemplateIdentityError) {
+        return c.json({ error: error.message }, 409)
+      }
+      if (error instanceof TemplateNotFoundError) {
+        return c.json({ error: 'not found' }, 404)
+      }
+      throw error
+    }
   })
 
   /**
@@ -220,6 +263,12 @@ export const createTemplateRoutes = (runtime: BackendRuntime) => {
     if (finished === true && timelapseFrozen === false) {
       return c.json({ error: 'a finished template must keep its timelapse frozen' }, 400)
     }
+    if (timelapseFrozen === false && finished !== false) {
+      const current = await ports.sql.readTemplate(templateId)
+      if (current?.finished === true) {
+        return c.json({ error: 'reopen the template before thawing its timelapse' }, 400)
+      }
+    }
     if (
       name === undefined &&
       nodeId === undefined &&
@@ -236,19 +285,47 @@ export const createTemplateRoutes = (runtime: BackendRuntime) => {
       )
     }
 
-    return runBackendHttp(
-      c,
-      runtime,
-      patchTemplate({
-        templateId,
-        ...(name === undefined ? {} : { name: name as string }),
-        ...(nodeId === undefined ? {} : { nodeId: nodeId as string | null }),
-        ...(published === undefined ? {} : { published: published as boolean }),
-        ...(timelapseFrozen === undefined ? {} : { timelapseFrozen: timelapseFrozen as boolean }),
-        ...(finished === undefined ? {} : { finished: finished as boolean }),
-      }),
-      (result) => c.json(result),
-    )
+    const now = millis(Date.now())
+    const patch = {
+      ...(name === undefined ? {} : { name: name as string }),
+      ...(nodeId === undefined ? {} : { nodeId: nodeId as string | null }),
+      ...(published === undefined ? {} : { publishedAt: published ? now : null }),
+      ...(finished === true
+        ? { finishedAt: now, timelapseFrozenAt: now }
+        : {
+            ...(finished === false ? { finishedAt: null } : {}),
+            ...(timelapseFrozen === undefined
+              ? {}
+              : { timelapseFrozenAt: timelapseFrozen ? now : null }),
+          }),
+    }
+    try {
+      if (!(await ports.sql.updateTemplate(templateId, patch, now))) {
+        if ((await ports.sql.readTemplate(templateId)) === null) {
+          return c.json({ error: 'not found' }, 404)
+        }
+        return c.json({ error: 'template changed concurrently' }, 409)
+      }
+    } catch (error) {
+      if (error instanceof NodeNotFoundError || error instanceof InvalidNodeParentError) {
+        return c.json({ error: error.message }, 400)
+      }
+      throw error
+    }
+
+    return c.json({
+      id: templateId,
+      ...(name === undefined ? {} : { name }),
+      ...(nodeId === undefined ? {} : { nodeId }),
+      ...(published === undefined ? {} : { published }),
+      ...(finished === undefined ? {} : { finished, finishedAt: finished ? now : null }),
+      ...(finished === true
+        ? { timelapseFrozen: true }
+        : timelapseFrozen === undefined
+          ? {}
+          : { timelapseFrozen }),
+      updatedAt: now,
+    })
   })
 
   routes.delete('/:id', async (c) => {
@@ -278,38 +355,57 @@ export const createTemplateRoutes = (runtime: BackendRuntime) => {
       versionId: expectedVersionQuery as string,
       updatedAt: millis(parsedUpdatedAt),
     }
-    return runBackendHttp(c, runtime, deleteTemplate(templateId, expected), () => c.body(null, 204))
+    if (!(await ports.sql.deleteTemplate(templateId, expected))) {
+      if ((await ports.sql.readTemplate(templateId)) === null) {
+        return c.json({ error: 'not found' }, 404)
+      }
+      return c.json({ error: 'template changed concurrently' }, 409)
+    }
+    return c.body(null, 204)
   })
 
   return routes
 }
 
-const createBlobRoutes = (runtime: BackendRuntime, namespace: 'chunks' | 'tiles') => {
+const createBlobRoutes = (
+  ports: Pick<Ports, 'blobs' | 'sql'>,
+  auth: AuthOptions,
+  namespace: 'chunks' | 'tiles',
+) => {
   const routes = new Hono()
 
-  routes.use('/*', requireRuntimeScope(runtime, 'read'))
+  routes.use('/*', requireScope(auth, 'read'))
 
   routes.get('/:hash', async (c) => {
     const hash = c.req.param('hash')
     if (!SHA256_HEX.test(hash)) return c.json({ error: `invalid ${namespace} hash` }, 400)
 
-    return runBackendHttp(c, runtime, readBlob(namespace, hash), (bytes) =>
-      // `private`, because this route is behind a read scope. Shared caches must not serve an
-      // authorised immutable blob to a later caller without that authorization.
-      c.body(new Uint8Array(bytes), 200, {
-        'content-type': 'image/png',
-        'cache-control': 'private, max-age=31536000, immutable',
-      }),
-    )
+    const bytes =
+      namespace === 'tiles'
+        ? await readTileBlob(ports, hash)
+        : await ports.blobs.get(namespace, hash)
+    if (bytes === null) return c.json({ error: 'not found' }, 404)
+
+    // `private`, because this route is behind a read scope. `public` invites any standards-compliant
+    // shared cache to store the response and hand it to a later request that carries no
+    // Authorization at all — so one authorised fetch would make a blob readable by anyone who knows
+    // its hash. Both namespaces are immutable and content-addressed, so a client may still cache one
+    // forever; what it may not do is cache it on someone else's behalf.
+    return c.body(new Uint8Array(bytes), 200, {
+      'content-type': 'image/png',
+      'cache-control': 'private, max-age=31536000, immutable',
+    })
   })
 
   return routes
 }
 
-export const createChunkRoutes = (runtime: BackendRuntime) => createBlobRoutes(runtime, 'chunks')
+export const createChunkRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) =>
+  createBlobRoutes(ports, auth, 'chunks')
 
 /**
  * Mirrored canvas tiles, served exactly like template chunks: the timelapse endpoint answers with
  * hashes, and this is where a frontend exchanges one for its pixels.
  */
-export const createTileRoutes = (runtime: BackendRuntime) => createBlobRoutes(runtime, 'tiles')
+export const createTileRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) =>
+  createBlobRoutes(ports, auth, 'tiles')

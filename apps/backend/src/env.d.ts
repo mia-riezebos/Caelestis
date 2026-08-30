@@ -47,12 +47,6 @@ declare namespace Cloudflare {
 
     /** `dry-run` inventories candidates; `delete` also performs fenced physical reclamation. */
     TILE_BLOB_GC_MODE?: string
-
-    /** Exact userscript build accepted as a bounded observability dimension. */
-    USERSCRIPT_BUILD_ID: string
-
-    /** Exact frontend build accepted as a bounded observability dimension. */
-    FRONTEND_BUILD_ID: string
   }
 }
 
@@ -62,6 +56,4 @@ interface Env {
   readonly OPEN_ACCESS?: string
   readonly BASE_PATH?: string
   readonly TILE_BLOB_GC_MODE?: string
-  readonly USERSCRIPT_BUILD_ID: string
-  readonly FRONTEND_BUILD_ID: string
 }

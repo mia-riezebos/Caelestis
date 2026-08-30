@@ -11,13 +11,12 @@ import {
   TRANSPARENT_INDEX,
   WRONG,
 } from '@caelestis/shared'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { ContributionDelta } from '../ports/index.js'
-import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
+import type { ContributionDelta, Ports } from '../ports/index.js'
 import { selectTelemetryHistoryResolution, selectTileHistoryResolution } from './telemetry.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
@@ -32,6 +31,7 @@ const harness = async () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
+  const ports: Ports = { blobs, sql, counters }
   await sql.insertNode({
     id: NODE_ID,
     season: 0,
@@ -45,12 +45,7 @@ const harness = async () => {
     blobs,
     sql,
     counters,
-    app: createApp(
-      createBackendRuntime(
-        makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
-      ),
-      { currentSeason: 1 },
-    ),
+    app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
   }
 }
 
@@ -140,8 +135,6 @@ const contribution = (overrides: Partial<ContributionDelta>): ContributionDelta 
 })
 
 describe('telemetry read routes', () => {
-  afterEach(() => vi.restoreAllMocks())
-
   it('selects the coarsest retained tier that still yields about 200 points', () => {
     const now = seconds(2_000_000_000)
     const range = (age: number, width = age) => ({
@@ -168,24 +161,6 @@ describe('telemetry read routes', () => {
         now,
       ),
     ).toBe(21_600)
-  })
-
-  it('maps a typed status read failure to the existing 500 response', async () => {
-    const { app, sql } = await harness()
-    const readToken = await mintToken(app, 'read')
-    const error = new Error('database unavailable')
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    sql.readTemplateStatuses = async () => {
-      throw error
-    }
-
-    const response = await app.request('/telemetry/status?season=0', {
-      headers: bearer(readToken),
-    })
-
-    expect(response.status).toBe(500)
-    expect(await response.text()).toBe('Internal Server Error')
-    expect(consoleError).toHaveBeenCalledWith(error)
   })
 
   it('serves the server-classified mismatch mask for one visible template tile', async () => {
