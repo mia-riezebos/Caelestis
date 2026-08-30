@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { authenticateRequest } from '../auth/middleware.js'
+import { listAccessTokens, mintAccessToken, revokeAccessToken } from '../auth/use-cases.js'
 import { readManifest } from '../manifest/use-cases.js'
 import { createNode, listNodes } from '../nodes/use-cases.js'
+import { resolveServerInfoEffect, writeServerSettings } from '../routes/server.js'
 import { createTemplate } from '../templates/use-cases.js'
 import { BlobStoreService, SqlStoreService } from './backend-runtime.js'
 
@@ -73,5 +75,38 @@ describe('migrated Effect use cases', () => {
       createdAt: expect.any(Number),
       updatedAt: expect.any(Number),
     })
+  })
+
+  it('administers server metadata and access tokens through the SQL service', async () => {
+    const sql = new MemorySqlStore()
+    await Effect.runPromise(
+      withSql(sql, writeServerSettings({ name: 'Renamed', description: 'Effect-owned' })),
+    )
+    await expect(
+      Effect.runPromise(
+        withSql(
+          sql,
+          resolveServerInfoEffect({
+            id: '00000000-0000-7000-8000-000000000000',
+            name: 'Configured',
+            auth: 'access_token',
+          }),
+        ),
+      ),
+    ).resolves.toMatchObject({ name: 'Renamed', description: 'Effect-owned' })
+
+    const minted = await Effect.runPromise(
+      withSql(
+        sql,
+        mintAccessToken({ label: 'isolated', scope: 'read', createdWithToken: 'bootstrap' }),
+      ),
+    )
+    await expect(Effect.runPromise(withSql(sql, listAccessTokens({ limit: 2 })))).resolves.toEqual([
+      minted.record,
+    ])
+    await Effect.runPromise(withSql(sql, revokeAccessToken(minted.record.tokenHash)))
+    await expect(Effect.runPromise(withSql(sql, listAccessTokens({ limit: 2 })))).resolves.toEqual(
+      [],
+    )
   })
 })

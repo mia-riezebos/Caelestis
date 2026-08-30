@@ -1,4 +1,5 @@
 import type { ServerInfo } from '@caelestis/shared'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { Ports } from './ports/index.js'
@@ -9,6 +10,7 @@ import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
 import { createBackendRuntime } from './runtime/backend-runtime.js'
+import { runBackendHttp } from './runtime/hono.js'
 
 /**
  * The Hono app, deliberately free of any runtime binding.
@@ -35,7 +37,6 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   const app = new Hono()
   const runtime = createBackendRuntime(ports)
   const auth = {
-    sql: ports.sql,
     bootstrapAdminToken: options.bootstrapAdminToken,
     openAccess: options.openAccess,
   }
@@ -89,12 +90,14 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   // rather than a promise to be kept.
   app.use('/*', cors({ origin: '*', exposeHeaders: ['ETag'], maxAge: 86_400 }))
 
-  app.get('/health', (c) => c.json({ ok: true }))
+  app.get('/health', (c) =>
+    runBackendHttp(c, runtime, Effect.succeed({ ok: true }), (health) => c.json(health)),
+  )
   app.route('/server', createServerRoutes(runtime, server))
-  app.route('/admin/server', createServerAdminRoutes(ports, auth))
+  app.route('/admin/server', createServerAdminRoutes(runtime, auth))
   app.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
 
-  app.route('/admin/tokens', createTokenRoutes(auth))
+  app.route('/admin/tokens', createTokenRoutes(runtime, auth))
   app.route('/admin/nodes', createNodeRoutes(runtime, auth))
   app.route('/admin/templates', createTemplateRoutes(runtime, auth))
   app.route('/chunks', createChunkRoutes(runtime, auth))

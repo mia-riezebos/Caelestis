@@ -1,10 +1,9 @@
 import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScope } from '../auth/middleware.js'
-import type { Ports } from '../ports/index.js'
+import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
 import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
-import { SqlStoreReadError } from '../runtime/errors.js'
+import { BackendStorageError, SqlStoreReadError } from '../runtime/errors.js'
 import { runBackendHttp } from '../runtime/hono.js'
 
 const MAX_NAME_LENGTH = 256
@@ -17,14 +16,6 @@ const MAX_DESCRIPTION_LENGTH = 4096
  * redeploy — the whole point of moving it out of `[vars]`. The vars stay the value a fresh
  * deployment begins with; anything set here wins for as long as it is set.
  */
-export const resolveServerInfo = async (
-  ports: Pick<Ports, 'sql'>,
-  base: ServerInfo,
-): Promise<ServerInfo> => {
-  const settings = await ports.sql.readServerSettings()
-  return mergeServerInfo(base, settings)
-}
-
 const mergeServerInfo = (
   base: ServerInfo,
   settings: { readonly name: string | null; readonly description: string | null },
@@ -46,6 +37,18 @@ export const resolveServerInfoEffect = (
     return mergeServerInfo(base, settings)
   })
 
+export const writeServerSettings = (settings: {
+  readonly name?: string
+  readonly description?: string | null
+}): Effect.Effect<void, BackendStorageError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    yield* Effect.tryPromise({
+      try: () => sql.writeServerSettings(settings),
+      catch: (cause) => new BackendStorageError({ operation: 'writeServerSettings', cause }),
+    })
+  })
+
 export const createServerRoutes = (runtime: BackendRuntime, base: ServerInfo) => {
   const routes = new Hono()
   // Public, and deliberately so: this is how a userscript decides whether it needs a token at all.
@@ -61,10 +64,10 @@ export const createServerRoutes = (runtime: BackendRuntime, base: ServerInfo) =>
  * Its own route under `/admin` rather than a method on the public one, so the read stays reachable
  * without a credential while the write never is.
  */
-export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) => {
+export const createServerAdminRoutes = (runtime: BackendRuntime, auth: AuthOptions) => {
   const routes = new Hono()
 
-  routes.use('/*', requireScope(auth, 'admin'))
+  routes.use('/*', requireScopeEffect(runtime, auth, 'admin'))
 
   routes.patch('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
@@ -92,13 +95,17 @@ export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOpt
       return c.json({ error: 'patch must set at least one of name, description' }, 400)
     }
 
-    await ports.sql.writeServerSettings({
-      ...(name === undefined ? {} : { name: (name as string).trim() }),
-      ...(description === undefined
-        ? {}
-        : { description: description === null ? null : (description as string) }),
-    })
-    return c.json({ ok: true })
+    return runBackendHttp(
+      c,
+      runtime,
+      writeServerSettings({
+        ...(name === undefined ? {} : { name: (name as string).trim() }),
+        ...(description === undefined
+          ? {}
+          : { description: description === null ? null : (description as string) }),
+      }),
+      () => c.json({ ok: true }),
+    )
   })
 
   return routes
