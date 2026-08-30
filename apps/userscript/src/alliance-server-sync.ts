@@ -9,6 +9,12 @@ import { userscriptClientHeaders } from './client-metrics.js'
 import { count } from './debug.js'
 import type { ServerManifest } from './server-manifest.js'
 import { parseServerManifest } from './server-manifest.js'
+import { coalesceServerRead } from './server-read-coalescer.js'
+import {
+  registerServerSyncResource,
+  requestServerSync,
+  type ServerSyncResult,
+} from './server-sync-coordinator.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -16,6 +22,7 @@ import {
   getState,
   isCurrentServerConnection,
   onStateChange,
+  serverConnectionIdentity,
   type State,
   sameServerConnection,
 } from './state.js'
@@ -24,7 +31,7 @@ import { forgetSurfaceNodes, rememberNodes } from './templates/server-nodes.js'
 import { syncServerTemplates } from './templates/server-sync.js'
 
 const MANIFEST_TIMEOUT_MS = 15_000
-const POLL_MS = 60_000
+const ALLIANCE_MANIFEST_RESOURCE = 'alliance-manifest'
 
 let installed = false
 let generation = 0
@@ -97,23 +104,23 @@ const readServer = async (
   ownGeneration: number,
   signal: AbortSignal,
   reason: ReconciliationReason,
-): Promise<void> => {
+): Promise<ServerSyncResult> => {
   count('alliance-sync:server considered')
   if (server.status !== 'connected') {
     count('alliance-sync:server not connected')
-    return
+    return { status: 'skipped' }
   }
   if (server.info === null || server.season === null) {
     count('alliance-sync:server identity unavailable')
-    return
+    return { status: 'skipped' }
   }
   if (!isCurrentServerConnection(server)) {
     count('alliance-sync:server superseded')
-    return
+    return { status: 'skipped' }
   }
   if (!currentSurface(surface, ownGeneration)) {
     count('alliance-sync:surface superseded')
-    return
+    return { status: 'skipped' }
   }
   const query = new URLSearchParams({
     season: String(server.season),
@@ -130,52 +137,38 @@ const readServer = async (
   try {
     count('alliance-sync:manifest requested')
     const token = activeServerToken(server)
-    const response = await fetch(serverEndpoint(server.url, `/manifest?${query}`), {
-      headers: {
-        ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
-        ...(token === null ? {} : { authorization: `Bearer ${token}` }),
-      },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(MANIFEST_TIMEOUT_MS)]),
-    })
+    const response = await coalesceServerRead(
+      serverConnectionIdentity(server),
+      `${server.season}\u0000${templateSurfaceKey(surface)}\u0000manifest`,
+      async () =>
+        await fetch(serverEndpoint(server.url, `/manifest?${query}`), {
+          headers: {
+            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+            ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+          },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(MANIFEST_TIMEOUT_MS)]),
+        }),
+    )
     if (!response.ok || !requestCurrent()) {
       count('alliance-sync:manifest refused')
-      return
+      return { status: 'failed' }
     }
     const manifest = parseServerManifest(await response.json(), server.info, surface)
     if (manifest === null || manifest.season !== server.season || !requestCurrent()) {
       count('alliance-sync:manifest invalid')
-      return
+      return { status: 'failed' }
     }
     count('alliance-sync:manifest admitted')
     manifests.set(key, { owner: server, manifest })
     rememberNodes(server.url, manifest.nodes, surface)
     notifyManifestChange()
     await syncServerTemplates(server, manifest.templates, requestCurrent, surface)
+    return { status: 'unchanged', revision: manifest.version }
   } catch {
     count('alliance-sync:manifest failed')
     // A failed alliance poll keeps the last admitted overlay, like the world manifest poll.
+    return { status: 'failed' }
   }
-}
-
-const syncSelected = (reason: ReconciliationReason): void => {
-  const surface = selected
-  if (surface === null) {
-    count('alliance-sync:no selected surface')
-    return
-  }
-  const ownGeneration = generation
-  if (readyGeneration !== ownGeneration) {
-    count('alliance-sync:surface retiring')
-    return
-  }
-  const signal = controller?.signal
-  if (signal === undefined) {
-    count('alliance-sync:no controller')
-    return
-  }
-  count('alliance-sync:sweep')
-  for (const server of getState().servers)
-    void readServer(server, surface, ownGeneration, signal, reason)
 }
 
 const retire = async (surface: TemplateSurface): Promise<void> => {
@@ -212,7 +205,7 @@ const selectActiveSurface = (): void => {
       if (previous !== null) await retire(previous)
       if (generation !== ownGeneration) return
       readyGeneration = ownGeneration
-      syncSelected('connect')
+      requestServerSync('state-change', ALLIANCE_MANIFEST_RESOURCE)
     })
   void transition.catch(() => undefined)
 }
@@ -244,9 +237,8 @@ const stateChanged = (next: State): void => {
   }
   lastConnectedServers = connected
   if (changed) notifyManifestChange()
-  syncSelected('connect')
+  requestServerSync('state-change', ALLIANCE_MANIFEST_RESOURCE)
 }
-
 /** Poll exact alliance surface manifests only while that Wplace editor is active. */
 export const installAllianceServerSync = (): void => {
   if (installed) return
@@ -254,8 +246,19 @@ export const installAllianceServerSync = (): void => {
   lastConnectedServers = connectedServers(getState())
   onActiveAllianceSurfaceChange(selectActiveSurface)
   onStateChange(stateChanged)
+  registerServerSyncResource({
+    id: ALLIANCE_MANIFEST_RESOURCE,
+    scope: () =>
+      selected !== null && readyGeneration === generation ? templateSurfaceKey(selected) : null,
+    refresh: async (server, reason) => {
+      const surface = selected
+      const signal = controller?.signal
+      if (surface === null || signal === undefined || readyGeneration !== generation)
+        return { status: 'skipped' }
+      return readServer(server, surface, generation, signal, reason)
+    },
+  })
   selectActiveSurface()
-  setInterval(() => syncSelected('interval'), POLL_MS)
 }
 
 /** Stable diagnostic key for the currently selected alliance manifest scope. */

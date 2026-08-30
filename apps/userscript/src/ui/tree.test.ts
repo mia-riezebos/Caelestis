@@ -194,7 +194,7 @@ describe('tree identity and ordering', () => {
     )
   })
 
-  it('rejects an older response before it can publish over the newest snapshot', async () => {
+  it('publishes one admitted snapshot for coalesced tree and canvas reads', async () => {
     const releases: Array<(response: Response) => void> = []
     vi.stubGlobal(
       'fetch',
@@ -223,37 +223,14 @@ describe('tree identity and ordering', () => {
 
     const first = listServerContents(connected)
     const second = listServerContents(connected)
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
-    releases[1]?.(manifest(info, [], [template], ['0/0']))
-    const newest = await second
-    expect(newest).not.toBeNull()
-    expect(admittedServerContentsFor(connected)).toBe(newest)
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+    releases[0]?.(manifest(info, [], [template], ['0/0']))
+    const [firstContents, secondContents] = await Promise.all([first, second])
+    expect(firstContents).not.toBeNull()
+    expect(secondContents).toBe(firstContents)
+    expect(admittedServerContentsFor(connected)).toBe(firstContents)
     expect(serverCache.cacheServer).toHaveBeenCalledOnce()
-    serverCache.cacheServer.mockClear()
-
-    releases[0]?.(
-      manifest(
-        info,
-        [],
-        [
-          {
-            ...template,
-            name: 'Older',
-            version: '019fed50-87a1-7523-a88c-bdeafad49685',
-            updatedAt: 1_750_000_000_001,
-          },
-        ],
-        ['0/0'],
-      ),
-    )
-    const older = await first
-    if (older === null) throw new Error('the older manifest did not decode')
-    expect(acceptServerSnapshot(connected, older)).toEqual(
-      expect.objectContaining({ status: 'superseded' }),
-    )
     expect(serverTemplateAt(connected.url, TEMPLATE_A)?.name).toBe('Newer')
-    expect(admittedServerContentsFor(connected)).toBe(newest)
-    expect(serverCache.cacheServer).not.toHaveBeenCalled()
     forgetServerRows(connected.url)
   })
 
