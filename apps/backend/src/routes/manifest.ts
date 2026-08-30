@@ -1,7 +1,7 @@
 import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScope } from '../auth/middleware.js'
+import { requireRuntimeScope } from '../auth/middleware.js'
 import { assembleManifestEffect } from '../manifest/assemble.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
@@ -19,12 +19,11 @@ const parseSeason = (value: string | undefined, fallback: number): number | null
 
 export const createManifestRoutes = (
   runtime: BackendRuntime,
-  auth: AuthOptions,
   options: { readonly server: ServerInfo; readonly currentSeason: number },
 ) => {
   const routes = new Hono()
 
-  routes.use('/*', requireScope(auth, 'read'))
+  routes.use('/*', requireRuntimeScope(runtime, 'read'))
 
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'), options.currentSeason)

@@ -1,6 +1,6 @@
 import { type Millis, millis } from '@caelestis/shared'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScope } from '../auth/middleware.js'
+import { requireRuntimeScope } from '../auth/middleware.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
 import {
@@ -24,10 +24,10 @@ const parseWholeNumber = (value: unknown): number | null => {
   return Number.isSafeInteger(parsed) ? parsed : null
 }
 
-export const createTemplateRoutes = (runtime: BackendRuntime, auth: AuthOptions) => {
+export const createTemplateRoutes = (runtime: BackendRuntime) => {
   const routes = new Hono()
 
-  routes.use('/*', requireScope(auth, 'admin'))
+  routes.use('/*', requireRuntimeScope(runtime, 'admin'))
 
   routes.post('/', async (c) => {
     if (!c.req.header('content-type')?.toLowerCase().startsWith('multipart/form-data')) {
@@ -236,14 +236,10 @@ export const createTemplateRoutes = (runtime: BackendRuntime, auth: AuthOptions)
   return routes
 }
 
-const createBlobRoutes = (
-  runtime: BackendRuntime,
-  auth: AuthOptions,
-  namespace: 'chunks' | 'tiles',
-) => {
+const createBlobRoutes = (runtime: BackendRuntime, namespace: 'chunks' | 'tiles') => {
   const routes = new Hono()
 
-  routes.use('/*', requireScope(auth, 'read'))
+  routes.use('/*', requireRuntimeScope(runtime, 'read'))
 
   routes.get('/:hash', async (c) => {
     const hash = c.req.param('hash')
@@ -262,12 +258,10 @@ const createBlobRoutes = (
   return routes
 }
 
-export const createChunkRoutes = (runtime: BackendRuntime, auth: AuthOptions) =>
-  createBlobRoutes(runtime, auth, 'chunks')
+export const createChunkRoutes = (runtime: BackendRuntime) => createBlobRoutes(runtime, 'chunks')
 
 /**
  * Mirrored canvas tiles, served exactly like template chunks: the timelapse endpoint answers with
  * hashes, and this is where a frontend exchanges one for its pixels.
  */
-export const createTileRoutes = (runtime: BackendRuntime, auth: AuthOptions) =>
-  createBlobRoutes(runtime, auth, 'tiles')
+export const createTileRoutes = (runtime: BackendRuntime) => createBlobRoutes(runtime, 'tiles')

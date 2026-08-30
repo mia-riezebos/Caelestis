@@ -20,6 +20,8 @@ const mapBackendHttpError = (context: Context, error: BackendHttpError): Respons
       return context.json({ error: error.message }, 404)
     case 'ResourceConflictError':
       return context.json({ error: error.message }, 409)
+    case 'AuthenticationError':
+      return context.json({ error: error.message }, error.status)
   }
 }
 

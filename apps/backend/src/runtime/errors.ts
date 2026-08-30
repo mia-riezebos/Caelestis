@@ -39,6 +39,12 @@ export class BackendStorageError extends Data.TaggedError('BackendStorageError')
   readonly cause: unknown
 }> {}
 
+/** Authentication failed without revealing whether a presented credential exists. */
+export class AuthenticationError extends Data.TaggedError('AuthenticationError')<{
+  readonly status: 401 | 403
+  readonly message: 'unauthorized' | 'forbidden'
+}> {}
+
 export type BackendHttpError =
   | SqlStoreReadError
   | TelemetryStorageError
@@ -47,3 +53,4 @@ export type BackendHttpError =
   | ResourceNotFoundError
   | ResourceConflictError
   | BackendStorageError
+  | AuthenticationError
