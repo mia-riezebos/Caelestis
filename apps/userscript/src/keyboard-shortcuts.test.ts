@@ -128,6 +128,18 @@ describe('keyboard shortcut actions', () => {
     expect(harness.setAppearance).toHaveBeenCalledWith('focused', { opacity: 0.6 })
   })
 
+  it('leaves shortcuts inactive when a shared shadow field owns the key', () => {
+    const input = Object.assign(new EventTarget(), { tagName: 'INPUT' })
+    const host = Object.assign(new EventTarget(), { tagName: 'CAELESTIS-SETTINGS' })
+    const event = new KeyboardEvent('keydown', { key: 't', cancelable: true })
+    Object.defineProperty(event, 'composedPath', { value: () => [input, host, window] })
+
+    window.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(harness.toggleMenu).not.toHaveBeenCalled()
+  })
+
   it('cycles remaining colours and delegates paint commit, cancel, and theme to Wplace', () => {
     press('a')
     press('d')
