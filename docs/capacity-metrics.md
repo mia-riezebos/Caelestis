@@ -35,7 +35,7 @@ The arrays passed to `writeDataPoint` have a fixed v1 meaning:
 | `blob2` | Normalized method and route template |
 | `blob3` | HTTP method |
 | `blob4` | Client (`userscript`, `frontend`, `third-party`, or `unknown`) |
-| `blob5` | Bounded client version |
+| `blob5` | Recognized userscript release or frontend deployment build; otherwise `unknown` |
 | `blob6` | Sync transport (`none`, `live`, `response-applied`, `recovery`, or `compatibility-poll`) |
 | `blob7` | Bounded reconciliation reason |
 | `blob8` | Cache outcome |
@@ -45,23 +45,25 @@ The arrays passed to `writeDataPoint` have a fixed v1 meaning:
 | `double2` | Request duration in milliseconds |
 | `double3` | D1 rows read |
 | `double4` | D1 rows written |
-| `double5` | D1 queries whose result exposed metadata |
-| `double6` | D1 queries whose API discarded metadata |
+| `double5` | Attempted D1 queries through APIs that expose result metadata |
+| `double6` | Attempted D1 queries through APIs that discard result metadata |
 | `double7` | Tile offers requested |
 | `double8` | Tile offers accepted for upload |
 | `double9` | Tile offers already known |
 | `double10` | Tile offers rejected as irrelevant |
 
-D1 exposes exact row metadata from `all`, `run`, and every batch result. The binding wrapper
-implements ordinary `raw` reads through `run`, preserving the array result Drizzle expects while
-retaining the metadata. `first`, `exec`, and the unused `raw({ columnNames: true })` overload do not
-expose it; those calls increment `double6` instead of pretending they read zero rows. This makes gaps
-visible in every route comparison.
+D1 exposes exact row metadata from successful `all`, `run`, and batch results. Query attempts are
+counted before awaiting D1 so failures remain visible, while row counts are added only from returned
+metadata. `raw`, `first`, and `exec` do not expose metadata; those calls increment `double6` instead
+of pretending they read zero rows. Native positional `raw` rows are preserved because joined reads
+can contain duplicate column names.
 
 The metrics layer stores no URL query, raw route parameter, authorization value, token digest,
 username, user agent, tile coordinate, hash, or pixel payload. Unknown paths collapse to `other`.
 Client metadata uses a short vendor media type in the CORS-safelisted `Accept` header so anonymous
-cross-origin reads do not gain a preflight.
+cross-origin reads do not gain a preflight. The backend admits only explicitly known userscript
+releases and the frontend build ID shared through deployment CI; all caller-supplied alternatives
+collapse to `unknown`.
 
 ## Repeatable queries
 

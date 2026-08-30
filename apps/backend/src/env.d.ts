@@ -57,3 +57,6 @@ interface Env {
   readonly BASE_PATH?: string
   readonly TILE_BLOB_GC_MODE?: string
 }
+
+/** Replaced with the deployment Git SHA by Wrangler in production. */
+declare const __CAELESTIS_DEPLOYMENT_VERSION__: string

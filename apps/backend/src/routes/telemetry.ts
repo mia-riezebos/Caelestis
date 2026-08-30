@@ -12,7 +12,7 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
-import { recordTileOfferBatch } from '../metrics/request-metrics.js'
+import { recordTileOfferBatch, recordTileOfferBatchRequested } from '../metrics/request-metrics.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -384,6 +384,7 @@ export const createTelemetryRoutes = (
     if (body === null || body.offers.length > MAX_TILE_OFFERS) {
       return c.json({ error: 'invalid tile offer batch' }, 400)
     }
+    recordTileOfferBatchRequested(body.offers.length)
     if (new Set(body.offers.map((offer) => offer.tile)).size !== body.offers.length) {
       return c.json({ error: 'tile offer batch contains duplicates' }, 400)
     }

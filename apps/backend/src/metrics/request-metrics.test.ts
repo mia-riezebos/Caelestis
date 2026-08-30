@@ -1,11 +1,15 @@
-import { clientMetricsAccept } from '@caelestis/shared'
+import { clientMetricsAccept, millis, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { describe, expect, it, vi } from 'vitest'
+import { D1SqlStore } from '../adapters/cloudflare/d1-sql-store.js'
+import { SqliteD1Database } from '../adapters/cloudflare/sqlite-d1.test-helper.js'
+import type { TemplateVersionRecord } from '../ports/index.js'
 import {
   instrumentD1,
   measureRequest,
   normalizeMetricRoute,
   recordCacheOutcome,
   recordTileOfferBatch,
+  recordTileOfferBatchRequested,
 } from './request-metrics.js'
 
 const result = (rowsRead: number, rowsWritten = 0): D1Result =>
@@ -53,6 +57,7 @@ describe('request capacity metrics', () => {
       'PUT /telemetry/tiles/:x/:y/:hash',
     )
     expect(normalizeMetricRoute('GET', '/untrusted/mia')).toBe('GET other')
+    expect(normalizeMetricRoute('mia-is-not-an-http-method', '/manifest')).toBe('OTHER other')
   })
 
   it('keeps the capacity traffic classes as separate normalized routes', () => {
@@ -122,16 +127,16 @@ describe('request capacity metrics', () => {
     const dataset = {
       writeDataPoint: (point?: AnalyticsEngineDataPoint) => points.push(point ?? {}),
     }
-    const run = (version: string, rows: number) =>
+    const run = (reason: 'interval' | 'focus', rows: number) =>
       measureRequest(
         dataset,
         new Request('https://example.com/manifest', {
           headers: {
             accept: clientMetricsAccept({
               client: 'userscript',
-              version,
+              version: '0.5.4',
               transport: 'compatibility-poll',
-              reason: 'interval',
+              reason,
             }),
           },
         }),
@@ -142,16 +147,38 @@ describe('request capacity metrics', () => {
         },
       )
 
-    await Promise.all([run('1.0.0', 3), run('2.0.0', 11)])
+    await Promise.all([run('interval', 3), run('focus', 11)])
 
     expect(
       points
-        .map((point) => [point.blobs?.[4], point.doubles?.[2]])
+        .map((point) => [point.blobs?.[6], point.doubles?.[2]])
         .sort(([left], [right]) => String(left).localeCompare(String(right))),
     ).toEqual([
-      ['1.0.0', 3],
-      ['2.0.0', 11],
+      ['focus', 11],
+      ['interval', 3],
     ])
+  })
+
+  it('buckets caller-supplied version labels unless they identify a known build', async () => {
+    const writeDataPoint = vi.fn()
+
+    await measureRequest(
+      { writeDataPoint },
+      new Request('https://example.com/manifest', {
+        headers: {
+          accept: clientMetricsAccept({
+            client: 'userscript',
+            version: 'mia-private-token',
+            transport: 'compatibility-poll',
+            reason: 'interval',
+          }),
+        },
+      }),
+      '/manifest',
+      async () => new Response('{}'),
+    )
+
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[4]).toBe('unknown')
   })
 
   it('counts metadata-dropping D1 APIs instead of pretending they read zero rows', async () => {
@@ -171,7 +198,91 @@ describe('request capacity metrics', () => {
     )
 
     expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[7]).toBe('not-modified')
-    expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.slice(2, 6)).toEqual([4, 0, 1, 2])
+    expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.slice(2, 6)).toEqual([0, 0, 0, 3])
+  })
+
+  it('preserves positional raw rows for joined D1 reads with duplicate column names', async () => {
+    const sqlite = new SqliteD1Database()
+    const store = new D1SqlStore(instrumentD1(sqlite as unknown as D1Database))
+    const version: TemplateVersionRecord = {
+      templateId: 'template-1',
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      nodeId: null,
+      name: 'Template',
+      versionId: 'version-1',
+      createdWithToken: 'a'.repeat(64),
+      createdByUserId: null,
+      createdAt: millis(1_000),
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      totalPixels: 1,
+      chunks: [{ tileX: 0, tileY: 0, hash: 'b'.repeat(64) }],
+    }
+
+    try {
+      await store.insertTemplateVersion(version)
+      await measureRequest(
+        undefined,
+        new Request('https://example.com/manifest'),
+        '/manifest',
+        async () => {
+          const [listed] = await store.listManifestTemplates(
+            { season: 1, surface: WORLD_TEMPLATE_SURFACE },
+            true,
+          )
+          expect(listed).toMatchObject({ id: 'template-1', versionId: 'version-1' })
+          return new Response('{}')
+        },
+      )
+    } finally {
+      sqlite.close()
+    }
+  })
+
+  it('counts attempted D1 queries even when the operation rejects', async () => {
+    const writeDataPoint = vi.fn()
+    const failing = database(0)
+    failing.prepare = () =>
+      ({
+        ...statement(0),
+        all: async () => {
+          throw new Error('D1 unavailable')
+        },
+      }) as unknown as D1PreparedStatement
+
+    await expect(
+      measureRequest(
+        { writeDataPoint },
+        new Request('https://example.com/manifest'),
+        '/manifest',
+        async () => {
+          await instrumentD1(failing).prepare('SELECT 1').all()
+          return new Response('{}')
+        },
+      ),
+    ).rejects.toThrow('D1 unavailable')
+
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[9]).toBe('500')
+    expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.slice(2, 6)).toEqual([0, 0, 1, 0])
+  })
+
+  it('keeps a failed tile-offer batch requested count', async () => {
+    const writeDataPoint = vi.fn()
+
+    await expect(
+      measureRequest(
+        { writeDataPoint },
+        new Request('https://example.com/telemetry/tiles/offers', { method: 'POST' }),
+        '/telemetry/tiles/offers',
+        async () => {
+          recordTileOfferBatchRequested(3)
+          throw new Error('offer processing failed')
+        },
+      ),
+    ).rejects.toThrow('offer processing failed')
+
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[8]).toBe('failed')
+    expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.[6]).toBe(3)
   })
 
   it.each([

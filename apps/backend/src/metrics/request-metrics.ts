@@ -38,6 +38,11 @@ type MetricDataset = Pick<AnalyticsEngineDataset, 'writeDataPoint'>
 const requestMetricStorage = new AsyncLocalStorage<RequestMetricState>()
 
 const route = (method: string, pattern: string): string => `${method} ${pattern}`
+const metricMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+const normalizeMetricMethod = (method: string): string => {
+  const normalized = method.toUpperCase()
+  return metricMethods.has(normalized) ? normalized : 'OTHER'
+}
 const exactRoutes = new Set([
   '/health',
   '/server',
@@ -58,7 +63,8 @@ const exactRoutes = new Set([
 
 /** A finite route vocabulary: request paths containing ids, hashes, or tokens never reach metrics. */
 export const normalizeMetricRoute = (method: string, pathname: string): string => {
-  const verb = method.toUpperCase()
+  const verb = normalizeMetricMethod(method)
+  if (verb === 'OTHER') return route(verb, 'other')
   if (exactRoutes.has(pathname)) return route(verb, pathname)
   if (/^\/admin\/tokens\/[^/]+$/.test(pathname)) return route(verb, '/admin/tokens/:tokenHash')
   if (/^\/admin\/nodes\/[^/]+\/subtree$/.test(pathname))
@@ -91,12 +97,16 @@ const isTileOfferRoute = (state: RequestMetricState): boolean =>
 const finiteCount = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 
-const recordD1Result = (result: D1Result): void => {
+const recordMeasuredD1Queries = (count = 1): void => {
+  const state = requestMetricStorage.getStore()
+  if (state !== undefined) state.d1MeasuredQueries += count
+}
+
+const recordD1Rows = (result: D1Result): void => {
   const state = requestMetricStorage.getStore()
   if (state === undefined) return
   state.d1RowsRead += finiteCount(result.meta.rows_read)
   state.d1RowsWritten += finiteCount(result.meta.rows_written)
-  state.d1MeasuredQueries++
 }
 
 const recordUnmeasuredD1Query = (): void => {
@@ -121,6 +131,13 @@ export const recordTileOfferBatch = (counts: TileOfferCounts): void => {
         : counts.rejected > 0
           ? 'rejected'
           : 'accepted'
+}
+
+/** Preserve attempted batch size even when offer processing later fails. */
+export const recordTileOfferBatchRequested = (requested: number): void => {
+  const state = requestMetricStorage.getStore()
+  if (state === undefined || !isTileOfferRoute(state)) return
+  state.tileOfferCounts = { ...state.tileOfferCounts, requested: finiteCount(requested) }
 }
 
 const finalizedTileOfferOutcome = (
@@ -184,11 +201,21 @@ export const measureRequest = async (
   run: () => Promise<Response>,
 ): Promise<Response> => {
   const client = parseClientMetricsAccept(request.headers.get('accept'))
+  const method = normalizeMetricMethod(request.method)
+  const deploymentVersion =
+    typeof __CAELESTIS_DEPLOYMENT_VERSION__ === 'string'
+      ? __CAELESTIS_DEPLOYMENT_VERSION__.slice(0, 12)
+      : 'development'
+  const clientVersion =
+    (client.client === 'userscript' && client.version === '0.5.4') ||
+    (client.client === 'frontend' && client.version === deploymentVersion)
+      ? client.version
+      : 'unknown'
   const state: RequestMetricState = {
     route: normalizeMetricRoute(request.method, pathname),
-    method: request.method.toUpperCase(),
+    method,
     client: client.client,
-    clientVersion: client.version,
+    clientVersion,
     syncTransport: client.transport,
     reconciliationReason: client.reason,
     cacheOutcome: 'none',
@@ -220,10 +247,10 @@ const instrumentedDatabases = new WeakMap<object, D1Database>()
 /**
  * Wrap a D1 binding once and attribute result metadata to the current measured request.
  *
- * D1 exposes exact row counts on `run`, `all`, and each batch result. Ordinary `raw` reads are
- * implemented through `run` so Drizzle retains that metadata. `first`, `exec`, and the column-name
- * `raw` overload discard it, so those calls are counted explicitly as unmeasured rather than
- * silently reported as zero-row queries.
+ * D1 exposes exact row counts on `run`, `all`, and each batch result. `raw`, `first`, and `exec`
+ * discard that metadata, so those calls are counted explicitly as unmeasured rather than silently
+ * reported as zero-row queries. `raw` must retain its native positional row semantics: translating
+ * object rows back into arrays corrupts joins that contain duplicate column names.
  */
 export const instrumentD1 = (database: D1Database): D1Database => {
   const cached = instrumentedDatabases.get(database as object)
@@ -238,25 +265,22 @@ export const instrumentD1 = (database: D1Database): D1Database => {
         return args.length === 0 ? statement.first() : statement.first(args[0])
       },
       run: async <T = Record<string, unknown>>() => {
+        recordMeasuredD1Queries()
         const result = await statement.run<T>()
-        recordD1Result(result)
+        recordD1Rows(result)
         return result
       },
       all: async <T = Record<string, unknown>>() => {
+        recordMeasuredD1Queries()
         const result = await statement.all<T>()
-        recordD1Result(result)
+        recordD1Rows(result)
         return result
       },
       raw: (options?: { columnNames?: boolean }) => {
-        if (options?.columnNames === true) {
-          recordUnmeasuredD1Query()
-          return statement.raw({ columnNames: true })
-        }
-        return statement.run<Record<string, unknown>>().then((result) => {
-          recordD1Result(result)
-          const rows = result.results.map((row) => Object.values(row))
-          return rows
-        })
+        recordUnmeasuredD1Query()
+        return options?.columnNames === true
+          ? statement.raw({ columnNames: true })
+          : statement.raw()
       },
     } as D1PreparedStatement
     originals.set(wrapped as object, statement)
@@ -270,8 +294,9 @@ export const instrumentD1 = (database: D1Database): D1Database => {
     ({
       prepare: (query: string) => wrapStatement(session.prepare(query)),
       batch: async <T = unknown>(statements: D1PreparedStatement[]) => {
+        recordMeasuredD1Queries(statements.length)
         const results = await session.batch<T>(statements.map(unwrap))
-        for (const result of results) recordD1Result(result)
+        for (const result of results) recordD1Rows(result)
         return results
       },
       getBookmark: () => session.getBookmark(),
@@ -280,8 +305,9 @@ export const instrumentD1 = (database: D1Database): D1Database => {
   const wrapped = {
     prepare: (query: string) => wrapStatement(database.prepare(query)),
     batch: async <T = unknown>(statements: D1PreparedStatement[]) => {
+      recordMeasuredD1Queries(statements.length)
       const results = await database.batch<T>(statements.map(unwrap))
-      for (const result of results) recordD1Result(result)
+      for (const result of results) recordD1Rows(result)
       return results
     },
     exec: async (query: string) => {
