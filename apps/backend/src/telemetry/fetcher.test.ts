@@ -11,8 +11,17 @@ import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { Ports, TemplateVersionRecord } from '../ports/index.js'
-import { fetchAlarmFollowUps, fetchCanvasTiles, RING_STALENESS_SECONDS } from './fetcher.js'
+import type { SqlStore, TemplateVersionRecord } from '../ports/index.js'
+import {
+  type BackendRuntime,
+  createBackendRuntime,
+  makeBackendContext,
+} from '../runtime/backend-runtime.js'
+import {
+  fetchAlarmFollowUps as fetchAlarmFollowUpsEffect,
+  fetchCanvasTiles as fetchCanvasTilesEffect,
+  RING_STALENESS_SECONDS,
+} from './fetcher.js'
 
 const TOKEN = 'a'.repeat(64)
 const NOW = seconds(1_750_032_000)
@@ -55,7 +64,8 @@ const harness = () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
-  const ports: Ports = { blobs, sql, counters }
+  const runtime = createBackendRuntime(makeBackendContext(blobs, sql, counters))
+  const ports = { blobs, sql, counters, runtime }
   const requested: string[] = []
   const userAgents: (string | null)[] = []
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -69,6 +79,19 @@ const harness = () => {
   }) as typeof fetch
   return { ports, sql, requested, userAgents, fetchImpl }
 }
+
+type FetchBackend = { readonly runtime: BackendRuntime }
+
+const fetchCanvasTiles = (
+  backend: FetchBackend,
+  options: Parameters<typeof fetchCanvasTilesEffect>[0],
+) => backend.runtime.run(fetchCanvasTilesEffect(options))
+
+const fetchAlarmFollowUps = (
+  backend: FetchBackend,
+  probes: Parameters<typeof fetchAlarmFollowUpsEffect>[0],
+  options?: Parameters<typeof fetchAlarmFollowUpsEffect>[1],
+) => backend.runtime.run(fetchAlarmFollowUpsEffect(probes, options))
 
 describe('the 6-hour tile fetcher', () => {
   it('fetches each tile once even when templates overlap, plus a deduplicated ring', async () => {
@@ -534,13 +557,14 @@ describe('the 6-hour tile fetcher', () => {
   it('caps due probes per watcher cycle and leaves the rest pending', async () => {
     const clearAlarmProbe = vi.fn(async () => undefined)
     const listManifestTemplates = vi.fn(async () => [])
-    const ports = {
-      sql: {
-        clearAlarmProbe,
-        listAlarmTiles: vi.fn(async () => []),
-        listManifestTemplates,
-      },
-    } as unknown as Ports
+    const sql = {
+      clearAlarmProbe,
+      listAlarmTiles: vi.fn(async () => []),
+      listManifestTemplates,
+    } as unknown as SqlStore
+    const blobs = new MemoryBlobStore()
+    const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
+    const ports = { runtime: createBackendRuntime(makeBackendContext(blobs, sql, counters)) }
     const probes = ['one', 'two'].map((templateId) => ({
       templateId,
       versionId: `${templateId}-version`,

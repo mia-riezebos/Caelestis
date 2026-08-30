@@ -9,8 +9,15 @@ import {
   WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
-import type { AlarmProbe, Ports } from '../ports/index.js'
-import { MAX_CANVAS_TILE_BYTES, refreshAuthoritativeTile, uploadTile } from './ingest.js'
+import { Effect } from 'effect'
+import type { AlarmProbe, BlobStore, SqlStore } from '../ports/index.js'
+import { BlobStoreService, SqlStoreService } from '../runtime/backend-runtime.js'
+import { BackendStorageError } from '../runtime/errors.js'
+import {
+  MAX_CANVAS_TILE_BYTES,
+  refreshAuthoritativeTileWithStores,
+  uploadTileWithStores,
+} from './ingest.js'
 
 /**
  * The server's own tile mirror, run from the 6-hour cron.
@@ -77,8 +84,8 @@ const compareAlarmTileFreshness = (
 const wplaceTileUrl = (season: number, tile: TileCoord): string =>
   `https://backend.wplace.live/files/s${season}/tiles/${tile.x}/${tile.y}.png`
 
-export const fetchCanvasTiles = async (
-  ports: Ports,
+const fetchCanvasTilesPromise = async (
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   options: {
     readonly season: number
     readonly now?: Seconds
@@ -163,7 +170,7 @@ export const fetchCanvasTiles = async (
       if (latest?.hash === hash) {
         unchanged++
         if (!ring) {
-          await refreshAuthoritativeTile(
+          await refreshAuthoritativeTileWithStores(
             ports,
             {
               wplaceUserId: FETCHER_USER_ID,
@@ -181,7 +188,7 @@ export const fetchCanvasTiles = async (
         }
         continue
       }
-      await uploadTile(
+      await uploadTileWithStores(
         ports,
         {
           wplaceUserId: FETCHER_USER_ID,
@@ -270,8 +277,8 @@ export const fetchCanvasTiles = async (
 }
 
 /** Refetch only the templates whose six-hour scan opened a regression episode. */
-export const fetchAlarmFollowUps = async (
-  ports: Ports,
+const fetchAlarmFollowUpsPromise = async (
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   probes: readonly AlarmProbe[],
   options: {
     readonly now?: Seconds
@@ -341,7 +348,7 @@ export const fetchAlarmFollowUps = async (
         const hash = await sha256Hex(bytes)
         const latest = await ports.sql.readLatestTile(probe.season, tile)
         if (latest?.hash === hash) {
-          await refreshAuthoritativeTile(
+          await refreshAuthoritativeTileWithStores(
             ports,
             {
               wplaceUserId: FETCHER_USER_ID,
@@ -357,7 +364,7 @@ export const fetchAlarmFollowUps = async (
           )
           continue
         }
-        await uploadTile(
+        await uploadTileWithStores(
           ports,
           {
             wplaceUserId: FETCHER_USER_ID,
@@ -434,3 +441,52 @@ export const fetchAlarmFollowUps = async (
 
   return { evaluated, failed, pending }
 }
+
+const storage = <A>(operation: string, run: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) => new BackendStorageError({ operation, cause }),
+  })
+
+export interface FetchCanvasTilesOptions {
+  readonly season: number
+  readonly now?: Seconds
+  readonly fetchImpl?: typeof fetch
+  readonly alarmIdFactory?: () => string
+  /** Test seam; production always uses the Worker-safe batch ceiling. */
+  readonly maxTiles?: number
+}
+
+/** Run the canvas mirror through event-scoped Effect services. */
+export const fetchCanvasTiles = (
+  options: FetchCanvasTilesOptions,
+): Effect.Effect<FetchReport, BackendStorageError, BlobStoreService | SqlStoreService> =>
+  Effect.gen(function* () {
+    const blobs = yield* BlobStoreService
+    const sql = yield* SqlStoreService
+    return yield* storage('fetchCanvasTiles', () =>
+      fetchCanvasTilesPromise({ blobs, sql }, options),
+    )
+  })
+
+export interface FetchAlarmFollowUpsOptions {
+  readonly now?: Seconds
+  readonly fetchImpl?: typeof fetch
+  /** Test seam; production always uses the Worker-safe batch ceiling. */
+  readonly maxTiles?: number
+  /** Test seam; production caps query-only probes as well as tile fetches. */
+  readonly maxProbes?: number
+}
+
+/** Run the durable alarm follow-up through event-scoped Effect services. */
+export const fetchAlarmFollowUps = (
+  probes: readonly AlarmProbe[],
+  options: FetchAlarmFollowUpsOptions = {},
+): Effect.Effect<AlarmFollowUpReport, BackendStorageError, BlobStoreService | SqlStoreService> =>
+  Effect.gen(function* () {
+    const blobs = yield* BlobStoreService
+    const sql = yield* SqlStoreService
+    return yield* storage('fetchAlarmFollowUps', () =>
+      fetchAlarmFollowUpsPromise({ blobs, sql }, probes, options),
+    )
+  })

@@ -4,7 +4,7 @@ import { D1SqlStore } from '../adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from '../adapters/cloudflare/sqlite-d1.test-helper.js'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { Ports, SqlStore, TileBlobReservation, TileObservation } from '../ports/index.js'
+import type { SqlStore, TileBlobReservation, TileObservation } from '../ports/index.js'
 import {
   readTileBlob,
   reserveTileBlob,
@@ -29,7 +29,12 @@ const observation = (): TileObservation => ({
   reportedByUserId: 7,
 })
 
-type Harness = { ports: Ports; sql: SqlStore; blobs: MemoryBlobStore; close(): void }
+type Harness = {
+  stores: { readonly sql: SqlStore; readonly blobs: MemoryBlobStore }
+  sql: SqlStore
+  blobs: MemoryBlobStore
+  close(): void
+}
 
 const adapters: readonly { name: string; make(): Harness }[] = [
   {
@@ -38,7 +43,7 @@ const adapters: readonly { name: string; make(): Harness }[] = [
       const sql = new MemorySqlStore()
       const blobs = new MemoryBlobStore()
       return {
-        ports: { sql, blobs, counters: {} as Ports['counters'] },
+        stores: { sql, blobs },
         sql,
         blobs,
         close: () => {},
@@ -52,7 +57,7 @@ const adapters: readonly { name: string; make(): Harness }[] = [
       const sql = new D1SqlStore(database as unknown as D1Database)
       const blobs = new MemoryBlobStore()
       return {
-        ports: { sql, blobs, counters: {} as Ports['counters'] },
+        stores: { sql, blobs },
         sql,
         blobs,
         close: () => database.close(),
@@ -67,7 +72,7 @@ const commit = (sql: SqlStore, reservation: TileBlobReservation) =>
 const logger = { log: () => {}, error: () => {} }
 
 const gc = (harness: Harness, mode: TileBlobGcMode, now: number) =>
-  runTileBlobGc(harness.ports, { mode, now: millis(now), logger })
+  runTileBlobGc(harness.stores, { mode, now: millis(now), logger })
 
 describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
   let harness: Harness
@@ -82,13 +87,13 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     await harness.blobs.put('tiles', HASH, BYTES)
     await harness.sql.noteTileBlobObject(HASH, HASH, millis(1_000))
 
-    const held = await reserveTileBlob(harness.ports, HASH, millis(1_500))
+    const held = await reserveTileBlob(harness.stores, HASH, millis(1_500))
     expect(held).not.toBeNull()
     if (held === null) throw new Error('expected the legacy blob to be reserved')
     await expect(commit(harness.sql, held.reservation)).resolves.toBe(true)
 
     await expect(harness.sql.claimTileBlobDeletion(HASH, millis(3_000))).resolves.toBe('missing')
-    await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
+    await expect(readTileBlob(harness.stores, HASH)).resolves.toEqual(BYTES)
   })
 
   it('finishes an interrupted deletion before restoring during the fence', async () => {
@@ -96,13 +101,13 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     await harness.sql.noteTileBlobObject(HASH, HASH, millis(1_000))
     await harness.sql.claimTileBlobDeletion(HASH, millis(1_500))
 
-    const reservation = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
+    const reservation = await reserveTileBlobUpload(harness.stores, HASH, millis(2_000))
     expect(reservation.blobKey).not.toBe(HASH)
     await harness.blobs.put('tiles', reservation.blobKey, BYTES)
     await expect(commit(harness.sql, reservation)).resolves.toBe(true)
 
     await expect(harness.blobs.get('tiles', HASH)).resolves.toBeNull()
-    await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
+    await expect(readTileBlob(harness.stores, HASH)).resolves.toEqual(BYTES)
   })
 
   it('restores after deletion without reusing its physical key', async () => {
@@ -112,17 +117,17 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     await harness.blobs.delete('tiles', [HASH])
     await harness.sql.finishTileBlobDeletion(HASH, millis(1_600))
 
-    const reservation = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
+    const reservation = await reserveTileBlobUpload(harness.stores, HASH, millis(2_000))
     await harness.blobs.put('tiles', reservation.blobKey, BYTES)
     await expect(commit(harness.sql, reservation)).resolves.toBe(true)
 
     expect(reservation.blobKey).toMatch(new RegExp(`^${HASH}/`))
-    await expect(readTileBlob(harness.ports, HASH)).resolves.toEqual(BYTES)
+    await expect(readTileBlob(harness.stores, HASH)).resolves.toEqual(BYTES)
   })
 
   it('reuses an existing generation for duplicate uploads', async () => {
-    const first = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
-    const duplicate = await reserveTileBlobUpload(harness.ports, HASH, millis(2_100))
+    const first = await reserveTileBlobUpload(harness.stores, HASH, millis(2_000))
+    const duplicate = await reserveTileBlobUpload(harness.stores, HASH, millis(2_100))
 
     expect(duplicate.blobKey).toBe(first.blobKey)
   })
@@ -131,13 +136,13 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     await harness.blobs.put('tiles', HASH, BYTES)
     await harness.sql.noteTileBlobObject(HASH, HASH, millis(1_000))
 
-    const stale = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
+    const stale = await reserveTileBlobUpload(harness.stores, HASH, millis(2_000))
     expect(stale.blobKey).not.toBe(HASH)
 
     await gc(harness, 'delete', 302_001)
     await expect(harness.blobs.get('tiles', HASH)).resolves.toBeNull()
 
-    const retry = await reserveTileBlobUpload(harness.ports, HASH, millis(302_100))
+    const retry = await reserveTileBlobUpload(harness.stores, HASH, millis(302_100))
     expect(retry.blobKey).toBe(stale.blobKey)
     await harness.blobs.put('tiles', retry.blobKey, BYTES)
     await expect(

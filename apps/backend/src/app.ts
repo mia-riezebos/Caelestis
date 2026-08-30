@@ -1,42 +1,36 @@
 import type { ServerInfo } from '@caelestis/shared'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import type { Ports } from './ports/index.js'
+import type { SyncRequestMetrics } from './observability/sync-metrics.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
+import type { BackendRuntime } from './runtime/backend-runtime.js'
+import { runBackendHttp } from './runtime/hono.js'
 
 /**
  * The Hono app, deliberately free of any runtime binding.
  *
  * Entry points adapt this app to a runtime; the app itself stays portable and only depends on the
- * use-case-shaped ports.
+ * Context services requested by its use cases.
  *
  * @see https://github.com/mia-riezebos/wplace-template-server/issues/12
  */
 export interface AppOptions {
-  /**
-   * The operator's bootstrap credential. Absent means the server has no bootstrap path, which is
-   * the right state once a real admin token has been minted.
-   */
-  readonly bootstrapAdminToken?: string | undefined
   readonly serverId?: string | undefined
   readonly serverName?: string | undefined
   readonly serverDescription?: string | undefined
   readonly openAccess?: boolean | undefined
   readonly currentSeason?: number | undefined
+  readonly requestMetrics?: Pick<SyncRequestMetrics, 'recordTileOffer'> | undefined
 }
 
-export const createApp = (ports: Ports, options: AppOptions = {}) => {
+export const createApp = (runtime: BackendRuntime, options: AppOptions = {}) => {
   const app = new Hono()
-  const auth = {
-    sql: ports.sql,
-    bootstrapAdminToken: options.bootstrapAdminToken,
-    openAccess: options.openAccess,
-  }
   // `??` guards `undefined` and nothing else, and every one of these is a wrangler.toml var an
   // operator edits by hand. A non-UUIDv7 id, an empty name or an empty description all passed
   // through and then failed the wire schema — so the deployment's own manifest became undecodable
@@ -87,17 +81,27 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   // rather than a promise to be kept.
   app.use('/*', cors({ origin: '*', exposeHeaders: ['ETag'], maxAge: 86_400 }))
 
-  app.get('/health', (c) => c.json({ ok: true }))
-  app.route('/server', createServerRoutes(ports, server))
-  app.route('/admin/server', createServerAdminRoutes(ports, auth))
-  app.route('/manifest', createManifestRoutes(ports, auth, { server, currentSeason }))
+  app.get('/health', (c) =>
+    runBackendHttp(c, runtime, Effect.succeed({ ok: true as const }), (health) => c.json(health)),
+  )
+  app.route('/server', createServerRoutes(runtime, server))
+  app.route('/admin/server', createServerAdminRoutes(runtime))
+  app.route('/manifest', createManifestRoutes(runtime, { server, currentSeason }))
 
-  app.route('/admin/tokens', createTokenRoutes(auth))
-  app.route('/admin/nodes', createNodeRoutes(ports, auth))
-  app.route('/admin/templates', createTemplateRoutes(ports, auth))
-  app.route('/chunks', createChunkRoutes(ports, auth))
-  app.route('/tiles', createTileRoutes(ports, auth))
-  app.route('/telemetry', createTelemetryRoutes(ports, auth, { currentSeason }))
+  app.route('/admin/tokens', createTokenRoutes(runtime))
+  app.route('/admin/nodes', createNodeRoutes(runtime))
+  app.route('/admin/templates', createTemplateRoutes(runtime))
+  app.route('/chunks', createChunkRoutes(runtime))
+  app.route('/tiles', createTileRoutes(runtime))
+  app.route(
+    '/telemetry',
+    createTelemetryRoutes(runtime, {
+      currentSeason,
+      ...(options.requestMetrics === undefined
+        ? {}
+        : { recordTileOffer: (outcome) => options.requestMetrics?.recordTileOffer(outcome) }),
+    }),
+  )
 
   return app
 }

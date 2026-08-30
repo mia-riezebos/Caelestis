@@ -32,6 +32,7 @@ export {
   type TemplateChunk,
 } from './slice.js'
 export * from './slug.js'
+export * from './sync-observability.js'
 export * from './telemetry.js'
 export * from './template-surface.js'
 export * from './tiles.js'

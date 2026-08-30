@@ -1,6 +1,12 @@
+import { Context } from 'effect'
 import { afterEach, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
-import worker from './worker.js'
+import {
+  BlobStoreService,
+  CounterStoreService,
+  SqlStoreService,
+} from './runtime/backend-runtime.js'
+import worker, { prepareBackendForEvent } from './worker.js'
 
 // `worker.ts` re-exports the Durable Object, whose module imports `cloudflare:workers` — absent
 // outside workerd. Same stub `telemetry-shard.test.ts` uses; nothing on these paths constructs one.
@@ -31,6 +37,8 @@ const env = () => {
   d1 = new SqliteD1Database()
   return {
     SHARD_STRATEGY: 'single',
+    USERSCRIPT_BUILD_ID: 'development',
+    FRONTEND_BUILD_ID: 'development',
     DB: d1,
     BLOBS: {},
     // `DurableObjectCounterStore` resolves its stub in the constructor, so the namespace has to
@@ -56,6 +64,22 @@ it('mints the first admin token with the configured ADMIN_TOKEN binding', async 
 
   expect(response.status).toBe(201)
   await expect(response.json()).resolves.toMatchObject({ label: 'first-admin', scope: 'admin' })
+})
+
+it('derives binding-backed clients for every Worker event', () => {
+  const configured = env()
+  const first = prepareBackendForEvent(configured)
+  const second = prepareBackendForEvent(configured)
+
+  expect(Context.get(first.runtime.context, BlobStoreService)).not.toBe(
+    Context.get(second.runtime.context, BlobStoreService),
+  )
+  expect(Context.get(first.runtime.context, SqlStoreService)).not.toBe(
+    Context.get(second.runtime.context, SqlStoreService),
+  )
+  expect(Context.get(first.runtime.context, CounterStoreService)).not.toBe(
+    Context.get(second.runtime.context, CounterStoreService),
+  )
 })
 
 it('refuses a credential that is not the configured ADMIN_TOKEN', async () => {

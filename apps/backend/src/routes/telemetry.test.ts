@@ -6,12 +6,13 @@ import {
   TILE_SIZE,
   TRANSPARENT_INDEX,
 } from '@caelestis/shared'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { Ports } from '../ports/index.js'
+import type { TileOfferBatchMetrics } from '../observability/sync-metrics.js'
+import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const TOKEN = 'a'.repeat(64)
@@ -20,11 +21,10 @@ const EVENT_ID = '01890f3e-7b2c-7abc-8def-0123456789ac'
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
-const harness = async () => {
+const harness = async (recordTileOffer?: (outcome: TileOfferBatchMetrics) => void) => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-  const ports: Ports = { blobs, sql, counters }
   await sql.insertNode({
     id: NODE_ID,
     season: 0,
@@ -38,7 +38,15 @@ const harness = async () => {
     blobs,
     sql,
     counters,
-    app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
+    app: createApp(
+      createBackendRuntime(
+        makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
+      ),
+      {
+        currentSeason: 1,
+        ...(recordTileOffer === undefined ? {} : { requestMetrics: { recordTileOffer } }),
+      },
+    ),
   }
 }
 
@@ -125,6 +133,8 @@ const uploadCanvas = async (
 }
 
 describe('telemetry routes', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   it('serves active alarms with read scope and hides unpublished templates from readers', async () => {
     const { app, sql } = await harness()
     const templateId = await createPublishedTemplate(app)
@@ -180,7 +190,8 @@ describe('telemetry routes', () => {
   })
 
   it('requests missing template-covered tiles and serves server-backed progress after upload', async () => {
-    const { app } = await harness()
+    const outcomes: TileOfferBatchMetrics[] = []
+    const { app, sql } = await harness((outcome) => outcomes.push(outcome))
     const templateId = await createPublishedTemplate(app)
     const reportToken = await mintToken(app, 'report')
     const bytes = await canvasTile()
@@ -200,6 +211,7 @@ describe('telemetry routes', () => {
     })
     expect(offered.status).toBe(200)
     await expect(offered.json()).resolves.toEqual({ wanted: ['0/0'] })
+    expect(outcomes.at(-1)).toEqual({ requested: 1, accepted: 1, alreadyKnown: 0, rejected: 0 })
 
     const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
       method: 'PUT',
@@ -243,6 +255,15 @@ describe('telemetry routes', () => {
       body: JSON.stringify(offer),
     })
     await expect(repeated.json()).resolves.toEqual({ wanted: [] })
+    expect(outcomes.at(-1)).toEqual({ requested: 1, accepted: 0, alreadyKnown: 1, rejected: 0 })
+
+    const uncovered = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({ ...offer, offers: [{ ...offer.offers[0], tile: '1/1' }] }),
+    })
+    await expect(uncovered.json()).resolves.toEqual({ wanted: [] })
+    expect(outcomes.at(-1)).toEqual({ requested: 1, accepted: 0, alreadyKnown: 0, rejected: 1 })
 
     const duplicate = await app.request('/telemetry/tiles/offers', {
       method: 'POST',
@@ -250,6 +271,52 @@ describe('telemetry routes', () => {
       body: JSON.stringify({ ...offer, offers: [offer.offers[0], offer.offers[0]] }),
     })
     expect(duplicate.status).toBe(400)
+
+    sql.listTelemetryTargets = async () => Promise.reject(new Error('D1 unavailable'))
+    const failed = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({ ...offer, offers: [{ ...offer.offers[0], tile: '2/2' }] }),
+    })
+    expect(failed.status).toBe(500)
+    expect(outcomes.at(-1)).toEqual({ requested: 1, accepted: 0, alreadyKnown: 0, rejected: 0 })
+  })
+
+  it('keeps upload validation separate from typed storage failures', async () => {
+    const { app, blobs } = await harness()
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const now = Math.floor(Date.now() / 1_000)
+    const upload = (claimedHash: string) =>
+      app.request(`/telemetry/tiles/0/0/${claimedHash}`, {
+        method: 'PUT',
+        headers: {
+          ...bearer(reportToken),
+          'x-caelestis-season': '0',
+          'x-caelestis-observed-at': String(now),
+          'x-caelestis-wplace-user-id': '42',
+          'x-caelestis-display-name': 'Mia',
+        },
+        body: bytes,
+      })
+
+    const invalid = await upload('f'.repeat(64))
+    expect(invalid.status).toBe(400)
+    await expect(invalid.json()).resolves.toEqual({
+      error: 'tile bytes do not match their sha256',
+    })
+
+    const error = new Error('blob storage unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    blobs.put = async () => {
+      throw error
+    }
+    const unavailable = await upload(hash)
+    expect(unavailable.status).toBe(500)
+    expect(await unavailable.text()).toBe('Internal Server Error')
+    expect(consoleError).toHaveBeenCalledWith(error)
   })
 
   it('clamps future tile observations to server receipt time', async () => {

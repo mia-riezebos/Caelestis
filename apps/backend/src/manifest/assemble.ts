@@ -6,7 +6,10 @@ import {
   type TemplateSurface,
   tileKey,
 } from '@caelestis/shared'
-import type { Ports } from '../ports/index.js'
+import { Effect } from 'effect'
+import type { SqlStore } from '../ports/index.js'
+import { SqlStoreService } from '../runtime/backend-runtime.js'
+import { SqlStoreReadError } from '../runtime/errors.js'
 
 export interface AssembleManifestOptions {
   readonly server: ServerInfo
@@ -23,7 +26,7 @@ const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000
 
 export const assembleManifest = async (
-  ports: Pick<Ports, 'sql'>,
+  ports: { readonly sql: SqlStore },
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
   const surface = options.surface ?? { kind: 'world', allianceId: null }
@@ -144,3 +147,15 @@ export const assembleManifest = async (
   const version = await sha256Hex(new TextEncoder().encode(JSON.stringify(unsigned)))
   return { ...unsigned, version }
 }
+
+/** Assemble the manifest through the runtime service while preserving the deterministic assembler. */
+export const assembleManifestEffect = (
+  options: AssembleManifestOptions,
+): Effect.Effect<Manifest, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    return yield* Effect.tryPromise({
+      try: () => assembleManifest({ sql }, options),
+      catch: (cause) => new SqlStoreReadError({ operation: 'assembleManifest', cause }),
+    })
+  })
