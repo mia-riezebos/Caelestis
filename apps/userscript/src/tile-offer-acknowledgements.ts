@@ -1,7 +1,7 @@
-export type TileOfferDecision = 'fresh' | 'retry' | 'avoid'
+export type TileOfferDecision = 'fresh' | 'retry' | 'pending' | 'avoid'
 
 interface TileOfferReceipt {
-  readonly state: 'attempted' | 'acknowledged'
+  readonly state: 'in-flight' | 'retryable' | 'acknowledged'
   readonly expiresAt: number
 }
 
@@ -49,16 +49,24 @@ export class TileOfferAcknowledgements {
     const receipt = server.receipts.get(observation)
     if (receipt === undefined) return 'fresh'
     server.receipts.delete(observation)
-    if (receipt.state === 'acknowledged' && receipt.expiresAt > this.#now()) {
+    if (receipt.expiresAt > this.#now()) {
       server.receipts.set(observation, receipt)
-      return 'avoid'
+      return receipt.state === 'acknowledged' ? 'avoid' : 'pending'
     }
     return 'retry'
   }
 
-  attempted(serverUrl: string, owner: object, season: number, observation: string): void {
+  started(serverUrl: string, owner: object, season: number, observation: string): void {
     this.#remember(serverUrl, owner, season, observation, {
-      state: 'attempted',
+      state: 'in-flight',
+      // A thrown or abandoned request cannot suppress observations forever.
+      expiresAt: this.#now() + this.#ttlMs,
+    })
+  }
+
+  retryable(serverUrl: string, owner: object, season: number, observation: string): void {
+    this.#remember(serverUrl, owner, season, observation, {
+      state: 'retryable',
       expiresAt: 0,
     })
   }

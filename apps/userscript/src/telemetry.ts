@@ -256,7 +256,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
   const owner = serverConnectionIdentity(server)
   for (const entry of entries)
-    tileOfferAcknowledgements.attempted(server.url, owner, season, offerKey(entry))
+    tileOfferAcknowledgements.started(server.url, owner, season, offerKey(entry))
   tileOfferMetric('requested', entries.length)
   const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
     method: 'POST',
@@ -268,6 +268,8 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     }),
   })
   if (response === null || !response.ok) {
+    for (const entry of entries)
+      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
     if (response !== null && response.status >= 400 && response.status < 500)
       tileOfferMetric('rejected', entries.length)
     if (response !== null)
@@ -282,8 +284,11 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     typeof body !== 'object' ||
     body === null ||
     !Array.isArray((body as { wanted?: unknown }).wanted)
-  )
+  ) {
+    for (const entry of entries)
+      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
     return
+  }
   const responseBody = body as {
     wanted: unknown[]
     acknowledged?: unknown
@@ -335,6 +340,8 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       // A refusal is still a definitive acknowledgement. Re-offering it on every canvas read would
       // turn stale client coverage into a hot loop; TTL/reconnect/content changes retain recovery.
       tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+    } else {
+      tileOfferAcknowledgements.retryable(server.url, owner, season, key)
     }
   }
   tileOfferMetric('accepted', accepted)
@@ -373,6 +380,7 @@ const shareObservedTile = (entry: OfferedTile): void => {
       tileOfferMetric('avoided')
       continue
     }
+    if (decision === 'pending') continue
     if (decision === 'retry') tileOfferMetric('retried')
     const previousQueue = queued.get(server.url)
     const serverQueue =
