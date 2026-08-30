@@ -186,6 +186,18 @@ export const deriveCapacityCalibration = (
 export const deriveModelInputs = (database, insightTotals, currentClientDefaults) =>
   deriveCapacityCalibration(database, insightTotals, currentClientDefaults).modelInputs
 
+export const parseIndependentActiveUserHours = (value) => {
+  if (value === undefined) return undefined
+  if (value.trim() === '') {
+    throw new RangeError('CAELESTIS_ACTIVE_USER_HOURS must not be blank')
+  }
+  const hours = Number(value)
+  if (!Number.isFinite(hours) || hours < 0) {
+    throw new RangeError('CAELESTIS_ACTIVE_USER_HOURS must be a finite non-negative number')
+  }
+  return hours
+}
+
 const wranglerJson = (args) =>
   JSON.parse(
     execFileSync('pnpm', ['--dir', 'apps/backend', 'exec', 'wrangler', ...args], {
@@ -430,14 +442,7 @@ const main = async () => {
   const insightTotals = sumInsights(insights)
   // biome-ignore lint/suspicious/noUndeclaredEnvVars: this standalone command does not run through Turbo.
   const configuredActiveUserHours = process.env.CAELESTIS_ACTIVE_USER_HOURS
-  const independentActiveUserHours =
-    configuredActiveUserHours === undefined ? undefined : Number(configuredActiveUserHours)
-  if (
-    independentActiveUserHours !== undefined &&
-    (!Number.isFinite(independentActiveUserHours) || independentActiveUserHours < 0)
-  ) {
-    throw new RangeError('CAELESTIS_ACTIVE_USER_HOURS must be a finite non-negative number')
-  }
+  const independentActiveUserHours = parseIndependentActiveUserHours(configuredActiveUserHours)
   const calibration = deriveCapacityCalibration(
     database,
     insightTotals,

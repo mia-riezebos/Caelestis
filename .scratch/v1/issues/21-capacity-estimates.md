@@ -97,7 +97,7 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
   batches and partial uploads. Only unclassified dashboard, manifest, and other reads remain a fixed
   optional residual. Persistent schema rows are included independently of telemetry retention.
 - Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 9
-  tests and `pnpm test:capacity` passed 11 tests. Backend, shared, and userscript type checks passed
+  tests and `pnpm test:capacity` passed 12 tests. Backend, shared, and userscript type checks passed
   after building workspace outputs.
 - `pnpm capacity:observe` uses read-only D1 SQL, D1 Insights, and Cloudflare GraphQL analytics. Its
   2026-08-30 production window measured 20,779 Worker requests, 58 Durable Object invocations,

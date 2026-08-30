@@ -7,6 +7,7 @@ import {
   deriveCapacityCalibration,
   deriveModelInputs,
   operationTotals,
+  parseIndependentActiveUserHours,
   readCapacityConfiguration,
   sumInsights,
 } from './capacity-observation.mjs'
@@ -36,6 +37,16 @@ test('reads only public resource identifiers from wrangler configuration', () =>
       season: 7,
     },
   )
+})
+
+test('rejects blank or invalid independent active-user hours', () => {
+  assert.equal(parseIndependentActiveUserHours(undefined), undefined)
+  assert.equal(parseIndependentActiveUserHours('0'), 0)
+  assert.equal(parseIndependentActiveUserHours(' 2.5 '), 2.5)
+  assert.throws(() => parseIndependentActiveUserHours(''), /must not be blank/)
+  assert.throws(() => parseIndependentActiveUserHours('  '), /must not be blank/)
+  assert.throws(() => parseIndependentActiveUserHours('-1'), /finite non-negative/)
+  assert.throws(() => parseIndependentActiveUserHours('nope'), /finite non-negative/)
 })
 
 test('reduces D1 insights and identifies status reads', () => {
