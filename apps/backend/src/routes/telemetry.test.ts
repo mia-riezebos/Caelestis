@@ -252,6 +252,35 @@ describe('telemetry routes', () => {
     expect(duplicate.status).toBe(400)
   })
 
+  it('clamps future tile observations to server receipt time', async () => {
+    const { app, sql } = await harness()
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const receivedAfter = Math.floor(Date.now() / 1_000)
+
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(receivedAfter + 86_400),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+
+    expect(uploaded.status).toBe(204)
+    await expect(sql.readLatestTile(0, { x: 0, y: 0 })).resolves.toEqual(
+      expect.objectContaining({ observedAt: expect.any(Number) }),
+    )
+    expect((await sql.readLatestTile(0, { x: 0, y: 0 }))?.observedAt).toBeLessThanOrEqual(
+      Date.now() + 5 * 60 * 1_000,
+    )
+  })
+
   it('classifies accepted paints once and rejects read-only reporting', async () => {
     const { app, counters } = await harness()
     const templateId = await createPublishedTemplate(app)

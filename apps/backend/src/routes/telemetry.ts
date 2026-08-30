@@ -41,6 +41,8 @@ const SHA256_HEX = /^[0-9a-f]{64}$/
 const WHOLE_NUMBER = /^(?:0|[1-9]\d*)$/
 const MIN_EPOCH_SECONDS = 1_577_836_800
 const MAX_EPOCH_SECONDS = 4_102_444_800
+/** Preserve ordinary device-clock skew without allowing a client to outrank scans indefinitely. */
+const MAX_TILE_FUTURE_SKEW_SECONDS = 5 * 60
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 /** Larger leaderboards stop being leaderboards; page by narrowing the window instead. */
@@ -622,6 +624,7 @@ export const createTelemetryRoutes = (
       return c.json({ error: 'tile offer batch contains duplicates' }, 400)
     }
     const caller = c.get('caller')
+    const receivedAt = seconds(Math.floor(Date.now() / 1_000))
     const wanted: string[] = []
     for (const offer of body.offers) {
       const tile = parseTileKey(offer.tile)
@@ -633,7 +636,9 @@ export const createTelemetryRoutes = (
         season: body.season,
         tile,
         hash: offer.sha256,
-        observedAt: offer.ts,
+        // Client clocks can be wrong or hostile. A future row otherwise outranks authoritative
+        // server scans until that timestamp arrives.
+        observedAt: seconds(Math.min(offer.ts, receivedAt + MAX_TILE_FUTURE_SKEW_SECONDS)),
         includeUnpublished: caller.scope === 'admin',
       })
       if (result === 'wanted') wanted.push(offer.tile)
@@ -669,6 +674,7 @@ export const createTelemetryRoutes = (
     const bytes = await readBoundedBody(c.req.raw, MAX_CANVAS_TILE_BYTES)
     if (bytes === null) return c.json({ error: 'invalid tile body' }, 400)
     const caller = c.get('caller')
+    const receivedAt = seconds(Math.floor(Date.now() / 1_000))
     try {
       await uploadTile(
         ports,
@@ -679,7 +685,7 @@ export const createTelemetryRoutes = (
           season,
           tile: { x, y },
           hash,
-          observedAt: seconds(observedAt),
+          observedAt: seconds(Math.min(observedAt, receivedAt + MAX_TILE_FUTURE_SKEW_SECONDS)),
           includeUnpublished: caller.scope === 'admin',
         },
         bytes,

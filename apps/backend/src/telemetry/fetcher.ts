@@ -36,6 +36,7 @@ export const FETCHER_USER_ID = 0
  * server with more coverage than budget degrades to "template tiles only", never the reverse.
  */
 export const MAX_FETCH_TILES_PER_RUN = 200
+export const MAX_ALARM_PROBES_PER_RUN = 25
 
 export const ALARM_SCAN_INTERVAL_SECONDS = 6 * 60 * 60
 /** Cron delivery is not exact; keep a small overlap between adjacent bounded batches. */
@@ -270,6 +271,8 @@ export const fetchAlarmFollowUps = async (
     readonly fetchImpl?: typeof fetch
     /** Test seam; production always uses the Worker-safe batch ceiling. */
     readonly maxTiles?: number
+    /** Test seam; production caps query-only probes as well as tile fetches. */
+    readonly maxProbes?: number
   } = {},
 ): Promise<AlarmFollowUpReport> => {
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
@@ -277,10 +280,12 @@ export const fetchAlarmFollowUps = async (
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
   let evaluated = 0
   let failed = 0
-  let pending = 0
+  const maxProbes = Math.max(1, options.maxProbes ?? MAX_ALARM_PROBES_PER_RUN)
+  const selectedProbes = probes.slice(0, maxProbes)
+  let pending = probes.length - selectedProbes.length
   let remaining = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
 
-  for (const probe of probes) {
+  for (const probe of selectedProbes) {
     const template = (await ports.sql.listManifestTemplates(probe.season, true)).find(
       (candidate) => candidate.id === probe.templateId && candidate.versionId === probe.versionId,
     )

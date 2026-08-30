@@ -358,6 +358,34 @@ describe('the 6-hour tile fetcher', () => {
     ])
   }, 20_000)
 
+  it('caps due probes per watcher cycle and leaves the rest pending', async () => {
+    const clearAlarmProbe = vi.fn(async () => undefined)
+    const listManifestTemplates = vi.fn(async () => [])
+    const ports = {
+      sql: {
+        clearAlarmProbe,
+        listAlarmTiles: vi.fn(async () => []),
+        listManifestTemplates,
+      },
+    } as unknown as Ports
+    const probes = ['one', 'two'].map((templateId) => ({
+      templateId,
+      versionId: `${templateId}-version`,
+      season: 0,
+      alarmId: `${templateId}-alarm`,
+      pixelsLost: 10,
+      dueAt: millis(NOW * 1_000),
+    }))
+
+    await expect(fetchAlarmFollowUps(ports, probes, { now: NOW, maxProbes: 1 })).resolves.toEqual({
+      evaluated: 0,
+      failed: 1,
+      pending: 1,
+    })
+    expect(listManifestTemplates).toHaveBeenCalledTimes(1)
+    expect(clearAlarmProbe).toHaveBeenCalledTimes(1)
+  })
+
   it('reclassifies an unchanged canvas tile for a new template version', async () => {
     const { ports, sql } = harness()
     const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
