@@ -17,4 +17,40 @@ export class TelemetryValidationError extends Data.TaggedError('TelemetryValidat
   readonly message: string
 }> {}
 
-export type BackendHttpError = SqlStoreReadError | TelemetryStorageError | TelemetryValidationError
+/** Input or a domain precondition the caller can correct. */
+export class RequestValidationError extends Data.TaggedError('RequestValidationError')<{
+  readonly message: string
+  readonly status?: 400 | 428
+}> {}
+
+/** The requested resource is absent without exposing a storage failure. */
+export class ResourceNotFoundError extends Data.TaggedError('ResourceNotFoundError')<{
+  readonly message: string
+}> {}
+
+/** A guarded write lost a race or conflicts with current state. */
+export class ResourceConflictError extends Data.TaggedError('ResourceConflictError')<{
+  readonly message: string
+}> {}
+
+/** A template, node, or blob dependency rejected an otherwise valid operation. */
+export class BackendStorageError extends Data.TaggedError('BackendStorageError')<{
+  readonly operation: string
+  readonly cause: unknown
+}> {}
+
+/** Authentication failed without revealing whether a presented credential exists. */
+export class AuthenticationError extends Data.TaggedError('AuthenticationError')<{
+  readonly status: 401 | 403
+  readonly message: 'unauthorized' | 'forbidden'
+}> {}
+
+export type BackendHttpError =
+  | SqlStoreReadError
+  | TelemetryStorageError
+  | TelemetryValidationError
+  | RequestValidationError
+  | ResourceNotFoundError
+  | ResourceConflictError
+  | BackendStorageError
+  | AuthenticationError

@@ -33,12 +33,12 @@ export interface AppOptions {
 
 export const createApp = (ports: Ports, options: AppOptions = {}) => {
   const app = new Hono()
-  const runtime = createBackendRuntime(ports)
   const auth = {
     sql: ports.sql,
     bootstrapAdminToken: options.bootstrapAdminToken,
     openAccess: options.openAccess,
   }
+  const runtime = createBackendRuntime(ports, auth)
   // `??` guards `undefined` and nothing else, and every one of these is a wrangler.toml var an
   // operator edits by hand. A non-UUIDv7 id, an empty name or an empty description all passed
   // through and then failed the wire schema — so the deployment's own manifest became undecodable
@@ -92,13 +92,13 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.get('/health', (c) => c.json({ ok: true }))
   app.route('/server', createServerRoutes(runtime, server))
   app.route('/admin/server', createServerAdminRoutes(ports, auth))
-  app.route('/manifest', createManifestRoutes(ports, auth, { server, currentSeason }))
+  app.route('/manifest', createManifestRoutes(runtime, { server, currentSeason }))
 
   app.route('/admin/tokens', createTokenRoutes(auth))
-  app.route('/admin/nodes', createNodeRoutes(ports, auth))
-  app.route('/admin/templates', createTemplateRoutes(ports, auth))
-  app.route('/chunks', createChunkRoutes(ports, auth))
-  app.route('/tiles', createTileRoutes(ports, auth))
+  app.route('/admin/nodes', createNodeRoutes(runtime))
+  app.route('/admin/templates', createTemplateRoutes(runtime))
+  app.route('/chunks', createChunkRoutes(runtime))
+  app.route('/tiles', createTileRoutes(runtime))
   app.route('/telemetry', createTelemetryRoutes(runtime, auth, { currentSeason }))
 
   return app

@@ -1,5 +1,12 @@
+import { Effect } from 'effect'
 import type { MiddlewareHandler } from 'hono'
 import type { AccessToken, SqlStore } from '../ports/index.js'
+import {
+  AuthenticationConfigService,
+  type BackendRuntime,
+  SqlStoreService,
+} from '../runtime/backend-runtime.js'
+import { AuthenticationError, BackendStorageError } from '../runtime/errors.js'
 import { hashToken, type Scope, satisfiesScope } from './tokens.js'
 
 /** What a request proved about itself. */
@@ -138,5 +145,73 @@ export const requireScope =
     if (!satisfiesScope(token.scope, required)) return c.json({ error: 'forbidden' }, 403)
 
     c.set('caller', { scope: token.scope, token, tokenHash: token.tokenHash })
+    return next()
+  }
+
+const authenticateScope = (
+  authorization: string | undefined,
+  required: Scope,
+): Effect.Effect<
+  Caller,
+  AuthenticationError | BackendStorageError,
+  AuthenticationConfigService | SqlStoreService
+> =>
+  Effect.gen(function* () {
+    const { bootstrapAdminToken, openAccess } = yield* AuthenticationConfigService
+    const sql = yield* SqlStoreService
+    const presented = bearerToken(authorization)
+    const anonymousRead = required === 'read' && openAccess === true
+    if (presented === null) {
+      if (!anonymousRead) {
+        return yield* Effect.fail(new AuthenticationError({ status: 401, message: 'unauthorized' }))
+      }
+      return { scope: 'read', token: null, tokenHash: OPEN_ACCESS_HASH }
+    }
+
+    if (
+      bootstrapAdminToken !== undefined &&
+      bootstrapAdminToken.length > 0 &&
+      equalsConstantTime(presented, bootstrapAdminToken)
+    ) {
+      const tokenHash = yield* Effect.tryPromise({
+        try: () => hashToken(presented),
+        catch: (cause) => new BackendStorageError({ operation: 'hashAccessToken', cause }),
+      })
+      return { scope: 'admin', token: null, tokenHash }
+    }
+
+    const tokenHash = yield* Effect.tryPromise({
+      try: () => hashToken(presented),
+      catch: (cause) => new BackendStorageError({ operation: 'hashAccessToken', cause }),
+    })
+    const token = yield* Effect.tryPromise({
+      try: () => sql.readAccessToken(tokenHash),
+      catch: (cause) => new BackendStorageError({ operation: 'readAccessToken', cause }),
+    })
+    if (token === null) {
+      return yield* Effect.fail(new AuthenticationError({ status: 401, message: 'unauthorized' }))
+    }
+    if (!satisfiesScope(token.scope, required)) {
+      return yield* Effect.fail(new AuthenticationError({ status: 403, message: 'forbidden' }))
+    }
+    return { scope: token.scope, token, tokenHash: token.tokenHash }
+  })
+
+/** Effect-backed authentication for routes already migrated off the legacy dependency bag. */
+export const requireRuntimeScope =
+  (runtime: BackendRuntime, required: Scope): MiddlewareHandler =>
+  async (c, next) => {
+    const result = await runtime.runHandled(
+      authenticateScope(c.req.header('authorization'), required),
+      (error) => error,
+    )
+    if (result instanceof AuthenticationError) {
+      return c.json({ error: result.message }, result.status)
+    }
+    if (result instanceof BackendStorageError) {
+      console.error(result.cause)
+      return c.text('Internal Server Error', 500)
+    }
+    c.set('caller', result)
     return next()
   }

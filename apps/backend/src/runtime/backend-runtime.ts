@@ -1,6 +1,11 @@
 import { Context, Effect, Layer } from 'effect'
 import type { BlobStore, CounterStore, Ports, SqlStore } from '../ports/index.js'
 
+export interface AuthenticationConfig {
+  readonly bootstrapAdminToken?: string | undefined
+  readonly openAccess?: boolean | undefined
+}
+
 export class BlobStoreService extends Context.Service<BlobStoreService, BlobStore>()(
   '@caelestis/backend/BlobStore',
 ) {}
@@ -13,16 +18,31 @@ export class CounterStoreService extends Context.Service<CounterStoreService, Co
   '@caelestis/backend/CounterStore',
 ) {}
 
-export type BackendServices = BlobStoreService | SqlStoreService | CounterStoreService
+export class AuthenticationConfigService extends Context.Service<
+  AuthenticationConfigService,
+  AuthenticationConfig
+>()('@caelestis/backend/AuthenticationConfig') {}
 
-export const contextFromPorts = (ports: Ports): Context.Context<BackendServices> =>
+export type BackendServices =
+  | BlobStoreService
+  | SqlStoreService
+  | CounterStoreService
+  | AuthenticationConfigService
+
+export const contextFromPorts = (
+  ports: Ports,
+  authentication: AuthenticationConfig = {},
+): Context.Context<BackendServices> =>
   Context.make(BlobStoreService, ports.blobs).pipe(
     Context.add(SqlStoreService, ports.sql),
     Context.add(CounterStoreService, ports.counters),
+    Context.add(AuthenticationConfigService, authentication),
   )
 
-export const layerFromPorts = (ports: Ports): Layer.Layer<BackendServices> =>
-  Layer.succeedContext(contextFromPorts(ports))
+export const layerFromPorts = (
+  ports: Ports,
+  authentication: AuthenticationConfig = {},
+): Layer.Layer<BackendServices> => Layer.succeedContext(contextFromPorts(ports, authentication))
 
 export interface BackendRuntime {
   readonly context: Context.Context<BackendServices>
@@ -40,8 +60,11 @@ export interface BackendRuntime {
  * Routes migrate one at a time. The bridge disappears after the last caller stops accepting
  * `Ports`, while the Context service identities remain stable.
  */
-export const createBackendRuntime = (ports: Ports): BackendRuntime => {
-  const context = contextFromPorts(ports)
+export const createBackendRuntime = (
+  ports: Ports,
+  authentication: AuthenticationConfig = {},
+): BackendRuntime => {
+  const context = contextFromPorts(ports, authentication)
   const layer = Layer.succeedContext(context)
 
   return {
