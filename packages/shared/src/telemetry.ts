@@ -78,6 +78,10 @@ export interface TileOffer {
 export interface TileOfferResponse {
   /** Tiles the server does not already have and wants the bytes for. */
   readonly wanted: readonly TileKey[]
+  /** Offered observations the server already holds and has durably acknowledged. */
+  readonly acknowledged?: readonly TileKey[]
+  /** Offered observations the server refused; omitted by older compatible servers. */
+  readonly rejected?: readonly TileKey[]
   /** Authoritative progress replacements produced while accepting already-held tile bytes. */
   readonly status?: StatusDelta
 }

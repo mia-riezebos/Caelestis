@@ -688,6 +688,8 @@ export const StatusDelta: Schema.Codec<Shared.StatusDelta> = Schema.Struct({
 
 export const TileOfferResponse: Schema.Codec<Shared.TileOfferResponse> = Schema.Struct({
   wanted: boundedArray(TileKey, MAX_MANIFEST_TILES),
+  acknowledged: Schema.optionalKey(boundedArray(TileKey, MAX_MANIFEST_TILES)),
+  rejected: Schema.optionalKey(boundedArray(TileKey, MAX_MANIFEST_TILES)),
   status: Schema.optionalKey(StatusDelta),
 })
 

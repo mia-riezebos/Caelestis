@@ -1409,10 +1409,15 @@ describe('cross-field and time-unit schemas', () => {
       removedTemplateIds: [TEMPLATE_ID],
     }
     expect(Schema.decodeUnknownSync(StatusDelta)(delta)).toEqual(delta)
-    expect(Schema.decodeUnknownSync(TileOfferResponse)({ wanted: [], status: delta })).toEqual({
-      wanted: [],
-      status: delta,
-    })
+    expect(
+      Schema.decodeUnknownSync(TileOfferResponse)({
+        wanted: [],
+        acknowledged: ['0/0'],
+        rejected: [],
+        status: delta,
+      }),
+    ).toEqual({ wanted: [], acknowledged: ['0/0'], rejected: [], status: delta })
+    expect(Schema.decodeUnknownSync(TileOfferResponse)({ wanted: [] })).toEqual({ wanted: [] })
     expect(Schema.decodeUnknownSync(TileUploadResponse)({ status: delta })).toEqual({
       status: delta,
     })
