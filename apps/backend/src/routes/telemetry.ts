@@ -1,4 +1,5 @@
 import {
+  type AlarmsResponse,
   type CanvasTilesResponse,
   type ContributionsResponse,
   type HistoryBucket,
@@ -298,6 +299,18 @@ export const createTelemetryRoutes = (
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
     const response: StatusResponse = {
       templates: await ports.sql.readTemplateStatuses(season, c.get('caller').scope === 'admin'),
+    }
+    return c.json(response)
+  })
+
+  routes.get('/alarms', requireScope(auth, 'read'), async (c) => {
+    const season =
+      c.req.query('season') === undefined
+        ? options.currentSeason
+        : wholeNumber(c.req.query('season'))
+    if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
+    const response: AlarmsResponse = {
+      alarms: await ports.sql.readActiveAlarms(season, c.get('caller').scope === 'admin'),
     }
     return c.json(response)
   })
