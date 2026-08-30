@@ -1,3 +1,4 @@
+import type { SyncTransport } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ServerTemplate } from './server-cache.js'
 import type { ConnectedServer } from './state.js'
@@ -24,7 +25,11 @@ const coordinator = vi.hoisted(() => ({
   resources: new Map<
     string,
     {
-      refresh: (server: unknown, reason: 'connect' | 'manifest-applied') => Promise<unknown>
+      refresh: (
+        server: unknown,
+        reason: 'connect' | 'manifest-applied',
+        transport: SyncTransport,
+      ) => Promise<unknown>
     }
   >(),
 }))
@@ -78,18 +83,24 @@ vi.mock('./server-sync-coordinator.js', () => ({
   serverSyncRevision: () => undefined,
   registerServerSyncResource: (resource: {
     id: string
-    refresh: (server: unknown, reason: 'connect' | 'manifest-applied') => Promise<unknown>
+    refresh: (
+      server: unknown,
+      reason: 'connect' | 'manifest-applied',
+      transport: SyncTransport,
+    ) => Promise<unknown>
   }) => {
     coordinator.resources.set(resource.id, resource)
     queueMicrotask(() => {
-      for (const server of harness.state.servers) void resource.refresh(server, 'connect')
+      for (const server of harness.state.servers)
+        void resource.refresh(server, 'connect', 'compatibility-poll')
     })
   },
   requestServerSync: (reason: 'connect' | 'manifest-applied', resourceId?: string) => {
     queueMicrotask(() => {
       for (const [id, resource] of coordinator.resources) {
         if (resourceId !== undefined && resourceId !== id) continue
-        for (const server of harness.state.servers) void resource.refresh(server, reason)
+        for (const server of harness.state.servers)
+          void resource.refresh(server, reason, 'compatibility-poll')
       }
     })
   },
@@ -164,7 +175,9 @@ describe('server telemetry client', () => {
     installTelemetry()
 
     const resource = coordinator.resources.get('telemetry-status')
-    await expect(resource?.refresh(server, 'connect')).resolves.toEqual({ status: 'skipped' })
+    await expect(resource?.refresh(server, 'connect', 'recovery')).resolves.toEqual({
+      status: 'skipped',
+    })
     expect(coordinator.snapshots).toEqual([
       {
         status: 'unchanged',
@@ -687,5 +700,58 @@ describe('server telemetry client', () => {
       painted: null,
       tiles: [{ x: 1, y: 2 }],
     })
+  })
+
+  it('retries one immutable paint event without changing count, order, or attribution', async () => {
+    const paintAttempts: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/paints')) {
+          paintAttempts.push(String(init?.body))
+          return new Response(null, { status: paintAttempts.length < 3 ? 503 : 204 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, {
+      nodes: [],
+      templates: [{ ...template, chunks: [...template.chunks, { tile: '2/2', hash: 'other' }] }],
+    })
+    harness.acceptedPaint?.({
+      season: 0,
+      observedAt: 1_800_000_000,
+      painted: 2,
+      tiles: [
+        { x: 2, y: 2, pixels: { x: [8], y: [9], colors: [10] } },
+        { x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } },
+      ],
+    })
+
+    await vi.waitFor(() => expect(paintAttempts).toHaveLength(3))
+    expect(new Set(paintAttempts).size).toBe(1)
+    const event = JSON.parse(paintAttempts[0] ?? '{}') as {
+      eventId: string
+      wplaceUserId: number
+      displayName: string
+      painted: number
+      tiles: Array<{ x: number; y: number }>
+    }
+    expect(event).toMatchObject({
+      wplaceUserId: 42,
+      displayName: 'Mía 🎨',
+      painted: 2,
+      tiles: [
+        { x: 2, y: 2 },
+        { x: 1, y: 2 },
+      ],
+    })
+    expect(event.eventId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
   })
 })

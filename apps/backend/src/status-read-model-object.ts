@@ -369,6 +369,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   ) {
     super(objectState, env)
     this.sql = new D1SqlStore(env.DB)
+    this.objectState.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'))
   }
 
   private model(season: number): SeasonStatusReadModel {

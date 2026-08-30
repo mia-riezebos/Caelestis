@@ -7,6 +7,7 @@ import {
   type ReconciliationReason,
   type StatusDelta,
   type StatusResponse,
+  type SyncTransport,
   seconds,
   sha256Hex,
   type TemplateStatus,
@@ -657,6 +658,7 @@ const applyStatusDelta = (
 const refreshStatus = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
+  transport: SyncTransport,
 ): Promise<ServerSyncResult> => {
   if (server.season === null || !isCurrentServerConnection(server)) return { status: 'skipped' }
   return coalesceServerRead(
@@ -669,7 +671,7 @@ const refreshStatus = async (
         {
           headers: {
             ...authHeaders(server),
-            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+            ...userscriptClientHeaders({ transport, reason }),
           },
           signal: serverConnectionSignal(server),
         },
@@ -723,6 +725,7 @@ const refreshStatus = async (
 const refreshAlarms = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
+  transport: SyncTransport,
 ): Promise<ServerSyncResult> => {
   if (server.season === null || !isCurrentServerConnection(server)) return { status: 'skipped' }
   const snapshot = coverage.get(server.url)
@@ -737,7 +740,7 @@ const refreshAlarms = async (
         {
           headers: {
             ...authHeaders(server),
-            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+            ...userscriptClientHeaders({ transport, reason }),
           },
           signal: serverConnectionSignal(server),
         },

@@ -296,9 +296,9 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(status).toHaveBeenCalledOnce()
-    expect(status).toHaveBeenCalledWith(server, 'post-offer')
+    expect(status).toHaveBeenCalledWith(server, 'post-offer', 'compatibility-poll')
     expect(alarms).toHaveBeenCalledOnce()
-    expect(alarms).toHaveBeenCalledWith(server, 'manifest-applied')
+    expect(alarms).toHaveBeenCalledWith(server, 'manifest-applied', 'compatibility-poll')
   })
 
   it('uses one authenticated live connection and suppresses healthy interval polls', async () => {
@@ -345,6 +345,8 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+    expect(status).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
+    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
     status.mockClear()
     manifest.mockClear()
 
@@ -356,6 +358,8 @@ describe('server sync coordinator', () => {
     expect(socket.sent).toEqual(['ping'])
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+    expect(status).toHaveBeenCalledWith(liveServer, 'interval', 'recovery')
+    expect(manifest).toHaveBeenCalledWith(liveServer, 'interval', 'recovery')
     socket.receiveRaw('pong')
   })
 

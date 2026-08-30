@@ -14,7 +14,8 @@ Measured with `pnpm --filter @caelestis/backend exec wrangler deploy --dry-run -
 | --- | ---: | ---: |
 | Pre-migration `2077607` | 1424.11 KiB | 296.59 KiB |
 | Effect runtime after #158 | 1560.62 KiB | 323.53 KiB |
-| Change | +136.51 KiB (+9.59%) | +26.94 KiB (+9.08%) |
+| Cached live-sync stack through #167 | 1644.60 KiB | 341.43 KiB |
+| Final change from pre-migration | +220.49 KiB (+15.48%) | +44.84 KiB (+15.12%) |
 
 ## Request-boundary microbenchmark
 
