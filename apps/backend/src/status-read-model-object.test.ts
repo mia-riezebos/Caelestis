@@ -461,6 +461,7 @@ describe('status read-model Durable Object', () => {
       ],
     })
     await recovered.notifyManifestChange(8)
+    await recovered.notifyAlarmChange(8)
     await recovered.closeCredential(8, 'b'.repeat(64))
 
     for (const subscriber of [publicSocket, adminSocket]) {
@@ -468,6 +469,7 @@ describe('status read-model Durable Object', () => {
       expect(subscriber.send).toHaveBeenCalledWith(
         JSON.stringify({ type: 'manifest-reconcile', revision: 2 }),
       )
+      expect(subscriber.send).toHaveBeenCalledWith(JSON.stringify({ type: 'alarms-reconcile' }))
     }
     expect(otherSeason.send).not.toHaveBeenCalled()
     expect(missingAttachment.send).not.toHaveBeenCalled()

@@ -11,6 +11,7 @@ describe('Durable Object status read-model adapter', () => {
         snapshot: { revision: 4, templates: [] },
       })),
       notifyManifestChange: vi.fn(async () => undefined),
+      notifyAlarmChange: vi.fn(async () => undefined),
       closeCredential: vi.fn(async () => undefined),
       fetch: vi.fn(async (_request: Request) => new Response(null, { status: 204 })),
     }
@@ -25,6 +26,7 @@ describe('Durable Object status read-model adapter', () => {
       snapshot: { revision: 4, templates: [] },
     })
     await model.notifyManifestChange(8)
+    await model.notifyAlarmChange(8)
     await model.closeCredential(8, 'b'.repeat(64))
     await model.connectLive(
       new Request('https://server.test/telemetry/live', {
@@ -47,6 +49,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(stub.applyCommittedChange).toHaveBeenCalledWith(8)
     expect(stub.reconcileSnapshot).toHaveBeenCalledWith(8, 'admin')
     expect(stub.notifyManifestChange).toHaveBeenCalledWith(8)
+    expect(stub.notifyAlarmChange).toHaveBeenCalledWith(8)
     expect(stub.closeCredential).toHaveBeenCalledWith(8, 'b'.repeat(64))
     const forwarded = stub.fetch.mock.calls[0]?.[0]
     expect(forwarded?.headers.get('authorization')).toBeNull()
