@@ -16,7 +16,8 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { ContributionDelta, Ports } from '../ports/index.js'
+import type { ContributionDelta } from '../ports/index.js'
+import { makeBackendContext } from '../runtime/backend-runtime.js'
 import { selectTelemetryHistoryResolution, selectTileHistoryResolution } from './telemetry.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
@@ -31,7 +32,7 @@ const harness = async () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-  const ports: Ports = { blobs, sql, counters }
+  const context = makeBackendContext(blobs, sql, counters)
   await sql.insertNode({
     id: NODE_ID,
     surface: { kind: 'world', allianceId: null },
@@ -46,7 +47,7 @@ const harness = async () => {
     blobs,
     sql,
     counters,
-    app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
+    app: createApp(context, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
   }
 }
 

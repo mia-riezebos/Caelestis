@@ -9,8 +9,8 @@ import {
   WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
-import type { AlarmProbe, Ports } from '../ports/index.js'
-import { createBackendRuntime } from '../runtime/backend-runtime.js'
+import type { AlarmProbe, BlobStore, CounterStore, SqlStore } from '../ports/index.js'
+import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 import { MAX_CANVAS_TILE_BYTES, refreshAuthoritativeTile, uploadTile } from './ingest.js'
 
 /**
@@ -39,6 +39,13 @@ export const FETCHER_USER_ID = 0
 export const MAX_FETCH_TILES_PER_RUN = 100
 export const MAX_ALARM_PROBES_PER_RUN = 25
 export const ALARM_FOLLOW_UP_RETRY_MILLISECONDS = 60_000
+
+/** The three concrete adapters used by server-owned background tile refreshes. */
+export interface FetcherStores {
+  readonly blobs: BlobStore
+  readonly sql: SqlStore
+  readonly counters: CounterStore
+}
 
 export const ALARM_SCAN_INTERVAL_SECONDS = 6 * 60 * 60
 /** Cron delivery is not exact; keep a small overlap between adjacent bounded batches. */
@@ -79,7 +86,7 @@ const wplaceTileUrl = (season: number, tile: TileCoord): string =>
   `https://backend.wplace.live/files/s${season}/tiles/${tile.x}/${tile.y}.png`
 
 export const fetchCanvasTiles = async (
-  ports: Ports,
+  ports: FetcherStores,
   options: {
     readonly season: number
     readonly now?: Seconds
@@ -94,7 +101,7 @@ export const fetchCanvasTiles = async (
   const alarmIdFactory = options.alarmIdFactory ?? uuidV7
   const maxTiles = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
   const { season } = options
-  const runtime = createBackendRuntime(ports)
+  const runtime = createBackendRuntime(makeBackendContext(ports.blobs, ports.sql, ports.counters))
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
   // admin's draft deserves the same timelapse the published version will show.
@@ -275,7 +282,7 @@ export const fetchCanvasTiles = async (
 
 /** Refetch only the templates whose six-hour scan opened a regression episode. */
 export const fetchAlarmFollowUps = async (
-  ports: Ports,
+  ports: FetcherStores,
   probes: readonly AlarmProbe[],
   options: {
     readonly now?: Seconds
@@ -288,7 +295,7 @@ export const fetchAlarmFollowUps = async (
 ): Promise<AlarmFollowUpReport> => {
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
   const fetchImpl = options.fetchImpl ?? fetch
-  const runtime = createBackendRuntime(ports)
+  const runtime = createBackendRuntime(makeBackendContext(ports.blobs, ports.sql, ports.counters))
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
   let evaluated = 0
   let failed = 0

@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from 'effect'
-import type { BlobStore, CounterStore, Ports, SqlStore } from '../ports/index.js'
+import type { BlobStore, CounterStore, SqlStore } from '../ports/index.js'
 
 export class BlobStoreService extends Context.Service<BlobStoreService, BlobStore>()(
   '@caelestis/backend/BlobStore',
@@ -14,19 +14,26 @@ export class CounterStoreService extends Context.Service<CounterStoreService, Co
 ) {}
 
 export type BackendServices = BlobStoreService | SqlStoreService | CounterStoreService
+export type BackendContext = Context.Context<BackendServices>
 
-export const contextFromPorts = (ports: Ports): Context.Context<BackendServices> =>
-  Context.make(BlobStoreService, ports.blobs).pipe(
-    Context.add(SqlStoreService, ports.sql),
-    Context.add(CounterStoreService, ports.counters),
+export const makeBackendContext = (
+  blobs: BlobStore,
+  sql: SqlStore,
+  counters: CounterStore,
+): BackendContext =>
+  Context.make(BlobStoreService, blobs).pipe(
+    Context.add(SqlStoreService, sql),
+    Context.add(CounterStoreService, counters),
   )
 
-export const layerFromPorts = (ports: Ports): Layer.Layer<BackendServices> =>
-  Layer.succeedContext(contextFromPorts(ports))
+export const makeBackendLayer = (
+  blobs: BlobStore,
+  sql: SqlStore,
+  counters: CounterStore,
+): Layer.Layer<BackendServices> => Layer.succeedContext(makeBackendContext(blobs, sql, counters))
 
 export interface BackendRuntime {
-  readonly context: Context.Context<BackendServices>
-  readonly layer: Layer.Layer<BackendServices>
+  readonly context: BackendContext
   readonly run: <A, E>(effect: Effect.Effect<A, E, BackendServices>) => Promise<A>
   readonly runHandled: <A, E, B>(
     effect: Effect.Effect<A, E, BackendServices>,
@@ -34,19 +41,9 @@ export interface BackendRuntime {
   ) => Promise<A | B>
 }
 
-/**
- * The temporary bridge from the current dependency bag to Effect services.
- *
- * Routes migrate one at a time. The bridge disappears after the last caller stops accepting
- * `Ports`, while the Context service identities remain stable.
- */
-export const createBackendRuntime = (ports: Ports): BackendRuntime => {
-  const context = contextFromPorts(ports)
-  const layer = Layer.succeedContext(context)
-
+export const createBackendRuntime = (context: BackendContext): BackendRuntime => {
   return {
     context,
-    layer,
     run: (effect) => Effect.runPromise(Effect.provideContext(effect, context)),
     runHandled: (effect, onError) =>
       Effect.runPromise(
