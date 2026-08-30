@@ -19,6 +19,12 @@ import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
 import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
+import { coalesceServerRead } from './server-read-coalescer.js'
+import {
+  registerServerSyncResource,
+  requestServerSync,
+  type ServerSyncResult,
+} from './server-sync-coordinator.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -28,13 +34,14 @@ import {
   onServerContents,
   onStateChange,
   type ServerContents,
+  serverConnectionIdentity,
+  serverConnectionSignal,
 } from './state.js'
 import type { TemplateColourProgress, TemplateProgress } from './templates/mismatch.js'
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
 import { accountIdentity, loadAccount } from './wplace-account.js'
 
 const OFFER_DELAY_MS = 250
-const STATUS_POLL_MS = 30_000
 const REQUEST_TIMEOUT_MS = 15_000
 const RETRIES = 3
 const MAX_RECENT_TILES = 32
@@ -142,7 +149,10 @@ const fetchWithRetry = async (url: string, init: RequestInit): Promise<Response 
     try {
       const response = await fetch(url, {
         ...init,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal:
+          init.signal == null
+            ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+            : AbortSignal.any([init.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       })
       if (response.ok || (response.status >= 400 && response.status < 500)) return response
     } catch {
@@ -244,7 +254,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     ),
   )
   const uploaded = await uploadWanted(server, identity, entries, wanted)
-  await refreshStatus(server, 'post-offer')
+  requestServerSync('post-offer', 'telemetry-status', server)
   const previousDedupe = offered.get(server.url)
   const dedupe =
     previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
@@ -402,7 +412,7 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   if (!isCurrentServerConnection(server)) return
   coverage.set(server.url, { server, tiles: coverageFrom(contents), contents })
   replayRecent(server)
-  void refreshServerTelemetry(server, 'manifest-applied').catch(reportTelemetryError)
+  requestServerSync('manifest-applied', 'telemetry-alarms', server)
 }
 
 const alarmFrom = (value: unknown): Alarm | null => {
@@ -480,109 +490,129 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
 const refreshStatus = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
-): Promise<void> => {
-  if (server.season === null || !isCurrentServerConnection(server)) return
-  const response = await fetchWithRetry(
-    serverEndpoint(server.url, `/telemetry/status?season=${server.season}`),
-    {
-      headers: {
-        ...authHeaders(server),
-        ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
-      },
+): Promise<ServerSyncResult> => {
+  if (server.season === null || !isCurrentServerConnection(server)) return { status: 'skipped' }
+  return coalesceServerRead(
+    serverConnectionIdentity(server),
+    `${server.season}\u0000world\u0000status`,
+    async () => {
+      const response = await fetchWithRetry(
+        serverEndpoint(server.url, `/telemetry/status?season=${server.season}`),
+        {
+          headers: {
+            ...authHeaders(server),
+            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+          },
+          signal: serverConnectionSignal(server),
+        },
+      )
+      if (response === null || !response.ok || !isCurrentServerConnection(server))
+        return { status: 'failed' }
+      const body = (await response.json().catch(() => null)) as Partial<StatusResponse> | null
+      if (
+        body === null ||
+        !Array.isArray(body.templates) ||
+        body.templates.length > MAX_MANIFEST_TEMPLATES
+      )
+        return { status: 'failed' }
+      let changed = false
+      const present = new Set<string>()
+      for (const raw of body.templates) {
+        const status = templateStatusFrom(raw)
+        if (status === null) return { status: 'failed' }
+        const key = statusKey(server.url, status.templateId)
+        present.add(key)
+        if (JSON.stringify(statuses.get(key)?.value) !== JSON.stringify(status)) {
+          statuses.set(key, { server, value: status })
+          changed = true
+        }
+      }
+      for (const key of [...statuses.keys()]) {
+        if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
+        statuses.delete(key)
+        changed = true
+      }
+      if (changed) {
+        for (const listener of statusListeners) {
+          try {
+            listener()
+          } catch (error) {
+            reportTelemetryError(error)
+          }
+        }
+      }
+      return { status: changed ? 'changed' : 'unchanged' }
     },
   )
-  if (response === null || !response.ok || !isCurrentServerConnection(server)) return
-  const body = (await response.json().catch(() => null)) as Partial<StatusResponse> | null
-  if (body === null || !Array.isArray(body.templates)) return
-  let changed = false
-  const present = new Set<string>()
-  for (const raw of body.templates) {
-    const status = templateStatusFrom(raw)
-    if (status === null) return
-    const key = statusKey(server.url, status.templateId)
-    present.add(key)
-    if (JSON.stringify(statuses.get(key)?.value) !== JSON.stringify(status)) {
-      statuses.set(key, { server, value: status })
-      changed = true
-    }
-  }
-  for (const key of [...statuses.keys()]) {
-    if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
-    statuses.delete(key)
-    changed = true
-  }
-  if (changed) {
-    for (const listener of statusListeners) {
-      try {
-        listener()
-      } catch (error) {
-        reportTelemetryError(error)
-      }
-    }
-  }
 }
 
 const refreshAlarms = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
-): Promise<void> => {
-  if (server.season === null || !isCurrentServerConnection(server)) return
+): Promise<ServerSyncResult> => {
+  if (server.season === null || !isCurrentServerConnection(server)) return { status: 'skipped' }
   const snapshot = coverage.get(server.url)
-  if (snapshot === undefined || !isCurrentServerConnection(snapshot.server)) return
-  const response = await fetchWithRetry(
-    serverEndpoint(server.url, `/telemetry/alarms?season=${server.season}`),
-    {
-      headers: {
-        ...authHeaders(server),
-        ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
-      },
+  if (snapshot === undefined || !isCurrentServerConnection(snapshot.server))
+    return { status: 'skipped' }
+  return coalesceServerRead(
+    serverConnectionIdentity(server),
+    `${server.season}\u0000world\u0000alarms`,
+    async () => {
+      const response = await fetchWithRetry(
+        serverEndpoint(server.url, `/telemetry/alarms?season=${server.season}`),
+        {
+          headers: {
+            ...authHeaders(server),
+            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+          },
+          signal: serverConnectionSignal(server),
+        },
+      )
+      if (
+        response === null ||
+        !response.ok ||
+        !isCurrentServerConnection(server) ||
+        coverage.get(server.url) !== snapshot
+      )
+        return { status: 'failed' }
+      const body = (await response.json().catch(() => null)) as Partial<AlarmsResponse> | null
+      if (
+        body === null ||
+        !Array.isArray(body.alarms) ||
+        body.alarms.length > MAX_MANIFEST_TEMPLATES
+      )
+        return { status: 'failed' }
+      const parsed: Alarm[] = []
+      const templateIds = new Set<string>()
+      for (const raw of body.alarms) {
+        const alarm = alarmFrom(raw)
+        if (alarm === null || templateIds.has(alarm.templateId)) return { status: 'failed' }
+        templateIds.add(alarm.templateId)
+        parsed.push(alarm)
+      }
+      let changed = false
+      const present = new Set<string>()
+      for (const alarm of parsed) {
+        const key = statusKey(server.url, alarm.templateId)
+        present.add(key)
+        const held = alarms.get(key)
+        if (
+          held?.contents !== snapshot.contents ||
+          JSON.stringify(held.value) !== JSON.stringify(alarm)
+        ) {
+          alarms.set(key, { server, contents: snapshot.contents, value: alarm })
+          changed = true
+        }
+      }
+      for (const key of [...alarms.keys()]) {
+        if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
+        alarms.delete(key)
+        changed = true
+      }
+      if (changed) notifyAlarmListeners()
+      return { status: changed ? 'changed' : 'unchanged' }
     },
   )
-  if (
-    response === null ||
-    !response.ok ||
-    !isCurrentServerConnection(server) ||
-    coverage.get(server.url) !== snapshot
-  )
-    return
-  const body = (await response.json().catch(() => null)) as Partial<AlarmsResponse> | null
-  if (body === null || !Array.isArray(body.alarms) || body.alarms.length > MAX_MANIFEST_TEMPLATES)
-    return
-  const parsed: Alarm[] = []
-  const templateIds = new Set<string>()
-  for (const raw of body.alarms) {
-    const alarm = alarmFrom(raw)
-    if (alarm === null || templateIds.has(alarm.templateId)) return
-    templateIds.add(alarm.templateId)
-    parsed.push(alarm)
-  }
-  let changed = false
-  const present = new Set<string>()
-  for (const alarm of parsed) {
-    const key = statusKey(server.url, alarm.templateId)
-    present.add(key)
-    const held = alarms.get(key)
-    if (
-      held?.contents !== snapshot.contents ||
-      JSON.stringify(held.value) !== JSON.stringify(alarm)
-    ) {
-      alarms.set(key, { server, contents: snapshot.contents, value: alarm })
-      changed = true
-    }
-  }
-  for (const key of [...alarms.keys()]) {
-    if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
-    alarms.delete(key)
-    changed = true
-  }
-  if (changed) notifyAlarmListeners()
-}
-
-const refreshServerTelemetry = async (
-  server: ConnectedServer,
-  reason: ReconciliationReason,
-): Promise<void> => {
-  await Promise.all([refreshStatus(server, reason), refreshAlarms(server, reason)])
 }
 
 const notifyAlarmListeners = (): void => {
@@ -711,19 +741,21 @@ export const installTelemetry = (): void => {
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
       replayRecent(server)
-      void refreshServerTelemetry(server, 'state-change').catch(reportTelemetryError)
     }
   })
-  setInterval(() => {
-    for (const server of getState().servers) {
-      if (server.status === 'connected')
-        void refreshServerTelemetry(server, 'interval').catch(reportTelemetryError)
-    }
-  }, STATUS_POLL_MS)
-  for (const server of getState().servers) {
-    if (server.status === 'connected')
-      void refreshServerTelemetry(server, 'connect').catch(reportTelemetryError)
-  }
+  registerServerSyncResource({
+    id: 'telemetry-status',
+    scope: (server) => (server.status === 'connected' && server.season !== null ? 'world' : null),
+    refresh: refreshStatus,
+  })
+  registerServerSyncResource({
+    id: 'telemetry-alarms',
+    scope: (server) =>
+      server.status === 'connected' && server.season !== null && coverageFor(server) !== null
+        ? 'world'
+        : null,
+    refresh: refreshAlarms,
+  })
 }
 
 export const reportTelemetryError = (error: unknown): void => {
