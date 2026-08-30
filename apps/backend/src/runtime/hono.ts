@@ -7,12 +7,19 @@ const mapBackendHttpError = (context: Context, error: BackendHttpError): Respons
   switch (error._tag) {
     case 'SqlStoreReadError':
     case 'TelemetryStorageError':
+    case 'BackendStorageError':
       // Hono's default error handler logged the rejected store call before returning this response.
       // Keep that signal while the failure moves into Effect's typed channel.
       console.error(error.cause)
       return context.text('Internal Server Error', 500)
     case 'TelemetryValidationError':
       return context.json({ error: error.message }, 400)
+    case 'RequestValidationError':
+      return context.json({ error: error.message }, error.status ?? 400)
+    case 'ResourceNotFoundError':
+      return context.json({ error: error.message }, 404)
+    case 'ResourceConflictError':
+      return context.json({ error: error.message }, 409)
   }
 }
 
