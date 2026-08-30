@@ -1,4 +1,4 @@
-import type { Template } from '@caelestis/shared'
+import type { AlarmKind, Template } from '@caelestis/shared'
 
 export type TemplateLifecycleState = Pick<
   Template,
@@ -15,6 +15,8 @@ export interface TemplateStateProps {
   finished?: boolean
   frozen?: boolean
   griefed?: boolean
+  alarmKind?: AlarmKind | undefined
+  pixelsLost?: number | undefined
   compact?: boolean
 }
 

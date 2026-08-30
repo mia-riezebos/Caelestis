@@ -67,6 +67,19 @@ describe('@caelestis/ui', () => {
     )
   })
 
+  it('renders server-owned regression and sustained-griefing alarms independently', async () => {
+    const state = new CaelestisTemplateState()
+    state.alarmKind = 'regression'
+    state.pixelsLost = 1234
+    document.body.append(state)
+    await tick()
+    expect(state.shadowRoot?.textContent).toContain('Regression · 1,234 px lost')
+
+    state.alarmKind = 'sustained-griefing'
+    await tick()
+    expect(state.shadowRoot?.textContent).toContain('Sustained griefing · 1,234 px lost')
+  })
+
   it('emits composed lifecycle intents and disables both actions while busy', async () => {
     const admin = new CaelestisTemplateAdmin()
     const changed = vi.fn()

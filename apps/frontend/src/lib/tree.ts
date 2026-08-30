@@ -1,4 +1,5 @@
 import type {
+  Alarm,
   Manifest,
   Node,
   Template,
@@ -55,6 +56,7 @@ export const sumProgress = (parts: readonly Progress[]): Progress =>
 export interface TreeTemplate {
   readonly template: Template
   readonly status: TemplateStatus | undefined
+  readonly alarm: Alarm | undefined
   readonly progress: Progress
 }
 
@@ -95,6 +97,7 @@ const countable = (templates: readonly TreeTemplate[]): readonly Progress[] =>
 export const buildTree = (
   manifest: Manifest,
   statuses: ReadonlyMap<string, TemplateStatus>,
+  alarms: ReadonlyMap<string, Alarm> = new Map(),
 ): TemplateTree => {
   const folderById = new Map<
     string,
@@ -109,6 +112,7 @@ export const buildTree = (
     const entry: TreeTemplate = {
       template,
       status: statuses.get(template.id),
+      alarm: alarms.get(template.id),
       progress: progressFromStatus(template, statuses.get(template.id)),
     }
     const parent = template.nodeId === null ? undefined : folderById.get(template.nodeId)
