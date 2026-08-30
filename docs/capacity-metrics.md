@@ -67,6 +67,12 @@ read from its package after Changesets have applied release bumps, while prior m
 releases are retained from the generated changelog. All caller-supplied alternatives collapse to
 `unknown`.
 
+The userscript's bounded debug counters expose the client side of offer suppression through
+`telemetry:tile-offers-avoided`, `-retried`, `-requested`, `-accepted`, and `-rejected`. These count
+observations rather than HTTP batches and are available from `__caelestis.counters()`. Server-side
+requested, accepted-for-upload, already-known, and rejected outcomes remain authoritative in the
+Analytics Engine columns above.
+
 ## Repeatable queries
 
 Use a fixed UTC start and end in place of the relative interval when capturing a release comparison.

@@ -711,6 +711,8 @@ export const offerTiles = (
 
 export interface TileOfferResult {
   readonly wanted: readonly string[]
+  readonly acknowledged: readonly string[]
+  readonly rejectedKeys: readonly string[]
   readonly accepted: number
   readonly alreadyKnown: number
   readonly rejected: number
@@ -730,6 +732,8 @@ export const offerTilesWithOutcome = (
     const sql = yield* SqlStoreService
     const statusReadModel = yield* StatusReadModelService
     const wanted: string[] = []
+    const acknowledged: string[] = []
+    const rejectedKeys: string[] = []
     const mutations = new Map<number, StatusProjectionMutation[]>()
     let projection: StatusProjectionChange | null = null
     let alreadyKnown = 0
@@ -752,8 +756,13 @@ export const offerTilesWithOutcome = (
               }),
             )
             if (outcome === 'wanted') wanted.push(offer.key)
-            else if (outcome === 'recorded') alreadyKnown++
-            else rejected++
+            else if (outcome === 'recorded') {
+              acknowledged.push(offer.key)
+              alreadyKnown++
+            } else {
+              rejectedKeys.push(offer.key)
+              rejected++
+            }
           }
         }),
       () =>
@@ -771,7 +780,15 @@ export const offerTilesWithOutcome = (
           }
         }),
     )
-    return { wanted, accepted: wanted.length, alreadyKnown, rejected, projection }
+    return {
+      wanted,
+      acknowledged,
+      rejectedKeys,
+      accepted: wanted.length,
+      alreadyKnown,
+      rejected,
+      projection,
+    }
   })
 
 /** Validate and persist one uploaded tile without leaking storage failures into a 400 response. */
