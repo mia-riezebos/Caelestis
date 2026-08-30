@@ -54,6 +54,11 @@ import {
   type TemplateTileStatusRecord,
   type TemplateVersionRecord,
   TILE_HISTORY_DECAY_EDGES,
+  type TileBlobCandidateResult,
+  type TileBlobClaimResult,
+  type TileBlobObject,
+  type TileBlobReservation,
+  type TileBlobScanState,
   type TileHistoryQuery,
   type TileHistoryReporterRow,
   type TileObservation,
@@ -109,6 +114,9 @@ export class MemorySqlStore implements SqlStore {
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
   private readonly tileHistory = new Map<string, TileHistoryRow>()
+  private readonly tileBlobObjects = new Map<string, TileBlobObject>()
+  private readonly tileBlobReservations = new Map<string, TileBlobReservation>()
+  private tileBlobScanState: TileBlobScanState = { completedSweeps: 0 }
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -665,6 +673,204 @@ export class MemorySqlStore implements SqlStore {
       if (current === undefined || current.observedAt <= status.observedAt) {
         this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
       }
+    }
+  }
+
+  private expireTileBlobReservations(now: number): void {
+    for (const [id, reservation] of this.tileBlobReservations) {
+      if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
+    }
+  }
+
+  private tileBlobIsReferenced(hash: string): boolean {
+    return (
+      [...this.canvasTiles.values()].some((row) => row.hash === hash) ||
+      [...this.tileHistory.values()].some((row) => row.hash === hash)
+    )
+  }
+
+  private tileBlobHasReservation(hash: string): boolean {
+    return [...this.tileBlobReservations.values()].some((reservation) => reservation.hash === hash)
+  }
+
+  private copyTileBlob(object: TileBlobObject): TileBlobObject {
+    return { ...object }
+  }
+
+  async readTileBlob(hash: string): Promise<TileBlobObject | null> {
+    const object = [...this.tileBlobObjects.values()]
+      .filter((candidate) => candidate.hash === hash && candidate.state === 'active')
+      .sort((left, right) => left.blobKey.localeCompare(right.blobKey))[0]
+    return object === undefined ? null : this.copyTileBlob(object)
+  }
+
+  async reserveTileBlob(
+    hash: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null> {
+    this.expireTileBlobReservations(now)
+    if (
+      [...this.tileBlobObjects.values()].some(
+        (object) => object.hash === hash && object.state === 'deleting',
+      )
+    ) {
+      return null
+    }
+    const object = [...this.tileBlobObjects.values()]
+      .filter(
+        (candidate) =>
+          candidate.hash === hash &&
+          (candidate.state === 'active' ||
+            candidate.state === 'candidate' ||
+            candidate.state === 'uploading'),
+      )
+      .sort((left, right) => left.blobKey.localeCompare(right.blobKey))[0]
+    if (object === undefined) return null
+    const active = { ...object, state: 'active' as const }
+    this.tileBlobObjects.set(active.blobKey, active)
+    const reservation = { id: reservationId, hash, blobKey: active.blobKey, expiresAt }
+    this.tileBlobReservations.set(reservationId, reservation)
+    return { ...reservation }
+  }
+
+  async reserveTileBlobUpload(
+    hash: string,
+    blobKey: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null> {
+    this.expireTileBlobReservations(now)
+    if (
+      [...this.tileBlobObjects.values()].some(
+        (object) => object.hash === hash && object.state === 'deleting',
+      )
+    ) {
+      return null
+    }
+    const held = this.tileBlobObjects.get(blobKey)
+    if (held !== undefined && (held.hash !== hash || held.state === 'deleting')) return null
+    this.tileBlobObjects.set(blobKey, {
+      blobKey,
+      hash,
+      state: 'uploading',
+      discoveredAt: held?.discoveredAt ?? now,
+      deleteStartedAt: null,
+      deleteAttempts: held?.deleteAttempts ?? 0,
+      reclaimedAt: null,
+    })
+    const reservation = { id: reservationId, hash, blobKey, expiresAt }
+    this.tileBlobReservations.set(reservationId, reservation)
+    return { ...reservation }
+  }
+
+  async commitTileBlobReservation(
+    reservationId: string,
+    now: Millis,
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+    recordHistory = true,
+  ): Promise<boolean> {
+    this.expireTileBlobReservations(now)
+    const reservation = this.tileBlobReservations.get(reservationId)
+    if (reservation === undefined || reservation.hash !== observation.hash) return false
+    if (
+      [...this.tileBlobObjects.values()].some(
+        (object) => object.hash === reservation.hash && object.state === 'deleting',
+      )
+    ) {
+      return false
+    }
+    const object = this.tileBlobObjects.get(reservation.blobKey)
+    if (object === undefined || object.hash !== reservation.hash) return false
+    this.tileBlobObjects.set(object.blobKey, {
+      ...object,
+      state: 'active',
+      reclaimedAt: null,
+    })
+    await this.recordTileObservation(observation, statuses, recordHistory)
+    this.tileBlobReservations.delete(reservationId)
+    return true
+  }
+
+  async releaseTileBlobReservation(reservationId: string): Promise<void> {
+    this.tileBlobReservations.delete(reservationId)
+  }
+
+  async noteTileBlobObject(
+    hash: string,
+    blobKey: string,
+    now: Millis,
+  ): Promise<TileBlobCandidateResult> {
+    this.expireTileBlobReservations(now)
+    const held = this.tileBlobObjects.get(blobKey)
+    if (held?.state === 'deleting') return 'deleting'
+    const referenced = this.tileBlobIsReferenced(hash) || this.tileBlobHasReservation(hash)
+    const state = referenced ? 'active' : 'candidate'
+    this.tileBlobObjects.set(blobKey, {
+      blobKey,
+      hash,
+      state,
+      discoveredAt: held?.discoveredAt ?? now,
+      deleteStartedAt: null,
+      deleteAttempts: held?.deleteAttempts ?? 0,
+      reclaimedAt: null,
+    })
+    return referenced ? 'referenced' : 'candidate'
+  }
+
+  async listTileBlobDeletionWork(limit: number): Promise<readonly TileBlobObject[]> {
+    return [...this.tileBlobObjects.values()]
+      .filter((object) => object.state === 'deleting' || object.state === 'candidate')
+      .sort(
+        (left, right) =>
+          (left.state === 'deleting' ? 0 : 1) - (right.state === 'deleting' ? 0 : 1) ||
+          left.discoveredAt - right.discoveredAt ||
+          left.blobKey.localeCompare(right.blobKey),
+      )
+      .slice(0, limit)
+      .map((object) => this.copyTileBlob(object))
+  }
+
+  async claimTileBlobDeletion(blobKey: string, now: Millis): Promise<TileBlobClaimResult> {
+    this.expireTileBlobReservations(now)
+    const object = this.tileBlobObjects.get(blobKey)
+    if (object === undefined || (object.state !== 'candidate' && object.state !== 'deleting')) {
+      return 'missing'
+    }
+    if (this.tileBlobIsReferenced(object.hash) || this.tileBlobHasReservation(object.hash)) {
+      this.tileBlobObjects.set(blobKey, {
+        ...object,
+        state: 'active',
+        deleteStartedAt: null,
+      })
+      return 'blocked'
+    }
+    this.tileBlobObjects.set(blobKey, {
+      ...object,
+      state: 'deleting',
+      deleteStartedAt: object.deleteStartedAt ?? now,
+      deleteAttempts: object.deleteAttempts + 1,
+    })
+    return 'claimed'
+  }
+
+  async finishTileBlobDeletion(blobKey: string, reclaimedAt: Millis): Promise<void> {
+    const object = this.tileBlobObjects.get(blobKey)
+    if (object?.state !== 'deleting') return
+    this.tileBlobObjects.set(blobKey, { ...object, state: 'deleted', reclaimedAt })
+  }
+
+  async readTileBlobScanState(): Promise<TileBlobScanState> {
+    return { ...this.tileBlobScanState }
+  }
+
+  async writeTileBlobScanState(cursor: string | undefined): Promise<void> {
+    this.tileBlobScanState = {
+      ...(cursor === undefined ? {} : { cursor }),
+      completedSweeps: this.tileBlobScanState.completedSweeps + (cursor === undefined ? 1 : 0),
     }
   }
 

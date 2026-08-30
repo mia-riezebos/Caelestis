@@ -567,6 +567,36 @@ export interface TileObservation {
 
 export type LatestTileObservation = Pick<TileObservation, 'season' | 'tile' | 'hash' | 'observedAt'>
 
+export type TileBlobObjectState = 'uploading' | 'active' | 'candidate' | 'deleting' | 'deleted'
+
+/** One physical R2 object carrying the bytes for a public content hash. */
+export interface TileBlobObject {
+  /** Key relative to `tiles/`. A suffix makes a restored generation immune to an older delete. */
+  readonly blobKey: string
+  readonly hash: string
+  readonly state: TileBlobObjectState
+  readonly discoveredAt: Millis
+  readonly deleteStartedAt: Millis | null
+  readonly deleteAttempts: number
+  readonly reclaimedAt: Millis | null
+}
+
+/** A live ingest claim. GC may not fence this hash until the claim commits or expires. */
+export interface TileBlobReservation {
+  readonly id: string
+  readonly hash: string
+  readonly blobKey: string
+  readonly expiresAt: Millis
+}
+
+export type TileBlobCandidateResult = 'candidate' | 'referenced' | 'deleting' | 'deleted'
+export type TileBlobClaimResult = 'claimed' | 'blocked' | 'missing'
+
+export interface TileBlobScanState {
+  readonly cursor?: string
+  readonly completedSweeps: number
+}
+
 export interface TemplateTileStatusRecord {
   readonly templateId: string
   readonly versionId: string
@@ -828,6 +858,59 @@ export interface SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
   ): Promise<void>
+
+  /** The preferred readable physical object for a hash, if one is registered and unfenced. */
+  readTileBlob(hash: string): Promise<TileBlobObject | null>
+
+  /**
+   * Reserve existing bytes for an observation. A candidate returns to active before its fence;
+   * a deleting hash refuses until its old physical key has been reconciled.
+   */
+  reserveTileBlob(
+    hash: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null>
+
+  /** Reserve a never-reused physical key before its bytes are written. */
+  reserveTileBlobUpload(
+    hash: string,
+    blobKey: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null>
+
+  /**
+   * Atomically verify the reservation, activate its object, and create both SQL reference kinds.
+   * False means the reservation expired or a deletion fence won first; no reference was created.
+   */
+  commitTileBlobReservation(
+    reservationId: string,
+    now: Millis,
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+    recordHistory?: boolean,
+  ): Promise<boolean>
+
+  releaseTileBlobReservation(reservationId: string): Promise<void>
+
+  /** Record one object found by a bounded R2 scan and classify it against live SQL references. */
+  noteTileBlobObject(hash: string, blobKey: string, now: Millis): Promise<TileBlobCandidateResult>
+
+  /** Deleting rows come first so interrupted work resumes before new candidates start. */
+  listTileBlobDeletionWork(limit: number): Promise<readonly TileBlobObject[]>
+
+  /** Fence a candidate only after atomically rechecking both reference tables and reservations. */
+  claimTileBlobDeletion(blobKey: string, now: Millis): Promise<TileBlobClaimResult>
+
+  /** Finalize an idempotent R2 delete. Only a fenced row can become deleted. */
+  finishTileBlobDeletion(blobKey: string, reclaimedAt: Millis): Promise<void>
+
+  readTileBlobScanState(): Promise<TileBlobScanState>
+
+  writeTileBlobScanState(cursor: string | undefined): Promise<void>
 
   /** Fold the SQL history for one touched tile. Physical blob GC needs a separately safe protocol. */
   foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<void>

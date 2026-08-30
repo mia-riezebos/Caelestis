@@ -1,4 +1,4 @@
-export type { BlobNamespace, BlobStore } from './blob-store.js'
+export type { BlobListPage, BlobNamespace, BlobStore } from './blob-store.js'
 export { EVENT_TIME_SKEW_SECONDS, isValidCounterDelta } from './counter-delta.js'
 export {
   type CounterDelta,
@@ -66,6 +66,12 @@ export {
   type TemplateVersionRecord,
   TILE_HISTORY_DECAY_EDGES,
   TILE_HISTORY_RESOLUTIONS,
+  type TileBlobCandidateResult,
+  type TileBlobClaimResult,
+  type TileBlobObject,
+  type TileBlobObjectState,
+  type TileBlobReservation,
+  type TileBlobScanState,
   type TileFrameCandidate,
   type TileHistoryQuery,
   type TileHistoryReporterRow,
