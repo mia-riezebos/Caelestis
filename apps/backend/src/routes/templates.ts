@@ -3,6 +3,8 @@ import {
   millis,
   PngError,
   SliceError,
+  type TemplateSurface,
+  templateSurface,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { Hono } from 'hono'
@@ -20,6 +22,7 @@ import { StoreTemplateError, storeTemplate } from '../templates/store.js'
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const WHOLE_NUMBER = /^(0|[1-9]\d*)$/
+const INTEGER = /^(?:0|-?[1-9]\d*)$/
 const MAX_NAME_LENGTH = 256
 
 const isValidName = (name: string): boolean => name.length > 0 && name.length <= MAX_NAME_LENGTH
@@ -28,6 +31,20 @@ const parseWholeNumber = (value: unknown): number | null => {
   if (typeof value !== 'string' || !WHOLE_NUMBER.test(value)) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+const parseInteger = (value: unknown): number | null => {
+  if (typeof value !== 'string' || !INTEGER.test(value)) return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+const parseSurface = (kind: unknown, allianceId: unknown): TemplateSurface | null => {
+  if (kind === undefined && allianceId === undefined) return WORLD_TEMPLATE_SURFACE
+  if (typeof kind !== 'string') return null
+  if (kind === 'world') return allianceId === undefined ? WORLD_TEMPLATE_SURFACE : null
+  const parsedAllianceId = parseWholeNumber(allianceId)
+  return parsedAllianceId === null ? null : templateSurface(kind, parsedAllianceId)
 }
 
 export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) => {
@@ -43,7 +60,16 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     const body = await c.req.parseBody().catch(() => null)
     if (body === null) return c.json({ error: 'invalid multipart body' }, 400)
 
-    const { png, nodeId: rawNodeId, season: rawSeason, name, originX, originY } = body
+    const {
+      png,
+      nodeId: rawNodeId,
+      season: rawSeason,
+      name,
+      originX,
+      originY,
+      surfaceKind,
+      allianceId,
+    } = body
     if (!(png instanceof File)) return c.json({ error: 'png must be a file part' }, 400)
     const nodeId = rawNodeId === undefined ? null : rawNodeId
     if (nodeId !== null && (typeof nodeId !== 'string' || !UUID_V7.test(nodeId))) {
@@ -62,16 +88,33 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       return c.json({ error: 'name must be 1..256 characters' }, 400)
     }
 
-    const parsedOriginX = parseWholeNumber(originX)
-    const parsedOriginY = parseWholeNumber(originY)
+    const surface = parseSurface(surfaceKind, allianceId)
+    if (surface === null) {
+      return c.json(
+        { error: 'surfaceKind must be world or an alliance surface with a positive allianceId' },
+        400,
+      )
+    }
+    const parsedOriginX =
+      surface.kind === 'world' ? parseWholeNumber(originX) : parseInteger(originX)
+    const parsedOriginY =
+      surface.kind === 'world' ? parseWholeNumber(originY) : parseInteger(originY)
     if (parsedOriginX === null || parsedOriginY === null) {
-      return c.json({ error: 'originX and originY must be non-negative integers' }, 400)
+      return c.json(
+        {
+          error:
+            surface.kind === 'world'
+              ? 'originX and originY must be non-negative integers'
+              : 'originX and originY must be integers',
+        },
+        400,
+      )
     }
 
     try {
       const caller = c.get('caller')
       const result = await storeTemplate(ports, {
-        surface: WORLD_TEMPLATE_SURFACE,
+        surface,
         season,
         nodeId,
         name,
@@ -124,14 +167,23 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
 
     const { png, originX, originY } = body
     if (!(png instanceof File)) return c.json({ error: 'png must be a file part' }, 400)
-    const parsedOriginX = parseWholeNumber(originX)
-    const parsedOriginY = parseWholeNumber(originY)
-    if (parsedOriginX === null || parsedOriginY === null) {
-      return c.json({ error: 'originX and originY must be non-negative integers' }, 400)
-    }
-
     const existing = await ports.sql.readTemplate(templateId)
     if (existing === null) return c.json({ error: 'not found' }, 404)
+    const parsedOriginX =
+      existing.surface.kind === 'world' ? parseWholeNumber(originX) : parseInteger(originX)
+    const parsedOriginY =
+      existing.surface.kind === 'world' ? parseWholeNumber(originY) : parseInteger(originY)
+    if (parsedOriginX === null || parsedOriginY === null) {
+      return c.json(
+        {
+          error:
+            existing.surface.kind === 'world'
+              ? 'originX and originY must be non-negative integers'
+              : 'originX and originY must be integers',
+        },
+        400,
+      )
+    }
 
     try {
       const caller = c.get('caller')

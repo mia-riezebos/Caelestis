@@ -28,6 +28,7 @@ export {
   SliceError,
   type SliceResult,
   sliceTemplate,
+  sliceTemplateForSurface,
   type TemplateChunk,
 } from './slice.js'
 export * from './slug.js'
