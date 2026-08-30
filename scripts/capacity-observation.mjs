@@ -113,6 +113,12 @@ export const deriveCapacityCalibration = (
   currentClientDefaults,
   independentActiveUserHours,
 ) => {
+  if (
+    independentActiveUserHours !== undefined &&
+    (!Number.isFinite(independentActiveUserHours) || independentActiveUserHours <= 0)
+  ) {
+    throw new RangeError('independent active-user hours must be a finite positive number')
+  }
   const reportingUsers = Number(database.active_users)
   // Insights has no HTTP request id with which to distinguish periodic status polls from the one
   // refresh after a successful multi-item offer batch. Keep every measured status call as a
@@ -192,8 +198,8 @@ export const parseIndependentActiveUserHours = (value) => {
     throw new RangeError('CAELESTIS_ACTIVE_USER_HOURS must not be blank')
   }
   const hours = Number(value)
-  if (!Number.isFinite(hours) || hours < 0) {
-    throw new RangeError('CAELESTIS_ACTIVE_USER_HOURS must be a finite non-negative number')
+  if (!Number.isFinite(hours) || hours <= 0) {
+    throw new RangeError('CAELESTIS_ACTIVE_USER_HOURS must be a finite positive number')
   }
   return hours
 }

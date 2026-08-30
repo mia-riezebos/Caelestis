@@ -41,12 +41,12 @@ test('reads only public resource identifiers from wrangler configuration', () =>
 
 test('rejects blank or invalid independent active-user hours', () => {
   assert.equal(parseIndependentActiveUserHours(undefined), undefined)
-  assert.equal(parseIndependentActiveUserHours('0'), 0)
   assert.equal(parseIndependentActiveUserHours(' 2.5 '), 2.5)
   assert.throws(() => parseIndependentActiveUserHours(''), /must not be blank/)
   assert.throws(() => parseIndependentActiveUserHours('  '), /must not be blank/)
-  assert.throws(() => parseIndependentActiveUserHours('-1'), /finite non-negative/)
-  assert.throws(() => parseIndependentActiveUserHours('nope'), /finite non-negative/)
+  assert.throws(() => parseIndependentActiveUserHours('0'), /finite positive/)
+  assert.throws(() => parseIndependentActiveUserHours('-1'), /finite positive/)
+  assert.throws(() => parseIndependentActiveUserHours('nope'), /finite positive/)
 })
 
 test('reduces D1 insights and identifies status reads', () => {
@@ -267,40 +267,38 @@ test('marks status-equivalent workload rates as unsafe to scale', () => {
 })
 
 test('uses independently measured user-hours for scalable workload rates', () => {
-  const calibration = deriveCapacityCalibration(
-    {
-      active_users: 2,
-      templates: 1,
-      covered_tiles: 0,
-      template_tile_entries: 0,
-      paint_events: 8,
-      client_tile_observations: 16,
-      distinct_tile_versions: 0,
-      persistent_rows: 1,
-      logical_rows: 1,
-      database_size_bytes: 100,
-      history_start_s: 0,
-    },
-    {
-      rowsRead: 100,
-      rowsWritten: 0,
-      statusRequests: 480,
-      statusRowsRead: 100,
-      paintRowsRead: 0,
-      tileRowsRead: 0,
-      otherRowsRead: 0,
-    },
-    {
-      paintBatchWindowSeconds: 0,
-      maxPaintEventsPerReport: 1,
-      tileOfferBatchWindowSeconds: 0.25,
-      maxTileOffersPerRequest: 64,
-      statusPollIntervalSeconds: 30,
-      statusRefreshesPerTileOfferRequest: 1,
-      lifecycleStatusRefreshesPerUserDay: 2,
-    },
-    2,
-  )
+  const database = {
+    active_users: 2,
+    templates: 1,
+    covered_tiles: 0,
+    template_tile_entries: 0,
+    paint_events: 8,
+    client_tile_observations: 16,
+    distinct_tile_versions: 0,
+    persistent_rows: 1,
+    logical_rows: 1,
+    database_size_bytes: 100,
+    history_start_s: 0,
+  }
+  const insights = {
+    rowsRead: 100,
+    rowsWritten: 0,
+    statusRequests: 480,
+    statusRowsRead: 100,
+    paintRowsRead: 0,
+    tileRowsRead: 0,
+    otherRowsRead: 0,
+  }
+  const defaults = {
+    paintBatchWindowSeconds: 0,
+    maxPaintEventsPerReport: 1,
+    tileOfferBatchWindowSeconds: 0.25,
+    maxTileOffersPerRequest: 64,
+    statusPollIntervalSeconds: 30,
+    statusRefreshesPerTileOfferRequest: 1,
+    lifecycleStatusRefreshesPerUserDay: 2,
+  }
+  const calibration = deriveCapacityCalibration(database, insights, defaults, 2)
 
   assert.equal(calibration.activeTimeCalibration.source, 'independent-user-hours')
   assert.equal(calibration.activeTimeCalibration.workloadRatesScalable, true)
@@ -308,6 +306,7 @@ test('uses independently measured user-hours for scalable workload rates', () =>
   assert.equal(calibration.modelInputs.activeHoursPerUser, 1)
   assert.equal(calibration.modelInputs.paintEventsPerUserHour, 4)
   assert.equal(calibration.modelInputs.tileFetchesPerUserHour, 8)
+  assert.throws(() => deriveCapacityCalibration(database, insights, defaults, 0), /finite positive/)
 })
 
 test('preserves status and tile-read totals across a multi-item partial-upload batch', () => {
