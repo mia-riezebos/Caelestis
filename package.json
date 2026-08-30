@@ -10,8 +10,7 @@
     "build": "turbo build",
     "dev": "turbo run dev",
     "check": "turbo check",
-    "test": "pnpm test:fixtures && pnpm test:capacity && turbo test",
-    "test:capacity": "node --test scripts/capacity-observation.test.mjs",
+    "test": "pnpm test:fixtures && turbo test",
     "test:fixtures": "node --test fixtures/berrycamp/fixtures.test.mjs",
     "lint": "biome check .",
     "format": "biome check --write .",
@@ -20,7 +19,6 @@
     "inject": "pnpm --filter @caelestis/userscript inject",
     "inject:watch": "pnpm --filter @caelestis/userscript inject:watch",
     "browser": "pnpm --filter @caelestis/userscript browser",
-    "capacity:observe": "pnpm --filter @caelestis/shared build && pnpm --filter @caelestis/backend build && node scripts/capacity-observation.mjs",
     "release:version": "changeset version",
     "test:release": "node .github/scripts/check-userscript-release-notes.mjs && node --test .github/scripts/*.test.mjs"
   },
