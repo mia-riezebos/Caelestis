@@ -20,6 +20,10 @@ const LIVE_HEARTBEAT_MS = 15 * 60_000
 const LIVE_HEARTBEAT_TIMEOUT_MS = 10_000
 const LIVE_RECOVERY_POLL_MS = 15 * 60_000
 
+type ParsedLiveEvent =
+  | Exclude<LiveSyncServerEvent, { readonly type: 'manifest-reconcile' }>
+  | { readonly type: 'manifest-reconcile'; readonly revision: number | null }
+
 export interface ServerSyncResult {
   readonly status: 'changed' | 'unchanged' | 'failed' | 'skipped'
   readonly revision?: string
@@ -327,7 +331,7 @@ export const applyServerSyncDelta = (
   return 'applied'
 }
 
-const parseLiveEvent = (data: unknown): LiveSyncServerEvent | null => {
+const parseLiveEvent = (data: unknown): ParsedLiveEvent | null => {
   if (
     typeof data !== 'string' ||
     new TextEncoder().encode(data).byteLength > MAX_LIVE_MESSAGE_BYTES
@@ -342,6 +346,9 @@ const parseLiveEvent = (data: unknown): LiveSyncServerEvent | null => {
   })()
   if (typeof parsed !== 'object' || parsed === null || !('type' in parsed)) return null
   const candidate = parsed as Record<string, unknown>
+  if (candidate.type === 'manifest-reconcile' && !('revision' in candidate)) {
+    return { type: 'manifest-reconcile', revision: null }
+  }
   if (
     candidate.type === 'manifest-reconcile' &&
     Number.isSafeInteger(candidate.revision) &&
@@ -370,6 +377,10 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     return
   }
   if (event.type === 'manifest-reconcile') {
+    if (event.revision === null) {
+      requestServerSync('revision-gap', 'world-manifest', server)
+      return
+    }
     const live = liveConnections.get(serverConnectionIdentity(server))
     if (live === undefined || event.revision <= (live.manifestRevision ?? -1)) return
     live.manifestRevision = event.revision

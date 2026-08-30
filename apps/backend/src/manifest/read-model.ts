@@ -32,6 +32,7 @@ export interface PersistedManifestProjection {
   readonly configuredServer: string
   readonly cachedAt: number
   readonly expiresAt: number
+  readonly serializedBytes: number
   readonly manifest: Manifest
 }
 
@@ -53,6 +54,7 @@ export interface SeasonManifestReadModel {
 
 export const MANIFEST_READ_MODEL_TTL_MILLISECONDS = 3 * 60_000
 export const MAX_MANIFEST_PROJECTIONS_PER_SEASON = 16
+export const MAX_MANIFEST_PROJECTION_BYTES_PER_SEASON = 16 * 1024 * 1024
 
 const projectionKey = (scope: ManifestVisibilityScope, surface: TemplateSurface): string =>
   surface.kind === 'world' ? `${scope}:world` : `${scope}:${surface.kind}:${surface.allianceId}`
@@ -72,10 +74,12 @@ export const createSeasonManifestReadModel = (options: {
   readonly now?: () => number
   readonly ttlMilliseconds?: number
   readonly maximumEntries?: number
+  readonly maximumBytes?: number
 }): SeasonManifestReadModel => {
   const now = options.now ?? Date.now
   const ttl = options.ttlMilliseconds ?? MANIFEST_READ_MODEL_TTL_MILLISECONDS
   const maximumEntries = options.maximumEntries ?? MAX_MANIFEST_PROJECTIONS_PER_SEASON
+  const maximumBytes = options.maximumBytes ?? MAX_MANIFEST_PROJECTION_BYTES_PER_SEASON
   let state: PersistedManifestReadModel | null = null
   let loaded = false
   let tail = Promise.resolve()
@@ -121,6 +125,7 @@ export const createSeasonManifestReadModel = (options: {
         }
 
         const manifest = await options.source(input)
+        const serializedBytes = new TextEncoder().encode(JSON.stringify(manifest)).byteLength
         const revisionChanged = keyed !== undefined && keyed.manifest.version !== manifest.version
         const revision = revisionChanged ? current.revision + 1 : current.revision
         const retained = revisionChanged ? [] : current.entries.filter((entry) => entry.key !== key)
@@ -131,11 +136,24 @@ export const createSeasonManifestReadModel = (options: {
             configuredServer: server,
             cachedAt: readAt,
             expiresAt: readAt + ttl,
+            serializedBytes,
             manifest,
           },
         ]
           .sort((left, right) => right.cachedAt - left.cachedAt)
-          .slice(0, maximumEntries)
+          .reduce<PersistedManifestProjection[]>((bounded, entry) => {
+            const retainedBytes = bounded.reduce(
+              (total, retained) => total + retained.serializedBytes,
+              0,
+            )
+            if (
+              bounded.length < maximumEntries &&
+              retainedBytes + entry.serializedBytes <= maximumBytes
+            ) {
+              bounded.push(entry)
+            }
+            return bounded
+          }, [])
         const next = { season: options.season, revision, entries }
         await options.persistence.save(next)
         state = next

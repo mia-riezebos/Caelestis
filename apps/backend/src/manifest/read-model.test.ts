@@ -73,6 +73,34 @@ describe('manifest read model', () => {
     expect(new Set(saved?.entries.map(({ key }) => key)).size).toBe(2)
   })
 
+  it('bounds retained projections by aggregate serialized bytes', async () => {
+    let now = 1_000
+    let persisted: PersistedManifestReadModel | null = null
+    const projected = manifest('a'.repeat(64))
+    const bytes = new TextEncoder().encode(JSON.stringify(projected)).byteLength
+    const source = vi.fn(async () => projected)
+    const model = createSeasonManifestReadModel({
+      season: 7,
+      source,
+      now: () => now++,
+      maximumBytes: bytes + 1,
+      persistence: {
+        load: async () => persisted,
+        save: async (next) => {
+          persisted = next
+        },
+      },
+    })
+    await model.read(input)
+    await model.read({ ...input, scope: 'admin' })
+
+    const saved = persisted as PersistedManifestReadModel | null
+    expect(saved?.entries).toHaveLength(1)
+    expect(
+      saved?.entries.reduce((total, entry) => total + entry.serializedBytes, 0),
+    ).toBeLessThanOrEqual(bytes + 1)
+  })
+
   it('uses TTL only to repair a missed invalidation and advances revision on changed content', async () => {
     let now = 1_000
     let persisted: PersistedManifestReadModel | null = null
