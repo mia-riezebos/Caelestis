@@ -313,10 +313,10 @@ export const fetchAlarmFollowUps = async (
       continue
     }
     const batch = staleTiles.slice(0, remaining)
-    remaining -= batch.length
 
     let complete = true
     for (const { tile } of batch) {
+      remaining--
       try {
         const response = await fetchImpl(wplaceTileUrl(probe.season, tile), {
           headers: { 'user-agent': WPLACE_TILE_USER_AGENT },

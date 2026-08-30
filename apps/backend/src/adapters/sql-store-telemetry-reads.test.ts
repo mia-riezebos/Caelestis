@@ -320,6 +320,27 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual([
       expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
     ])
+
+    await store.recordTileObservation(
+      observation({ tile, hash: 'b'.repeat(64), observedAt: millis(3_000) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(3_000),
+        },
+      ],
+    )
+    await expect(store.listAlarmTiles(1)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', observedAt: 1_000 }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
   })
 
   it('keeps the hash with the most distinct reporters per bucket, ties to the smaller hash', async () => {

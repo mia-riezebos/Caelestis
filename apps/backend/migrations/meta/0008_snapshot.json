@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d48c7d12-14c6-4d6f-9ef6-2f55363f8cc0",
+  "id": "ead86e2c-d2e1-4699-8285-1452823c88ec",
   "prevId": "dfb314a2-6c2a-4d17-9742-a8597b44e7c9",
   "tables": {
     "access_tokens": {
@@ -650,6 +650,133 @@
         "template_alarm_states_episode_check": {
           "name": "template_alarm_states_episode_check",
           "value": "(\"template_alarm_states\".\"alarm_id\" IS NULL AND \"template_alarm_states\".\"kind\" IS NULL AND \"template_alarm_states\".\"pixels_lost\" IS NULL\n          AND \"template_alarm_states\".\"first_seen_ms\" IS NULL AND \"template_alarm_states\".\"last_seen_ms\" IS NULL\n          AND \"template_alarm_states\".\"probe_due_at_ms\" IS NULL AND \"template_alarm_states\".\"probe_pixels_lost\" IS NULL)\n        OR (\"template_alarm_states\".\"alarm_id\" IS NOT NULL\n          AND \"template_alarm_states\".\"kind\" IN ('regression', 'sustained-griefing')\n          AND typeof(\"template_alarm_states\".\"pixels_lost\") = 'integer' AND \"template_alarm_states\".\"pixels_lost\" > 0\n          AND typeof(\"template_alarm_states\".\"first_seen_ms\") = 'integer'\n          AND typeof(\"template_alarm_states\".\"last_seen_ms\") = 'integer'\n          AND \"template_alarm_states\".\"first_seen_ms\" <= \"template_alarm_states\".\"last_seen_ms\"\n          AND ((\"template_alarm_states\".\"probe_due_at_ms\" IS NULL AND \"template_alarm_states\".\"probe_pixels_lost\" IS NULL)\n            OR (typeof(\"template_alarm_states\".\"probe_due_at_ms\") = 'integer'\n              AND typeof(\"template_alarm_states\".\"probe_pixels_lost\") = 'integer'\n              AND \"template_alarm_states\".\"probe_pixels_lost\" > 0)))"
+        }
+      }
+    },
+    "template_alarm_tile_statuses": {
+      "name": "template_alarm_tile_statuses",
+      "columns": {
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version_id": {
+          "name": "version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct": {
+          "name": "correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "wrong": {
+          "name": "wrong",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "blank": {
+          "name": "blank",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "colours_json": {
+          "name": "colours_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observed_at_ms": {
+          "name": "observed_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "template_alarm_tile_statuses_version_idx": {
+          "name": "template_alarm_tile_statuses_version_idx",
+          "columns": [
+            "version_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "template_alarm_tile_statuses_template_id_templates_id_fk": {
+          "name": "template_alarm_tile_statuses_template_id_templates_id_fk",
+          "tableFrom": "template_alarm_tile_statuses",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "template_alarm_tile_statuses_version_id_template_versions_id_fk": {
+          "name": "template_alarm_tile_statuses_version_id_template_versions_id_fk",
+          "tableFrom": "template_alarm_tile_statuses",
+          "tableTo": "template_versions",
+          "columnsFrom": [
+            "version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "template_alarm_tile_statuses_template_id_version_id_tile_x_tile_y_pk": {
+          "columns": [
+            "template_id",
+            "version_id",
+            "tile_x",
+            "tile_y"
+          ],
+          "name": "template_alarm_tile_statuses_template_id_version_id_tile_x_tile_y_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "template_alarm_tile_statuses_coordinate_check": {
+          "name": "template_alarm_tile_statuses_coordinate_check",
+          "value": "typeof(\"template_alarm_tile_statuses\".\"tile_x\") = 'integer' AND typeof(\"template_alarm_tile_statuses\".\"tile_y\") = 'integer'\n        AND \"template_alarm_tile_statuses\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"template_alarm_tile_statuses\".\"tile_y\" BETWEEN 0 AND 2047"
+        },
+        "template_alarm_tile_statuses_counter_check": {
+          "name": "template_alarm_tile_statuses_counter_check",
+          "value": "typeof(\"template_alarm_tile_statuses\".\"correct\") = 'integer' AND typeof(\"template_alarm_tile_statuses\".\"wrong\") = 'integer'\n        AND typeof(\"template_alarm_tile_statuses\".\"blank\") = 'integer'\n        AND \"template_alarm_tile_statuses\".\"correct\" >= 0 AND \"template_alarm_tile_statuses\".\"wrong\" >= 0 AND \"template_alarm_tile_statuses\".\"blank\" >= 0"
         }
       }
     },

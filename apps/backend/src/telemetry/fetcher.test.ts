@@ -428,6 +428,107 @@ describe('the 6-hour tile fetcher', () => {
     ])
   }, 20_000)
 
+  it('spends follow-up capacity on attempted tiles instead of abandoned batches', async () => {
+    const { ports, sql } = harness()
+    const firstTiles = [
+      { x: 30, y: 30 },
+      { x: 31, y: 30 },
+    ]
+    const secondTile = { x: 40, y: 40 }
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const chunkHash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', chunkHash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('first-probe', firstTiles),
+      totalPixels: 2,
+      chunks: firstTiles.map((tile) => ({ tileX: tile.x, tileY: tile.y, hash: chunkHash })),
+    })
+    await sql.insertTemplateVersion({
+      ...version('second-probe', [secondTile]),
+      bbox: {
+        minX: secondTile.x * TILE_SIZE,
+        minY: secondTile.y * TILE_SIZE,
+        maxX: secondTile.x * TILE_SIZE + 1,
+        maxY: secondTile.y * TILE_SIZE + 1,
+      },
+      chunks: [{ tileX: secondTile.x, tileY: secondTile.y, hash: chunkHash }],
+    })
+
+    const observedAt = millis(NOW * 1_000)
+    for (const [templateId, tiles] of [
+      ['first-probe', firstTiles],
+      ['second-probe', [secondTile]],
+    ] as const) {
+      for (const tile of tiles) {
+        await sql.recordTileObservation(
+          {
+            season: 0,
+            tile,
+            hash: 'f'.repeat(64),
+            observedAt,
+            reportedAt: NOW,
+            reportedWithToken: TOKEN,
+            reportedByUserId: 1,
+          },
+          [
+            {
+              templateId,
+              versionId: `${templateId}-version`,
+              tile,
+              correct: 1,
+              wrong: 0,
+              blank: 0,
+              observedAt,
+            },
+          ],
+          false,
+          true,
+        )
+      }
+    }
+
+    const dueAt = millis(observedAt + 1)
+    const probes = ['first-probe', 'second-probe'].map((templateId) => ({
+      templateId,
+      versionId: `${templateId}-version`,
+      season: 0,
+      alarmId: `${templateId}-alarm`,
+      pixelsLost: 10,
+      dueAt,
+    }))
+    const canvas = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+    canvas[0] = 1
+    const canvasBytes = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, canvas)
+    const requested: string[] = []
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      requested.push(url)
+      return url.includes('/30/30.png')
+        ? new Response(null, { status: 502 })
+        : new Response(canvasBytes.slice())
+    }) as typeof fetch
+
+    await expect(
+      fetchAlarmFollowUps(ports, probes, {
+        now: seconds(NOW + 1),
+        fetchImpl,
+        maxTiles: 2,
+      }),
+    ).resolves.toEqual({ evaluated: 1, failed: 1, pending: 1 })
+    expect(requested).toEqual([
+      expect.stringContaining('/30/30.png'),
+      expect.stringContaining('/40/40.png'),
+    ])
+    await expect(sql.listAlarmTiles(0)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          templateId: 'second-probe',
+          observedAt: (NOW + 1) * 1_000,
+        }),
+      ]),
+    )
+  }, 20_000)
+
   it('caps due probes per watcher cycle and leaves the rest pending', async () => {
     const clearAlarmProbe = vi.fn(async () => undefined)
     const listManifestTemplates = vi.fn(async () => [])

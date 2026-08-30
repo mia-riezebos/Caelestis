@@ -721,6 +721,42 @@ export const templateTileStatuses = sqliteTable(
   ],
 )
 
+/** Last backend-owned classification per current template chunk, independent of client freshness. */
+export const templateAlarmTileStatuses = sqliteTable(
+  'template_alarm_tile_statuses',
+  {
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id')
+      .notNull()
+      .references(() => templateVersions.id, { onDelete: 'cascade' }),
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    correct: integer('correct').notNull(),
+    wrong: integer('wrong').notNull(),
+    blank: integer('blank').notNull(),
+    coloursJson: text('colours_json').notNull(),
+    observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
+    index('template_alarm_tile_statuses_version_idx').on(table.versionId),
+    check(
+      'template_alarm_tile_statuses_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+    check(
+      'template_alarm_tile_statuses_counter_check',
+      sql`typeof(${table.correct}) = 'integer' AND typeof(${table.wrong}) = 'integer'
+        AND typeof(${table.blank}) = 'integer'
+        AND ${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
+    ),
+  ],
+)
+
 /** Version-local high-water state and the one active alarm episode a template may own. */
 export const templateAlarmStates = sqliteTable(
   'template_alarm_states',

@@ -37,6 +37,7 @@ import {
   serverSettings,
   telemetryBuckets,
   templateAlarmStates,
+  templateAlarmTileStatuses,
   templates,
   templateTileStatuses,
   templateVersions,
@@ -1104,10 +1105,7 @@ export class D1SqlStore implements SqlStore {
         tileX: versionTiles.tileX,
         tileY: versionTiles.tileY,
         hash: versionTiles.hash,
-        observedAt: sql<Millis | null>`CASE
-          WHEN ${templateTileStatuses.serverOwned} = 1 THEN ${templateTileStatuses.observedAtMs}
-          ELSE NULL
-        END`,
+        observedAt: templateAlarmTileStatuses.observedAtMs,
       })
       .from(versionTiles)
       .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
@@ -1119,12 +1117,12 @@ export class D1SqlStore implements SqlStore {
         ),
       )
       .leftJoin(
-        templateTileStatuses,
+        templateAlarmTileStatuses,
         and(
-          eq(templateTileStatuses.templateId, templates.id),
-          eq(templateTileStatuses.versionId, templateVersions.id),
-          eq(templateTileStatuses.tileX, versionTiles.tileX),
-          eq(templateTileStatuses.tileY, versionTiles.tileY),
+          eq(templateAlarmTileStatuses.templateId, templates.id),
+          eq(templateAlarmTileStatuses.versionId, templateVersions.id),
+          eq(templateAlarmTileStatuses.tileX, versionTiles.tileX),
+          eq(templateAlarmTileStatuses.tileY, versionTiles.tileY),
         ),
       )
       .where(eq(templates.season, season))
@@ -1295,8 +1293,42 @@ export class D1SqlStore implements SqlStore {
           }),
       )
       if (statements.length > 0) {
+        const authoritativeStatements = forceCurrent
+          ? group.map((status) =>
+              this.database
+                .insert(templateAlarmTileStatuses)
+                .values({
+                  templateId: status.templateId,
+                  versionId: status.versionId,
+                  tileX: status.tile.x,
+                  tileY: status.tile.y,
+                  correct: status.correct,
+                  wrong: status.wrong,
+                  blank: status.blank,
+                  coloursJson: JSON.stringify(status.colours ?? []),
+                  observedAtMs: status.observedAt,
+                })
+                .onConflictDoUpdate({
+                  target: [
+                    templateAlarmTileStatuses.templateId,
+                    templateAlarmTileStatuses.versionId,
+                    templateAlarmTileStatuses.tileX,
+                    templateAlarmTileStatuses.tileY,
+                  ],
+                  set: {
+                    correct: status.correct,
+                    wrong: status.wrong,
+                    blank: status.blank,
+                    coloursJson: JSON.stringify(status.colours ?? []),
+                    observedAtMs: status.observedAt,
+                  },
+                  setWhere: lte(templateAlarmTileStatuses.observedAtMs, status.observedAt),
+                }),
+            )
+          : []
+        const writes = [...statements, ...authoritativeStatements]
         await this.database.batch(
-          statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+          writes as [(typeof writes)[number], ...Array<(typeof writes)[number]>],
         )
       }
     }
@@ -1827,31 +1859,32 @@ export class D1SqlStore implements SqlStore {
     includeUnpublished: boolean,
     options: { readonly serverOwnedOnly?: boolean } = {},
   ): Promise<readonly import('@caelestis/shared').TemplateStatus[]> {
+    const statusTable =
+      options.serverOwnedOnly === true ? templateAlarmTileStatuses : templateTileStatuses
     const rows = await this.database
       .select({
         templateId: templates.id,
-        correct: sql<number>`sum(${templateTileStatuses.correct})`,
-        wrong: sql<number>`sum(${templateTileStatuses.wrong})`,
-        blank: sql<number>`sum(${templateTileStatuses.blank})`,
+        correct: sql<number>`sum(${statusTable.correct})`,
+        wrong: sql<number>`sum(${statusTable.wrong})`,
+        blank: sql<number>`sum(${statusTable.blank})`,
         total: templateVersions.totalPixels,
         colourTotalsJson: templateVersions.colourTotalsJson,
-        colourRowsJson: sql<string>`json_group_array(${templateTileStatuses.coloursJson})`,
-        observedAt: sql<number>`max(${templateTileStatuses.observedAtMs})`,
+        colourRowsJson: sql<string>`json_group_array(${statusTable.coloursJson})`,
+        observedAt: sql<number>`max(${statusTable.observedAtMs})`,
       })
       .from(templates)
       .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
       .innerJoin(
-        templateTileStatuses,
+        statusTable,
         and(
-          eq(templateTileStatuses.templateId, templates.id),
-          eq(templateTileStatuses.versionId, templateVersions.id),
+          eq(statusTable.templateId, templates.id),
+          eq(statusTable.versionId, templateVersions.id),
         ),
       )
       .where(
         and(
           eq(templates.season, season),
           includeUnpublished ? undefined : isNotNull(templates.publishedAt),
-          options.serverOwnedOnly === true ? eq(templateTileStatuses.serverOwned, true) : undefined,
         ),
       )
       .groupBy(templates.id, templateVersions.totalPixels, templateVersions.colourTotalsJson)

@@ -131,6 +131,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly serverOwnedCanvasTiles = new Set<string>()
   private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
   private readonly serverOwnedTemplateStatuses = new Set<string>()
+  private readonly templateAlarmTileStatuses = new Map<string, TemplateTileStatusRecord>()
   private readonly appliedEvents = new Set<string>()
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
@@ -640,9 +641,7 @@ export class MemorySqlStore implements SqlStore {
       const key = `${tile.templateId}\u0000${tile.versionId}\u0000${tileKey({ x: tile.tileX, y: tile.tileY })}`
       return {
         ...tile,
-        observedAt: this.serverOwnedTemplateStatuses.has(key)
-          ? (this.templateTileStatuses.get(key)?.observedAt ?? null)
-          : null,
+        observedAt: this.templateAlarmTileStatuses.get(key)?.observedAt ?? null,
       }
     })
   }
@@ -732,6 +731,12 @@ export class MemorySqlStore implements SqlStore {
         this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
         if (forceCurrent) this.serverOwnedTemplateStatuses.add(statusKey)
         else this.serverOwnedTemplateStatuses.delete(statusKey)
+      }
+      if (forceCurrent) {
+        const authoritative = this.templateAlarmTileStatuses.get(statusKey)
+        if (authoritative === undefined || authoritative.observedAt <= status.observedAt) {
+          this.templateAlarmTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
+        }
       }
     }
   }
@@ -1050,12 +1055,14 @@ export class MemorySqlStore implements SqlStore {
         (!includeUnpublished && template.publishedAt === null)
       )
         continue
-      const statuses = [...this.templateTileStatuses.entries()]
+      const source =
+        options.serverOwnedOnly === true
+          ? this.templateAlarmTileStatuses
+          : this.templateTileStatuses
+      const statuses = [...source.entries()]
         .filter(
-          ([key, status]) =>
-            status.templateId === templateId &&
-            status.versionId === version.versionId &&
-            (options.serverOwnedOnly !== true || this.serverOwnedTemplateStatuses.has(key)),
+          ([, status]) =>
+            status.templateId === templateId && status.versionId === version.versionId,
         )
         .map(([, status]) => status)
       if (statuses.length === 0) continue
