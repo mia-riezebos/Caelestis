@@ -1,16 +1,15 @@
-import { readFileSync } from 'node:fs'
 import adapter from '@sveltejs/adapter-static'
 import { sveltekit } from '@sveltejs/kit/vite'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
 
-const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
-  version: string
-}
+const deploymentVersion = /^[0-9a-f]{40}$/i.test(process.env.CAELESTIS_BUILD_ID ?? '')
+  ? (process.env.CAELESTIS_BUILD_ID ?? '').slice(0, 12)
+  : 'development'
 
 export default defineConfig({
   define: {
-    __CAELESTIS_FRONTEND_VERSION__: JSON.stringify(pkg.version),
+    __CAELESTIS_FRONTEND_VERSION__: JSON.stringify(deploymentVersion),
   },
   resolve: {
     // Component tests run in happy-dom and need Svelte's client entry point rather than its SSR

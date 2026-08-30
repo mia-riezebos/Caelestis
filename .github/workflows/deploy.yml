@@ -20,6 +20,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 492214885e7a580ccc1d141dfdb4dc5f
+      CAELESTIS_BUILD_ID: ${{ github.sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -52,7 +53,7 @@ jobs:
         run: pnpm --dir apps/backend exec wrangler d1 migrations apply DB --remote
 
       - name: Deploy backend
-        run: pnpm --dir apps/backend exec wrangler deploy
+        run: pnpm --dir apps/backend exec wrangler deploy --define "__CAELESTIS_DEPLOYMENT_VERSION__:\"$CAELESTIS_BUILD_ID\""
 
       - name: Deploy frontend
         run: pnpm --dir apps/frontend exec wrangler deploy
