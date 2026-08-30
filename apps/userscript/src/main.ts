@@ -2,6 +2,7 @@ import { TILE_SIZE } from '@caelestis/shared'
 import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
 import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
+import { installAlarmNotifications } from './alarms.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -310,6 +311,7 @@ const main = (): void => {
   step('server templates', installServerSync)
   step('alliance server templates', installAllianceServerSync)
   step('server telemetry', installTelemetry)
+  step('alarm notifications', installAlarmNotifications)
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {
     watchPaintSelection()

@@ -125,8 +125,7 @@ const removeToast = (id: string): void => {
   render()
 }
 
-export const showToast = (message: string, kind: ToastKind = 'info'): void => {
-  if (document.getElementById(PANEL_ID) === null) return
+const pushToast = (message: string, kind: ToastKind): void => {
   ensureRoot()
 
   const replaced = kind === 'error' ? toasts : toasts.filter((toast) => toast.kind !== 'error')
@@ -143,6 +142,16 @@ export const showToast = (message: string, kind: ToastKind = 'info'): void => {
       window.setTimeout(() => removeToast(id), 6000),
     )
   }
+}
+
+export const showToast = (message: string, kind: ToastKind = 'info'): void => {
+  if (document.getElementById(PANEL_ID) === null) return
+  pushToast(message, kind)
+}
+
+/** Page-level notices such as alarms are valid while the panel itself is closed. */
+export const showAmbientToast = (message: string, kind: ToastKind = 'info'): void => {
+  pushToast(message, kind)
 }
 
 export interface ConfirmationRequest {

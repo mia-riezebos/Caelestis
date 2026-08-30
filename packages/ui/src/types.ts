@@ -5,6 +5,8 @@ export type TemplateLifecycleState = Pick<
   'finished' | 'finishedAt' | 'timelapseFrozen'
 > & {
   readonly griefed: boolean
+  readonly alarmKind?: AlarmKind | undefined
+  readonly pixelsLost?: number | undefined
 }
 
 export interface TemplateLifecycleChangeDetail {
