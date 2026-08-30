@@ -11,7 +11,7 @@ import {
 import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
+import { type AuthOptions, authenticateRequest, requireScopeEffect } from '../auth/middleware.js'
 import { recordTileOfferBatch, recordTileOfferBatchRequested } from '../metrics/request-metrics.js'
 import {
   LADDER_RESOLUTIONS,
@@ -19,7 +19,7 @@ import {
   TILE_HISTORY_RESOLUTIONS,
 } from '../ports/index.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
-import { runBackendHttp } from '../runtime/hono.js'
+import { runBackendHttp, runBackendMiddleware } from '../runtime/hono.js'
 import {
   MAX_CANVAS_TILE_BYTES,
   offerTilesWithOutcome,
@@ -52,6 +52,22 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 /** Larger leaderboards stop being leaderboards; page by narrowing the window instead. */
 const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
+const LIVE_PROTOCOL = 'caelestis.live.v1'
+const LIVE_AUTH_PREFIX = 'caelestis.auth.'
+
+const liveAuthorization = (
+  header: string | undefined,
+): { readonly authorization?: string } | null => {
+  if (header === undefined) return null
+  const protocols = header.split(',').map((protocol) => protocol.trim())
+  if (!protocols.includes(LIVE_PROTOCOL)) return null
+  const credentials = protocols.filter((protocol) => protocol.startsWith(LIVE_AUTH_PREFIX))
+  if (credentials.length > 1) return null
+  const credential = credentials[0]
+  if (credential === undefined) return {}
+  const token = credential.slice(LIVE_AUTH_PREFIX.length)
+  return /^[A-Z0-9]+$/.test(token) ? { authorization: `Bearer ${token}` } : null
+}
 
 const wholeNumber = (value: string | undefined): number | null => {
   if (value === undefined || !WHOLE_NUMBER.test(value)) return null
@@ -133,9 +149,55 @@ const readBoundedBody = async (request: Request, limit: number): Promise<Uint8Ar
 export const createTelemetryRoutes = (
   runtime: BackendRuntime,
   auth: AuthOptions,
-  options: { readonly currentSeason: number },
+  options: {
+    readonly currentSeason: number
+    readonly connectStatusLive?: (
+      request: Request,
+      connection: {
+        readonly season: number
+        readonly scope: 'public' | 'admin'
+        readonly lastRevision: number | null
+      },
+    ) => Promise<Response>
+  },
 ) => {
   const routes = new Hono()
+
+  routes.get(
+    '/live',
+    async (c, next) => {
+      if (c.req.header('upgrade')?.toLowerCase() !== 'websocket') {
+        return c.json({ error: 'websocket upgrade required' }, 426)
+      }
+      const credentials = liveAuthorization(c.req.header('sec-websocket-protocol'))
+      if (credentials === null) return c.json({ error: 'invalid websocket protocol' }, 400)
+      return runBackendMiddleware(
+        c,
+        runtime,
+        authenticateRequest(credentials.authorization, auth, 'read'),
+        async (caller) => {
+          c.set('caller', caller)
+          await next()
+        },
+      )
+    },
+    async (c) => {
+      if (options.connectStatusLive === undefined) return c.json({ error: 'not found' }, 404)
+      const season = wholeNumber(c.req.query('season'))
+      const requestedScope = c.req.query('scope')
+      const lastRevisionRaw = c.req.query('revision')
+      const lastRevision = lastRevisionRaw === undefined ? null : wholeNumber(lastRevisionRaw)
+      const scope = c.get('caller').scope === 'admin' ? 'admin' : 'public'
+      if (season === null || season !== options.currentSeason) {
+        return c.json({ error: 'season is not served by this live endpoint' }, 404)
+      }
+      if (requestedScope !== scope) return c.json({ error: 'visibility scope mismatch' }, 403)
+      if (lastRevisionRaw !== undefined && lastRevision === null) {
+        return c.json({ error: 'revision must be a non-negative integer' }, 400)
+      }
+      return options.connectStatusLive(c.req.raw, { season, scope, lastRevision })
+    },
+  )
 
   routes.get('/status', requireScopeEffect(runtime, auth, 'read'), (c) => {
     const season =

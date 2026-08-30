@@ -30,6 +30,16 @@ export interface AppOptions {
   readonly serverDescription?: string | undefined
   readonly openAccess?: boolean | undefined
   readonly currentSeason?: number | undefined
+  readonly connectStatusLive?:
+    | ((
+        request: Request,
+        connection: {
+          readonly season: number
+          readonly scope: 'public' | 'admin'
+          readonly lastRevision: number | null
+        },
+      ) => Promise<Response>)
+    | undefined
 }
 
 export const createApp = (context: BackendContext, options: AppOptions = {}) => {
@@ -59,6 +69,7 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
       'serverName',
     ),
     auth: options.openAccess === true ? 'none' : 'access_token',
+    ...(options.connectStatusLive === undefined ? {} : { liveSync: 1 as const }),
   } as const
   const server: ServerInfo =
     options.serverDescription === undefined
@@ -101,7 +112,15 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
   app.route('/admin/templates', createTemplateRoutes(runtime, auth))
   app.route('/chunks', createChunkRoutes(runtime, auth))
   app.route('/tiles', createTileRoutes(runtime, auth))
-  app.route('/telemetry', createTelemetryRoutes(runtime, auth, { currentSeason }))
+  app.route(
+    '/telemetry',
+    createTelemetryRoutes(runtime, auth, {
+      currentSeason,
+      ...(options.connectStatusLive === undefined
+        ? {}
+        : { connectStatusLive: options.connectStatusLive }),
+    }),
+  )
 
   return app
 }

@@ -1,4 +1,5 @@
-import type { ReconciliationReason } from '@caelestis/shared'
+import type { LiveSyncServerEvent, ReconciliationReason } from '@caelestis/shared'
+import { serverEndpoint } from './server-url.js'
 import {
   type ConnectedServer,
   getState,
@@ -11,6 +12,10 @@ const INITIAL_POLL_MS = 60_000
 const MAX_UNCHANGED_POLL_MS = 5 * 60_000
 const JITTER_RANGE_MS = 30_000
 const REFRESH_CONCURRENCY = 4
+const LIVE_PROTOCOL = 'caelestis.live.v1'
+const LIVE_AUTH_PREFIX = 'caelestis.auth.'
+const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
+const MAX_RECONNECT_MS = 30_000
 
 export interface ServerSyncResult {
   readonly status: 'changed' | 'unchanged' | 'failed' | 'skipped'
@@ -26,6 +31,10 @@ export interface ServerSyncResource {
     server: ConnectedServer,
     reason: ReconciliationReason,
   ) => Promise<ServerSyncResult>
+  /** Healthy live transport suppresses interval polling for this resource. */
+  readonly live?: boolean
+  /** Optional resource-owned validation/application for a compact live event. */
+  readonly applyLiveEvent?: (server: ConnectedServer, event: unknown) => boolean
 }
 
 interface Schedule {
@@ -42,6 +51,14 @@ interface PendingResourceRequest {
   readonly servers: Map<object, ReconciliationReason>
 }
 
+interface LiveConnection {
+  readonly server: ConnectedServer
+  socket: WebSocket | null
+  reconnectTimer: ReturnType<typeof setTimeout> | null
+  attempts: number
+  healthy: boolean
+}
+
 const resources = new Map<string, ServerSyncResource>()
 const schedules = new Map<string, Schedule>()
 const running = new WeakMap<object, Map<string, Promise<void>>>()
@@ -49,6 +66,7 @@ let installed = false
 let timer: ReturnType<typeof setTimeout> | null = null
 let sweepRun: Promise<void> | null = null
 let requestedResources: Map<string, PendingResourceRequest> | null = new Map()
+const liveConnections = new Map<object, LiveConnection>()
 
 const connected = (): readonly ConnectedServer[] =>
   getState().servers.filter(
@@ -61,6 +79,14 @@ const activeDocument = (): boolean =>
 
 const scheduleKey = (server: ConnectedServer, scope: string, resource: string): string =>
   `${server.url}\u0000${server.season ?? ''}\u0000${scope}\u0000${resource}`
+
+const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
+  server.isAdmin ? 'admin' : 'public'
+
+const liveHealthy = (server: ConnectedServer): boolean => {
+  const held = liveConnections.get(serverConnectionIdentity(server))
+  return held?.healthy === true && held.server === server && isCurrentServerConnection(server)
+}
 
 /** Terminal unchanged cadence is never below five minutes; jitter only spreads it later. */
 export const adaptiveServerSyncDelay = (unchanged: number, jitter = Math.random()): number => {
@@ -81,6 +107,7 @@ const armTimer = (): void => {
   let next = Number.POSITIVE_INFINITY
   for (const schedule of schedules.values()) {
     if (!isCurrentServerConnection(schedule.server)) continue
+    if (resources.get(schedule.resource)?.live === true && liveHealthy(schedule.server)) continue
     next = Math.min(next, schedule.dueAt)
   }
   if (requestedResources !== null || next !== Number.POSITIVE_INFINITY) {
@@ -159,6 +186,7 @@ const sweep = async (
       if (requested !== null && explicit?.allReason === undefined && targeted === undefined)
         continue
       const scheduled = schedules.get(key)
+      if (requested === null && resource.live === true && liveHealthy(server)) continue
       if (requested === null && scheduled !== undefined && scheduled.dueAt > now) continue
       const reason = targeted ?? explicit?.allReason ?? 'interval'
       work.push(() =>
@@ -283,9 +311,160 @@ export const applyServerSyncDelta = (
   return 'applied'
 }
 
+const parseLiveEvent = (data: unknown): LiveSyncServerEvent | null => {
+  if (
+    typeof data !== 'string' ||
+    new TextEncoder().encode(data).byteLength > MAX_LIVE_MESSAGE_BYTES
+  )
+    return null
+  const parsed: unknown = (() => {
+    try {
+      return JSON.parse(data)
+    } catch {
+      return null
+    }
+  })()
+  if (typeof parsed !== 'object' || parsed === null || !('type' in parsed)) return null
+  const candidate = parsed as Record<string, unknown>
+  if (candidate.type === 'manifest-reconcile') return { type: 'manifest-reconcile' }
+  if (
+    (candidate.type === 'ready' || candidate.type === 'status-reconcile') &&
+    Number.isSafeInteger(candidate.revision) &&
+    Number(candidate.revision) >= 0
+  ) {
+    return { type: candidate.type, revision: Number(candidate.revision) }
+  }
+  if (candidate.type === 'status-delta' && candidate.delta !== undefined) {
+    return { type: 'status-delta', delta: candidate.delta as never }
+  }
+  return null
+}
+
+const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
+  if (!isCurrentServerConnection(server)) return
+  const event = parseLiveEvent(raw)
+  if (event === null) {
+    requestServerSync('revision-gap', 'telemetry-status', server)
+    return
+  }
+  if (event.type === 'manifest-reconcile') {
+    requestServerSync('revision-gap', 'world-manifest', server)
+    return
+  }
+  if (event.type === 'status-delta') {
+    const applied =
+      resources.get('telemetry-status')?.applyLiveEvent?.(server, event.delta) ?? false
+    if (!applied) requestServerSync('revision-gap', 'telemetry-status', server)
+    return
+  }
+  const current = serverSyncRevision(server, 'world', 'telemetry-status')
+  if (current !== String(event.revision)) {
+    requestServerSync('revision-gap', 'telemetry-status', server)
+  }
+}
+
+const closeLiveConnection = (connection: LiveConnection): void => {
+  if (connection.reconnectTimer !== null) clearTimeout(connection.reconnectTimer)
+  connection.reconnectTimer = null
+  connection.healthy = false
+  const socket = connection.socket
+  connection.socket = null
+  if (socket !== null && socket.readyState < 2) socket.close(1000, 'retired')
+}
+
+const scheduleLiveReconnect = (connection: LiveConnection): void => {
+  if (connection.reconnectTimer !== null) return
+  const delay = Math.min(1_000 * 2 ** connection.attempts++, MAX_RECONNECT_MS)
+  connection.reconnectTimer = setTimeout(() => {
+    connection.reconnectTimer = null
+    openLiveConnection(connection)
+  }, delay)
+}
+
+const openLiveConnection = (connection: LiveConnection): void => {
+  const { server } = connection
+  if (
+    !activeDocument() ||
+    !isCurrentServerConnection(server) ||
+    server.info?.liveSync !== 1 ||
+    server.season === null ||
+    typeof WebSocket === 'undefined' ||
+    connection.socket !== null
+  )
+    return
+  const endpoint = new URL(serverEndpoint(server.url, '/telemetry/live'))
+  endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
+  endpoint.searchParams.set('season', String(server.season))
+  endpoint.searchParams.set('scope', liveScope(server))
+  const revision = serverSyncRevision(server, 'world', 'telemetry-status')
+  if (revision !== undefined) endpoint.searchParams.set('revision', revision)
+  const protocols = [LIVE_PROTOCOL]
+  if (server.token !== null && server.tokenUsable !== false) {
+    protocols.push(`${LIVE_AUTH_PREFIX}${server.token}`)
+  }
+  let socket: WebSocket
+  try {
+    socket = new WebSocket(endpoint, protocols)
+  } catch {
+    scheduleLiveReconnect(connection)
+    return
+  }
+  connection.socket = socket
+  socket.addEventListener('open', () => {
+    if (connection.socket !== socket || !isCurrentServerConnection(server)) return
+    connection.healthy = true
+    connection.attempts = 0
+    requestServerSync('connect', 'telemetry-status', server)
+    requestServerSync('connect', 'world-manifest', server)
+    armTimer()
+  })
+  socket.addEventListener('message', (message) => {
+    if (connection.socket === socket) handleLiveEvent(server, message.data)
+  })
+  socket.addEventListener('error', () => socket.close())
+  socket.addEventListener('close', () => {
+    if (connection.socket !== socket) return
+    connection.socket = null
+    connection.healthy = false
+    if (!isCurrentServerConnection(server)) return
+    requestServerSync('reconnect', 'telemetry-status', server)
+    requestServerSync('reconnect', 'world-manifest', server)
+    scheduleLiveReconnect(connection)
+    armTimer()
+  })
+}
+
+const reconcileLiveConnections = (): void => {
+  const retained = new Set<object>()
+  for (const server of connected()) {
+    if (server.info?.liveSync !== 1 || typeof WebSocket === 'undefined') continue
+    const owner = serverConnectionIdentity(server)
+    retained.add(owner)
+    let connection = liveConnections.get(owner)
+    if (connection === undefined) {
+      connection = {
+        server,
+        socket: null,
+        reconnectTimer: null,
+        attempts: 0,
+        healthy: false,
+      }
+      liveConnections.set(owner, connection)
+    }
+    openLiveConnection(connection)
+  }
+  for (const [owner, connection] of liveConnections) {
+    if (retained.has(owner)) continue
+    closeLiveConnection(connection)
+    liveConnections.delete(owner)
+  }
+}
+
 const recover = (reason: 'focus' | 'online'): void => {
-  if (activeDocument()) requestServerSync(reason)
-  else clearTimer()
+  if (activeDocument()) {
+    reconcileLiveConnections()
+    requestServerSync(reason)
+  } else clearTimer()
 }
 
 /** Install the one scheduler after every status and manifest resource has registered. */
@@ -304,14 +483,23 @@ export const installServerSyncCoordinator = (): void => {
           ),
       )
     previousConnections = next
-    if (changed) requestServerSync('state-change')
+    if (changed) {
+      reconcileLiveConnections()
+      requestServerSync('state-change')
+    }
   })
   if (typeof document !== 'undefined')
     document.addEventListener('visibilitychange', () => recover('focus'))
   if (typeof window !== 'undefined') {
     window.addEventListener('focus', () => recover('focus'))
     window.addEventListener('online', () => recover('online'))
-    window.addEventListener('offline', clearTimer)
+    window.addEventListener('offline', () => {
+      clearTimer()
+      for (const connection of liveConnections.values()) closeLiveConnection(connection)
+    })
   }
+  reconcileLiveConnections()
   requestServerSync('connect')
 }
+
+export const serverLiveSyncHealthy = (server: ConnectedServer): boolean => liveHealthy(server)

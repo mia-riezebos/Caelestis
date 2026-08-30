@@ -81,6 +81,8 @@ const appFor = (env: Env): App => {
     // advertises anonymous reads still rejects its manifest. Keep both in the prepared app config.
     currentSeason: parseSeason(env.SEASON),
     openAccess: env.OPEN_ACCESS === 'true',
+    connectStatusLive: (request, connection) =>
+      statusReadModelFor(env).connectLive(request, connection),
   })
   preparedApps.set(env, app)
   return app

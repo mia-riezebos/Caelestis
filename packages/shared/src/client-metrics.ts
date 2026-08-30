@@ -8,6 +8,7 @@ export type ReconciliationReason =
   | 'interval'
   | 'focus'
   | 'online'
+  | 'reconnect'
   | 'post-offer'
   | 'revision-gap'
   | 'state-change'
@@ -44,6 +45,7 @@ const reasons = new Set<ReconciliationReason>([
   'interval',
   'focus',
   'online',
+  'reconnect',
   'post-offer',
   'revision-gap',
   'state-change',

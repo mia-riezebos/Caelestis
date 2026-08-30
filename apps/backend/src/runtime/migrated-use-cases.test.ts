@@ -9,7 +9,16 @@ import { readManifest } from '../manifest/use-cases.js'
 import { createNode, listNodes } from '../nodes/use-cases.js'
 import { resolveServerInfoEffect, writeServerSettings } from '../routes/server.js'
 import { createTemplate } from '../templates/use-cases.js'
-import { BlobStoreService, SqlStoreService } from './backend-runtime.js'
+import { BlobStoreService, SqlStoreService, StatusReadModelService } from './backend-runtime.js'
+
+const statusReadModel = {
+  applyCommittedChange: vi.fn(async () => null),
+  reconcileSnapshot: vi.fn(async () => ({
+    cacheOutcome: 'hit' as const,
+    snapshot: { revision: 0, templates: [] },
+  })),
+  notifyManifestChange: vi.fn(async () => undefined),
+}
 
 const withSql = <A, E>(sql: MemorySqlStore, effect: Effect.Effect<A, E, SqlStoreService>) =>
   Effect.provideService(effect, SqlStoreService, sql)
@@ -25,7 +34,12 @@ describe('migrated Effect use cases', () => {
     const created = await Effect.runPromise(
       withSql(
         sql,
-        createNode({ season: 1, parentId: null, name: 'Effect node', description: 'isolated' }),
+        createNode({
+          season: 1,
+          parentId: null,
+          name: 'Effect node',
+          description: 'isolated',
+        }).pipe(Effect.provideService(StatusReadModelService, statusReadModel)),
       ),
     )
     await expect(Effect.runPromise(withSql(sql, listNodes(1)))).resolves.toEqual([created])
@@ -67,6 +81,7 @@ describe('migrated Effect use cases', () => {
     }).pipe(
       Effect.provideService(SqlStoreService, sql),
       Effect.provideService(BlobStoreService, blobs),
+      Effect.provideService(StatusReadModelService, statusReadModel),
     )
 
     const stored = await Effect.runPromise(program)

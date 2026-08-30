@@ -10,6 +10,8 @@ describe('Durable Object status read-model adapter', () => {
         cacheOutcome: 'hit' as const,
         snapshot: { revision: 4, templates: [] },
       })),
+      notifyManifestChange: vi.fn(async () => undefined),
+      fetch: vi.fn(async (_request: Request) => new Response(null, { status: 204 })),
     }
     const namespace = {
       getByName: vi.fn(() => stub),
@@ -21,9 +23,26 @@ describe('Durable Object status read-model adapter', () => {
       cacheOutcome: 'hit',
       snapshot: { revision: 4, templates: [] },
     })
+    await model.notifyManifestChange(8)
+    await model.connectLive(
+      new Request('https://server.test/telemetry/live', {
+        headers: {
+          authorization: 'Bearer SECRET',
+          upgrade: 'websocket',
+          'sec-websocket-protocol': 'caelestis.live.v1, caelestis.auth.SECRET',
+        },
+      }),
+      { season: 8, scope: 'admin', lastRevision: 4 },
+    )
 
     expect(namespace.getByName).toHaveBeenCalledWith('season:8')
     expect(stub.applyCommittedChange).toHaveBeenCalledWith(8)
     expect(stub.reconcileSnapshot).toHaveBeenCalledWith(8, 'admin')
+    expect(stub.notifyManifestChange).toHaveBeenCalledWith(8)
+    const forwarded = stub.fetch.mock.calls[0]?.[0]
+    expect(forwarded?.headers.get('authorization')).toBeNull()
+    expect(forwarded?.headers.get('x-caelestis-season')).toBe('8')
+    expect(forwarded?.headers.get('x-caelestis-scope')).toBe('admin')
+    expect(forwarded?.headers.get('x-caelestis-revision')).toBe('4')
   })
 })

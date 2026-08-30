@@ -30,6 +30,8 @@ export interface ServerInfo {
   readonly name: string
   readonly description?: string
   readonly auth: 'none' | 'access_token'
+  /** Present only when the server supports the hibernating status/manifest live protocol. */
+  readonly liveSync?: 1
 }
 
 /**
