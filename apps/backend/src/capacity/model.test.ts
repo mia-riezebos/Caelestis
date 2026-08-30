@@ -19,8 +19,7 @@ const inputs = (patch: Partial<CapacityInputs> = {}): CapacityInputs => ({
   d1BytesPerLogicalRow: 200,
   d1RowsReadPerStatusRequest: 100,
   d1RowsReadPerPaintReportRequest: 0,
-  d1RowsReadPerTileOfferRequest: 0,
-  d1RowsReadPerTileUploadRequest: 0,
+  d1RowsReadPerTileObservation: 0,
   otherD1RowsReadPerDay: 0,
   otherWorkerRequestsPerDay: 0,
   persistentD1Rows: 0,
@@ -124,7 +123,7 @@ describe('capacity model', () => {
     expect(quiet.storage.d1LogicalRows).toBeGreaterThan(30)
   })
 
-  it('scales route-specific D1 reads and persistent schema storage', () => {
+  it('scales paint and aggregate tile D1 reads with persistent schema storage', () => {
     const estimate = estimateCapacity(
       inputs({
         activeUsers: 2,
@@ -134,8 +133,7 @@ describe('capacity model', () => {
         tileVersionsPerCoveredTileDay: 0.5,
         d1RowsReadPerStatusRequest: 100,
         d1RowsReadPerPaintReportRequest: 7,
-        d1RowsReadPerTileOfferRequest: 11,
-        d1RowsReadPerTileUploadRequest: 13,
+        d1RowsReadPerTileObservation: 11,
         persistentD1Rows: 500,
       }),
     )
@@ -143,8 +141,7 @@ describe('capacity model', () => {
     expect(estimate.daily.d1RowsRead).toBeCloseTo(
       estimate.traffic.statusRequests * 100 +
         estimate.traffic.paintReportRequests * 7 +
-        estimate.traffic.tileOfferRequests * 11 +
-        estimate.traffic.tileUploadRequests * 13,
+        estimate.traffic.tileOffers * 11,
     )
     expect(estimate.storage.d1LogicalRows).toBeGreaterThanOrEqual(500)
   })

@@ -77,7 +77,7 @@ test('reduces D1 insights and identifies status reads', () => {
   )
 })
 
-test('derives rates from measured client-open time', () => {
+test('derives rates from the conservative status-equivalent clock', () => {
   const originalNow = Date.now
   Date.now = () => 10 * 86_400_000
   try {
@@ -115,17 +115,16 @@ test('derives rates from measured client-open time', () => {
       },
     )
 
-    assert.equal(inputs.activeHoursPerUser, 23 / 12)
-    assert.equal(inputs.paintEventsPerUserHour, 48 / 23)
-    assert.equal(inputs.tileFetchesPerUserHour, 96 / 23)
+    assert.equal(inputs.activeHoursPerUser, 2)
+    assert.equal(inputs.paintEventsPerUserHour, 2)
+    assert.equal(inputs.tileFetchesPerUserHour, 4)
     assert.equal(inputs.averageTemplatesPerTile, 1.5)
     assert.equal(inputs.tileVersionsPerCoveredTileDay, 2)
     assert.equal(inputs.historyDays, 5)
     assert.equal(inputs.d1BytesPerLogicalRow, 250)
     assert.equal(inputs.d1RowsReadPerStatusRequest, 20)
     assert.equal(inputs.d1RowsReadPerPaintReportRequest, 20)
-    assert.equal(inputs.d1RowsReadPerTileOfferRequest, 10)
-    assert.equal(inputs.d1RowsReadPerTileUploadRequest, 10)
+    assert.equal(inputs.d1RowsReadPerTileObservation, 20)
     assert.equal(inputs.otherD1RowsReadPerDay, 2_400)
     assert.equal(inputs.persistentD1Rows, 40)
   } finally {
@@ -172,7 +171,7 @@ test('preserves unavailable R2 operation metrics as null', () => {
   assert.equal(compared.r2ClassBOperations.observed, null)
 })
 
-test('derives status-only client hours after separating triggered refreshes', () => {
+test('derives a conservative periodic-equivalent clock for status-only clients', () => {
   const inputs = deriveModelInputs(
     {
       active_users: 0,
@@ -208,5 +207,48 @@ test('derives status-only client hours after separating triggered refreshes', ()
   )
 
   assert.equal(inputs.activeUsers, 1)
-  assert.equal(inputs.activeHoursPerUser, (118 * 30) / 3_600)
+  assert.equal(inputs.activeHoursPerUser, 1)
+})
+
+test('preserves status and tile-read totals across a multi-item partial-upload batch', () => {
+  const inputs = deriveModelInputs(
+    {
+      active_users: 1,
+      templates: 1,
+      covered_tiles: 64,
+      template_tile_entries: 64,
+      paint_events: 0,
+      client_tile_observations: 64,
+      distinct_tile_versions: 8,
+      persistent_rows: 5,
+      logical_rows: 5,
+      database_size_bytes: 500,
+      history_start_s: 0,
+    },
+    {
+      rowsRead: 7_600,
+      rowsWritten: 0,
+      statusRequests: 120,
+      statusRowsRead: 1_200,
+      paintRowsRead: 0,
+      tileRowsRead: 6_400,
+      otherRowsRead: 0,
+    },
+    {
+      paintBatchWindowSeconds: 0,
+      maxPaintEventsPerReport: 1,
+      tileOfferBatchWindowSeconds: 0.25,
+      maxTileOffersPerRequest: 64,
+      statusPollIntervalSeconds: 30,
+      statusRefreshesPerTileOfferRequest: 1,
+      lifecycleStatusRefreshesPerUserDay: 2,
+    },
+  )
+
+  assert.equal(inputs.activeHoursPerUser * (3_600 / inputs.statusPollIntervalSeconds), 120)
+  assert.equal(inputs.tileFetchesPerUserHour * inputs.activeHoursPerUser, 64)
+  assert.equal(
+    inputs.d1RowsReadPerTileObservation * inputs.tileFetchesPerUserHour * inputs.activeHoursPerUser,
+    6_400,
+  )
 })

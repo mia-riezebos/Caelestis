@@ -109,25 +109,13 @@ export const classifyR2Operations = (operations) =>
 
 export const deriveModelInputs = (database, insightTotals, currentClientDefaults) => {
   const reportingUsers = Number(database.active_users)
-  const offerStatusRequests = Math.min(
-    insightTotals.statusRequests,
-    Number(database.client_tile_observations) *
-      currentClientDefaults.statusRefreshesPerTileOfferRequest,
-  )
-  const activeUserHoursFrom = (users) =>
-    (Math.max(
-      0,
-      insightTotals.statusRequests -
-        offerStatusRequests -
-        users * currentClientDefaults.lifecycleStatusRefreshesPerUserDay,
-    ) *
-      currentClientDefaults.statusPollIntervalSeconds) /
-    3_600
-  let activeUsers = Math.max(reportingUsers, insightTotals.statusRequests > 0 ? 1 : 0)
-  for (let iteration = 0; iteration < 2; iteration++) {
-    activeUsers = Math.max(activeUsers, Math.ceil(activeUserHoursFrom(activeUsers) / 24))
-  }
-  const activeUserHours = activeUserHoursFrom(activeUsers)
+  // Insights has no HTTP request id with which to distinguish periodic status polls from the one
+  // refresh after a successful multi-item offer batch. Keep every measured status call as a
+  // periodic-equivalent upper bound rather than subtracting tile rows as though they were batches.
+  const activeUserHours =
+    (insightTotals.statusRequests * currentClientDefaults.statusPollIntervalSeconds) / 3_600
+  const statusUsers = activeUserHours === 0 ? 0 : Math.max(1, Math.ceil(activeUserHours / 24))
+  const activeUsers = Math.max(reportingUsers, statusUsers)
   const activeHoursPerUser = activeUsers === 0 ? 0 : activeUserHours / activeUsers
   const paintEvents = Number(database.paint_events)
   const clientTileObservations = Number(database.client_tile_observations)
@@ -135,7 +123,6 @@ export const deriveModelInputs = (database, insightTotals, currentClientDefaults
   const logicalRows = Number(database.logical_rows)
   const historyStartSeconds = Number(database.history_start_s)
   const nowSeconds = Math.floor(Date.now() / 1_000)
-  const tileReadRequests = clientTileObservations * 2
 
   return {
     activeUsers,
@@ -163,10 +150,8 @@ export const deriveModelInputs = (database, insightTotals, currentClientDefaults
         : insightTotals.statusRowsRead / insightTotals.statusRequests,
     d1RowsReadPerPaintReportRequest:
       paintEvents === 0 ? 0 : insightTotals.paintRowsRead / paintEvents,
-    d1RowsReadPerTileOfferRequest:
-      tileReadRequests === 0 ? 0 : insightTotals.tileRowsRead / tileReadRequests,
-    d1RowsReadPerTileUploadRequest:
-      tileReadRequests === 0 ? 0 : insightTotals.tileRowsRead / tileReadRequests,
+    d1RowsReadPerTileObservation:
+      clientTileObservations === 0 ? 0 : insightTotals.tileRowsRead / clientTileObservations,
     otherD1RowsReadPerDay: insightTotals.otherRowsRead,
     otherWorkerRequestsPerDay: 0,
     persistentD1Rows: Number(database.persistent_rows),

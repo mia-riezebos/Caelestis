@@ -65,8 +65,12 @@ export interface CapacityInputs {
   readonly d1RowsReadPerStatusRequest: number
   /** Route-specific D1 reads calibrated from D1 Insights for the observed workload. */
   readonly d1RowsReadPerPaintReportRequest: number
-  readonly d1RowsReadPerTileOfferRequest: number
-  readonly d1RowsReadPerTileUploadRequest: number
+  /**
+   * Aggregate offer and upload reads per accepted client tile observation. D1 Insights does not
+   * retain HTTP request ids, so this unit preserves the measured baseline across offer batching and
+   * partial uploads instead of inventing route request counts.
+   */
+  readonly d1RowsReadPerTileObservation: number
   /** Manifest, dashboard, and other queries outside the telemetry request model. */
   readonly otherD1RowsReadPerDay: number
   readonly otherWorkerRequestsPerDay: number
@@ -225,8 +229,7 @@ export const estimateCapacity = (inputs: CapacityInputs): CapacityEstimate => {
   const d1RowsRead =
     statusRequests * inputs.d1RowsReadPerStatusRequest +
     paintReportRequests * inputs.d1RowsReadPerPaintReportRequest +
-    tileOfferRequests * inputs.d1RowsReadPerTileOfferRequest +
-    tileUploadRequests * inputs.d1RowsReadPerTileUploadRequest +
+    tileOffers * inputs.d1RowsReadPerTileObservation +
     inputs.otherD1RowsReadPerDay
 
   const paintTemplateTouches = classifiedPaintEvents * inputs.averageTemplatesPerPaint

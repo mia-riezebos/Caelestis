@@ -132,16 +132,19 @@ the 30-second status refresh makes D1 reads the first wall.
 | Workload | Daily estimate or measurement | Free-tier result |
 | --- | --- | --- |
 | Production, 2026-08-30: 3 reporting clients, 90 templates, 36 covered tiles | 20,779 Worker requests; 58 Durable Object requests; 7.32M D1 rows read; 14,719 D1 rows written | Over: D1 reads reached 146% |
-| Same 90-template shape: 4 users active 8 hours | 4,575 modeled Worker requests; 3.72M D1 rows read; at most 7,310 D1 rows written | Fits; 6 users model at 5.34M reads |
-| Smaller 10-template/4-tile shape: 14 users active 8 hours | 15,554 modeled Worker requests; 4.69M D1 rows read; at most 14,166 D1 rows written | Fits narrowly; 15 users model at 5.02M reads |
+| Same 90-template shape: 5 users active 8 hours | 5,685 modeled Worker requests; 4.36M D1 rows read | Fits; 6 users model at 5.23M reads |
+| Smaller 10-template/4-tile shape: 12 users active 8 hours | 13,334 modeled Worker requests; 4.73M D1 rows read | Fits narrowly; 13 users model at 5.13M reads |
 
 The scenario rows are conservative bounds, not promises. They use the recorded production rates
-(0.5 paints and 9 tile observations per user-hour), count the status refresh after every successful
-offer plus two lifecycle refreshes per user-day, and charge the full historical non-status D1 residual
-as about 3,600 rows read per telemetry request. That last assumption deliberately overcounts
-unrelated traffic until a fresh observation can split paint, offer, upload, dashboard, and manifest
-queries. Roughly 4 users with 90 templates or 14 users with 10 templates fit this bound; deployers
-should rerun the observation command for their own template shape.
+(0.5 paints and 9 accepted tile observations per user-hour), count the status refresh after every
+modeled offer batch plus two lifecycle refreshes per user-day, and charge the full historical
+non-status D1 residual across paint and tile observations as about 4,400 rows each. D1 Insights does
+not retain the HTTP request ids needed to separate a multi-tile offer from its partial uploads, so
+the observation command keeps those reads in one baseline-preserving tile unit. It also treats every
+measured status call as periodic-equivalent open time instead of mistaking tile rows for offer
+batches; modeled triggered refreshes are then added conservatively. Roughly 5 users with 90
+templates or 12 users with 10 templates fit this bound. Deployers should rerun the command for their
+own template shape.
 
 The first knob is the status path: lengthen its 30-second interval, or cache or precompute its
 result. Paint batching does not reduce periodic, post-offer, or lifecycle status reads. Per-template
