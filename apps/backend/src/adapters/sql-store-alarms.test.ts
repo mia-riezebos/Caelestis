@@ -124,6 +124,25 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
     ])
   })
 
+  it('does not let an overlapping scan overwrite a worsening follow-up', async () => {
+    await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
+
+    await Promise.all([
+      store.evaluateTemplateAlarm(
+        snapshot(59_800, PROBE_AT),
+        { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+        'unused',
+      ),
+      store.evaluateTemplateAlarm(snapshot(59_900, PROBE_AT), { kind: 'scan' }, 'unused'),
+    ])
+
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
+      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 100 }),
+    ])
+    await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
+  })
+
   it('keeps unpublished alarms admin-only and resets the baseline on a new version', async () => {
     await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
     await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)

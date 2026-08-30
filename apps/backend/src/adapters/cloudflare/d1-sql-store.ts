@@ -1881,40 +1881,55 @@ export class D1SqlStore implements SqlStore {
     phase: AlarmEvaluationPhase,
     alarmId: string,
   ): Promise<AlarmPolicyResult> {
-    const previousRow = await this.database
-      .select()
-      .from(templateAlarmStates)
-      .where(eq(templateAlarmStates.templateId, snapshot.templateId))
-      .limit(1)
-      .then((rows) => rows[0])
-    const result = evaluateAlarmSnapshot(
-      previousRow === undefined ? null : storedAlarmState(previousRow),
-      snapshot,
-      phase,
-      () => alarmId,
-    )
-    const alarm = result.state.alarm
-    const probeDueAt = result.scheduleFollowUp
-      ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
-      : null
-    const values = {
-      templateId: snapshot.templateId,
-      versionId: result.state.versionId,
-      total: result.state.total,
-      peakCorrect: result.state.peakCorrect,
-      alarmId: alarm?.id ?? null,
-      kind: alarm?.kind ?? null,
-      pixelsLost: alarm?.pixelsLost ?? null,
-      firstSeenMs: alarm?.firstSeen ?? null,
-      lastSeenMs: alarm?.lastSeen ?? null,
-      probeDueAtMs: probeDueAt,
-      probePixelsLost: result.scheduleFollowUp ? (alarm?.pixelsLost ?? null) : null,
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const previousRow = await this.database
+        .select()
+        .from(templateAlarmStates)
+        .where(eq(templateAlarmStates.templateId, snapshot.templateId))
+        .limit(1)
+        .then((rows) => rows[0])
+      const result = evaluateAlarmSnapshot(
+        previousRow === undefined ? null : storedAlarmState(previousRow),
+        snapshot,
+        phase,
+        () => alarmId,
+      )
+      const alarm = result.state.alarm
+      const probeDueAt = result.scheduleFollowUp
+        ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
+        : null
+      const values = {
+        templateId: snapshot.templateId,
+        versionId: result.state.versionId,
+        total: result.state.total,
+        peakCorrect: result.state.peakCorrect,
+        alarmId: alarm?.id ?? null,
+        kind: alarm?.kind ?? null,
+        pixelsLost: alarm?.pixelsLost ?? null,
+        firstSeenMs: alarm?.firstSeen ?? null,
+        lastSeenMs: alarm?.lastSeen ?? null,
+        probeDueAtMs: probeDueAt,
+        probePixelsLost: result.scheduleFollowUp ? (alarm?.pixelsLost ?? null) : null,
+        revision: (previousRow?.revision ?? -1) + 1,
+      }
+      const write =
+        previousRow === undefined
+          ? await this.database
+              .insert(templateAlarmStates)
+              .values(values)
+              .onConflictDoNothing({ target: templateAlarmStates.templateId })
+          : await this.database
+              .update(templateAlarmStates)
+              .set(values)
+              .where(
+                and(
+                  eq(templateAlarmStates.templateId, snapshot.templateId),
+                  eq(templateAlarmStates.revision, previousRow.revision),
+                ),
+              )
+      if (Number(write.meta.changes) > 0) return result
     }
-    await this.database
-      .insert(templateAlarmStates)
-      .values(values)
-      .onConflictDoUpdate({ target: templateAlarmStates.templateId, set: values })
-    return result
+    throw new Error(`alarm state stayed contended for template ${snapshot.templateId}`)
   }
 
   async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {
@@ -1994,7 +2009,11 @@ export class D1SqlStore implements SqlStore {
   async clearAlarmProbe(templateId: string, alarmId: string): Promise<void> {
     await this.database
       .update(templateAlarmStates)
-      .set({ probeDueAtMs: null, probePixelsLost: null })
+      .set({
+        probeDueAtMs: null,
+        probePixelsLost: null,
+        revision: sql`${templateAlarmStates.revision} + 1`,
+      })
       .where(
         and(
           eq(templateAlarmStates.templateId, templateId),

@@ -189,7 +189,7 @@ describe('the 6-hour tile fetcher', () => {
 
     await fetchCanvasTiles(ports, {
       season: 0,
-      now: seconds(NOW + 6 * 60 * 60),
+      now: seconds(NOW + 6 * 60 * 60 + 1),
       fetchImpl,
       maxTiles: 2,
     })

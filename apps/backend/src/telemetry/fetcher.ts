@@ -37,8 +37,9 @@ export const FETCHER_USER_ID = 0
  */
 export const MAX_FETCH_TILES_PER_RUN = 200
 
-/** A complete rolling snapshot may span the current and immediately preceding cron batch. */
-export const ALARM_SCAN_FRESHNESS_SECONDS = 6 * 60 * 60
+export const ALARM_SCAN_INTERVAL_SECONDS = 6 * 60 * 60
+/** Cron delivery is not exact; keep a small overlap between adjacent bounded batches. */
+export const ALARM_SCAN_JITTER_SECONDS = 5 * 60
 
 /** Ring tiles skip their refetch while younger than this — surroundings age fine. */
 export const RING_STALENESS_SECONDS = 72_000 // 20 hours: roughly daily under a 6-hour cron.
@@ -88,7 +89,7 @@ export const fetchCanvasTiles = async (
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
   const fetchImpl = options.fetchImpl ?? fetch
   const alarmIdFactory = options.alarmIdFactory ?? uuidV7
-  const maxTiles = options.maxTiles ?? MAX_FETCH_TILES_PER_RUN
+  const maxTiles = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
   const { season } = options
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
@@ -206,16 +207,16 @@ export const fetchCanvasTiles = async (
   }
   const statuses = await ports.sql.readTemplateStatuses(season, true)
   const statusesById = new Map(statuses.map((status) => [status.templateId, status]))
+  const scanCycleBatches = Math.max(1, Math.ceil(templateTiles.size / maxTiles))
+  const freshnessCutoff =
+    (now - scanCycleBatches * ALARM_SCAN_INTERVAL_SECONDS - ALARM_SCAN_JITTER_SECONDS) * 1_000
   let followUpScheduled = false
   for (const template of templates) {
     const required = requiredTiles.get(template.id) ?? []
     const status = statusesById.get(template.id)
     if (
       required.length === 0 ||
-      !required.every(
-        (observedAt) =>
-          observedAt !== null && observedAt >= (now - ALARM_SCAN_FRESHNESS_SECONDS) * 1_000,
-      ) ||
+      !required.every((observedAt) => observedAt !== null && observedAt >= freshnessCutoff) ||
       status === undefined ||
       status.total !== template.totalPixels
     ) {
@@ -262,7 +263,7 @@ export const fetchAlarmFollowUps = async (
   let evaluated = 0
   let failed = 0
   let pending = 0
-  let remaining = options.maxTiles ?? MAX_FETCH_TILES_PER_RUN
+  let remaining = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
 
   for (const probe of probes) {
     const template = (await ports.sql.listManifestTemplates(probe.season, true)).find(

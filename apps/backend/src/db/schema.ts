@@ -734,6 +734,8 @@ export const templateAlarmStates = sqliteTable(
     lastSeenMs: integer('last_seen_ms').$type<Millis>(),
     probeDueAtMs: integer('probe_due_at_ms').$type<Millis>(),
     probePixelsLost: integer('probe_pixels_lost'),
+    /** Optimistic compare-and-swap guard for overlapping cron and follow-up evaluations. */
+    revision: integer('revision').notNull().default(0),
   },
   (table) => [
     index('template_alarm_states_probe_due_idx').on(table.probeDueAtMs),
