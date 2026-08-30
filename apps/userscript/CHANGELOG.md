@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.5.5
+
+### Patch Changes
+
+- 2ad9543: Pause global keyboard shortcuts while typing in fields inside shared UI components.
+
 ## 0.5.4
 
 ### Patch Changes
