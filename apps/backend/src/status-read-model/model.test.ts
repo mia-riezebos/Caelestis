@@ -48,7 +48,9 @@ const harness = (
     source: { read },
     persistence: { load: async () => stored, save },
     revisions: {
-      commit: async (_season, nextPublicFingerprint, nextAdminFingerprint) => {
+      current: async () => revisions.revision,
+      commit: async (_season, expectedRevision, nextPublicFingerprint, nextAdminFingerprint) => {
+        if (expectedRevision !== revisions.revision) return null
         if (
           revisions.revision === 0 ||
           revisions.publicFingerprint !== nextPublicFingerprint ||
@@ -117,7 +119,20 @@ describe('season status read model', () => {
       },
     })
 
-    await test.model.applyCommittedChange()
+    await expect(test.model.applyCommittedChange()).resolves.toEqual({
+      public: {
+        baseRevision: 1,
+        revision: 2,
+        templates: [status('public', 1)],
+        removedTemplateIds: [],
+      },
+      admin: {
+        baseRevision: 1,
+        revision: 2,
+        templates: [status('public', 1)],
+        removedTemplateIds: [],
+      },
+    })
     await expect(test.model.reconcileSnapshot('public')).resolves.toMatchObject({
       snapshot: { revision: 2 },
     })
@@ -147,6 +162,21 @@ describe('season status read model', () => {
       cacheOutcome: 'stale',
       snapshot: { revision: 2, templates: [status('public', 1)] },
     })
+  })
+
+  it('retries reconciliation when a tile commit advances the revision during source reads', async () => {
+    const test = harness()
+    test.setPublic([status('public', 1)])
+    test.setAdmin([status('public', 1), status('draft', 0)])
+    test.read.mockImplementationOnce(async () => {
+      test.revisions.revision = 1
+      return [status('public', 1)]
+    })
+
+    await expect(test.model.reconcileSnapshot('public')).resolves.toMatchObject({
+      snapshot: { revision: 2, templates: [status('public', 1)] },
+    })
+    expect(test.read).toHaveBeenCalledTimes(4)
   })
 
   it('rebuilds after projection loss and recovers a persisted snapshot after process eviction', async () => {

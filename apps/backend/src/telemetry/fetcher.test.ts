@@ -12,6 +12,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import type { TemplateVersionRecord } from '../ports/index.js'
+import type { StatusReadModelPort } from '../status-read-model/port.js'
 import {
   type FetcherStores,
   fetchAlarmFollowUps,
@@ -128,6 +129,46 @@ describe('the 6-hour tile fetcher', () => {
     expect(third).toMatchObject({ fetched: 0, unchanged: 9, fresh: 0 })
   })
 
+  it('applies all status changes from one fetch job in one projection call', async () => {
+    const { ports, sql, fetchImpl } = harness()
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    for (const x of [5, 6]) {
+      await sql.insertTemplateVersion({
+        ...version(`tile-${x}`, [{ x, y: 5 }]),
+        bbox: {
+          minX: x * TILE_SIZE,
+          minY: 5 * TILE_SIZE,
+          maxX: x * TILE_SIZE + 1,
+          maxY: 5 * TILE_SIZE + 1,
+        },
+        chunks: [{ tileX: x, tileY: 5, hash }],
+      })
+    }
+    const applyCommittedChange = vi.fn(async () => null)
+    const statusReadModel: StatusReadModelPort = {
+      applyCommittedChange,
+      reconcileSnapshot: vi.fn(),
+    }
+
+    await fetchCanvasTiles(
+      { ...ports, statusReadModel },
+      {
+        season: 0,
+        now: NOW,
+        fetchImpl,
+        maxTiles: 2,
+      },
+    )
+
+    expect(applyCommittedChange).toHaveBeenCalledTimes(1)
+    expect(applyCommittedChange).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ baseRevision: 0, revision: 2 }),
+    )
+  })
+
   it('survives an upstream failure without abandoning the run', async () => {
     const { ports, sql } = harness()
     await sql.insertTemplateVersion(version('lone', [{ x: 5, y: 5 }]))
@@ -212,7 +253,7 @@ describe('the 6-hour tile fetcher', () => {
     const bytes = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, canvas)
     const evaluate = vi.spyOn(sql, 'evaluateTemplateAlarm')
     const record = vi
-      .spyOn(sql, 'recordTileObservation')
+      .spyOn(sql, 'commitTileBlobReservation')
       .mockRejectedValueOnce(new Error('status write failed'))
 
     await fetchCanvasTiles(ports, {

@@ -71,6 +71,13 @@
       "when": 1788105036034,
       "tag": "0009_breezy_red_skull",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788107534013,
+      "tag": "0010_charming_photon",
+      "breakpoints": true
     }
   ]
 }

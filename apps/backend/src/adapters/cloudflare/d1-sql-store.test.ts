@@ -55,19 +55,71 @@ describe('D1SqlStore', () => {
 
   it('retains a status revision for equal fingerprints and advances it atomically on change', async () => {
     await expect(
-      store.commitStatusProjectionRevision(4, 'a'.repeat(64), 'b'.repeat(64)),
+      store.commitStatusProjectionRevision(4, 0, 'a'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(1)
     await expect(
-      store.commitStatusProjectionRevision(4, 'a'.repeat(64), 'b'.repeat(64)),
+      store.commitStatusProjectionRevision(4, 1, 'a'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(1)
     await expect(
-      store.commitStatusProjectionRevision(4, 'c'.repeat(64), 'b'.repeat(64)),
+      store.commitStatusProjectionRevision(4, 1, 'c'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(2)
 
     const recovered = new D1SqlStore(d1 as unknown as D1Database)
     await expect(
-      recovered.commitStatusProjectionRevision(4, 'c'.repeat(64), 'b'.repeat(64)),
+      recovered.commitStatusProjectionRevision(4, 2, 'c'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(2)
+  })
+
+  it('commits tile status and its revision together and fences a stale reconciliation', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    const hash = 'd'.repeat(64)
+    await expect(
+      store.reserveTileBlobUpload(hash, hash, 'reservation', millis(1_000), millis(5_000)),
+    ).resolves.not.toBeNull()
+
+    await expect(
+      store.commitTileBlobReservation(
+        'reservation',
+        millis(2_000),
+        {
+          season: 1,
+          tile: { x: 0, y: 0 },
+          hash,
+          observedAt: millis(2_000),
+          reportedAt: seconds(2),
+          reportedWithToken: 'c'.repeat(64),
+          reportedByUserId: 42,
+        },
+        [
+          {
+            templateId: 'template-1',
+            versionId: 'version-1',
+            tile: { x: 0, y: 0 },
+            correct: 1,
+            wrong: 0,
+            blank: 0,
+            observedAt: millis(2_000),
+          },
+        ],
+        false,
+      ),
+    ).resolves.toMatchObject({ revision: 1, statusChanges: [{ previous: null }] })
+    await expect(store.readStatusProjectionRevision(1)).resolves.toBe(1)
+    await expect(
+      store.commitStatusProjectionRevision(1, 0, 'a'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBeNull()
+    await expect(
+      store.commitStatusProjectionRevision(1, 1, 'a'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBe(1)
   })
 
   it('uses hash indexes for tile blob reference checks', () => {

@@ -119,7 +119,7 @@ const uploadCanvasTile = async (
     },
     body: bytes,
   })
-  expect(uploaded.status).toBe(204)
+  expect(uploaded.status).toBe(200)
   return hash
 }
 

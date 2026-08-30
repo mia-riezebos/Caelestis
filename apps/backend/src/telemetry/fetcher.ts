@@ -11,8 +11,13 @@ import {
 } from '@caelestis/shared'
 import type { AlarmProbe, BlobStore, CounterStore, SqlStore } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
-import type { StatusReadModelPort } from '../status-read-model/port.js'
-import { MAX_CANVAS_TILE_BYTES, refreshAuthoritativeTile, uploadTile } from './ingest.js'
+import { DirectStatusReadModel, type StatusReadModelPort } from '../status-read-model/port.js'
+import {
+  createStatusProjectionBatch,
+  MAX_CANVAS_TILE_BYTES,
+  refreshAuthoritativeTile,
+  uploadTile,
+} from './ingest.js'
 
 /**
  * The server's own tile mirror, run from the 6-hour cron.
@@ -103,9 +108,11 @@ export const fetchCanvasTiles = async (
   const alarmIdFactory = options.alarmIdFactory ?? uuidV7
   const maxTiles = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
   const { season } = options
+  const statusReadModel = ports.statusReadModel ?? new DirectStatusReadModel(ports.sql)
   const runtime = createBackendRuntime(
-    makeBackendContext(ports.blobs, ports.sql, ports.counters, ports.statusReadModel),
+    makeBackendContext(ports.blobs, ports.sql, ports.counters, statusReadModel),
   )
+  const projectionBatch = createStatusProjectionBatch(statusReadModel)
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
   // admin's draft deserves the same timelapse the published version will show.
@@ -189,6 +196,7 @@ export const fetchCanvasTiles = async (
                 includeUnpublished: true,
               },
               bytes,
+              { projectionBatch },
             ),
           )
           serverRefreshedTemplateTiles.add(tileKey(tile))
@@ -208,7 +216,7 @@ export const fetchCanvasTiles = async (
             includeUnpublished: true,
           },
           bytes,
-          { requireCoverage: false, authoritative: true },
+          { requireCoverage: false, authoritative: true, projectionBatch },
         ),
       )
       if (!ring) serverRefreshedTemplateTiles.add(tileKey(tile))
@@ -218,6 +226,7 @@ export const fetchCanvasTiles = async (
       failed++
     }
   }
+  await projectionBatch.flush()
 
   const templates = await ports.sql.listManifestTemplates(
     { season, surface: WORLD_TEMPLATE_SURFACE },
@@ -299,9 +308,11 @@ export const fetchAlarmFollowUps = async (
 ): Promise<AlarmFollowUpReport> => {
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
   const fetchImpl = options.fetchImpl ?? fetch
+  const statusReadModel = ports.statusReadModel ?? new DirectStatusReadModel(ports.sql)
   const runtime = createBackendRuntime(
-    makeBackendContext(ports.blobs, ports.sql, ports.counters, ports.statusReadModel),
+    makeBackendContext(ports.blobs, ports.sql, ports.counters, statusReadModel),
   )
+  const projectionBatch = createStatusProjectionBatch(statusReadModel)
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
   let evaluated = 0
   let failed = 0
@@ -372,6 +383,7 @@ export const fetchAlarmFollowUps = async (
                 includeUnpublished: true,
               },
               bytes,
+              { projectionBatch },
             ),
           )
           continue
@@ -389,7 +401,7 @@ export const fetchAlarmFollowUps = async (
               includeUnpublished: true,
             },
             bytes,
-            { requireCoverage: false, authoritative: true },
+            { requireCoverage: false, authoritative: true, projectionBatch },
           ),
         )
       } catch {
@@ -451,6 +463,8 @@ export const fetchAlarmFollowUps = async (
     )
     evaluated++
   }
+
+  await projectionBatch.flush()
 
   return { evaluated, failed, pending }
 }

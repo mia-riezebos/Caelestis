@@ -5,6 +5,7 @@ import {
   PALETTE_SIZE,
   type PaintEvent,
   type ReconciliationReason,
+  type StatusDelta,
   type StatusResponse,
   seconds,
   sha256Hex,
@@ -21,6 +22,7 @@ import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
 import { coalesceServerRead } from './server-read-coalescer.js'
 import {
+  applyServerSyncDelta,
   registerServerSyncResource,
   requestServerSync,
   type ServerSyncResult,
@@ -170,8 +172,9 @@ const uploadWanted = async (
   identity: NonNullable<ReturnType<typeof accountIdentity>>,
   entries: readonly OfferedTile[],
   wanted: ReadonlySet<string>,
-): Promise<ReadonlySet<string>> => {
+): Promise<{ readonly uploaded: ReadonlySet<string>; readonly receivedStatus: boolean }> => {
   const uploaded = new Set<string>()
+  const deltas: StatusDelta[] = []
   await Promise.all(
     entries
       .filter((entry) => wanted.has(entry.tile))
@@ -197,6 +200,9 @@ const uploadWanted = async (
         if (response?.ok) {
           uploaded.add(`${entry.tile}\u0000${entry.sha256}`)
           invalidateServerMismatchTile(server.url, entry.coord)
+          const body = (await response.json().catch(() => null)) as { status?: unknown } | null
+          const delta = statusDeltaFrom(body?.status)
+          if (delta !== null) deltas.push(delta)
         } else if (response !== null)
           warn('install', 'telemetry tile upload was rejected', {
             server: server.url,
@@ -205,7 +211,11 @@ const uploadWanted = async (
           })
       }),
   )
-  return uploaded
+  deltas.sort(
+    (left, right) => left.baseRevision - right.baseRevision || left.revision - right.revision,
+  )
+  for (const delta of deltas) applyStatusDelta(server, delta)
+  return { uploaded, receivedStatus: deltas.length > 0 }
 }
 
 const flushOffers = async (serverUrl: string): Promise<void> => {
@@ -248,13 +258,15 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     !Array.isArray((body as { wanted?: unknown }).wanted)
   )
     return
+  const responseBody = body as { wanted: unknown[]; status?: unknown }
   const wanted = new Set(
-    (body as { wanted: unknown[] }).wanted.filter(
-      (tile): tile is string => typeof tile === 'string',
-    ),
+    responseBody.wanted.filter((tile): tile is string => typeof tile === 'string'),
   )
-  const uploaded = await uploadWanted(server, identity, entries, wanted)
-  requestServerSync('post-offer', 'telemetry-status', server)
+  const offeredStatus = statusDeltaFrom(responseBody.status)
+  if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
+  const { uploaded, receivedStatus } = await uploadWanted(server, identity, entries, wanted)
+  if (offeredStatus === null && !receivedStatus)
+    requestServerSync('post-offer', 'telemetry-status', server)
   const previousDedupe = offered.get(server.url)
   const dedupe =
     previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
@@ -439,6 +451,7 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
   const candidate = value as Partial<TemplateStatus>
   if (
     typeof candidate.templateId !== 'string' ||
+    !UUID_V7.test(candidate.templateId) ||
     ![
       candidate.correct,
       candidate.wrong,
@@ -487,6 +500,80 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
   return candidate as TemplateStatus
 }
 
+const statusDeltaFrom = (value: unknown): StatusDelta | null => {
+  if (typeof value !== 'object' || value === null) return null
+  const candidate = value as Partial<StatusDelta>
+  if (
+    !Number.isSafeInteger(candidate.baseRevision) ||
+    Number(candidate.baseRevision) < 0 ||
+    !Number.isSafeInteger(candidate.revision) ||
+    Number(candidate.revision) < Number(candidate.baseRevision) ||
+    !Array.isArray(candidate.templates) ||
+    candidate.templates.length > MAX_MANIFEST_TEMPLATES ||
+    !Array.isArray(candidate.removedTemplateIds) ||
+    candidate.removedTemplateIds.length > MAX_MANIFEST_TEMPLATES
+  )
+    return null
+  const templates: TemplateStatus[] = []
+  const templateIds = new Set<string>()
+  for (const raw of candidate.templates) {
+    const status = templateStatusFrom(raw)
+    if (status === null || templateIds.has(status.templateId)) return null
+    templateIds.add(status.templateId)
+    templates.push(status)
+  }
+  const removedTemplateIds = new Set<string>()
+  for (const templateId of candidate.removedTemplateIds) {
+    if (
+      typeof templateId !== 'string' ||
+      !UUID_V7.test(templateId) ||
+      templateIds.has(templateId) ||
+      removedTemplateIds.has(templateId)
+    )
+      return null
+    removedTemplateIds.add(templateId)
+  }
+  return {
+    baseRevision: Number(candidate.baseRevision),
+    revision: Number(candidate.revision),
+    templates,
+    removedTemplateIds: [...removedTemplateIds],
+  }
+}
+
+const notifyStatusListeners = (): void => {
+  for (const listener of statusListeners) {
+    try {
+      listener()
+    } catch (error) {
+      reportTelemetryError(error)
+    }
+  }
+}
+
+const applyStatusDelta = (server: ConnectedServer, delta: StatusDelta): void => {
+  applyServerSyncDelta(
+    server,
+    'world',
+    'telemetry-status',
+    String(delta.baseRevision),
+    String(delta.revision),
+    () => {
+      let changed = false
+      for (const status of delta.templates) {
+        const key = statusKey(server.url, status.templateId)
+        if (JSON.stringify(statuses.get(key)?.value) === JSON.stringify(status)) continue
+        statuses.set(key, { server, value: status })
+        changed = true
+      }
+      for (const templateId of delta.removedTemplateIds) {
+        changed = statuses.delete(statusKey(server.url, templateId)) || changed
+      }
+      if (changed) notifyStatusListeners()
+    },
+  )
+}
+
 const refreshStatus = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
@@ -533,15 +620,7 @@ const refreshStatus = async (
         statuses.delete(key)
         changed = true
       }
-      if (changed) {
-        for (const listener of statusListeners) {
-          try {
-            listener()
-          } catch (error) {
-            reportTelemetryError(error)
-          }
-        }
-      }
+      if (changed) notifyStatusListeners()
       return {
         status: changed ? 'changed' : 'unchanged',
         ...(body.revision === undefined ? {} : { revision: String(body.revision) }),

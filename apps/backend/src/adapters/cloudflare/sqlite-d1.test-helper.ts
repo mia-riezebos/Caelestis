@@ -80,6 +80,10 @@ class SqliteD1Statement {
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
     this.refusePatternsD1WouldRefuse()
+    if (/\breturning\b/i.test(this.sql)) {
+      const rows = this.statement.all(...this.bindings) as T[]
+      return result(rows, rows.length)
+    }
     const changed = this.statement.run(...this.bindings)
     return result<T>([], Number(changed.changes))
   }
