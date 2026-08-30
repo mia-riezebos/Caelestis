@@ -52,6 +52,20 @@ describe('D1SqlStore', () => {
 
   afterEach(() => d1.close())
 
+  it('uses hash indexes for tile blob reference checks', () => {
+    for (const [table, indexName] of [
+      ['tile_history', 'tile_history_sha256_idx'],
+      ['canvas_tiles', 'canvas_tiles_sha256_idx'],
+    ] as const) {
+      const plan = d1.sqlite
+        .prepare(`EXPLAIN QUERY PLAN SELECT 1 FROM ${table} WHERE sha256 = ? LIMIT 1`)
+        .all('a'.repeat(64)) as Array<{ detail: string }>
+      expect(plan.some(({ detail }) => detail.includes(`USING COVERING INDEX ${indexName}`))).toBe(
+        true,
+      )
+    }
+  })
+
   it('counts the old path in characters, not UTF-16 units, when moving a subtree', async () => {
     // SQLite's `length()` and `substr()` count characters; JavaScript's `.length` counts UTF-16
     // units, and an astral character is two of them. Deriving the SQL offset in JavaScript therefore

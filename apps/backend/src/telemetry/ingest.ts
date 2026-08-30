@@ -25,6 +25,7 @@ import type {
   TemplateTileStatusRecord,
   TileObservation,
 } from '../ports/index.js'
+import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
 
@@ -191,7 +192,7 @@ export const readMismatchMask = async (
   if (target === undefined) return { kind: 'not-found' }
   const latest = await ports.sql.readLatestTile(query.season, query.tile)
   if (latest === null) return { kind: 'unobserved' }
-  const canvasBytes = await ports.blobs.get('tiles', latest.hash)
+  const canvasBytes = await readTileBlob(ports, latest.hash)
   if (canvasBytes === null) return { kind: 'unobserved' }
   const canvas = await decodeCanvas(canvasBytes).catch(() => null)
   if (canvas === null) return { kind: 'unobserved' }
@@ -209,10 +210,11 @@ export const readMismatchMask = async (
  * fetcher deliberately stores a ring of surrounding tiles no template covers, purely as timelapse
  * and viewer context.
  */
-export const recordObservation = async (
+const recordObservation = async (
   ports: Ports,
   metadata: TileMetadata,
   bytes: Uint8Array,
+  reservationId: string,
 ): Promise<void> => {
   const canvas = await decodeCanvas(bytes)
   const targets = await ports.sql.listTelemetryTargets(
@@ -236,7 +238,16 @@ export const recordObservation = async (
   }
   await ports.sql.rememberPainter(metadata.wplaceUserId, metadata.displayName, millis(observedAtMs))
   const recordHistory = targets.length === 0 || targets.some((target) => !target.finished)
-  await ports.sql.recordTileObservation(observation, statuses, recordHistory)
+  const committed = await ports.sql.commitTileBlobReservation(
+    reservationId,
+    millis(Date.now()),
+    observation,
+    statuses,
+    recordHistory,
+  )
+  if (!committed) {
+    throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
+  }
   await ports.sql.foldTileHistory(
     metadata.season,
     metadata.tile,
@@ -255,9 +266,9 @@ export const offerTile = async (
     metadata.includeUnpublished,
   )
   if (targets.length === 0) return 'ignored'
-  const bytes = await ports.blobs.get('tiles', metadata.hash)
-  if (bytes === null) return 'wanted'
-  await recordObservation(ports, metadata, bytes)
+  const held = await reserveTileBlob(ports, metadata.hash)
+  if (held === null) return 'wanted'
+  await recordObservation(ports, metadata, held.bytes, held.reservation.id)
   return 'recorded'
 }
 
@@ -265,6 +276,7 @@ export const uploadTile = async (
   ports: Ports,
   metadata: TileMetadata,
   bytes: Uint8Array,
+  options: { readonly requireCoverage?: boolean } = {},
 ): Promise<void> => {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
     throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
@@ -276,9 +288,17 @@ export const uploadTile = async (
     metadata.tile,
     metadata.includeUnpublished,
   )
-  if (targets.length === 0) throw new RangeError('tile is not covered by a visible template')
-  await ports.blobs.put('tiles', actualHash, bytes)
-  await recordObservation(ports, metadata, bytes)
+  if (options.requireCoverage !== false && targets.length === 0) {
+    throw new RangeError('tile is not covered by a visible template')
+  }
+  const reservation = await reserveTileBlobUpload(ports, actualHash)
+  try {
+    await ports.blobs.put('tiles', reservation.blobKey, bytes)
+    await recordObservation(ports, metadata, bytes, reservation.id)
+  } catch (error) {
+    await ports.sql.releaseTileBlobReservation(reservation.id)
+    throw error
+  }
 }
 
 const ourPaletteIndex = (wplaceIndex: number): number =>
@@ -306,7 +326,7 @@ export const recordPaint = async (
     const targets = await ports.sql.listTelemetryTargets(event.season, tile, includeUnpublished)
     if (targets.length === 0) continue
     const latest = await ports.sql.readLatestTile(event.season, tile)
-    const previousBytes = latest === null ? null : await ports.blobs.get('tiles', latest.hash)
+    const previousBytes = latest === null ? null : await readTileBlob(ports, latest.hash)
     const previous =
       previousBytes === null ? null : await decodeCanvas(previousBytes).catch(() => null)
 

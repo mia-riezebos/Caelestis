@@ -8,7 +8,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { BlobNamespace, BlobStore } from '../ports/index.js'
+import type { BlobListPage, BlobNamespace, BlobStore } from '../ports/index.js'
 import { StoreTemplateError, storeTemplate } from './store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -34,6 +34,13 @@ class CountingBlobStore implements BlobStore {
   async hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>> {
     this.hasAllCalls.push({ namespace, hashes: [...hashes] })
     return this.inner.hasAll(namespace, hashes)
+  }
+
+  async list(
+    namespace: BlobNamespace,
+    options: { cursor?: string; limit: number },
+  ): Promise<BlobListPage> {
+    return this.inner.list(namespace, options)
   }
 }
 

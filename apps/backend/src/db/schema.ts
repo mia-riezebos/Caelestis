@@ -507,6 +507,7 @@ export const tileHistory = sqliteTable(
         table.reportedByUserId,
       ],
     }),
+    index('tile_history_sha256_idx').on(table.sha256),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
     check(
       'tile_history_season_check',
@@ -563,6 +564,7 @@ export const canvasTiles = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.season, table.tileX, table.tileY] }),
+    index('canvas_tiles_sha256_idx').on(table.sha256),
     check(
       'canvas_tiles_season_check',
       sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0`,
@@ -577,6 +579,86 @@ export const canvasTiles = sqliteTable(
       'canvas_tiles_sha256_check',
       sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
         AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
+export type TileBlobObjectState = 'uploading' | 'active' | 'candidate' | 'deleting' | 'deleted'
+
+/**
+ * Durable state for each physical tile object.
+ *
+ * `sha256` remains the public content identity. `blob_key` is the physical R2 key relative to the
+ * `tiles/` namespace and changes after a deletion. A delete can therefore finish late without
+ * removing bytes restored by a later ingest.
+ */
+export const tileBlobObjects = sqliteTable(
+  'tile_blob_objects',
+  {
+    blobKey: text('blob_key').primaryKey(),
+    sha256: text('sha256').notNull(),
+    state: text('state').$type<TileBlobObjectState>().notNull(),
+    discoveredAtMs: integer('discovered_at_ms').$type<Millis>().notNull(),
+    deleteStartedAtMs: integer('delete_started_at_ms').$type<Millis>(),
+    deleteAttempts: integer('delete_attempts').notNull().default(0),
+    reclaimedAtMs: integer('reclaimed_at_ms').$type<Millis>(),
+  },
+  (table) => [
+    index('tile_blob_objects_hash_state_idx').on(table.sha256, table.state),
+    check(
+      'tile_blob_objects_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+    check(
+      'tile_blob_objects_key_check',
+      sql`${table.blobKey} = ${table.sha256} OR substr(${table.blobKey}, 1, length(${table.sha256}) + 1) = ${table.sha256} || '/'`,
+    ),
+    check(
+      'tile_blob_objects_state_check',
+      sql`${table.state} IN ('uploading', 'active', 'candidate', 'deleting', 'deleted')`,
+    ),
+    check(
+      'tile_blob_objects_attempts_check',
+      sql`typeof(${table.deleteAttempts}) = 'integer' AND ${table.deleteAttempts} >= 0`,
+    ),
+  ],
+)
+
+/** In-flight ingest claims. A deletion fence and a live reservation are mutually exclusive. */
+export const tileBlobReservations = sqliteTable(
+  'tile_blob_reservations',
+  {
+    id: text('id').primaryKey(),
+    sha256: text('sha256').notNull(),
+    blobKey: text('blob_key')
+      .notNull()
+      .references(() => tileBlobObjects.blobKey, { onDelete: 'cascade' }),
+    expiresAtMs: integer('expires_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    index('tile_blob_reservations_hash_expiry_idx').on(table.sha256, table.expiresAtMs),
+    check(
+      'tile_blob_reservations_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
+/** The opaque R2 cursor that makes each scheduled namespace scan continue where the last stopped. */
+export const tileBlobGcState = sqliteTable(
+  'tile_blob_gc_state',
+  {
+    id: integer('id').primaryKey(),
+    cursor: text('cursor'),
+    completedSweeps: integer('completed_sweeps').notNull().default(0),
+  },
+  (table) => [
+    check('tile_blob_gc_state_single_row_check', sql`${table.id} = 1`),
+    check(
+      'tile_blob_gc_state_sweeps_check',
+      sql`typeof(${table.completedSweeps}) = 'integer' AND ${table.completedSweeps} >= 0`,
     ),
   ],
 )

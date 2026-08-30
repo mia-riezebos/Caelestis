@@ -8,6 +8,7 @@ import {
   TemplateIdentityError,
   TemplateNotFoundError,
 } from '../ports/index.js'
+import { readTileBlob } from '../telemetry/tile-blobs.js'
 import { StoreTemplateError, storeTemplate } from '../templates/store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -319,7 +320,10 @@ const createBlobRoutes = (
     const hash = c.req.param('hash')
     if (!SHA256_HEX.test(hash)) return c.json({ error: `invalid ${namespace} hash` }, 400)
 
-    const bytes = await ports.blobs.get(namespace, hash)
+    const bytes =
+      namespace === 'tiles'
+        ? await readTileBlob(ports, hash)
+        : await ports.blobs.get(namespace, hash)
     if (bytes === null) return c.json({ error: 'not found' }, 404)
 
     // `private`, because this route is behind a read scope. `public` invites any standards-compliant

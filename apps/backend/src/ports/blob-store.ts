@@ -9,13 +9,21 @@
 /** Blobs are segregated by kind: templates sliced to tile boundaries, and mirrored canvas tiles. */
 export type BlobNamespace = 'chunks' | 'tiles'
 
-export interface BlobStore {
-  put(namespace: BlobNamespace, hash: string, bytes: Uint8Array): Promise<void>
+export interface BlobListPage {
+  /** Keys relative to the requested namespace, in the object store's stable listing order. */
+  readonly keys: readonly string[]
+  /** Opaque continuation token. Absent when the namespace scan is complete. */
+  readonly cursor?: string
+}
 
-  get(namespace: BlobNamespace, hash: string): Promise<Uint8Array | null>
+export interface BlobStore {
+  /** Store one relative key. Tile keys may include an internal generation suffix. */
+  put(namespace: BlobNamespace, key: string, bytes: Uint8Array): Promise<void>
+
+  get(namespace: BlobNamespace, key: string): Promise<Uint8Array | null>
 
   /** Delete these content-addressed objects after the SQL store has proved they are unreferenced. */
-  delete(namespace: BlobNamespace, hashes: readonly string[]): Promise<void>
+  delete(namespace: BlobNamespace, keys: readonly string[]): Promise<void>
 
   /**
    * Which of these hashes the store already holds.
@@ -25,4 +33,7 @@ export interface BlobStore {
    * a single cheap round trip into dozens.
    */
   hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>>
+
+  /** One bounded namespace page. The cursor is opaque and may only be passed back to this method. */
+  list(namespace: BlobNamespace, options: { cursor?: string; limit: number }): Promise<BlobListPage>
 }
