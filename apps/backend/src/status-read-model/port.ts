@@ -50,17 +50,13 @@ export const publishManifestChange = async (
   }
 }
 
-/** Credential revocation is authoritative even if the optional live-session cleanup fails. */
+/** Production adapters propagate cleanup failure so idempotent revocation can be retried. */
 export const closeLiveCredential = async (
   readModel: StatusReadModelPort,
   season: number,
   tokenHash: string,
 ): Promise<void> => {
-  try {
-    await readModel.closeCredential?.(season, tokenHash)
-  } catch (error) {
-    console.error(error)
-  }
+  await readModel.closeCredential?.(season, tokenHash)
 }
 
 /** Portable process-local adapter used by tests and non-Worker entry points. */

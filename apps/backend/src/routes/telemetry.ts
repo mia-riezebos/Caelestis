@@ -170,6 +170,7 @@ export const createTelemetryRoutes = (
         readonly season: number
         readonly scope: 'public' | 'admin'
         readonly tokenHash: string
+        readonly revocable: boolean
         readonly lastRevision: number | null
       },
     ) => Promise<Response>
@@ -213,6 +214,7 @@ export const createTelemetryRoutes = (
         season,
         scope,
         tokenHash: c.get('caller').tokenHash,
+        revocable: c.get('caller').token !== null,
         lastRevision,
       })
     },

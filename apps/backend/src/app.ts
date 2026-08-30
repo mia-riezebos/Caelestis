@@ -37,6 +37,7 @@ export interface AppOptions {
           readonly season: number
           readonly scope: 'public' | 'admin'
           readonly tokenHash: string
+          readonly revocable: boolean
           readonly lastRevision: number | null
         },
       ) => Promise<Response>)
