@@ -29,6 +29,9 @@ const coordinator = vi.hoisted(() => ({
 }))
 
 const debug = vi.hoisted(() => ({ count: vi.fn(), warn: vi.fn() }))
+const account = vi.hoisted(() => ({
+  loadAccount: vi.fn<() => Promise<void>>(async () => undefined),
+}))
 
 vi.mock('./debug.js', () => debug)
 vi.mock('./state.js', () => ({
@@ -106,7 +109,7 @@ vi.mock('./tile-transform.js', () => ({
 }))
 vi.mock('./wplace-account.js', () => ({
   accountIdentity: () => ({ wplaceUserId: 42, displayName: 'Mía 🎨' }),
-  loadAccount: vi.fn(async () => undefined),
+  loadAccount: account.loadAccount,
 }))
 
 const server: ConnectedServer = {
@@ -133,6 +136,7 @@ const template: ServerTemplate = {
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
+  account.loadAccount.mockImplementation(async () => undefined)
   harness.serverContents = null
   harness.fetchedTile = null
   harness.tileInterest = null
@@ -497,6 +501,44 @@ describe('server telemetry client', () => {
     expect(offers).toBe(1)
 
     acknowledge?.()
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+  })
+
+  it('fences duplicate observations while account identity is loading', async () => {
+    let offers = 0
+    let finishAccountLoad: (() => void) | undefined
+    account.loadAccount.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishAccountLoad = resolve
+        }),
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(0)
+
+    finishAccountLoad?.()
+    await vi.waitFor(() => expect(offers).toBe(1))
     await new Promise((resolve) => setTimeout(resolve, 350))
     expect(offers).toBe(1)
   })
