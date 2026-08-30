@@ -136,6 +136,33 @@ describe('the 6-hour tile fetcher', () => {
     expect(await ports.sql.readLatestTile(0, { x: 5, y: 5 })).toBeNull()
   })
 
+  it('does not evaluate a stale snapshot when this scan failed to refresh its tile', async () => {
+    const { ports, sql, fetchImpl } = harness()
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('stale', [{ x: 5, y: 5 }]),
+      bbox: {
+        minX: 5 * TILE_SIZE,
+        minY: 5 * TILE_SIZE,
+        maxX: 5 * TILE_SIZE + 1,
+        maxY: 5 * TILE_SIZE + 1,
+      },
+      chunks: [{ tileX: 5, tileY: 5, hash }],
+    })
+    await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    const evaluate = vi.spyOn(sql, 'evaluateTemplateAlarm')
+
+    await fetchCanvasTiles(ports, {
+      season: 0,
+      now: seconds(NOW + 6 * 60 * 60),
+      fetchImpl: (async () => new Response(null, { status: 502 })) as typeof fetch,
+    })
+
+    expect(evaluate).not.toHaveBeenCalled()
+  })
+
   it('spends its budget on template tiles before any ring tile', async () => {
     const { ports, sql, requested, fetchImpl } = harness()
     // 250 distinct template tiles: over the 200-tile budget before the ring is even considered.

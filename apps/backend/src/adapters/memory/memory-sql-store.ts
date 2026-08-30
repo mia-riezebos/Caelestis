@@ -1091,12 +1091,22 @@ export class MemorySqlStore implements SqlStore {
   ): Promise<AlarmPolicyResult> {
     const previous = this.alarmStates.get(snapshot.templateId) ?? null
     const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
+    const obsoleteFollowUp =
+      phase.kind === 'follow-up' &&
+      previous !== null &&
+      previous.alarm !== null &&
+      phase.alarmId !== previous.alarm.id
     const probe = result.scheduleFollowUp
       ? {
           probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
           probePixelsLost: result.state.alarm?.pixelsLost ?? null,
         }
-      : { probeDueAt: null, probePixelsLost: null }
+      : obsoleteFollowUp
+        ? {
+            probeDueAt: previous.probeDueAt,
+            probePixelsLost: previous.probePixelsLost,
+          }
+        : { probeDueAt: null, probePixelsLost: null }
     this.alarmStates.set(snapshot.templateId, { ...result.state, ...probe })
     return result
   }

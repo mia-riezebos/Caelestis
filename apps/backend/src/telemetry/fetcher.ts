@@ -130,6 +130,9 @@ export const fetchCanvasTiles = async (
   let fresh = 0
   let failed = 0
   const budgeted = work.slice(0, maxTiles)
+  const attemptedTemplateTiles = new Set<string>(
+    budgeted.filter(({ ring }) => !ring).map(({ tile }) => tileKey(tile)),
+  )
   for (const { tile, ring } of budgeted) {
     const latest = await ports.sql.readLatestTile(season, tile)
     if (
@@ -199,11 +202,18 @@ export const fetchCanvasTiles = async (
 
   const templates = await ports.sql.listManifestTemplates(season, true)
   const refreshedAlarmTiles = await ports.sql.listAlarmTiles(season)
-  const requiredTiles = new Map<string, Array<number | null>>()
+  const requiredTiles = new Map<
+    string,
+    Array<{ readonly key: string; readonly observedAt: number | null }>
+  >()
   for (const row of refreshedAlarmTiles) {
+    const requirement = {
+      key: tileKey({ x: row.tileX, y: row.tileY }),
+      observedAt: row.observedAt,
+    }
     const held = requiredTiles.get(row.templateId)
-    if (held === undefined) requiredTiles.set(row.templateId, [row.observedAt])
-    else held.push(row.observedAt)
+    if (held === undefined) requiredTiles.set(row.templateId, [requirement])
+    else held.push(requirement)
   }
   const statuses = await ports.sql.readTemplateStatuses(season, true)
   const statusesById = new Map(statuses.map((status) => [status.templateId, status]))
@@ -216,7 +226,12 @@ export const fetchCanvasTiles = async (
     const status = statusesById.get(template.id)
     if (
       required.length === 0 ||
-      !required.every((observedAt) => observedAt !== null && observedAt >= freshnessCutoff) ||
+      !required.every(
+        ({ key, observedAt }) =>
+          observedAt !== null &&
+          observedAt >= freshnessCutoff &&
+          (!attemptedTemplateTiles.has(key) || observedAt >= now * 1_000),
+      ) ||
       status === undefined ||
       status.total !== template.totalPixels
     ) {

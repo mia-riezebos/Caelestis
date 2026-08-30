@@ -1888,16 +1888,19 @@ export class D1SqlStore implements SqlStore {
         .where(eq(templateAlarmStates.templateId, snapshot.templateId))
         .limit(1)
         .then((rows) => rows[0])
-      const result = evaluateAlarmSnapshot(
-        previousRow === undefined ? null : storedAlarmState(previousRow),
-        snapshot,
-        phase,
-        () => alarmId,
-      )
+      const previousState = previousRow === undefined ? null : storedAlarmState(previousRow)
+      const result = evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
       const alarm = result.state.alarm
+      const obsoleteFollowUp =
+        phase.kind === 'follow-up' &&
+        previousState !== null &&
+        previousState.alarm !== null &&
+        phase.alarmId !== previousState.alarm.id
       const probeDueAt = result.scheduleFollowUp
         ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
-        : null
+        : obsoleteFollowUp
+          ? (previousRow?.probeDueAtMs ?? null)
+          : null
       const values = {
         templateId: snapshot.templateId,
         versionId: result.state.versionId,
@@ -1909,7 +1912,11 @@ export class D1SqlStore implements SqlStore {
         firstSeenMs: alarm?.firstSeen ?? null,
         lastSeenMs: alarm?.lastSeen ?? null,
         probeDueAtMs: probeDueAt,
-        probePixelsLost: result.scheduleFollowUp ? (alarm?.pixelsLost ?? null) : null,
+        probePixelsLost: result.scheduleFollowUp
+          ? (alarm?.pixelsLost ?? null)
+          : obsoleteFollowUp
+            ? (previousRow?.probePixelsLost ?? null)
+            : null,
         revision: (previousRow?.revision ?? -1) + 1,
       }
       const write =
