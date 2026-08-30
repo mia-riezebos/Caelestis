@@ -90,20 +90,17 @@ export const createTemplate = (
 
     return yield* Effect.tryPromise({
       try: () =>
-        storeTemplate(
-          { blobs, sql },
-          {
-            surface: input.surface,
-            season,
-            nodeId: input.nodeId,
-            name: input.name,
-            createdWithToken: input.createdWithToken,
-            createdByUserId: null,
-            originX: input.originX,
-            originY: input.originY,
-            png: input.png,
-          },
-        ),
+        storeTemplate(blobs, sql, {
+          surface: input.surface,
+          season,
+          nodeId: input.nodeId,
+          name: input.name,
+          createdWithToken: input.createdWithToken,
+          createdByUserId: null,
+          originX: input.originX,
+          originY: input.originY,
+          png: input.png,
+        }),
       catch: (cause) => templateFailure('storeTemplate', cause),
     })
   })
@@ -140,21 +137,18 @@ export const replaceTemplateVersion = (input: {
 
     return yield* Effect.tryPromise({
       try: () =>
-        storeTemplate(
-          { blobs, sql },
-          {
-            templateId: input.templateId,
-            surface: existing.surface,
-            season: existing.season,
-            nodeId: existing.nodeId,
-            name: existing.name,
-            createdWithToken: input.createdWithToken,
-            createdByUserId: null,
-            originX,
-            originY,
-            png: input.png,
-          },
-        ),
+        storeTemplate(blobs, sql, {
+          templateId: input.templateId,
+          surface: existing.surface,
+          season: existing.season,
+          nodeId: existing.nodeId,
+          name: existing.name,
+          createdWithToken: input.createdWithToken,
+          createdByUserId: null,
+          originX,
+          originY,
+          png: input.png,
+        }),
       catch: (cause) => templateFailure('replaceTemplateVersion', cause),
     })
   })

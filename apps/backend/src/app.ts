@@ -2,14 +2,13 @@ import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import type { Ports } from './ports/index.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
-import { createBackendRuntime } from './runtime/backend-runtime.js'
+import { type BackendContext, createBackendRuntime } from './runtime/backend-runtime.js'
 import { runBackendHttp } from './runtime/hono.js'
 
 /**
@@ -33,9 +32,9 @@ export interface AppOptions {
   readonly currentSeason?: number | undefined
 }
 
-export const createApp = (ports: Ports, options: AppOptions = {}) => {
+export const createApp = (context: BackendContext, options: AppOptions = {}) => {
   const app = new Hono()
-  const runtime = createBackendRuntime(ports)
+  const runtime = createBackendRuntime(context)
   const auth = {
     bootstrapAdminToken: options.bootstrapAdminToken,
     openAccess: options.openAccess,

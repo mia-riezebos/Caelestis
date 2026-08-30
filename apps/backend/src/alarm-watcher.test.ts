@@ -1,17 +1,23 @@
 import { millis } from '@caelestis/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { ALARM_RETRY_DELAY_MILLISECONDS, runAlarmWatcherCycle } from './alarm-watcher-cycle.js'
-import type { Ports } from './ports/index.js'
+import type { BlobStore, CounterStore, SqlStore } from './ports/index.js'
+import { createBackendRuntime, makeBackendContext } from './runtime/backend-runtime.js'
+
+const runtimeFor = (sql: Partial<SqlStore>) =>
+  createBackendRuntime(makeBackendContext({} as BlobStore, sql as SqlStore, {} as CounterStore))
 
 describe('alarm watcher', () => {
   it('owns an explicit retry when durable probe reads fail', async () => {
     const setAlarm = vi.fn(async () => undefined)
-    const ports = {
-      sql: { listDueAlarmProbes: vi.fn(async () => Promise.reject(new Error('D1 unavailable'))) },
-    } as unknown as Ports
+    const runtime = runtimeFor({
+      listDueAlarmProbes: vi.fn(async () => Promise.reject(new Error('D1 unavailable'))),
+    })
 
     await expect(
-      runAlarmWatcherCycle(ports, { setAlarm }, millis(100_000), undefined, () => millis(100_000)),
+      runAlarmWatcherCycle(runtime, { setAlarm }, millis(100_000), undefined, () =>
+        millis(100_000),
+      ),
     ).resolves.toBeUndefined()
 
     expect(setAlarm).toHaveBeenCalledWith(100_000 + ALARM_RETRY_DELAY_MILLISECONDS)
@@ -19,15 +25,13 @@ describe('alarm watcher', () => {
 
   it('continues a bounded multi-batch probe without a hot loop', async () => {
     const setAlarm = vi.fn(async () => undefined)
-    const ports = {
-      sql: {
-        listDueAlarmProbes: vi.fn(async () => []),
-        nextAlarmProbeAt: vi.fn(async () => millis(90_000)),
-      },
-    } as unknown as Ports
+    const runtime = runtimeFor({
+      listDueAlarmProbes: vi.fn(async () => []),
+      nextAlarmProbeAt: vi.fn(async () => millis(90_000)),
+    })
 
     await runAlarmWatcherCycle(
-      ports,
+      runtime,
       { setAlarm },
       millis(100_000),
       async () => ({ evaluated: 0, failed: 0, pending: 1 }),
@@ -39,12 +43,10 @@ describe('alarm watcher', () => {
 
   it('measures retry delay from the end of a slow follow-up cycle', async () => {
     const setAlarm = vi.fn(async () => undefined)
-    const ports = {
-      sql: { listDueAlarmProbes: vi.fn(async () => []) },
-    } as unknown as Ports
+    const runtime = runtimeFor({ listDueAlarmProbes: vi.fn(async () => []) })
 
     await runAlarmWatcherCycle(
-      ports,
+      runtime,
       { setAlarm },
       millis(100_000),
       async () => ({ evaluated: 0, failed: 1, pending: 1 }),
@@ -58,15 +60,13 @@ describe('alarm watcher', () => {
     const setAlarm = vi.fn(async () => undefined)
     const deleteAlarm = vi.fn(async () => undefined)
     const storage = { setAlarm, deleteAlarm }
-    const ports = {
-      sql: {
-        listDueAlarmProbes: vi.fn(async () => []),
-        nextAlarmProbeAt: vi.fn(async () => null),
-      },
-    } as unknown as Ports
+    const runtime = runtimeFor({
+      listDueAlarmProbes: vi.fn(async () => []),
+      nextAlarmProbeAt: vi.fn(async () => null),
+    })
 
     await runAlarmWatcherCycle(
-      ports,
+      runtime,
       storage,
       millis(100_000),
       async () => ({ evaluated: 0, failed: 0, pending: 0 }),

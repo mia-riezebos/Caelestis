@@ -16,7 +16,7 @@ import {
   uuidV7,
   WORLD_PIXELS,
 } from '@caelestis/shared'
-import type { Ports, TemplateVersionRecord } from '../ports/index.js'
+import type { BlobStore, SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { NodeNotFoundError, TemplateIdentityError, TemplateNotFoundError } from '../ports/index.js'
 
 export interface StoreTemplateInput {
@@ -101,11 +101,12 @@ const colourTotals = (
 }
 
 export const storeTemplate = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  blobs: BlobStore,
+  sql: SqlStore,
   input: StoreTemplateInput,
 ): Promise<StoredTemplate> => {
   if (input.templateId === undefined && input.nodeId !== null) {
-    const node = await ports.sql.readNode(input.nodeId)
+    const node = await sql.readNode(input.nodeId)
     if (node === null) throw new NodeNotFoundError(`node does not exist: ${input.nodeId}`)
     if (node.season !== input.season) {
       throw new NodeNotFoundError(`node does not exist in season ${input.season}: ${input.nodeId}`)
@@ -138,12 +139,12 @@ export const storeTemplate = async (
   }
 
   if (input.templateId !== undefined) {
-    const existing = await ports.sql.readTemplate(input.templateId)
+    const existing = await sql.readTemplate(input.templateId)
     if (existing === null) {
       throw new TemplateNotFoundError(`template does not exist: ${input.templateId}`)
     }
     if (existing.currentVersionId !== null) {
-      const current = await ports.sql.readTemplateVersion(existing.currentVersionId)
+      const current = await sql.readTemplateVersion(existing.currentVersionId)
       if (current === null) {
         throw new TemplateNotFoundError(
           `current version does not exist: ${existing.currentVersionId}`,
@@ -173,10 +174,10 @@ export const storeTemplate = async (
   // Several tiles can contain the same cropped image. Content addressing means one upload per
   // distinct hash is enough even when the version index refers to that hash more than once.
   const pngByHash = new Map(encodedChunks.map(({ hash, png }) => [hash, png]))
-  const present = await ports.blobs.hasAll('chunks', [...pngByHash.keys()])
+  const present = await blobs.hasAll('chunks', [...pngByHash.keys()])
   await Promise.all(
     [...pngByHash].map(async ([hash, png]) => {
-      if (!present.has(hash)) await ports.blobs.put('chunks', hash, png)
+      if (!present.has(hash)) await blobs.put('chunks', hash, png)
     }),
   )
 
@@ -203,10 +204,10 @@ export const storeTemplate = async (
     colourTotals: colourTotals(indices),
     chunks: versionChunks,
   }
-  await ports.sql.insertTemplateVersion(version, {
+  await sql.insertTemplateVersion(version, {
     requireExisting: input.templateId !== undefined,
   })
-  const installed = await ports.sql.readTemplate(templateId)
+  const installed = await sql.readTemplate(templateId)
   if (installed === null) {
     throw new TemplateNotFoundError(`template does not exist: ${templateId}`)
   }
