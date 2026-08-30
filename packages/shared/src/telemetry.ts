@@ -99,6 +99,7 @@ export type LiveSyncServerEvent =
   | { readonly type: 'status-delta'; readonly delta: StatusDelta }
   | { readonly type: 'status-reconcile'; readonly revision: number }
   | { readonly type: 'manifest-reconcile'; readonly revision: number }
+  | { readonly type: 'alarms-reconcile' }
 
 /** Successful tile uploads carry their authoritative progress change instead of requiring a read. */
 export interface TileUploadResponse {

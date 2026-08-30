@@ -11,7 +11,11 @@ import {
 } from '@caelestis/shared'
 import type { AlarmProbe, BlobStore, CounterStore, SqlStore } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
-import { DirectStatusReadModel, type StatusReadModelPort } from '../status-read-model/port.js'
+import {
+  DirectStatusReadModel,
+  publishAlarmChange,
+  type StatusReadModelPort,
+} from '../status-read-model/port.js'
 import { createDerivedArtifactWriteBatch } from './derived-classification.js'
 import {
   createStatusProjectionBatch,
@@ -266,6 +270,7 @@ export const fetchCanvasTiles = async (
   const freshnessCutoff =
     (now - scanCycleBatches * ALARM_SCAN_INTERVAL_SECONDS - ALARM_SCAN_JITTER_SECONDS) * 1_000
   let followUpScheduled = false
+  let alarmsEvaluated = false
   for (const template of templates) {
     const required = requiredTiles.get(template.id) ?? []
     const status = statusesById.get(template.id)
@@ -294,8 +299,10 @@ export const fetchCanvasTiles = async (
       { kind: 'scan' },
       alarmIdFactory(),
     )
+    alarmsEvaluated = true
     followUpScheduled ||= result.scheduleFollowUp
   }
+  if (alarmsEvaluated) await publishAlarmChange(statusReadModel, season)
 
   return {
     fetched,
@@ -331,6 +338,7 @@ export const fetchAlarmFollowUps = async (
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
   let evaluated = 0
   let failed = 0
+  const evaluatedSeasons = new Set<number>()
   const maxProbes = Math.max(1, options.maxProbes ?? MAX_ALARM_PROBES_PER_RUN)
   const selectedProbes = probes.slice(0, maxProbes)
   let pending = probes.length - selectedProbes.length
@@ -483,6 +491,7 @@ export const fetchAlarmFollowUps = async (
         'unused',
       )
       evaluated++
+      evaluatedSeasons.add(probe.season)
     }
   } finally {
     try {
@@ -491,6 +500,8 @@ export const fetchAlarmFollowUps = async (
       await artifactWriteBatch.flush()
     }
   }
+
+  for (const season of evaluatedSeasons) await publishAlarmChange(statusReadModel, season)
 
   return { evaluated, failed, pending }
 }

@@ -39,6 +39,10 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return this.shard(season).notifyManifestChange(season)
   }
 
+  notifyAlarmChange(season: number): Promise<void> {
+    return this.shard(season).notifyAlarmChange(season)
+  }
+
   closeCredential(season: number, tokenHash: string): Promise<void> {
     return this.shard(season).closeCredential(season, tokenHash)
   }
