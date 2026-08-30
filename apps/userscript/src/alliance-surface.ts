@@ -1,0 +1,323 @@
+import type { AllianceTemplateSurfaceKind, PixelBounds, TemplateSurface } from '@caelestis/shared'
+import { pageWindow } from './page-world.js'
+import { captureFetchUrlGetters, urlForFetchInput } from './wplace-raster.js'
+
+const HQ_STAGE = 'dialog[open] [role="application"][aria-label="Headquarters canvas"]'
+const ASSET_STAGE = 'dialog[open] [role="application"][aria-label="Alliance asset canvas"]'
+const ARTBOARD_FRAME = '.artboard-frame'
+const BACKEND_ORIGIN = 'https://backend.wplace.live'
+const DRAFT_CANVAS = /^\/alliance\/assets\/drafts\/(\d+)\/canvas$/
+const PUBLIC_HEADQUARTERS = /^\/alliances\/(\d+)\/headquarters(?:\/|$)/
+
+export interface ActiveAllianceSurface {
+  readonly surface: Exclude<TemplateSurface, { readonly kind: 'world' }>
+  readonly stage: HTMLElement
+  readonly frame: HTMLElement
+  /** Present only while Wplace's disposable picture/banner draft is open. */
+  readonly draftId: number | null
+  /** Signed, half-open HQ bounds when Wplace has supplied them. */
+  readonly bounds: PixelBounds | null
+}
+
+type Listener = (surface: ActiveAllianceSurface | null) => void
+
+let active: ActiveAllianceSurface | null = null
+let installed = false
+let observer: MutationObserver | null = null
+let restoreFetch: (() => void) | null = null
+let reconcileQueued = false
+let allianceId: number | null = null
+let hqBounds: PixelBounds | null = null
+let draft: {
+  readonly id: number
+  readonly kind: AllianceTemplateSurfaceKind
+} | null = null
+let allianceSequence = 0
+let acceptedAllianceSequence = 0
+let draftSequence = 0
+let acceptedDraftSequence = 0
+let allianceEpoch = 0
+const listeners = new Set<Listener>()
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const positiveInteger = (value: unknown): number | null =>
+  Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : null
+
+const integer = (value: unknown): number | null =>
+  Number.isSafeInteger(value) ? Number(value) : null
+
+const parseHqBounds = (value: unknown): PixelBounds | null => {
+  if (!isRecord(value)) return null
+  const minX = integer(value.minX)
+  const minY = integer(value.minY)
+  const inclusiveMaxX = integer(value.maxX)
+  const inclusiveMaxY = integer(value.maxY)
+  if (
+    minX === null ||
+    minY === null ||
+    inclusiveMaxX === null ||
+    inclusiveMaxY === null ||
+    minX < -1_000 ||
+    minY < -1_000 ||
+    inclusiveMaxX >= 1_000 ||
+    inclusiveMaxY >= 1_000 ||
+    minX > inclusiveMaxX ||
+    minY > inclusiveMaxY
+  ) {
+    return null
+  }
+  return { minX, minY, maxX: inclusiveMaxX + 1, maxY: inclusiveMaxY + 1 }
+}
+
+const sameBounds = (left: PixelBounds | null, right: PixelBounds | null): boolean =>
+  left === right ||
+  (left !== null &&
+    right !== null &&
+    left.minX === right.minX &&
+    left.minY === right.minY &&
+    left.maxX === right.maxX &&
+    left.maxY === right.maxY)
+
+const sameActive = (left: ActiveAllianceSurface | null, right: ActiveAllianceSurface | null) =>
+  left === right ||
+  (left !== null &&
+    right !== null &&
+    left.stage === right.stage &&
+    left.frame === right.frame &&
+    left.surface.kind === right.surface.kind &&
+    left.surface.allianceId === right.surface.allianceId &&
+    left.draftId === right.draftId &&
+    sameBounds(left.bounds, right.bounds))
+
+const publish = (next: ActiveAllianceSurface | null): void => {
+  if (sameActive(active, next)) return
+  active = next
+  for (const listener of listeners) {
+    try {
+      listener(next)
+    } catch {
+      // Page lifecycle observation must never break Wplace because one consumer failed.
+    }
+  }
+}
+
+const reconcile = (): void => {
+  reconcileQueued = false
+  const realm = pageWindow()
+  const hqStage = realm.document.querySelector<HTMLElement>(HQ_STAGE)
+  if (hqStage !== null && allianceId !== null) {
+    const frame = hqStage.querySelector<HTMLElement>(ARTBOARD_FRAME)
+    if (frame !== null) {
+      publish({
+        surface: { kind: 'alliance-headquarters', allianceId },
+        stage: hqStage,
+        frame,
+        draftId: null,
+        bounds: hqBounds,
+      })
+      return
+    }
+  }
+
+  const assetStage = realm.document.querySelector<HTMLElement>(ASSET_STAGE)
+  if (assetStage !== null && allianceId !== null && draft !== null) {
+    const frame = assetStage.querySelector<HTMLElement>(ARTBOARD_FRAME)
+    if (frame !== null) {
+      publish({
+        surface: { kind: draft.kind, allianceId },
+        stage: assetStage,
+        frame,
+        draftId: draft.id,
+        bounds: null,
+      })
+      return
+    }
+  }
+  publish(null)
+}
+
+const queueReconcile = (): void => {
+  if (reconcileQueued) return
+  reconcileQueued = true
+  queueMicrotask(reconcile)
+}
+
+const readJson = (response: Response, accept: (body: unknown) => void): void => {
+  if (!response.ok) return
+  try {
+    void response
+      .clone()
+      .json()
+      .then(accept)
+      .catch(() => {})
+  } catch {
+    // A response that cannot be cloned is simply not an observable context source.
+  }
+}
+
+const observeAlliance = (response: Response, sequence: number, headquarters: boolean): void => {
+  readJson(response, (body) => {
+    if (sequence < acceptedAllianceSequence || !isRecord(body)) return
+    const nextAllianceId = positiveInteger(headquarters ? body.allianceId : body.id)
+    if (nextAllianceId === null) return
+    acceptedAllianceSequence = sequence
+    if (allianceId !== null && allianceId !== nextAllianceId) allianceEpoch++
+    if (allianceId !== nextAllianceId) {
+      allianceId = nextAllianceId
+      draft = null
+      hqBounds = null
+    }
+    if (headquarters) hqBounds = parseHqBounds(body.bounds)
+    queueReconcile()
+  })
+}
+
+const observeDraft = (
+  response: Response,
+  sequence: number,
+  requestedDraftId: number,
+  requestAllianceEpoch: number,
+): void => {
+  readJson(response, (body) => {
+    if (
+      requestAllianceEpoch !== allianceEpoch ||
+      sequence < acceptedDraftSequence ||
+      !isRecord(body)
+    )
+      return
+    const responseDraftId =
+      body.draftId === undefined ? requestedDraftId : positiveInteger(body.draftId)
+    if (responseDraftId !== requestedDraftId) return
+    const kind =
+      body.assetType === 'picture'
+        ? ('alliance-picture' as const)
+        : body.assetType === 'banner'
+          ? ('alliance-banner' as const)
+          : null
+    if (kind === null) return
+    acceptedDraftSequence = sequence
+    draft = { id: requestedDraftId, kind }
+    queueReconcile()
+  })
+}
+
+const installFetchObserver = (realm: Window & typeof globalThis): (() => void) | null => {
+  const previous = realm.fetch
+  const urlGetters = captureFetchUrlGetters(realm)
+  const wrapped = function (this: unknown, ...args: Parameters<typeof fetch>) {
+    let observation:
+      | { readonly kind: 'alliance'; readonly sequence: number }
+      | { readonly kind: 'hq'; readonly sequence: number }
+      | {
+          readonly kind: 'draft'
+          readonly sequence: number
+          readonly draftId: number
+          readonly allianceEpoch: number
+        }
+      | null = null
+    try {
+      const raw = urlForFetchInput(args[0], realm, urlGetters)
+      if (raw !== null) {
+        const url = new URL(raw, realm.location?.href)
+        if (url.origin === BACKEND_ORIGIN) {
+          const publicHq = PUBLIC_HEADQUARTERS.exec(url.pathname)
+          const publicAllianceId = publicHq === null ? null : positiveInteger(Number(publicHq[1]))
+          if (publicAllianceId !== null && allianceId !== publicAllianceId) {
+            if (allianceId !== null) allianceEpoch++
+            allianceId = publicAllianceId
+            draft = null
+            hqBounds = null
+            queueReconcile()
+          }
+          if (url.pathname === '/alliance') {
+            observation = { kind: 'alliance', sequence: ++allianceSequence }
+          } else if (url.pathname === '/alliance/headquarters') {
+            observation = { kind: 'hq', sequence: ++allianceSequence }
+          } else if (url.searchParams.get('metadataOnly') === 'true') {
+            const match = DRAFT_CANVAS.exec(url.pathname)
+            const id = match === null ? null : positiveInteger(Number(match[1]))
+            if (id !== null) {
+              observation = {
+                kind: 'draft',
+                sequence: ++draftSequence,
+                draftId: id,
+                allianceEpoch,
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Unusual fetch inputs remain fully transparent; they simply carry no observable context.
+    }
+
+    const pending = previous.apply(this as never, args)
+    if (observation === null) return pending
+    return pending.then((response) => {
+      if (observation.kind === 'draft') {
+        observeDraft(response, observation.sequence, observation.draftId, observation.allianceEpoch)
+      } else {
+        observeAlliance(response, observation.sequence, observation.kind === 'hq')
+      }
+      return response
+    })
+  } as typeof fetch
+
+  try {
+    realm.fetch = wrapped
+  } catch {
+    return null
+  }
+  if (realm.fetch !== wrapped) return null
+  return () => {
+    if (realm.fetch === wrapped) realm.fetch = previous
+  }
+}
+
+/** Install the request and DOM observers at document-start. Idempotent. */
+export const installAllianceSurfaceObserver = (): void => {
+  if (installed) return
+  installed = true
+  const realm = pageWindow()
+  restoreFetch = installFetchObserver(realm)
+  observer = new realm.MutationObserver(queueReconcile)
+  observer.observe(realm.document, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['open', 'aria-label', 'role', 'class'],
+  })
+  // A late dev injection may have missed Wplace's bootstrap request. One read restores the stable
+  // alliance id; signed-out users and users without an alliance simply leave the context unknown.
+  void realm.fetch(`${BACKEND_ORIGIN}/alliance`, { credentials: 'include' }).catch(() => undefined)
+  queueReconcile()
+}
+
+export const activeAllianceSurface = (): ActiveAllianceSurface | null => active
+
+export const onActiveAllianceSurfaceChange = (listener: Listener): (() => void) => {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+/** Test-only lifecycle reset; harmless when called during teardown in a page. */
+export const resetAllianceSurfaceObserver = (): void => {
+  observer?.disconnect()
+  restoreFetch?.()
+  observer = null
+  restoreFetch = null
+  installed = false
+  reconcileQueued = false
+  allianceId = null
+  hqBounds = null
+  draft = null
+  allianceSequence = 0
+  acceptedAllianceSequence = 0
+  draftSequence = 0
+  acceptedDraftSequence = 0
+  allianceEpoch = 0
+  active = null
+  listeners.clear()
+}

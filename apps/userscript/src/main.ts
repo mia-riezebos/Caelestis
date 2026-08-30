@@ -1,5 +1,6 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { registerCaelestisUi } from '@caelestis/ui/elements'
+import { installAllianceSurfaceObserver } from './alliance-surface.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -233,6 +234,7 @@ const main = (): void => {
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
   step('map capture', installMapCapture)
+  step('alliance surface observer', installAllianceSurfaceObserver)
   step('debug API', () => {
     installDebugApi({
       /** The captured MapLibre Map, for poking at its style and layers from the console. */
