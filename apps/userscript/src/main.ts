@@ -1,7 +1,7 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { registerCaelestisUi } from '@caelestis/ui/elements'
-import { installAllianceServerSync } from './alliance-server-sync.js'
-import { installAllianceSurfaceObserver } from './alliance-surface.js'
+import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
+import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -40,7 +40,7 @@ import {
   resetProfile,
 } from './profile.js'
 import { serverMismatchMemoryBytes } from './server-mismatch.js'
-import { loadState, onStateChange } from './state.js'
+import { getState, loadState, onStateChange } from './state.js'
 import { installTelemetry } from './telemetry.js'
 import {
   isTemplateVisible,
@@ -253,6 +253,17 @@ const main = (): void => {
           serverTemplateId: template.serverTemplateId ?? null,
           opaque: template.opaque,
         })),
+      /** The active Wplace artboard and exact backend manifest scope selected for it. */
+      allianceSurface: () => ({
+        active: activeAllianceSurface()?.surface ?? null,
+        manifest: selectedAllianceManifestScope(),
+        servers: getState().servers.map((server) => ({
+          url: server.url,
+          status: server.status,
+          identified: server.info !== null,
+          season: server.season,
+        })),
+      }),
       /** The exact focused-template counts currently decorating Wplace's native paint palette. */
       paletteProgress: () => paintPaletteProgress(),
       /** A live performance snapshot. Enable profiling in Settings first. */

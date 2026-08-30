@@ -130,6 +130,23 @@ describe('active alliance surface observation', () => {
     })
   })
 
+  it('recovers a cached asset editor from its fixed native canvas dimensions', async () => {
+    window.fetch = vi.fn<typeof fetch>(() => json({ id: 535_245 }))
+    installAllianceSurfaceObserver()
+    const dialog = stage('Alliance asset canvas')
+    const canvas = document.createElement('canvas')
+    canvas.width = 384
+    canvas.height = 128
+    dialog.querySelector('.artboard-frame')?.append(canvas)
+
+    await settle()
+
+    expect(activeAllianceSurface()).toMatchObject({
+      surface: { kind: 'alliance-banner', allianceId: 535_245 },
+      draftId: null,
+    })
+  })
+
   it('rejects a late draft response after a newer editor request has won', async () => {
     let finishPicture!: (response: Response) => void
     let finishBanner!: (response: Response) => void

@@ -13,7 +13,7 @@ export interface ActiveAllianceSurface {
   readonly surface: Exclude<TemplateSurface, { readonly kind: 'world' }>
   readonly stage: HTMLElement
   readonly frame: HTMLElement
-  /** Present only while Wplace's disposable picture/banner draft is open. */
+  /** Present when the request observer saw Wplace's disposable picture/banner draft id. */
   readonly draftId: number | null
   /** Signed, half-open HQ bounds when Wplace has supplied them. */
   readonly bounds: PixelBounds | null
@@ -91,6 +91,16 @@ const sameActive = (left: ActiveAllianceSurface | null, right: ActiveAllianceSur
     left.draftId === right.draftId &&
     sameBounds(left.bounds, right.bounds))
 
+const assetKindFromCanvas = (frame: HTMLElement): AllianceTemplateSurfaceKind | null => {
+  for (const child of frame.children) {
+    if (child.tagName !== 'CANVAS') continue
+    const canvas = child as HTMLCanvasElement
+    if (canvas.width === 64 && canvas.height === 64) return 'alliance-picture'
+    if (canvas.width === 384 && canvas.height === 128) return 'alliance-banner'
+  }
+  return null
+}
+
 const publish = (next: ActiveAllianceSurface | null): void => {
   if (sameActive(active, next)) return
   active = next
@@ -122,14 +132,22 @@ const reconcile = (): void => {
   }
 
   const assetStage = realm.document.querySelector<HTMLElement>(ASSET_STAGE)
-  if (assetStage !== null && allianceId !== null && draft !== null) {
+  if (assetStage !== null && allianceId !== null) {
     const frame = assetStage.querySelector<HTMLElement>(ARTBOARD_FRAME)
     if (frame !== null) {
+      // Wplace may reuse a cached draft without issuing the metadata request after a late dev
+      // injection. The two asset canvases have fixed, disjoint dimensions, so their native
+      // artboard canvas is a safe fallback for kind detection; the request still owns the draft id.
+      const kind = draft?.kind ?? assetKindFromCanvas(frame)
+      if (kind === null) {
+        publish(null)
+        return
+      }
       publish({
-        surface: { kind: draft.kind, allianceId },
+        surface: { kind, allianceId },
         stage: assetStage,
         frame,
-        draftId: draft.id,
+        draftId: draft?.id ?? null,
         bounds: null,
       })
       return
