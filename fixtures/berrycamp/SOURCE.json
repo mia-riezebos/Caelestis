@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/mia-riezebos/berrycamp.github.io",
+  "branch": "dev",
+  "commit": "3690d394e2b01856054a46c6d213894e7bdbc3cf",
+  "sourcePath": "wplace-templates/quantized/rooms",
+  "include": "**/*.json",
+  "tree": "09fd6f9ed5370dc6cfc37ad36cb9b50ae6558d0a",
+  "inventory": {
+    "files": 92,
+    "json": 92,
+    "templates": 92,
+    "embeddedPngs": 192
+  }
+}

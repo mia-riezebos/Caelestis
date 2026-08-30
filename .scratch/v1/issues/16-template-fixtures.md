@@ -39,8 +39,8 @@ therefore not redo.
 
 ## TODOs
 
-- [~] Snapshot the Berrycamp fixture corpus and record exact provenance.
-- [ ] Add corpus integrity validation and representative real-template contract tests.
+- [x] Snapshot the Berrycamp fixture corpus and record exact provenance.
+- [~] Add corpus integrity validation and representative real-template contract tests.
 - [ ] Run repository validation and record the completed fixture contract.
 
 ## Notes
