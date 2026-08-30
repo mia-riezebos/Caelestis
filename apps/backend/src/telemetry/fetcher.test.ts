@@ -209,4 +209,37 @@ describe('the 6-hour tile fetcher', () => {
       expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 11 }),
     ])
   }, 20_000)
+
+  it('reclassifies an unchanged canvas tile for a new template version', async () => {
+    const { ports, sql } = harness()
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    const first = {
+      ...version('versioned', [{ x: 5, y: 5 }]),
+      bbox: {
+        minX: 5 * TILE_SIZE,
+        minY: 5 * TILE_SIZE,
+        maxX: 5 * TILE_SIZE + 1,
+        maxY: 5 * TILE_SIZE + 1,
+      },
+      chunks: [{ tileX: 5, tileY: 5, hash }],
+    }
+    await sql.insertTemplateVersion(first)
+    const indices = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+    indices[0] = 1
+    const bytes = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
+    const fetchImpl = (async () => new Response(bytes.slice())) as typeof fetch
+    await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+
+    await sql.insertTemplateVersion(
+      { ...first, versionId: 'versioned-next', createdAt: millis(NOW * 1_000 + 1) },
+      { requireExisting: true },
+    )
+    await fetchCanvasTiles(ports, { season: 0, now: seconds(NOW + 6 * 60 * 60), fetchImpl })
+
+    await expect(sql.readTemplateStatuses(0, true)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'versioned', correct: 1, total: 1 }),
+    ])
+  }, 20_000)
 })

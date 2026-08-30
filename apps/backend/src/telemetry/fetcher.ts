@@ -137,7 +137,24 @@ export const fetchCanvasTiles = async (
       const hash = await sha256Hex(bytes)
       if (latest?.hash === hash) {
         unchanged++
-        if (!ring) completedTemplateTiles.add(tileKey(tile))
+        if (!ring) {
+          await uploadTile(
+            ports,
+            {
+              wplaceUserId: FETCHER_USER_ID,
+              displayName: FETCHER_DISPLAY_NAME,
+              tokenHash,
+              season,
+              tile,
+              hash,
+              observedAt: now,
+              includeUnpublished: true,
+            },
+            bytes,
+            { requireCoverage: false, recordHistory: false },
+          )
+          completedTemplateTiles.add(tileKey(tile))
+        }
         continue
       }
       await uploadTile(
@@ -258,7 +275,24 @@ export const fetchAlarmFollowUps = async (
         }
         const hash = await sha256Hex(bytes)
         const latest = await ports.sql.readLatestTile(probe.season, tile)
-        if (latest?.hash === hash) continue
+        if (latest?.hash === hash) {
+          await uploadTile(
+            ports,
+            {
+              wplaceUserId: FETCHER_USER_ID,
+              displayName: FETCHER_DISPLAY_NAME,
+              tokenHash,
+              season: probe.season,
+              tile,
+              hash,
+              observedAt: now,
+              includeUnpublished: true,
+            },
+            bytes,
+            { requireCoverage: false, recordHistory: false },
+          )
+          continue
+        }
         await uploadTile(
           ports,
           {
