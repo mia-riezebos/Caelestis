@@ -60,6 +60,7 @@ const MAX_TILE_OFFER_SERVERS = 32
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 interface OfferedTile extends TileOffer {
+  readonly deliveryId: string
   readonly coord: TileCoord
   readonly bytes: Uint8Array
 }
@@ -114,7 +115,7 @@ const tileOfferMetric = (
   by = 1,
 ): void => count(`telemetry:tile-offers-${outcome}`, by)
 
-const offerKey = (entry: TileOffer): string => `${entry.tile}\u0000${entry.sha256}`
+const offerKey = (entry: OfferedTile): string => entry.deliveryId
 
 /** Remember bounded recent delivery IDs; old values may safely be offered again after eviction. */
 const rememberDedupe = (values: Set<string>, value: string): void => {
@@ -247,7 +248,21 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   const server = pending.server
   const season = server.season
   if (season === null) return
-  const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
+  const entries: OfferedTile[] = []
+  const selectedTiles = new Set<string>()
+  const remaining = new Map<string, OfferedTile>()
+  for (const [deliveryId, entry] of pending.entries) {
+    if (entries.length < MAX_TILE_OFFERS && !selectedTiles.has(entry.tile)) {
+      entries.push(entry)
+      selectedTiles.add(entry.tile)
+    } else {
+      remaining.set(deliveryId, entry)
+    }
+  }
+  if (remaining.size > 0) {
+    queued.set(serverUrl, { server, entries: remaining })
+    scheduleFlush(serverUrl)
+  }
   const owner = serverConnectionIdentity(server)
   for (const entry of entries)
     tileOfferAcknowledgements.started(server.url, owner, season, offerKey(entry))
@@ -348,11 +363,6 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   }
   tileOfferMetric('accepted', accepted)
   if (completeDisposition) tileOfferMetric('rejected', rejected.size)
-  if (pending.entries.size > entries.length) {
-    const rest = new Map([...pending.entries].slice(entries.length))
-    queued.set(serverUrl, { server, entries: rest })
-    scheduleFlush(serverUrl)
-  }
 }
 
 const scheduleFlush = (serverUrl: string): void => {
@@ -389,17 +399,14 @@ const shareObservedTile = (entry: OfferedTile): void => {
       previousQueue !== undefined && isCurrentServerConnection(previousQueue.server)
         ? previousQueue
         : { server, entries: new Map<string, OfferedTile>() }
-    serverQueue.entries.set(entry.tile, entry)
+    serverQueue.entries.set(entry.deliveryId, entry)
     queued.set(server.url, serverQueue)
     scheduleFlush(server.url)
   }
 }
 
 const rememberTile = (entry: OfferedTile): void => {
-  const previous = recentTiles.get(entry.tile)
-  if (previous !== undefined) recentTileBytes -= previous.bytes.byteLength
-  recentTiles.delete(entry.tile)
-  recentTiles.set(entry.tile, entry)
+  recentTiles.set(entry.deliveryId, entry)
   recentTileBytes += entry.bytes.byteLength
   while (recentTiles.size > MAX_RECENT_TILES || recentTileBytes > MAX_RECENT_TILE_BYTES) {
     const oldest = recentTiles.entries().next()
@@ -416,6 +423,7 @@ const observeTile = async (
 ): Promise<void> => {
   if (!getState().shareTiles) return
   const entry: OfferedTile = {
+    deliveryId: uuidV7(),
     tile: tileKey(tile),
     coord: tile,
     sha256: await sha256Hex(bytes),
