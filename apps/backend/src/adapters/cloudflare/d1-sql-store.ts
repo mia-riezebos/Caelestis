@@ -1384,23 +1384,29 @@ export class D1SqlStore implements SqlStore {
     blobKey: string,
     now: Millis,
   ): Promise<TileBlobCandidateResult> {
-    const referenced = await this.client
-      .prepare(
-        `SELECT EXISTS(
-           SELECT 1 FROM tile_history WHERE sha256 = ?
-           UNION ALL SELECT 1 FROM canvas_tiles WHERE sha256 = ?
-           UNION ALL SELECT 1 FROM tile_blob_reservations
-             WHERE sha256 = ? AND expires_at_ms > ?
-         ) AS held`,
-      )
-      .bind(hash, hash, hash, now)
-      .first<{ held: number }>()
-    const nextState = referenced?.held === 1 ? 'active' : 'candidate'
     await this.client
       .prepare(
         `INSERT INTO tile_blob_objects (
            blob_key, sha256, state, discovered_at_ms, delete_attempts
-         ) VALUES (?, ?, ?, ?, 0)
+         )
+         SELECT ?, ?, CASE
+           WHEN EXISTS (
+             SELECT 1 FROM tile_blob_reservations
+             WHERE sha256 = ? AND blob_key = ? AND expires_at_ms > ?
+           ) OR (
+             (
+               EXISTS (SELECT 1 FROM tile_history WHERE sha256 = ?)
+               OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = ?)
+             ) AND (
+               EXISTS (
+                 SELECT 1 FROM tile_blob_objects
+                 WHERE blob_key = ? AND sha256 = ? AND state = 'active'
+               ) OR NOT EXISTS (
+                 SELECT 1 FROM tile_blob_objects
+                 WHERE sha256 = ? AND blob_key <> ? AND state = 'active'
+               )
+             )
+           ) THEN 'active' ELSE 'candidate' END, ?, 0
          ON CONFLICT(blob_key) DO UPDATE SET
            sha256 = excluded.sha256,
            state = CASE
@@ -1416,7 +1422,7 @@ export class D1SqlStore implements SqlStore {
              ELSE NULL
            END`,
       )
-      .bind(blobKey, hash, nextState, now)
+      .bind(blobKey, hash, hash, blobKey, now, hash, hash, blobKey, hash, hash, blobKey, now)
       .run()
     const row = await this.client
       .prepare('SELECT state FROM tile_blob_objects WHERE blob_key = ?')
@@ -1424,7 +1430,7 @@ export class D1SqlStore implements SqlStore {
       .first<{ state: string }>()
     return row?.state === 'deleting'
       ? 'deleting'
-      : nextState === 'active'
+      : row?.state === 'active'
         ? 'referenced'
         : 'candidate'
   }
@@ -1450,28 +1456,55 @@ export class D1SqlStore implements SqlStore {
         .prepare(
           `UPDATE tile_blob_objects SET
              state = CASE
-               WHEN EXISTS (SELECT 1 FROM tile_history WHERE sha256 = tile_blob_objects.sha256)
-                 OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = tile_blob_objects.sha256)
-                 OR EXISTS (
+               WHEN EXISTS (
                    SELECT 1 FROM tile_blob_reservations
-                   WHERE sha256 = tile_blob_objects.sha256 AND expires_at_ms > ?
+                   WHERE sha256 = tile_blob_objects.sha256
+                     AND blob_key = tile_blob_objects.blob_key AND expires_at_ms > ?
+                 ) OR (
+                   (
+                     EXISTS (SELECT 1 FROM tile_history WHERE sha256 = tile_blob_objects.sha256)
+                     OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = tile_blob_objects.sha256)
+                   ) AND NOT EXISTS (
+                     SELECT 1 FROM tile_blob_objects AS active
+                     WHERE active.sha256 = tile_blob_objects.sha256
+                       AND active.blob_key <> tile_blob_objects.blob_key
+                       AND active.state = 'active'
                  )
+                )
                THEN 'active' ELSE 'deleting' END,
              delete_started_at_ms = CASE
-               WHEN EXISTS (SELECT 1 FROM tile_history WHERE sha256 = tile_blob_objects.sha256)
-                 OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = tile_blob_objects.sha256)
-                 OR EXISTS (
+               WHEN EXISTS (
                    SELECT 1 FROM tile_blob_reservations
-                   WHERE sha256 = tile_blob_objects.sha256 AND expires_at_ms > ?
+                   WHERE sha256 = tile_blob_objects.sha256
+                     AND blob_key = tile_blob_objects.blob_key AND expires_at_ms > ?
+                 ) OR (
+                   (
+                     EXISTS (SELECT 1 FROM tile_history WHERE sha256 = tile_blob_objects.sha256)
+                     OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = tile_blob_objects.sha256)
+                   ) AND NOT EXISTS (
+                     SELECT 1 FROM tile_blob_objects AS active
+                     WHERE active.sha256 = tile_blob_objects.sha256
+                       AND active.blob_key <> tile_blob_objects.blob_key
+                       AND active.state = 'active'
                  )
+                )
                THEN NULL ELSE coalesce(delete_started_at_ms, ?) END,
              delete_attempts = CASE
-               WHEN EXISTS (SELECT 1 FROM tile_history WHERE sha256 = tile_blob_objects.sha256)
-                 OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = tile_blob_objects.sha256)
-                 OR EXISTS (
+               WHEN EXISTS (
                    SELECT 1 FROM tile_blob_reservations
-                   WHERE sha256 = tile_blob_objects.sha256 AND expires_at_ms > ?
+                   WHERE sha256 = tile_blob_objects.sha256
+                     AND blob_key = tile_blob_objects.blob_key AND expires_at_ms > ?
+                 ) OR (
+                   (
+                     EXISTS (SELECT 1 FROM tile_history WHERE sha256 = tile_blob_objects.sha256)
+                     OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = tile_blob_objects.sha256)
+                   ) AND NOT EXISTS (
+                     SELECT 1 FROM tile_blob_objects AS active
+                     WHERE active.sha256 = tile_blob_objects.sha256
+                       AND active.blob_key <> tile_blob_objects.blob_key
+                       AND active.state = 'active'
                  )
+                )
                THEN delete_attempts ELSE delete_attempts + 1 END
            WHERE blob_key = ? AND state IN ('candidate', 'deleting')`,
         )

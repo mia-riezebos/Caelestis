@@ -689,10 +689,6 @@ export class MemorySqlStore implements SqlStore {
     )
   }
 
-  private tileBlobHasReservation(hash: string): boolean {
-    return [...this.tileBlobReservations.values()].some((reservation) => reservation.hash === hash)
-  }
-
   private copyTileBlob(object: TileBlobObject): TileBlobObject {
     return { ...object }
   }
@@ -821,7 +817,15 @@ export class MemorySqlStore implements SqlStore {
     this.expireTileBlobReservations(now)
     const held = this.tileBlobObjects.get(blobKey)
     if (held?.state === 'deleting') return 'deleting'
-    const referenced = this.tileBlobIsReferenced(hash) || this.tileBlobHasReservation(hash)
+    const hasExactReservation = [...this.tileBlobReservations.values()].some(
+      (reservation) => reservation.hash === hash && reservation.blobKey === blobKey,
+    )
+    const hasOtherActiveGeneration = [...this.tileBlobObjects.values()].some(
+      (object) => object.hash === hash && object.blobKey !== blobKey && object.state === 'active',
+    )
+    const referenced =
+      hasExactReservation ||
+      (this.tileBlobIsReferenced(hash) && (held?.state === 'active' || !hasOtherActiveGeneration))
     const state = referenced ? 'active' : 'candidate'
     this.tileBlobObjects.set(blobKey, {
       blobKey,
@@ -854,7 +858,19 @@ export class MemorySqlStore implements SqlStore {
     if (object === undefined || (object.state !== 'candidate' && object.state !== 'deleting')) {
       return 'missing'
     }
-    if (this.tileBlobIsReferenced(object.hash) || this.tileBlobHasReservation(object.hash)) {
+    const hasExactReservation = [...this.tileBlobReservations.values()].some(
+      (reservation) => reservation.hash === object.hash && reservation.blobKey === object.blobKey,
+    )
+    const hasOtherActiveGeneration = [...this.tileBlobObjects.values()].some(
+      (candidate) =>
+        candidate.hash === object.hash &&
+        candidate.blobKey !== object.blobKey &&
+        candidate.state === 'active',
+    )
+    if (
+      hasExactReservation ||
+      (this.tileBlobIsReferenced(object.hash) && !hasOtherActiveGeneration)
+    ) {
       this.tileBlobObjects.set(blobKey, {
         ...object,
         state: 'active',

@@ -152,6 +152,17 @@ describe.each(adapters)('$name tile blob lifecycle contract', ({ make }) => {
     await expect(
       store.reserveTileBlobUpload(HASH, uploadBlobKey, 'upload', millis(1_100), millis(3_100)),
     ).resolves.toMatchObject({ blobKey: uploadBlobKey })
+    await expect(
+      store.commitTileBlobReservation(
+        'upload',
+        millis(1_200),
+        observation(HASH, millis(1_200)),
+        [],
+      ),
+    ).resolves.toBe(true)
+
+    await expect(store.noteTileBlobObject(HASH, HASH, millis(1_300))).resolves.toBe('candidate')
+    await expect(store.claimTileBlobDeletion(HASH, millis(1_400))).resolves.toBe('claimed')
   })
 
   it('persists the bounded R2 scan cursor and completed sweeps', async () => {
