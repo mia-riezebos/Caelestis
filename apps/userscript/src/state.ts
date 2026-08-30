@@ -1,4 +1,4 @@
-import { PALETTE_SIZE, type ReconciliationReason } from '@caelestis/shared'
+import { PALETTE_SIZE, type ReconciliationReason, type SyncTransport } from '@caelestis/shared'
 import { userscriptClientHeaders } from './client-metrics.js'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
@@ -1364,6 +1364,7 @@ export const listServerContents = async (
   server: ConnectedServer,
   signal?: AbortSignal,
   reason: ReconciliationReason = 'unknown',
+  transport: SyncTransport = 'compatibility-poll',
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
   if (!isCurrentServerConnection(server)) return null
@@ -1384,9 +1385,9 @@ export const listServerContents = async (
           {
             headers:
               activeServerToken(server) === null
-                ? userscriptClientHeaders({ transport: 'compatibility-poll', reason })
+                ? userscriptClientHeaders({ transport, reason })
                 : {
-                    ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+                    ...userscriptClientHeaders({ transport, reason }),
                     authorization: `Bearer ${activeServerToken(server)}`,
                   },
             signal: serverConnectionSignal(server),

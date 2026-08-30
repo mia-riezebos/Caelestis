@@ -1,4 +1,4 @@
-import type { LiveSyncServerEvent, ReconciliationReason } from '@caelestis/shared'
+import type { LiveSyncServerEvent, ReconciliationReason, SyncTransport } from '@caelestis/shared'
 import { serverEndpoint } from './server-url.js'
 import {
   type ConnectedServer,
@@ -37,6 +37,7 @@ export interface ServerSyncResource {
   readonly refresh: (
     server: ConnectedServer,
     reason: ReconciliationReason,
+    transport: SyncTransport,
   ) => Promise<ServerSyncResult>
   /** Healthy live transport suppresses interval polling for this resource. */
   readonly live?: boolean
@@ -179,7 +180,11 @@ const runResource = async (
   const pending = owned.get(key)
   if (pending !== undefined) return pending
   const started = resource
-    .refresh(server, reason)
+    .refresh(
+      server,
+      reason,
+      resource.live === true && liveHealthy(server) ? 'recovery' : 'compatibility-poll',
+    )
     .then((result) => applyResult(server, scope, resource.id, result))
     .catch(() => applyResult(server, scope, resource.id, { status: 'failed' }))
     .finally(() => {

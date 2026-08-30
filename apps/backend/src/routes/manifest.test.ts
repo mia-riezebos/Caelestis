@@ -5,6 +5,7 @@ import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
 import { hashToken } from '../auth/tokens.js'
+import { measureRequest } from '../metrics/request-metrics.js'
 import type { TemplateVersionRecord } from '../ports/index.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
 import { DirectStatusReadModel } from '../status-read-model/port.js'
@@ -194,6 +195,19 @@ describe('server and manifest routes', () => {
     expect(((await other.json()) as { season: number }).season).toBe(99)
     expect(assemble).toHaveBeenCalledTimes(2)
     expect((await app.request('/manifest?season=abc', bearer(MEMBER))).status).toBe(400)
+  })
+
+  it('records the manifest projection cache outcome on the request metric', async () => {
+    const writeDataPoint = vi.fn()
+    const request = new Request('https://example.test/manifest', bearer(MEMBER))
+
+    const response = await measureRequest({ writeDataPoint }, request, '/manifest', async () =>
+      app.fetch(request),
+    )
+
+    expect(response.status).toBe(200)
+    expect(writeDataPoint).toHaveBeenCalledOnce()
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[7]).toBe('miss')
   })
 
   it('selects one alliance surface without leaking world or another alliance', async () => {

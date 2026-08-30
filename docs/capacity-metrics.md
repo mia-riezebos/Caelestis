@@ -125,3 +125,16 @@ Query the same UTC window in Workers Analytics for `caelestis-frontend` and reco
 alongside these backend results. Paint reports (`POST /telemetry/paints`) and tile writes
 (`PUT /telemetry/tiles/:x/:y/:hash`) must remain separate from avoidable sync reads when calculating
 the PRD's 90 percent reduction target.
+
+## Five-client acceptance budget
+
+`pnpm capacity:report` reproduces the conservative 24-hour healthy-live projection used by issue
+#167. It counts five socket upgrades, two bootstrap reads per client, and 96 recovery cohorts for
+both status and manifest. The result is 975 avoidable Worker requests, a 93.35 percent reduction
+from the 14,660-request status, manifest, and tile-offer baseline. That steady-state result leaves a
+budget of 491 tile-offer batches while retaining a reduction of at least 90 percent.
+
+Pass a measured post-rollout offer count back into the same gate with
+`pnpm capacity:report -- --tile-offer-batches <count>`. Required paint reports and requested tile
+writes remain excluded in both modes. The complete recovery matrix and rollout measurement gate are
+in [sync-acceptance.md](./sync-acceptance.md).
