@@ -5,7 +5,7 @@ import {
   readCachedServerMismatch,
   writeCachedServerMismatch,
 } from './server-mismatch-cache.js'
-import { userscriptRequestHeaders } from './server-observability.js'
+import { observedUserscriptRequest } from './server-observability.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -100,16 +100,17 @@ const readMask = async (
   const isCurrent = (): boolean =>
     isCurrentServerConnection(server) &&
     (tileInvalidations.get(invalidationKey) ?? 0) === invalidation
-  const request = fetch(
+  const observed = observedUserscriptRequest(
     serverEndpoint(
       server.url,
       `/telemetry/templates/${templateId}/versions/${version}/tiles/${tile.x}/${tile.y}/mismatches?season=${server.season}`,
     ),
     {
-      headers: userscriptRequestHeaders(token === null ? {} : { authorization: `Bearer ${token}` }),
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
-  ).catch(() => null)
+  )
+  const request = fetch(observed.input, observed.init).catch(() => null)
   const cachedBytes = await readCachedServerMismatch(key)
   if (cachedBytes !== null && isCurrent()) {
     const cached = decodeMismatchMask(cachedBytes)

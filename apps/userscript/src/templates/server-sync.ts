@@ -9,7 +9,7 @@ import {
 } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
-import { userscriptRequestHeaders } from '../server-observability.js'
+import { observedUserscriptRequest } from '../server-observability.js'
 import { serverEndpoint } from '../server-url.js'
 import {
   activeServerToken,
@@ -124,14 +124,14 @@ export const fetchChunkWithinBudget = async (
   if (cached !== undefined) return cached.byteLength <= remainingBytes ? cached : null
   const readLimit = Math.min(MAX_CHUNK_BYTES, remainingBytes)
   try {
-    const response = await fetch(serverEndpoint(server.url, `/chunks/${hash}`), {
-      headers: userscriptRequestHeaders(
+    const observed = observedUserscriptRequest(serverEndpoint(server.url, `/chunks/${hash}`), {
+      headers:
         activeServerToken(server) === null
           ? {}
           : { authorization: `Bearer ${activeServerToken(server)}` },
-      ),
       signal: AbortSignal.any([generationSignal, AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS)]),
     })
+    const response = await fetch(observed.input, observed.init)
     if (!response.ok) return null
     const declared = Number(response.headers.get('content-length'))
     if (Number.isFinite(declared) && declared > readLimit) return null

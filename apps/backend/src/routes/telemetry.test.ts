@@ -137,7 +137,7 @@ describe('telemetry routes', () => {
 
   it('requests missing template-covered tiles and serves server-backed progress after upload', async () => {
     const outcomes: TileOfferBatchMetrics[] = []
-    const { app } = await harness((outcome) => outcomes.push(outcome))
+    const { app, sql } = await harness((outcome) => outcomes.push(outcome))
     const templateId = await createPublishedTemplate(app)
     const reportToken = await mintToken(app, 'report')
     const bytes = await canvasTile()
@@ -217,6 +217,15 @@ describe('telemetry routes', () => {
       body: JSON.stringify({ ...offer, offers: [offer.offers[0], offer.offers[0]] }),
     })
     expect(duplicate.status).toBe(400)
+
+    sql.listTelemetryTargets = async () => Promise.reject(new Error('D1 unavailable'))
+    const failed = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({ ...offer, offers: [{ ...offer.offers[0], tile: '2/2' }] }),
+    })
+    expect(failed.status).toBe(500)
+    expect(outcomes.at(-1)).toEqual({ requested: 1, accepted: 0, alreadyKnown: 0, rejected: 0 })
   })
 
   it('keeps upload validation separate from typed storage failures', async () => {

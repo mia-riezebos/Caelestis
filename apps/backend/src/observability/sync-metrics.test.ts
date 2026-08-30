@@ -41,6 +41,10 @@ describe('sync request observability', () => {
   it.each([
     ['/manifest?season=7', 'manifest'],
     ['/telemetry/status?season=7', 'status'],
+    [
+      '/telemetry/templates/template/versions/version/tiles/1/2/mismatches?season=7',
+      'mismatch-mask',
+    ],
     ['/telemetry/tiles/offers', 'tile-offer'],
     ['/telemetry/tiles/1/2/hash', 'tile-upload'],
     ['/telemetry/paints', 'paint-report'],
@@ -48,6 +52,16 @@ describe('sync request observability', () => {
     ['/admin/templates/private-id', 'template-admin'],
   ])('groups %s without logging parameters as %s', (path, route) => {
     expect(syncRoute(new Request(`https://example.com${path}`))).toBe(route)
+  })
+
+  it('separates CORS preflights from application routes', () => {
+    expect(
+      syncRoute(
+        new Request('https://example.com/telemetry/status', {
+          method: 'OPTIONS',
+        }),
+      ),
+    ).toBe('cors-preflight')
   })
 
   it('records bounded client dimensions and exact/lower-bound D1 work without secrets', async () => {
@@ -130,6 +144,60 @@ describe('sync request observability', () => {
       sync_mode: 'none',
       sync_reason: 'none',
       tile_offer: { failed_batches: 1 },
+    })
+    logged.mockRestore()
+  })
+
+  it('reads simple-request dimensions from the query and rejects unknown valid-looking builds', () => {
+    const known = new SyncRequestMetrics(
+      new Request(
+        'https://example.com/manifest?__caelestis_client=userscript&__caelestis_client_version=0.5.4&__caelestis_sync_transport=http&__caelestis_sync_mode=compatibility-poll&__caelestis_sync_reason=interval',
+      ),
+    )
+    const unknown = new SyncRequestMetrics(
+      new Request('https://example.com/manifest', {
+        headers: {
+          'x-caelestis-client': 'userscript',
+          'x-caelestis-client-version': '0.5.5',
+        },
+      }),
+    )
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    known.finish(new Response(null, { status: 304 }))
+    unknown.finish(new Response(null, { status: 200 }))
+
+    expect(logged.mock.calls[0]?.[0]).toMatchObject({
+      client: 'userscript',
+      client_version: '0.5.4',
+      sync_mode: 'compatibility-poll',
+      sync_reason: 'interval',
+      cache_outcome: 'revalidated',
+    })
+    expect(logged.mock.calls[1]?.[0]).toMatchObject({
+      client: 'userscript',
+      client_version: 'unknown',
+    })
+    logged.mockRestore()
+  })
+
+  it('counts D1 attempts whose promises reject without inventing row metadata', async () => {
+    const source = fakeDatabase()
+    source.prepare = () =>
+      ({
+        ...fakeStatement(),
+        all: async () => Promise.reject(new Error('D1 unavailable')),
+      }) as unknown as D1PreparedStatement
+    const metrics = new SyncRequestMetrics(new Request('https://example.com/health'))
+    await expect(meterD1Database(source, metrics).prepare('select').all()).rejects.toThrow(
+      'D1 unavailable',
+    )
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    metrics.finish(new Response(null, { status: 500 }))
+
+    expect(logged.mock.calls[0]?.[0]).toMatchObject({
+      d1: { queries: 1, rows_read: 0, rows_read_exact: 0, rows_written: 0 },
     })
     logged.mockRestore()
   })

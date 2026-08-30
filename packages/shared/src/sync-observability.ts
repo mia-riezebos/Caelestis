@@ -4,6 +4,12 @@ export const SYNC_TRANSPORT_HEADER = 'x-caelestis-sync-transport'
 export const SYNC_MODE_HEADER = 'x-caelestis-sync-mode'
 export const SYNC_REASON_HEADER = 'x-caelestis-sync-reason'
 
+export const CLIENT_KIND_QUERY = '__caelestis_client'
+export const CLIENT_VERSION_QUERY = '__caelestis_client_version'
+export const SYNC_TRANSPORT_QUERY = '__caelestis_sync_transport'
+export const SYNC_MODE_QUERY = '__caelestis_sync_mode'
+export const SYNC_REASON_QUERY = '__caelestis_sync_reason'
+
 export const CLIENT_KINDS = ['userscript', 'frontend'] as const
 export type ClientKind = (typeof CLIENT_KINDS)[number]
 

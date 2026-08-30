@@ -56,7 +56,9 @@ export const parseTail = (text) => {
 
 export const summarizeSyncEvents = (events) => {
   const summary = {
+    invocations: 0,
     requests: 0,
+    preflights: 0,
     by_route: {},
     by_client_version: {},
     by_route_client_version: {},
@@ -79,6 +81,11 @@ export const summarizeSyncEvents = (events) => {
     },
   }
   for (const event of events) {
+    summary.invocations++
+    if (event.route === 'cors-preflight') {
+      summary.preflights++
+      continue
+    }
     summary.requests++
     const route = typeof event.route === 'string' ? event.route : 'unknown'
     const client = typeof event.client === 'string' ? event.client : 'unknown'

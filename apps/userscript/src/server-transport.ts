@@ -1,6 +1,6 @@
 import type { SyncRequestMetadata } from '@caelestis/shared'
 import { discardResponseBody } from './response.js'
-import { userscriptRequestHeaders } from './server-observability.js'
+import { observedUserscriptRequest } from './server-observability.js'
 
 const REMOTE_TIMEOUT_MS = 10_000
 const LARGE_TRANSFER_TIMEOUT_MS = 120_000
@@ -94,10 +94,10 @@ const request = async <Result>(
   else upstream?.addEventListener('abort', abortFromUpstream, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
   try {
+    const observed = observedUserscriptRequest(input, init, metadata)
     return await read(
-      await fetch(input, {
-        ...init,
-        headers: userscriptRequestHeaders(init.headers, metadata),
+      await fetch(observed.input, {
+        ...observed.init,
         signal: controller.signal,
       }),
     )

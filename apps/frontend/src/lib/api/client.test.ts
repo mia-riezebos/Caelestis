@@ -106,7 +106,7 @@ describe('API request recovery', () => {
 
     const manifestHeaders = new Headers(fetch.mock.calls[0]?.[1]?.headers)
     expect(manifestHeaders.get('x-caelestis-client')).toBe('frontend')
-    expect(manifestHeaders.get('x-caelestis-client-version')).toBe('0.0.0')
+    expect(manifestHeaders.get('x-caelestis-client-version')).toBe(__CAELESTIS_FRONTEND_VERSION__)
     expect(manifestHeaders.get('x-caelestis-sync-mode')).toBe('recovery')
     expect(manifestHeaders.get('x-caelestis-sync-reason')).toBe('page-load')
 

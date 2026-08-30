@@ -33,7 +33,9 @@ pnpm --filter @caelestis/backend sync:summary -- sync-baseline.ndjson > sync-bas
 ```
 
 Use the same duration and a recorded active-client count for every comparison. Compare
-`requests`, `by_route_client_version`, `by_sync_mode`, `d1.rows_read`, and `tile_offer`. In
+`invocations`, `requests`, `preflights`, `by_route_client_version`, `by_sync_mode`, `d1.rows_read`,
+and `tile_offer`. `requests` excludes CORS preflights so application traffic remains comparable;
+`invocations` includes them so the summary still reconciles to Worker usage. In
 particular:
 
 - `paint-report`, `tile-upload`, and accepted tile offers are required reporting traffic.
@@ -53,3 +55,8 @@ Every backend request emits one `caelestis.sync.request` structured log with bou
 route, method, status, client/build version, transport, sync mode/reason, cache outcome, duration,
 D1 work, and tile-offer outcomes. Dynamic path segments and query strings are normalized to route
 names before logging. Invalid client-supplied dimension values collapse to `unknown` or `none`.
+The backend only preserves the exact userscript version and frontend commit configured by the
+deployment; spoofed or stale build strings collapse to the single `unknown` bucket.
+Open-access userscript reads carry these dimensions in reserved query parameters so observability
+does not turn CORS-simple GETs into extra preflight invocations. Requests that already require a
+preflight use the headers, and those `OPTIONS` calls are classified as `cors-preflight`.

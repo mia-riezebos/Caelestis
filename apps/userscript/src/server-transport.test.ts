@@ -31,9 +31,13 @@ describe('server request observability', () => {
       reason: 'interval',
     })
 
+    const url = new URL(String(fetch.mock.calls[0]?.[0]))
     const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers)
-    expect(headers.get('x-caelestis-sync-transport')).toBe('http')
-    expect(headers.get('x-caelestis-sync-mode')).toBe('compatibility-poll')
-    expect(headers.get('x-caelestis-sync-reason')).toBe('interval')
+    expect(headers.has('x-caelestis-client')).toBe(false)
+    expect(url.searchParams.get('__caelestis_client')).toBe('userscript')
+    expect(url.searchParams.get('__caelestis_client_version')).toBe('development')
+    expect(url.searchParams.get('__caelestis_sync_transport')).toBe('http')
+    expect(url.searchParams.get('__caelestis_sync_mode')).toBe('compatibility-poll')
+    expect(url.searchParams.get('__caelestis_sync_reason')).toBe('interval')
   })
 })

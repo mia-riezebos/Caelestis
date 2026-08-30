@@ -91,7 +91,10 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
     if (mountedRequest === null) return new Response('Not Found', { status: 404 })
-    const metrics = new SyncRequestMetrics(mountedRequest)
+    const metrics = new SyncRequestMetrics(mountedRequest, {
+      userscript: [env.USERSCRIPT_BUILD_ID],
+      frontend: [env.FRONTEND_BUILD_ID],
+    })
     try {
       const response = await prepareBackendForEvent(env, metrics).app.fetch(mountedRequest)
       metrics.finish(response)

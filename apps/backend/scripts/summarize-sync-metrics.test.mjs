@@ -43,12 +43,20 @@ test('summarizes direct and Wrangler-wrapped structured sync events', () => {
   const input = [
     JSON.stringify(first),
     JSON.stringify({ logs: [{ level: 'log', message: [JSON.stringify(second)] }] }),
+    JSON.stringify({
+      event: 'caelestis.sync.request',
+      route: 'cors-preflight',
+      client: 'unknown',
+      client_version: 'unknown',
+    }),
     'not json',
   ].join('\n')
 
   const summary = summarizeSyncEvents(parseTail(input))
 
+  expect(summary.invocations).toBe(3)
   expect(summary.requests).toBe(2)
+  expect(summary.preflights).toBe(1)
   expect(summary.by_route).toEqual({ status: 1, 'tile-offer': 1 })
   expect(summary.by_route_client_version).toEqual({
     'status|userscript@0.5.4': 1,

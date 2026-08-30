@@ -40,6 +40,9 @@ SEASON = "0"
 OPEN_ACCESS = "true"
 # Mount the runtime adapter here while keeping the portable Hono app root-relative.
 BASE_PATH = "/backend"
+# CI overrides these with the userscript version and deployment commit. Local builds stay bounded.
+USERSCRIPT_BUILD_ID = "development"
+FRONTEND_BUILD_ID = "development"
 
 [observability]
 enabled = true

@@ -391,6 +391,12 @@ export const createTelemetryRoutes = (
         },
       })
     }
+    options.recordTileOffer?.({
+      requested: offers.length,
+      accepted: 0,
+      alreadyKnown: 0,
+      rejected: 0,
+    })
     return runBackendHttp(c, runtime, offerTiles(offers), (outcome) => {
       options.recordTileOffer?.({
         requested: offers.length,

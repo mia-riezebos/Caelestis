@@ -1,12 +1,17 @@
 import {
   CLIENT_KIND_HEADER,
+  CLIENT_KIND_QUERY,
   CLIENT_KINDS,
   CLIENT_VERSION_HEADER,
+  CLIENT_VERSION_QUERY,
   SYNC_MODE_HEADER,
+  SYNC_MODE_QUERY,
   SYNC_MODES,
   SYNC_REASON_HEADER,
+  SYNC_REASON_QUERY,
   SYNC_REASONS,
   SYNC_TRANSPORT_HEADER,
+  SYNC_TRANSPORT_QUERY,
   SYNC_TRANSPORTS,
   type SyncMode,
   type SyncReason,
@@ -24,18 +29,38 @@ const boundedMember = <Value extends string>(
 ): Value =>
   value !== null && (allowed as readonly string[]).includes(value) ? (value as Value) : fallback
 
-const clientVersion = (request: Request): string => {
-  const value = request.headers.get(CLIENT_VERSION_HEADER)
-  return value !== null && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}$/.test(value) ? value : 'unknown'
+const requestDimension = (request: Request, header: string, query: string): string | null =>
+  request.headers.get(header) ?? new URL(request.url).searchParams.get(query)
+
+export interface RecognizedClientVersions {
+  readonly userscript: readonly string[]
+  readonly frontend: readonly string[]
+}
+
+const clientVersion = (
+  request: Request,
+  client: string,
+  recognized: RecognizedClientVersions,
+): string => {
+  const value = requestDimension(request, CLIENT_VERSION_HEADER, CLIENT_VERSION_QUERY)
+  if (value === null || !/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(value)) return 'unknown'
+  if (client === 'userscript' && recognized.userscript.includes(value)) return value
+  if (client === 'frontend' && recognized.frontend.includes(value)) return value
+  return 'unknown'
 }
 
 /** Low-cardinality route names; parameters, query strings, hashes, and identifiers never enter logs. */
 export const syncRoute = (request: Request): string => {
+  if (request.method === 'OPTIONS') return 'cors-preflight'
   const path = new URL(request.url).pathname
   if (path === '/health') return 'health'
   if (path === '/server') return 'server'
   if (path === '/manifest') return 'manifest'
   if (path === '/telemetry/status') return 'status'
+  if (
+    /^\/telemetry\/templates\/[^/]+\/versions\/[^/]+\/tiles\/[^/]+\/[^/]+\/mismatches$/.test(path)
+  )
+    return 'mismatch-mask'
   if (path === '/telemetry/tiles/offers') return 'tile-offer'
   if (/^\/telemetry\/tiles\/[^/]+\/[^/]+\/history$/.test(path)) return 'tile-history'
   if (/^\/telemetry\/tiles\/[^/]+\/[^/]+\/[^/]+$/.test(path)) return 'tile-upload'
@@ -66,14 +91,16 @@ class D1QueryMetrics {
   private lowerBoundRowsRead = 0
   private rowsWritten = 0
 
+  recordAttempts(count = 1): void {
+    this.queries += count
+  }
+
   recordResult(result: D1Result<unknown>): void {
-    this.queries++
     this.exactRowsRead += this.nonnegativeCount(result.meta.rows_read)
     this.rowsWritten += this.nonnegativeCount(result.meta.rows_written)
   }
 
   recordRowsWithoutMeta(rows: number): void {
-    this.queries++
     this.lowerBoundRowsRead += rows
   }
 
@@ -104,18 +131,36 @@ export class SyncRequestMetrics {
   private readonly reason: SyncReason
   private tileOffer: TileOfferBatchMetrics | undefined
 
-  constructor(request: Request) {
+  constructor(
+    request: Request,
+    recognized: RecognizedClientVersions = {
+      userscript: ['development', '0.5.4'],
+      frontend: ['development'],
+    },
+  ) {
     this.route = syncRoute(request)
     this.method = request.method
-    this.client = boundedMember(request.headers.get(CLIENT_KIND_HEADER), CLIENT_KINDS, 'unknown')
-    this.version = clientVersion(request)
+    this.client = boundedMember(
+      requestDimension(request, CLIENT_KIND_HEADER, CLIENT_KIND_QUERY),
+      CLIENT_KINDS,
+      'unknown',
+    )
+    this.version = clientVersion(request, this.client, recognized)
     this.transport = boundedMember(
-      request.headers.get(SYNC_TRANSPORT_HEADER),
+      requestDimension(request, SYNC_TRANSPORT_HEADER, SYNC_TRANSPORT_QUERY),
       SYNC_TRANSPORTS,
       'http',
     )
-    this.mode = boundedMember(request.headers.get(SYNC_MODE_HEADER), SYNC_MODES, 'none')
-    this.reason = boundedMember(request.headers.get(SYNC_REASON_HEADER), SYNC_REASONS, 'none')
+    this.mode = boundedMember(
+      requestDimension(request, SYNC_MODE_HEADER, SYNC_MODE_QUERY),
+      SYNC_MODES,
+      'none',
+    )
+    this.reason = boundedMember(
+      requestDimension(request, SYNC_REASON_HEADER, SYNC_REASON_QUERY),
+      SYNC_REASONS,
+      'none',
+    )
   }
 
   recordTileOffer(outcome: TileOfferBatchMetrics): void {
@@ -123,10 +168,10 @@ export class SyncRequestMetrics {
   }
 
   finish(response: Response): void {
-    const cache = boundedMember(
-      response.headers.get(CACHE_OUTCOME_HEADER),
-      CACHE_OUTCOMES,
-      'none',
+    const cache = (
+      response.status === 304
+        ? 'revalidated'
+        : boundedMember(response.headers.get(CACHE_OUTCOME_HEADER), CACHE_OUTCOMES, 'none')
     ) as CacheOutcome
     const tileOffer =
       this.route !== 'tile-offer'
@@ -169,6 +214,7 @@ class MeteredD1PreparedStatement implements D1PreparedStatement {
   }
 
   first<T = unknown>(colName?: string): Promise<T | null> {
+    this.metrics.recordAttempts()
     const read = colName === undefined ? this.source.first<T>() : this.source.first<T>(colName)
     return read.then((result) => {
       this.metrics.recordRowsWithoutMeta(result === null ? 0 : 1)
@@ -177,6 +223,7 @@ class MeteredD1PreparedStatement implements D1PreparedStatement {
   }
 
   run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    this.metrics.recordAttempts()
     return this.source.run<T>().then((result) => {
       this.metrics.recordResult(result)
       return result
@@ -184,6 +231,7 @@ class MeteredD1PreparedStatement implements D1PreparedStatement {
   }
 
   all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    this.metrics.recordAttempts()
     return this.source.all<T>().then((result) => {
       this.metrics.recordResult(result)
       return result
@@ -193,6 +241,7 @@ class MeteredD1PreparedStatement implements D1PreparedStatement {
   raw<T = unknown[]>(options: { columnNames: true }): Promise<[string[], ...T[]]>
   raw<T = unknown[]>(options?: { columnNames?: false }): Promise<T[]>
   raw<T = unknown[]>(options?: { columnNames?: boolean }): Promise<T[] | [string[], ...T[]]> {
+    this.metrics.recordAttempts()
     if (options?.columnNames === true) {
       return this.source.raw<T>({ columnNames: true }).then((rows) => {
         this.metrics.recordRowsWithoutMeta(Math.max(0, rows.length - 1))
@@ -222,6 +271,7 @@ class MeteredD1DatabaseSession implements D1DatabaseSession {
   }
 
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    this.metrics.recordAttempts(statements.length)
     return this.source.batch<T>(unwrapStatements(statements)).then((results) => {
       for (const result of results) this.metrics.recordResult(result)
       return results
@@ -244,6 +294,7 @@ class MeteredD1Database implements D1Database {
   }
 
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    this.metrics.recordAttempts(statements.length)
     return this.source.batch<T>(unwrapStatements(statements)).then((results) => {
       for (const result of results) this.metrics.recordResult(result)
       return results
@@ -251,6 +302,7 @@ class MeteredD1Database implements D1Database {
   }
 
   exec(query: string): Promise<D1ExecResult> {
+    this.metrics.recordAttempts()
     return this.source.exec(query)
   }
 

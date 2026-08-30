@@ -307,7 +307,11 @@ describe('server state boundaries', () => {
     )
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/backend/admin/nodes?season=0')
+    const adminProbeUrl = new URL(String(fetchMock.mock.calls[2]?.[0]))
+    expect(adminProbeUrl.origin + adminProbeUrl.pathname).toBe(
+      'https://example.com/backend/admin/nodes',
+    )
+    expect(adminProbeUrl.searchParams.get('season')).toBe('0')
   })
 
   it('accepts chunks on both runs of an antimeridian-wrapped template', async () => {
@@ -1151,7 +1155,8 @@ describe('server state boundaries', () => {
     expect(rejectedHeaders.get('x-caelestis-sync-mode')).toBe('recovery')
     const openHeaders = new Headers(fetchMock.mock.calls[2]?.[1]?.headers)
     expect(openHeaders.get('authorization')).toBeNull()
-    expect(openHeaders.get('x-caelestis-client')).toBe('userscript')
+    const openUrl = new URL(String(fetchMock.mock.calls[2]?.[0]))
+    expect(openUrl.searchParams.get('__caelestis_client')).toBe('userscript')
   })
 
   it('publishes each stored-server refresh as soon as that server settles', async () => {
@@ -1190,7 +1195,7 @@ describe('server state boundaries', () => {
     let serverRequests = 0
     const fetchMock = vi.fn<typeof fetch>((input) => {
       const url = String(input)
-      if (!url.endsWith('/server')) {
+      if (!new URL(url).pathname.endsWith('/server')) {
         const response = url.includes('/manifest')
           ? new Response(JSON.stringify(manifest), { status: 200 })
           : new Response(JSON.stringify({ nodes: [] }), { status: 200 })
