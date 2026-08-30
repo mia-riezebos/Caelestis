@@ -1,4 +1,4 @@
-import type { TemplateSurface } from '@caelestis/shared'
+import { parseClientMetricsAccept, type TemplateSurface } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface MockServer {
@@ -121,9 +121,27 @@ describe('alliance server sync', () => {
     installAllianceServerSync()
     await flush()
     expect(fetch).toHaveBeenCalledTimes(1)
+    expect(
+      parseClientMetricsAccept(
+        new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).get('accept'),
+      ),
+    ).toMatchObject({
+      client: 'userscript',
+      transport: 'compatibility-poll',
+      reason: 'connect',
+    })
     vi.advanceTimersByTime(60_000)
     await flush()
     expect(fetch).toHaveBeenCalledTimes(2)
+    expect(
+      parseClientMetricsAccept(
+        new Headers(vi.mocked(fetch).mock.calls[1]?.[1]?.headers).get('accept'),
+      ),
+    ).toMatchObject({
+      client: 'userscript',
+      transport: 'compatibility-poll',
+      reason: 'interval',
+    })
 
     finishNewer(new Response(JSON.stringify(manifest(hq(), 0, 'Newer'))))
     await flush()
