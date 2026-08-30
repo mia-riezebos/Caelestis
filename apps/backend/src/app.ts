@@ -98,7 +98,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.route('/admin/server', createServerAdminRoutes(runtime))
   app.route('/manifest', createManifestRoutes(runtime, { server, currentSeason }))
 
-  app.route('/admin/tokens', createTokenRoutes(auth))
+  app.route('/admin/tokens', createTokenRoutes(runtime))
   app.route('/admin/nodes', createNodeRoutes(runtime))
   app.route('/admin/templates', createTemplateRoutes(runtime))
   app.route('/chunks', createChunkRoutes(runtime))
