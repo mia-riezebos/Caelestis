@@ -8,6 +8,7 @@ import {
   type TileHistoryFrame,
   templateSurface,
   WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
 import {
@@ -1125,7 +1126,9 @@ export class D1SqlStore implements SqlStore {
           eq(templateAlarmTileStatuses.tileY, versionTiles.tileY),
         ),
       )
-      .where(eq(templates.season, season))
+      .where(
+        and(eq(templates.season, season), eq(templates.surfaceKind, WORLD_TEMPLATE_SURFACE.kind)),
+      )
   }
 
   async listTelemetryTargets(

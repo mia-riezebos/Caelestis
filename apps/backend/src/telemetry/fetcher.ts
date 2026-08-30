@@ -5,8 +5,8 @@ import {
   sha256Hex,
   type TileCoord,
   tileKey,
-  WORLD_TEMPLATE_SURFACE,
   uuidV7,
+  WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
 import type { AlarmProbe, Ports } from '../ports/index.js'
@@ -204,7 +204,10 @@ export const fetchCanvasTiles = async (
     }
   }
 
-  const templates = await ports.sql.listManifestTemplates(season, true)
+  const templates = await ports.sql.listManifestTemplates(
+    { season, surface: WORLD_TEMPLATE_SURFACE },
+    true,
+  )
   const refreshedAlarmTiles = await ports.sql.listAlarmTiles(season)
   const requiredTiles = new Map<
     string,
@@ -290,7 +293,12 @@ export const fetchAlarmFollowUps = async (
   let remaining = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
 
   for (const probe of selectedProbes) {
-    const template = (await ports.sql.listManifestTemplates(probe.season, true)).find(
+    const template = (
+      await ports.sql.listManifestTemplates(
+        { season: probe.season, surface: WORLD_TEMPLATE_SURFACE },
+        true,
+      )
+    ).find(
       (candidate) => candidate.id === probe.templateId && candidate.versionId === probe.versionId,
     )
     let tiles = (await ports.sql.listAlarmTiles(probe.season)).filter(

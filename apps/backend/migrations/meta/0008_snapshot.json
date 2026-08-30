@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ead86e2c-d2e1-4699-8285-1452823c88ec",
-  "prevId": "dfb314a2-6c2a-4d17-9742-a8597b44e7c9",
+  "id": "b1fffb3d-8035-404e-a261-4b72ef2f6033",
+  "prevId": "0abf2c93-ddbc-4f21-8e8a-4d6efacc07a9",
   "tables": {
     "access_tokens": {
       "name": "access_tokens",
@@ -1062,7 +1062,7 @@
         },
         "template_versions_pixel_bounds_check": {
           "name": "template_versions_pixel_bounds_check",
-          "value": "typeof(\"template_versions\".\"min_x\") = 'integer' AND typeof(\"template_versions\".\"min_y\") = 'integer'\n        AND typeof(\"template_versions\".\"max_x\") = 'integer' AND typeof(\"template_versions\".\"max_y\") = 'integer'\n        AND typeof(\"template_versions\".\"total_pixels\") = 'integer'\n        AND \"template_versions\".\"min_x\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"min_y\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"max_x\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"max_y\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"min_x\" <> \"template_versions\".\"max_x\"\n        AND \"template_versions\".\"min_y\" < \"template_versions\".\"max_y\"\n        AND \"template_versions\".\"total_pixels\" >= 0"
+          "value": "typeof(\"template_versions\".\"min_x\") = 'integer' AND typeof(\"template_versions\".\"min_y\") = 'integer'\n        AND typeof(\"template_versions\".\"max_x\") = 'integer' AND typeof(\"template_versions\".\"max_y\") = 'integer'\n        AND typeof(\"template_versions\".\"total_pixels\") = 'integer'\n        AND \"template_versions\".\"min_x\" BETWEEN -1000 AND 2047999\n        AND \"template_versions\".\"min_y\" BETWEEN -1000 AND 2047999\n        AND \"template_versions\".\"max_x\" BETWEEN -999 AND 2048000\n        AND \"template_versions\".\"max_y\" BETWEEN -999 AND 2048000\n        AND \"template_versions\".\"min_x\" <> \"template_versions\".\"max_x\"\n        AND \"template_versions\".\"min_y\" < \"template_versions\".\"max_y\"\n        AND \"template_versions\".\"total_pixels\" >= 0"
         },
         "template_versions_bounds_range_check": {
           "name": "template_versions_bounds_range_check",
@@ -1085,6 +1085,21 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "surface_kind": {
+          "name": "surface_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'world'"
+        },
+        "alliance_id": {
+          "name": "alliance_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "node_id": {
@@ -1158,7 +1173,17 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "templates_surface_idx": {
+          "name": "templates_surface_idx",
+          "columns": [
+            "season",
+            "surface_kind",
+            "alliance_id"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {
         "templates_node_id_nodes_id_fk": {
           "name": "templates_node_id_nodes_id_fk",
@@ -1192,6 +1217,10 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
+        "templates_surface_check": {
+          "name": "templates_surface_check",
+          "value": "(\"templates\".\"surface_kind\" = 'world' AND \"templates\".\"alliance_id\" IS NULL)\n        OR (\"templates\".\"surface_kind\" IN ('alliance-headquarters', 'alliance-picture', 'alliance-banner')\n          AND typeof(\"templates\".\"alliance_id\") = 'integer' AND \"templates\".\"alliance_id\" > 0)"
+        },
         "templates_created_with_token_check": {
           "name": "templates_created_with_token_check",
           "value": "typeof(\"templates\".\"created_with_token\") = 'text' AND length(\"templates\".\"created_with_token\") = 64\n        AND \"templates\".\"created_with_token\" NOT GLOB '*[^0-9a-f]*'\n        AND (\"templates\".\"created_by_user_id\" IS NULL\n          OR (typeof(\"templates\".\"created_by_user_id\") = 'integer' AND \"templates\".\"created_by_user_id\" >= 0))"
@@ -1582,7 +1611,7 @@
         },
         "version_tiles_coordinate_check": {
           "name": "version_tiles_coordinate_check",
-          "value": "typeof(\"version_tiles\".\"tile_x\") = 'integer' AND typeof(\"version_tiles\".\"tile_y\") = 'integer'\n        AND \"version_tiles\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"version_tiles\".\"tile_y\" BETWEEN 0 AND 2047"
+          "value": "typeof(\"version_tiles\".\"tile_x\") = 'integer' AND typeof(\"version_tiles\".\"tile_y\") = 'integer'\n        AND \"version_tiles\".\"tile_x\" BETWEEN -1 AND 2047\n        AND \"version_tiles\".\"tile_y\" BETWEEN -1 AND 2047"
         }
       }
     }

@@ -10,6 +10,7 @@ import {
   type TileHistoryFrame,
   tileKey,
   WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
 import {
@@ -636,7 +637,7 @@ export class MemorySqlStore implements SqlStore {
   }
 
   async listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]> {
-    const tiles = await this.listManifestTiles(season, true)
+    const tiles = await this.listManifestTiles({ season, surface: WORLD_TEMPLATE_SURFACE }, true)
     return tiles.map((tile) => {
       const key = `${tile.templateId}\u0000${tile.versionId}\u0000${tileKey({ x: tile.tileX, y: tile.tileY })}`
       return {

@@ -1,8 +1,8 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { registerCaelestisUi } from '@caelestis/ui/elements'
+import { installAlarmNotifications } from './alarms.js'
 import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
 import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
-import { installAlarmNotifications } from './alarms.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,

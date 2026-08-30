@@ -1,4 +1,4 @@
-import { millis } from '@caelestis/shared'
+import { millis, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
@@ -17,6 +17,7 @@ const PROBE_AT = millis(SIX_HOURS_LATER + 10 * 60 * 1_000)
 const version = (versionId = VERSION_ID): TemplateVersionRecord => ({
   templateId: TEMPLATE_ID,
   season: 1,
+  surface: WORLD_TEMPLATE_SURFACE,
   nodeId: null,
   name: 'Alarm test',
   versionId,
