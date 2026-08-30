@@ -1,7 +1,7 @@
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
-import { createApp } from './app.js'
+import { type App, createApp } from './app.js'
 import type { Ports } from './ports/index.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
@@ -47,6 +47,32 @@ const tileBlobGcMode = (value: string | undefined): TileBlobGcMode => {
   throw new Error(`Unsupported TILE_BLOB_GC_MODE: ${JSON.stringify(value)}`)
 }
 
+/** One prepared Hono/Effect runtime per Worker environment object, released with that environment. */
+const preparedApps = new WeakMap<Env, App>()
+
+const appFor = (env: Env): App => {
+  const prepared = preparedApps.get(env)
+  if (prepared !== undefined) return prepared
+
+  const ports: Ports = {
+    blobs: new R2BlobStore(env.BLOBS),
+    sql: new D1SqlStore(env.DB),
+    counters: new DurableObjectCounterStore(env.TELEMETRY),
+  }
+  const app = createApp(ports, {
+    bootstrapAdminToken: env.ADMIN_TOKEN,
+    serverId: env.SERVER_ID,
+    serverName: env.SERVER_NAME,
+    serverDescription: env.SERVER_DESCRIPTION,
+    // Without the season, every deployment answers as season 0. Without openAccess, a server that
+    // advertises anonymous reads still rejects its manifest. Keep both in the prepared app config.
+    currentSeason: parseSeason(env.SEASON),
+    openAccess: env.OPEN_ACCESS === 'true',
+  })
+  preparedApps.set(env, app)
+  return app
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (env.SHARD_STRATEGY !== 'single') {
@@ -56,24 +82,7 @@ export default {
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
     if (mountedRequest === null) return new Response('Not Found', { status: 404 })
 
-    const ports: Ports = {
-      blobs: new R2BlobStore(env.BLOBS),
-      sql: new D1SqlStore(env.DB),
-      counters: new DurableObjectCounterStore(env.TELEMETRY),
-    }
-
-    return createApp(ports, {
-      bootstrapAdminToken: env.ADMIN_TOKEN,
-      serverId: env.SERVER_ID,
-      serverName: env.SERVER_NAME,
-      serverDescription: env.SERVER_DESCRIPTION,
-      // Both were reachable only from tests. Without the season, every deployment answered as
-      // season 0 — a later-season server served season 0's manifest, which for a fresh one is empty,
-      // and `ServerInfo` carries no season for a client to notice. Without openAccess, a server
-      // could not be opened at all.
-      currentSeason: parseSeason(env.SEASON),
-      openAccess: env.OPEN_ACCESS === 'true',
-    }).fetch(mountedRequest)
+    return appFor(env).fetch(mountedRequest)
   },
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
