@@ -304,6 +304,7 @@ describe('telemetry routes', () => {
       })),
     })
     await createPublishedTemplate(app)
+    applyCommittedChange.mockClear()
     const reportToken = await mintToken(app, 'report')
     const bytes = await canvasTile()
     const hash = await sha256Hex(bytes)
@@ -326,6 +327,55 @@ describe('telemetry routes', () => {
     await expect(sql.readTemplateStatuses(0, false)).resolves.toHaveLength(1)
     expect(applyCommittedChange).toHaveBeenCalledWith(0)
     expect(consoleError).toHaveBeenCalledWith(projectionError)
+  })
+
+  it('repairs accepted uploads and known offers before a later history fold can fail', async () => {
+    const applyCommittedChange = vi.fn(async () => undefined)
+    const { app, sql } = await harness({
+      applyCommittedChange,
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+    })
+    await createPublishedTemplate(app)
+    applyCommittedChange.mockClear()
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const now = seconds(Math.floor(Date.now() / 1_000))
+    const foldError = new Error('history fold unavailable')
+    sql.foldTileHistory = vi.fn(async () => Promise.reject(foldError))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(now),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+    expect(uploaded.status).toBe(500)
+    await expect(sql.readTemplateStatuses(0, false)).resolves.toHaveLength(1)
+    expect(applyCommittedChange).toHaveBeenCalledTimes(1)
+
+    const offered = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 0,
+        offers: [{ tile: '0/0', sha256: hash, ts: now + 1 }],
+      }),
+    })
+    expect(offered.status).toBe(500)
+    expect(applyCommittedChange).toHaveBeenCalledTimes(2)
+    expect(consoleError).toHaveBeenCalledWith(foldError)
   })
 
   it('clamps future tile observations to server receipt time', async () => {
