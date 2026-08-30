@@ -4,6 +4,7 @@ import {
   capacityObservationSql,
   classifyR2Operations,
   comparison,
+  deriveCapacityCalibration,
   deriveModelInputs,
   operationTotals,
   readCapacityConfiguration,
@@ -77,7 +78,7 @@ test('reduces D1 insights and identifies status reads', () => {
   )
 })
 
-test('derives rates from the conservative status-equivalent clock', () => {
+test('derives backfit rates from the status-equivalent clock', () => {
   const originalNow = Date.now
   Date.now = () => 10 * 86_400_000
   try {
@@ -171,7 +172,7 @@ test('preserves unavailable R2 operation metrics as null', () => {
   assert.equal(compared.r2ClassBOperations.observed, null)
 })
 
-test('derives a conservative periodic-equivalent clock for status-only clients', () => {
+test('derives a periodic-equivalent backfit for status-only clients', () => {
   const inputs = deriveModelInputs(
     {
       active_users: 0,
@@ -208,6 +209,94 @@ test('derives a conservative periodic-equivalent clock for status-only clients',
 
   assert.equal(inputs.activeUsers, 1)
   assert.equal(inputs.activeHoursPerUser, 1)
+})
+
+test('marks status-equivalent workload rates as unsafe to scale', () => {
+  const calibration = deriveCapacityCalibration(
+    {
+      active_users: 1,
+      templates: 1,
+      covered_tiles: 0,
+      template_tile_entries: 0,
+      paint_events: 4,
+      client_tile_observations: 0,
+      distinct_tile_versions: 0,
+      persistent_rows: 1,
+      logical_rows: 1,
+      database_size_bytes: 100,
+      history_start_s: 0,
+    },
+    {
+      rowsRead: 100,
+      rowsWritten: 0,
+      statusRequests: 120,
+      statusRowsRead: 100,
+      paintRowsRead: 0,
+      tileRowsRead: 0,
+      otherRowsRead: 0,
+    },
+    {
+      paintBatchWindowSeconds: 0,
+      maxPaintEventsPerReport: 1,
+      tileOfferBatchWindowSeconds: 0.25,
+      maxTileOffersPerRequest: 64,
+      statusPollIntervalSeconds: 30,
+      statusRefreshesPerTileOfferRequest: 1,
+      lifecycleStatusRefreshesPerUserDay: 2,
+    },
+  )
+
+  assert.equal(calibration.activeTimeCalibration.source, 'status-equivalent-backfit')
+  assert.equal(calibration.activeTimeCalibration.workloadRatesScalable, false)
+  assert.equal(calibration.activeTimeCalibration.estimateUse, 'observed-window-backfit-only')
+  assert.deepEqual(calibration.activeTimeCalibration.variableTrafficRateUpperBoundsPerUserHour, {
+    paintEvents: null,
+    tileObservations: null,
+  })
+})
+
+test('uses independently measured user-hours for scalable workload rates', () => {
+  const calibration = deriveCapacityCalibration(
+    {
+      active_users: 2,
+      templates: 1,
+      covered_tiles: 0,
+      template_tile_entries: 0,
+      paint_events: 8,
+      client_tile_observations: 16,
+      distinct_tile_versions: 0,
+      persistent_rows: 1,
+      logical_rows: 1,
+      database_size_bytes: 100,
+      history_start_s: 0,
+    },
+    {
+      rowsRead: 100,
+      rowsWritten: 0,
+      statusRequests: 480,
+      statusRowsRead: 100,
+      paintRowsRead: 0,
+      tileRowsRead: 0,
+      otherRowsRead: 0,
+    },
+    {
+      paintBatchWindowSeconds: 0,
+      maxPaintEventsPerReport: 1,
+      tileOfferBatchWindowSeconds: 0.25,
+      maxTileOffersPerRequest: 64,
+      statusPollIntervalSeconds: 30,
+      statusRefreshesPerTileOfferRequest: 1,
+      lifecycleStatusRefreshesPerUserDay: 2,
+    },
+    2,
+  )
+
+  assert.equal(calibration.activeTimeCalibration.source, 'independent-user-hours')
+  assert.equal(calibration.activeTimeCalibration.workloadRatesScalable, true)
+  assert.equal(calibration.activeTimeCalibration.estimateUse, 'scalable-point-estimate')
+  assert.equal(calibration.modelInputs.activeHoursPerUser, 1)
+  assert.equal(calibration.modelInputs.paintEventsPerUserHour, 4)
+  assert.equal(calibration.modelInputs.tileFetchesPerUserHour, 8)
 })
 
 test('preserves status and tile-read totals across a multi-item partial-upload batch', () => {

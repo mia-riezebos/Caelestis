@@ -132,19 +132,22 @@ the 30-second status refresh makes D1 reads the first wall.
 | Workload | Daily estimate or measurement | Free-tier result |
 | --- | --- | --- |
 | Production, 2026-08-30: 3 reporting clients, 90 templates, 36 covered tiles | 20,779 Worker requests; 58 Durable Object requests; 7.32M D1 rows read; 14,719 D1 rows written | Over: D1 reads reached 146% |
-| Same 90-template shape: 5 users active 8 hours | 5,685 modeled Worker requests; 4.36M D1 rows read | Fits; 6 users model at 5.23M reads |
-| Smaller 10-template/4-tile shape: 12 users active 8 hours | 13,334 modeled Worker requests; 4.73M D1 rows read | Fits narrowly; 13 users model at 5.13M reads |
+| 90-template periodic-status upper bound: 10 users active 8 hours | 9,600 status requests; 4.99M D1 rows read before paint, tile, or triggered status traffic | At most 10; 11 users exceed 5M on periodic status alone |
+| 10-template periodic-status upper bound: 89 users active 8 hours | 85,440 status requests; 4.96M D1 rows read before paint, tile, or triggered status traffic | At most 89; 90 users exceed 5M on periodic status alone |
 
-The scenario rows are conservative bounds, not promises. They use the recorded production rates
-(0.5 paints and 9 accepted tile observations per user-hour), count the status refresh after every
-modeled offer batch plus two lifecycle refreshes per user-day, and charge the full historical
-non-status D1 residual across paint and tile observations as about 4,400 rows each. D1 Insights does
-not retain the HTTP request ids needed to separate a multi-tile offer from its partial uploads, so
-the observation command keeps those reads in one baseline-preserving tile unit. It also treats every
-measured status call as periodic-equivalent open time instead of mistaking tile rows for offer
-batches; modeled triggered refreshes are then added conservatively. Roughly 5 users with 90
-templates or 12 users with 10 templates fit this bound. Deployers should rerun the command for their
-own template shape.
+The scenario rows are hard upper bounds on who might fit, not claims that those user counts fit a
+real painting workload. They include only the guaranteed 30-second periodic status traffic and
+deliberately assume zero paint, tile, post-offer, and lifecycle traffic; any real work lowers the
+limit. D1 Insights does not retain the HTTP request ids needed to distinguish periodic status polls
+from refreshes after multi-tile offer batches. Using all status calls as an open-time clock therefore
+depresses per-hour paint and tile rates and is valid only as a backfit of the observed window, not as
+a scalable workload estimate.
+
+The observation command says so in `activeTimeCalibration.workloadRatesScalable`. Supply an
+independently measured total with `CAELESTIS_ACTIVE_USER_HOURS` to produce rates that can be scaled;
+without it, the variable-traffic upper bound is reported as unknown rather than promoted into a
+free-tier claim. Offer and upload D1 reads remain one baseline-preserving cost per accepted tile
+observation because the available analytics cannot separate their request counts.
 
 The first knob is the status path: lengthen its 30-second interval, or cache or precompute its
 result. Paint batching does not reduce periodic, post-offer, or lifecycle status reads. Per-template
@@ -159,11 +162,13 @@ watch the 10 GB storage allowance.
 Run the same read-only 24-hour comparison against the configured production resources with:
 
 ```sh
-CLOUDFLARE_API_TOKEN=... pnpm capacity:observe
+CAELESTIS_ACTIVE_USER_HOURS=... CLOUDFLARE_API_TOKEN=... pnpm capacity:observe
 ```
 
-The token is optional for the local model and D1 Insights portion; Cloudflare GraphQL comparisons,
-including R2 operation counts, are reported as unavailable rather than zero when it is absent.
+The active-user-hours input is optional for backfitting the observed window but required before
+scaling its paint and tile rates. The token is optional for the local model and D1 Insights portion;
+Cloudflare GraphQL comparisons, including R2 operation counts, are reported as unavailable rather
+than zero when it is absent.
 
 ## Userscript releases
 

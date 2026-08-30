@@ -107,13 +107,19 @@ export const classifyR2Operations = (operations) =>
     { classA: 0, classB: 0 },
   )
 
-export const deriveModelInputs = (database, insightTotals, currentClientDefaults) => {
+export const deriveCapacityCalibration = (
+  database,
+  insightTotals,
+  currentClientDefaults,
+  independentActiveUserHours,
+) => {
   const reportingUsers = Number(database.active_users)
   // Insights has no HTTP request id with which to distinguish periodic status polls from the one
   // refresh after a successful multi-item offer batch. Keep every measured status call as a
-  // periodic-equivalent upper bound rather than subtracting tile rows as though they were batches.
-  const activeUserHours =
+  // periodic-equivalent backfit rather than subtracting tile rows as though they were batches.
+  const statusEquivalentUserHours =
     (insightTotals.statusRequests * currentClientDefaults.statusPollIntervalSeconds) / 3_600
+  const activeUserHours = independentActiveUserHours ?? statusEquivalentUserHours
   const statusUsers = activeUserHours === 0 ? 0 : Math.max(1, Math.ceil(activeUserHours / 24))
   const activeUsers = Math.max(reportingUsers, statusUsers)
   const activeHoursPerUser = activeUsers === 0 ? 0 : activeUserHours / activeUsers
@@ -125,38 +131,60 @@ export const deriveModelInputs = (database, insightTotals, currentClientDefaults
   const nowSeconds = Math.floor(Date.now() / 1_000)
 
   return {
-    activeUsers,
-    activeHoursPerUser,
-    templates: Number(database.templates),
-    coveredTiles,
-    paintEventsPerUserHour: activeUserHours === 0 ? 0 : paintEvents / activeUserHours,
-    tileFetchesPerUserHour: activeUserHours === 0 ? 0 : clientTileObservations / activeUserHours,
-    averageTemplatesPerPaint: 1,
-    averageTilesPerPaint: 1,
-    averageTemplatesPerTile:
-      coveredTiles === 0 ? 0 : Number(database.template_tile_entries) / coveredTiles,
-    classifiedPaintFraction: 1,
-    ...currentClientDefaults,
-    tileVersionsPerCoveredTileDay:
-      coveredTiles === 0 ? 0 : Number(database.distinct_tile_versions) / coveredTiles,
-    averageTileBytes: AVERAGE_TILE_BYTES,
-    historyDays:
-      historyStartSeconds === 0 ? 0 : Math.max(0, (nowSeconds - historyStartSeconds) / 86_400),
-    d1BytesPerLogicalRow:
-      logicalRows === 0 ? 0 : Number(database.database_size_bytes) / logicalRows,
-    d1RowsReadPerStatusRequest:
-      insightTotals.statusRequests === 0
-        ? 0
-        : insightTotals.statusRowsRead / insightTotals.statusRequests,
-    d1RowsReadPerPaintReportRequest:
-      paintEvents === 0 ? 0 : insightTotals.paintRowsRead / paintEvents,
-    d1RowsReadPerTileObservation:
-      clientTileObservations === 0 ? 0 : insightTotals.tileRowsRead / clientTileObservations,
-    otherD1RowsReadPerDay: insightTotals.otherRowsRead,
-    otherWorkerRequestsPerDay: 0,
-    persistentD1Rows: Number(database.persistent_rows),
+    modelInputs: {
+      activeUsers,
+      activeHoursPerUser,
+      templates: Number(database.templates),
+      coveredTiles,
+      paintEventsPerUserHour: activeUserHours === 0 ? 0 : paintEvents / activeUserHours,
+      tileFetchesPerUserHour: activeUserHours === 0 ? 0 : clientTileObservations / activeUserHours,
+      averageTemplatesPerPaint: 1,
+      averageTilesPerPaint: 1,
+      averageTemplatesPerTile:
+        coveredTiles === 0 ? 0 : Number(database.template_tile_entries) / coveredTiles,
+      classifiedPaintFraction: 1,
+      ...currentClientDefaults,
+      tileVersionsPerCoveredTileDay:
+        coveredTiles === 0 ? 0 : Number(database.distinct_tile_versions) / coveredTiles,
+      averageTileBytes: AVERAGE_TILE_BYTES,
+      historyDays:
+        historyStartSeconds === 0 ? 0 : Math.max(0, (nowSeconds - historyStartSeconds) / 86_400),
+      d1BytesPerLogicalRow:
+        logicalRows === 0 ? 0 : Number(database.database_size_bytes) / logicalRows,
+      d1RowsReadPerStatusRequest:
+        insightTotals.statusRequests === 0
+          ? 0
+          : insightTotals.statusRowsRead / insightTotals.statusRequests,
+      d1RowsReadPerPaintReportRequest:
+        paintEvents === 0 ? 0 : insightTotals.paintRowsRead / paintEvents,
+      d1RowsReadPerTileObservation:
+        clientTileObservations === 0 ? 0 : insightTotals.tileRowsRead / clientTileObservations,
+      otherD1RowsReadPerDay: insightTotals.otherRowsRead,
+      otherWorkerRequestsPerDay: 0,
+      persistentD1Rows: Number(database.persistent_rows),
+    },
+    activeTimeCalibration: {
+      source:
+        independentActiveUserHours === undefined
+          ? 'status-equivalent-backfit'
+          : 'independent-user-hours',
+      activeUserHours,
+      statusEquivalentUserHours,
+      workloadRatesScalable: independentActiveUserHours !== undefined,
+      estimateUse:
+        independentActiveUserHours === undefined
+          ? 'observed-window-backfit-only'
+          : 'scalable-point-estimate',
+      variableTrafficRateUpperBoundsPerUserHour: {
+        paintEvents: null,
+        tileObservations: null,
+      },
+    },
   }
 }
+
+export const deriveModelInputs = (database, insightTotals, currentClientDefaults) =>
+  deriveCapacityCalibration(database, insightTotals, currentClientDefaults).modelInputs
 
 const wranglerJson = (args) =>
   JSON.parse(
@@ -400,7 +428,23 @@ const main = async () => {
     '--json',
   ])
   const insightTotals = sumInsights(insights)
-  const modelInputs = deriveModelInputs(database, insightTotals, CURRENT_CLIENT_CAPACITY_DEFAULTS)
+  // biome-ignore lint/suspicious/noUndeclaredEnvVars: this standalone command does not run through Turbo.
+  const configuredActiveUserHours = process.env.CAELESTIS_ACTIVE_USER_HOURS
+  const independentActiveUserHours =
+    configuredActiveUserHours === undefined ? undefined : Number(configuredActiveUserHours)
+  if (
+    independentActiveUserHours !== undefined &&
+    (!Number.isFinite(independentActiveUserHours) || independentActiveUserHours < 0)
+  ) {
+    throw new RangeError('CAELESTIS_ACTIVE_USER_HOURS must be a finite non-negative number')
+  }
+  const calibration = deriveCapacityCalibration(
+    database,
+    insightTotals,
+    CURRENT_CLIENT_CAPACITY_DEFAULTS,
+    independentActiveUserHours,
+  )
+  const modelInputs = calibration.modelInputs
   const estimate = estimateCapacity(modelInputs)
   const observed = await queryCloudflareMetrics(configuration, start, end)
 
@@ -410,6 +454,7 @@ const main = async () => {
         window: { start: start.toISOString(), end: end.toISOString(), hours: WINDOW_HOURS },
         database,
         insightTotals,
+        activeTimeCalibration: calibration.activeTimeCalibration,
         modelInputs,
         estimate,
         observed,

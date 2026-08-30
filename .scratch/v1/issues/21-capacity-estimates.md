@@ -88,33 +88,36 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
   lifetime cost of each decay-ladder row. Live analytics supplies the actual billed count.
 - Status traffic is split into periodic, post-offer, and lifecycle refreshes in the forward model.
   D1 Insights does not retain the HTTP request ids needed to measure historical offer batches, so
-  observation keeps all measured status calls as a conservative periodic-equivalent clock rather
-  than subtracting tile rows as though every row were a batch. Status-only clients remain included.
+  observation keeps all measured status calls as a periodic-equivalent backfit rather than
+  subtracting tile rows as though every row were a batch. It explicitly marks the resulting
+  workload rates unsafe to scale. `CAELESTIS_ACTIVE_USER_HOURS` supplies the independent signal
+  needed to make them scalable; status-only clients remain included either way.
 - Paint reads scale per paint report. Offer and upload reads stay together as one calibrated cost
   per accepted client tile observation, which reproduces the measured baseline despite multi-tile
   batches and partial uploads. Only unclassified dashboard, manifest, and other reads remain a fixed
   optional residual. Persistent schema rows are included independently of telemetry retention.
 - Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 9
-  tests and `pnpm test:capacity` passed 9 tests. Backend, shared, and userscript type checks passed
+  tests and `pnpm test:capacity` passed 11 tests. Backend, shared, and userscript type checks passed
   after building workspace outputs.
 - `pnpm capacity:observe` uses read-only D1 SQL, D1 Insights, and Cloudflare GraphQL analytics. Its
   2026-08-30 production window measured 20,779 Worker requests, 58 Durable Object invocations,
   7,319,387 D1 rows read, 14,719 D1 rows written, 136 R2 Class A operations, 15,474 R2 Class B
   operations, and 71.4 MB of R2 payload storage.
-- The recorded snapshot's D1 Insights rows remain the calibration source. The revised comparison is
-  deliberately conservative instead of forcing an exact request backfit: its aggregate tile unit
-  preserves measured tile reads, while current post-offer and lifecycle status refreshes are added
-  on top of the periodic-equivalent status clock. Residual Worker and R2 read traffic still comes
-  from manifest, dashboard, and other paths outside the telemetry model.
+- The recorded snapshot's D1 Insights rows remain the calibration source. Its aggregate tile unit
+  preserves measured tile reads, but the status-equivalent clock is only a baseline backfit until an
+  independent active-user-hours total is supplied. The command exposes that distinction instead of
+  publishing the depressed per-hour workload rates as a bound. Residual Worker and R2 read traffic
+  still comes from manifest, dashboard, and other paths outside the telemetry model.
 - D1 reads are the first wall: D1 Insights measured 7,027,389 rows, or 141% of the 5 million rows
   read/day Free allowance. The 8,378 status calls scanned about 520 rows each and accounted for
   4,356,332 of those rows. Paint batching cannot reduce that fixed query traffic.
-- The original scaled README scenarios omitted the remaining workload-dependent reads. The revised
-  conservative boundary charges the full historical non-status residual across paint and accepted
-  tile observations as about 4,400 reads each: roughly 5 eight-hour users fit the 90-template shape
-  (6 do not), while roughly 12 fit a 10-template/4-tile shape (13 do not). A fresh
-  `capacity:observe` run recalibrates those route costs; the local Cloudflare identity could not
-  refresh the historical snapshot (`7403`).
+- The original scaled README scenarios omitted workload-dependent reads, and status-triggered calls
+  mean the captured window cannot produce a finite upper rate without independent active time. The
+  README therefore publishes periodic-status impossibility bounds: at most 10 eight-hour users for
+  the 90-template query shape and at most 89 for the 10-template shape. Real paint and tile work
+  only lowers those counts. A fresh `capacity:observe` run with independently measured user-hours
+  can publish a narrower workload estimate; the local Cloudflare identity could not refresh the
+  historical snapshot (`7403`).
 - R2 storage observations now deduplicate by content hash, and missing GraphQL metrics stay null
   rather than becoming false zeroes.
 - Limit sources, checked 2026-08-30:
