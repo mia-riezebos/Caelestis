@@ -7,9 +7,10 @@ import {
   type PixelBounds,
   type QuantiseReport,
   quantiseToPalette,
+  type SurfaceChunkKey,
   sha256Hex,
-  sliceTemplate,
-  type TileKey,
+  sliceTemplateForSurface,
+  type TemplateSurface,
   TRANSPARENT_INDEX,
   tileKey,
   uuidV7,
@@ -27,6 +28,7 @@ export interface StoreTemplateInput {
    * its name, parent, published state and creation date.
    */
   readonly templateId?: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly nodeId: string | null
   readonly name: string
@@ -43,7 +45,7 @@ export interface StoredTemplate {
   readonly versionId: string
   readonly bbox: PixelBounds
   readonly totalPixels: number
-  readonly chunks: readonly { readonly tile: TileKey; readonly hash: string }[]
+  readonly chunks: readonly { readonly tile: SurfaceChunkKey; readonly hash: string }[]
   readonly report: QuantiseReport
   readonly published: boolean
 }
@@ -117,7 +119,14 @@ export const storeTemplate = async (
     'indices' in decoded
       ? { indices: decoded.indices, report: exactPaletteReport(decoded.indices) }
       : quantiseToPalette(decoded.pixels)
-  const sliced = sliceTemplate(indices, width, height, input.originX, input.originY)
+  const sliced = sliceTemplateForSurface(
+    indices,
+    width,
+    height,
+    input.originX,
+    input.originY,
+    input.surface,
+  )
   // Bound the storage work, not the image area. A 1,999,000x2 image slices to ~4,000 chunks: ~170
   // batch statements against D1's 50 per invocation, ~8,000 R2 subrequests against a limit of 1,000,
   // and 4,000 concurrent compressions — from an upload a few kilobytes long, because two rows of one
@@ -140,7 +149,8 @@ export const storeTemplate = async (
           `current version does not exist: ${existing.currentVersionId}`,
         )
       }
-      const span = (min: number, max: number) => (max >= min ? max - min : WORLD_PIXELS - min + max)
+      const span = (min: number, max: number) =>
+        input.surface.kind === 'world' && max < min ? WORLD_PIXELS - min + max : max - min
       const wasWidth = span(current.bbox.minX, current.bbox.maxX)
       const wasHeight = current.bbox.maxY - current.bbox.minY
       const nowWidth = span(sliced.bbox.minX, sliced.bbox.maxX)
@@ -180,6 +190,7 @@ export const storeTemplate = async (
   }))
   const version: TemplateVersionRecord = {
     templateId,
+    surface: input.surface,
     season: input.season,
     nodeId: input.nodeId,
     name: input.name,

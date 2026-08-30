@@ -460,6 +460,55 @@ describe('cross-field and time-unit schemas', () => {
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
+  it('accepts signed chunks on a scoped headquarters manifest', () => {
+    const template = {
+      ...validTemplate,
+      bbox: { minX: -1, minY: -1, maxX: 1, maxY: 0 },
+      totalPixels: 2,
+      chunks: [
+        { tile: '-1/-1', hash: HASH },
+        { tile: '0/-1', hash: 'a'.repeat(64) },
+      ],
+    }
+    const manifest = {
+      ...validManifest,
+      surface: { kind: 'alliance-headquarters' as const, allianceId: 535_245 },
+      templates: [template],
+      tiles: ['-1/-1', '0/-1'],
+    }
+
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it('rejects signed chunks when the manifest omits its alliance surface', () => {
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [
+        {
+          ...validTemplate,
+          bbox: { minX: -1, minY: -1, maxX: 0, maxY: 0 },
+          chunks: [{ tile: '-1/-1', hash: HASH }],
+        },
+      ],
+      tiles: ['-1/-1'],
+    })
+  })
+
+  it('rejects a template outside the selected asset canvas', () => {
+    expectRejected(Manifest, {
+      ...validManifest,
+      surface: { kind: 'alliance-picture', allianceId: 1 },
+      templates: [
+        {
+          ...validTemplate,
+          bbox: { minX: 63, minY: 0, maxX: 65, maxY: 1 },
+          chunks: [{ tile: '0/0', hash: HASH }],
+        },
+      ],
+      tiles: ['0/0'],
+    })
+  })
+
   it('requires manifest tiles to exactly match the unique tiles referenced by chunks', () => {
     expectRejected(Manifest, { ...validManifest, tiles: [] })
   })

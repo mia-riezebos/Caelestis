@@ -5,9 +5,11 @@ import {
   mismatchClassAt,
   PALETTE_SIZE,
   parseTileKey,
+  sameTemplateSurface,
   TILE_SIZE,
   type TileCoord,
   TRANSPARENT_INDEX,
+  WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { count } from '../debug.js'
 import { measureProfile } from '../profile.js'
@@ -40,6 +42,11 @@ import { type MismatchMarks, packMismatchMark } from './mismatch-marks.js'
 import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
 import { forgetInWorker, hasWorker, scanInWorker } from './mismatch-worker.js'
 import { horizontalSpans, sourceXAt, wrappedDeltaX } from './placement.js'
+
+const worldTemplates = (): readonly PlacedTemplate[] =>
+  displayTemplates().filter((template) =>
+    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
+  )
 
 /**
  * Which pixels of a template the canvas disagrees with, per tile.
@@ -580,7 +587,7 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
   // Borrow the frame budget: the same guard, spending idle time instead of a frame's.
   scanDeadline = performance.now() + Math.max(deadline.timeRemaining(), 1)
   let ranOutOfTime = false
-  const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
+  const templatesById = new Map(worldTemplates().map((template) => [template.id, template]))
   for (const cacheKey of [...stale]) {
     if (performance.now() >= scanDeadline) {
       ranOutOfTime = true
@@ -641,7 +648,7 @@ const scheduleIdleScan = (): void => {
  * past us while we were not looking.
  */
 export const wantsTilePixels = (tile?: TileCoord): boolean => {
-  const templates = displayTemplates().filter((template) => {
+  const templates = worldTemplates().filter((template) => {
     // A server template's marker list comes from its server mismatch mask and its progress comes
     // from telemetry. Capturing the underlying Wplace tile as a fallback makes every newly visible
     // tile perform a million-pixel canvas read during a pan, precisely when the map needs its frame
@@ -839,7 +846,7 @@ const navigationCandidates = (
   templateId?: string,
 ): NavigationCandidate[] => {
   const candidates: NavigationCandidate[] = []
-  for (const template of displayTemplates()) {
+  for (const template of worldTemplates()) {
     if (!isTemplateVisible(template)) continue
     if (templateId !== undefined && template.id !== templateId) continue
     const templateTop = template.originY
@@ -1617,7 +1624,7 @@ const patchTile = (tile: TileCoord, x: number, y: number): void => {
   // Read once. This runs per announced pixel, and a tile re-read announces every pixel that moved —
   // hundreds to thousands in one go. Reusing one id index keeps the inner loop independent of the
   // number of displayed templates.
-  const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
+  const templatesById = new Map(worldTemplates().map((template) => [template.id, template]))
   for (const cacheKey of keys) {
     const entry = cache.get(cacheKey)
     if (entry === undefined) continue
@@ -1805,7 +1812,7 @@ onTilePixels((tile, triples, source) => {
   if (triples.length / 3 > MAX_PATCHED_PIXELS) {
     const suffix = `|${tile.x}/${tile.y}`
     const pixels = tilePixels(tile)
-    const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
+    const templatesById = new Map(worldTemplates().map((template) => [template.id, template]))
     let invalidated = false
     for (const [cacheKey, entry] of cache) {
       if (!cacheKey.endsWith(suffix)) continue
@@ -1907,7 +1914,7 @@ export const forgetMismatches = (id: string): void => {
 
 let knownTemplateIds = new Set<string>()
 onLocalChange(() => {
-  const current = new Set(displayTemplates().map((template) => template.id))
+  const current = new Set(worldTemplates().map((template) => template.id))
   for (const id of knownTemplateIds) {
     if (!current.has(id)) forgetMismatches(id)
   }

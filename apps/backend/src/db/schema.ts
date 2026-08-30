@@ -1,4 +1,4 @@
-import type { Millis, Seconds } from '@caelestis/shared'
+import type { Millis, Seconds, TemplateSurfaceKind } from '@caelestis/shared'
 import { WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { sql } from 'drizzle-orm'
 import {
@@ -128,15 +128,17 @@ export const templateVersions = sqliteTable(
     ),
     check(
       'template_versions_pixel_bounds_check',
-      // x wraps through zero, so min_x > max_x is a legal antimeridian span; y does not wrap.
-      // Zero width and zero height are rejected: a template covering no pixels is not a placement.
+      // The table is shared by world coordinates and the centred alliance HQ. SQLite CHECKs cannot
+      // consult the parent template's surface, so this is the safe outer envelope; the store
+      // validates the exact surface-specific bounds before insertion. World x may wrap through zero,
+      // hence min_x > max_x remains legal here, while y never wraps.
       sql`typeof(${table.minX}) = 'integer' AND typeof(${table.minY}) = 'integer'
         AND typeof(${table.maxX}) = 'integer' AND typeof(${table.maxY}) = 'integer'
         AND typeof(${table.totalPixels}) = 'integer'
-        AND ${table.minX} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
-        AND ${table.minY} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
-        AND ${table.maxX} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
-        AND ${table.maxY} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
+        AND ${table.minX} BETWEEN -1000 AND ${sql.raw(String(WORLD_PIXELS - 1))}
+        AND ${table.minY} BETWEEN -1000 AND ${sql.raw(String(WORLD_PIXELS - 1))}
+        AND ${table.maxX} BETWEEN -999 AND ${sql.raw(String(WORLD_PIXELS))}
+        AND ${table.maxY} BETWEEN -999 AND ${sql.raw(String(WORLD_PIXELS))}
         AND ${table.minX} <> ${table.maxX}
         AND ${table.minY} < ${table.maxY}
         AND ${table.totalPixels} >= 0`,
@@ -153,6 +155,13 @@ export const templates = sqliteTable(
   {
     id: text('id').primaryKey(),
     season: integer('season').notNull(),
+    surfaceKind: text('surface_kind', {
+      enum: ['world', 'alliance-headquarters', 'alliance-picture', 'alliance-banner'],
+    })
+      .$type<TemplateSurfaceKind>()
+      .notNull()
+      .default('world'),
+    allianceId: integer('alliance_id'),
     nodeId: text('node_id').references(() => nodes.id),
     name: text('name').notNull(),
     currentVersionId: text('current_version_id'),
@@ -202,6 +211,13 @@ export const templates = sqliteTable(
   // Expressed as a composite key against (id, template_id), which is why template_versions carries
   // a unique index on that pair: SQLite requires a foreign key's parent columns to be unique.
   (table) => [
+    check(
+      'templates_surface_check',
+      sql`(${table.surfaceKind} = 'world' AND ${table.allianceId} IS NULL)
+        OR (${table.surfaceKind} IN ('alliance-headquarters', 'alliance-picture', 'alliance-banner')
+          AND typeof(${table.allianceId}) = 'integer' AND ${table.allianceId} > 0)`,
+    ),
+    index('templates_surface_idx').on(table.season, table.surfaceKind, table.allianceId),
     // Same shape rule the reporter columns carry, for the same reason: an author record outlives
     // the credential it names, so the digest is constrained and its existence is not.
     check(
@@ -237,9 +253,11 @@ export const versionTiles = sqliteTable(
     ),
     check(
       'version_tiles_coordinate_check',
+      // Alliance HQ uses the same 1,000px chunk grid centred on zero, so its western/northern half
+      // is chunk -1. The store still validates exact per-surface ranges before this outer envelope.
       sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
-        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
-        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+        AND ${table.tileX} BETWEEN -1 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN -1 AND ${sql.raw(String(WORLD_TILES - 1))}`,
     ),
     primaryKey({ columns: [table.versionId, table.tileX, table.tileY] }),
     index('version_tiles_tile_idx').on(table.tileX, table.tileY),

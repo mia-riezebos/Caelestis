@@ -36,6 +36,7 @@ const node: NodeRecord = {
 
 const version = (templateId: string, versionId: string, tileX: number): TemplateVersionRecord => ({
   templateId,
+  surface: { kind: 'world', allianceId: null },
   season: 1,
   nodeId: node.id,
   name: `Template ${tileX}`,

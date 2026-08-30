@@ -1,4 +1,4 @@
-import { millis, seconds } from '@caelestis/shared'
+import { millis, seconds, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
 import {
@@ -25,6 +25,7 @@ const templateVersion = (
   overrides: Partial<TemplateVersionRecord> = {},
 ): TemplateVersionRecord => ({
   templateId: 'template-1',
+  surface: { kind: 'world', allianceId: null },
   season: 1,
   nodeId: 'node-1',
   name: 'Template',
@@ -613,7 +614,15 @@ describe('D1SqlStore', () => {
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700, NULL, NULL);
+      INSERT INTO templates (
+        id, season, surface_kind, alliance_id, node_id, name, current_version_id, published_at,
+        created_with_token, created_by_user_id, created_at_ms, updated_at_ms,
+        timelapse_frozen_at_ms, finished_at_ms
+      ) VALUES (
+        'attr-t', 1, 'world', NULL, 'attr-node', 'T', NULL, NULL,
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700,
+        NULL, NULL
+      );
       INSERT INTO template_versions (
         id, template_id, created_at_ms, created_with_token, created_by_user_id,
         min_x, min_y, max_x, max_y, total_pixels
@@ -658,6 +667,7 @@ describe('D1SqlStore', () => {
 
     await store.insertTemplateVersion({
       templateId: 'bulk-t',
+      surface: { kind: 'world', allianceId: null },
       season: 1,
       nodeId: 'bulk-node',
       name: 'Bulk',
@@ -808,6 +818,16 @@ describe('D1SqlStore', () => {
     )
     await store.insertTemplateVersion(
       templateVersion({
+        templateId: 'alliance',
+        versionId: 'version-alliance',
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        bbox: { minX: -1, minY: -1, maxX: 0, maxY: 0 },
+        totalPixels: 1,
+        chunks: [{ tileX: -1, tileY: -1, hash: 'c'.repeat(64) }],
+      }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({
         templateId: 'other',
         versionId: 'version-other',
         season: 2,
@@ -815,15 +835,32 @@ describe('D1SqlStore', () => {
       }),
     )
     await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('alliance', millis(5_000), millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const ids = async (includeUnpublished: boolean): Promise<string[]> =>
-      (await store.listManifestTemplates(1, includeUnpublished)).map((row) => row.id).sort()
+      (
+        await store.listManifestTemplates(
+          { season: 1, surface: WORLD_TEMPLATE_SURFACE },
+          includeUnpublished,
+        )
+      )
+        .map((row) => row.id)
+        .sort()
 
     await expect(ids(false)).resolves.toEqual(['template-1'])
     // The same call including drafts still refuses the other season. Sorted, because the query has
     // no ORDER BY — the assembler sorts these itself, so row order here is SQLite's to choose.
     await expect(ids(true)).resolves.toEqual(['draft', 'template-1'])
+    await expect(
+      store.listManifestTemplates(
+        {
+          season: 1,
+          surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        },
+        false,
+      ),
+    ).resolves.toMatchObject([{ id: 'alliance' }])
   })
 
   it('lists only tiles of published templates of the asked-for season', async () => {
@@ -839,6 +876,16 @@ describe('D1SqlStore', () => {
     )
     await store.insertTemplateVersion(
       templateVersion({
+        templateId: 'alliance',
+        versionId: 'version-alliance',
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        bbox: { minX: -1, minY: -1, maxX: 0, maxY: 0 },
+        totalPixels: 1,
+        chunks: [{ tileX: -1, tileY: -1, hash: 'c'.repeat(64) }],
+      }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({
         templateId: 'other',
         versionId: 'version-other',
         season: 2,
@@ -846,16 +893,33 @@ describe('D1SqlStore', () => {
       }),
     )
     await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('alliance', millis(5_000), millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const owners = async (includeUnpublished: boolean): Promise<string[]> =>
       [
-        ...new Set((await store.listManifestTiles(1, includeUnpublished)).map((t) => t.templateId)),
+        ...new Set(
+          (
+            await store.listManifestTiles(
+              { season: 1, surface: WORLD_TEMPLATE_SURFACE },
+              includeUnpublished,
+            )
+          ).map((t) => t.templateId),
+        ),
       ].sort()
 
     await expect(owners(false)).resolves.toEqual(['template-1'])
     // Both arms carry the season predicate, and only this one carries it alone: without the call
     // below, deleting it leaks the other season's tiles while everything stays green.
     await expect(owners(true)).resolves.toEqual(['draft', 'template-1'])
+    await expect(
+      store.listManifestTiles(
+        {
+          season: 1,
+          surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+        },
+        false,
+      ),
+    ).resolves.toMatchObject([{ templateId: 'alliance', tileX: -1, tileY: -1 }])
   })
 })

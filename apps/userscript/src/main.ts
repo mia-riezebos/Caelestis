@@ -1,5 +1,7 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { registerCaelestisUi } from '@caelestis/ui/elements'
+import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
+import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -9,6 +11,7 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
+import { installAllianceOverlayLayer } from './gl/artboard-layer.js'
 import {
   installOverlayLayer,
   overlayGpuMemoryBytes,
@@ -37,7 +40,7 @@ import {
   resetProfile,
 } from './profile.js'
 import { serverMismatchMemoryBytes } from './server-mismatch.js'
-import { loadState, onStateChange } from './state.js'
+import { getState, loadState, onStateChange } from './state.js'
 import { installTelemetry } from './telemetry.js'
 import {
   isTemplateVisible,
@@ -233,6 +236,7 @@ const main = (): void => {
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
   step('map capture', installMapCapture)
+  step('alliance surface observer', installAllianceSurfaceObserver)
   step('debug API', () => {
     installDebugApi({
       /** The captured MapLibre Map, for poking at its style and layers from the console. */
@@ -249,6 +253,17 @@ const main = (): void => {
           serverTemplateId: template.serverTemplateId ?? null,
           opaque: template.opaque,
         })),
+      /** The active Wplace artboard and exact backend manifest scope selected for it. */
+      allianceSurface: () => ({
+        active: activeAllianceSurface()?.surface ?? null,
+        manifest: selectedAllianceManifestScope(),
+        servers: getState().servers.map((server) => ({
+          url: server.url,
+          status: server.status,
+          identified: server.info !== null,
+          season: server.season,
+        })),
+      }),
       /** The exact focused-template counts currently decorating Wplace's native paint palette. */
       paletteProgress: () => paintPaletteProgress(),
       /** A live performance snapshot. Enable profiling in Settings first. */
@@ -293,6 +308,7 @@ const main = (): void => {
   // Server templates do not: they are re-fetched, because the server is where they live and a copy
   // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
   step('server templates', installServerSync)
+  step('alliance server templates', installAllianceServerSync)
   step('server telemetry', installTelemetry)
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {
@@ -353,6 +369,7 @@ const main = (): void => {
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
+  step('alliance overlay layer', installAllianceOverlayLayer)
   onFrame((frame) => renderOverlayControls(repaint, frame.canvas), 'Overlay controls')
   onTileFrame(draw)
   onLocalChange(redraw)
