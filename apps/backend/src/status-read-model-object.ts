@@ -29,7 +29,8 @@ const MAX_CHUNK_JSON_BYTES = 512 * 1024
 const MAX_DELTA_MESSAGE_BYTES = 32 * 1024
 const LIVE_PROTOCOL = 'caelestis.live.v1'
 const MANIFEST_CACHE_INDEX_KEY = 'manifest-read-model:v1:index'
-const MANIFEST_CACHE_CHUNK_BYTES = 512 * 1024
+// 128 Ki UTF-16 code units are at most 384 KiB in UTF-8, below the intended 512 KiB ceiling.
+const MANIFEST_CACHE_CHUNK_CODE_UNITS = 128 * 1024
 
 interface LiveSubscriberAttachment {
   readonly season: number
@@ -98,21 +99,8 @@ const manifestChunkKey = (generation: string, index: number): string =>
 
 const chunkJsonText = (value: string): readonly string[] => {
   const chunks: string[] = []
-  let offset = 0
-  while (offset < value.length) {
-    let low = offset + 1
-    let high = value.length
-    let end = low
-    while (low <= high) {
-      const candidate = Math.floor((low + high) / 2)
-      const bytes = new TextEncoder().encode(value.slice(offset, candidate)).byteLength
-      if (bytes <= MANIFEST_CACHE_CHUNK_BYTES) {
-        end = candidate
-        low = candidate + 1
-      } else high = candidate - 1
-    }
-    chunks.push(value.slice(offset, end))
-    offset = end
+  for (let offset = 0; offset < value.length; offset += MANIFEST_CACHE_CHUNK_CODE_UNITS) {
+    chunks.push(value.slice(offset, offset + MANIFEST_CACHE_CHUNK_CODE_UNITS))
   }
   return chunks
 }
@@ -123,6 +111,7 @@ export const createChunkedManifestPersistence = (
   season: number,
 ): ManifestReadModelPersistence => {
   let index: StoredManifestCacheIndex | null = null
+  const invalidGenerations = new Set<string>()
   const loadIndex = async () => {
     index ??= (await storage.get<StoredManifestCacheIndex>(MANIFEST_CACHE_INDEX_KEY)) ?? null
     return index
@@ -145,6 +134,7 @@ export const createChunkedManifestPersistence = (
         for (let chunk = 0; chunk < entry.chunks; chunk += 1) {
           const part = await storage.get<string>(manifestChunkKey(entry.generation, chunk))
           if (part === undefined) {
+            invalidGenerations.add(entry.generation)
             return { season: stored.season, revision: stored.revision, entries: [] }
           }
           parts.push(part)
@@ -157,10 +147,12 @@ export const createChunkedManifestPersistence = (
             !('version' in manifest) ||
             manifest.version !== entry.version
           ) {
+            invalidGenerations.add(entry.generation)
             return { season: stored.season, revision: stored.revision, entries: [] }
           }
           entries.push({ ...entry, manifest: manifest as Manifest })
         } catch {
+          invalidGenerations.add(entry.generation)
           return { season: stored.season, revision: stored.revision, entries: [] }
         }
       }
@@ -173,7 +165,10 @@ export const createChunkedManifestPersistence = (
       const newlyRetired: StoredManifestRetirement[] = []
       for (const projection of next.entries) {
         const prior = priorEntries.get(projection.key)
-        if (prior?.version === projection.manifest.version) {
+        if (
+          prior?.version === projection.manifest.version &&
+          !invalidGenerations.has(prior.generation)
+        ) {
           entries.push({
             ...prior,
             configuredServer: projection.configuredServer,
@@ -183,7 +178,8 @@ export const createChunkedManifestPersistence = (
           priorEntries.delete(projection.key)
           continue
         }
-        const generation = `${next.revision}-${projection.manifest.version}-${encodeURIComponent(projection.key)}`
+        const slot = prior?.generation.endsWith(':0') ? 1 : 0
+        const generation = `${next.revision}-${projection.manifest.version}-${encodeURIComponent(projection.key)}:${slot}`
         const chunks = chunkJsonText(JSON.stringify(projection.manifest))
         await storage.transaction(async (transaction) => {
           for (let chunk = 0; chunk < chunks.length; chunk += 1) {
@@ -195,12 +191,14 @@ export const createChunkedManifestPersistence = (
           configuredServer: projection.configuredServer,
           cachedAt: projection.cachedAt,
           expiresAt: projection.expiresAt,
+          serializedBytes: projection.serializedBytes,
           version: projection.manifest.version,
           generation,
           chunks: chunks.length,
         })
         if (prior !== undefined) {
           newlyRetired.push({ generation: prior.generation, chunks: prior.chunks })
+          invalidGenerations.delete(prior.generation)
           priorEntries.delete(projection.key)
         }
       }

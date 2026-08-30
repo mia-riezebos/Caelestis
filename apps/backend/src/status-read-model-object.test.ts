@@ -1,6 +1,7 @@
 import { type Manifest, millis } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
+import { createSeasonManifestReadModel } from './manifest/read-model.js'
 import {
   createChunkedManifestPersistence,
   createChunkedStatusPersistence,
@@ -20,6 +21,9 @@ afterEach(() => {
 })
 
 describe('status read-model Durable Object', () => {
+  const serializedBytes = (manifest: Manifest): number =>
+    new TextEncoder().encode(JSON.stringify(manifest)).byteLength
+
   const objectState = (
     held: Map<string, unknown>,
     maximumValueBytes = Number.POSITIVE_INFINITY,
@@ -142,6 +146,7 @@ describe('status read-model Durable Object', () => {
           configuredServer: '{}',
           cachedAt: 1_750_000_000_000,
           expiresAt: 1_750_000_180_000,
+          serializedBytes: serializedBytes(manifest),
           manifest,
         },
       ],
@@ -155,11 +160,38 @@ describe('status read-model Durable Object', () => {
     })
 
     await state.storage.delete(chunks[0] as string)
-    await expect(createChunkedManifestPersistence(state.storage, 4).load()).resolves.toEqual({
+    const broken = createChunkedManifestPersistence(state.storage, 4)
+    await expect(broken.load()).resolves.toEqual({
       season: 4,
       revision: 7,
       entries: [],
     })
+    const input = {
+      server: manifest.server,
+      season: 4,
+      surface: { kind: 'world' as const, allianceId: null },
+      scope: 'public' as const,
+      ifNoneMatch: [] as string[],
+    }
+    const source = vi.fn(async () => manifest)
+    const repair = createSeasonManifestReadModel({ season: 4, source, persistence: broken })
+    await repair.read(input)
+    expect(source).toHaveBeenCalledOnce()
+
+    const recoveredPersistence = createChunkedManifestPersistence(state.storage, 4)
+    await expect(recoveredPersistence.load()).resolves.toMatchObject({
+      season: 4,
+      revision: 7,
+      entries: [{ manifest }],
+    })
+    const recoveredSource = vi.fn(async () => manifest)
+    const recovered = createSeasonManifestReadModel({
+      season: 4,
+      source: recoveredSource,
+      persistence: recoveredPersistence,
+    })
+    await expect(recovered.read(input)).resolves.toMatchObject({ cacheOutcome: 'hit' })
+    expect(recoveredSource).not.toHaveBeenCalled()
   })
 
   it('keeps the previously published manifest cache when a replacement chunk write fails', async () => {
@@ -183,6 +215,7 @@ describe('status read-model Durable Object', () => {
       configuredServer: '{}',
       cachedAt: 1_750_000_000_000,
       expiresAt: 1_750_000_180_000,
+      serializedBytes: serializedBytes(first),
       manifest: first,
     }
     await persistence.save({ season: 6, revision: 3, entries: [entry] })
@@ -231,6 +264,7 @@ describe('status read-model Durable Object', () => {
       configuredServer: '{}',
       cachedAt: 1_750_000_000_000,
       expiresAt: 1_750_000_180_000,
+      serializedBytes: serializedBytes(first),
       manifest: first,
     }
     await persistence.save({ season: 6, revision: 3, entries: [entry] })
