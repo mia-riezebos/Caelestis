@@ -285,6 +285,7 @@ describe('node routes', () => {
     const occupied = await createNode(app, { season: 1, parentId: null, name: 'Occupied' })
     const version: TemplateVersionRecord = {
       templateId: '01890f3a-6b7c-7def-8123-456789abcda0',
+      surface: { kind: 'world', allianceId: null },
       season: 1,
       nodeId: occupied.body.id,
       name: 'Template',
@@ -329,6 +330,7 @@ describe('node routes', () => {
       hashes: readonly string[],
     ): TemplateVersionRecord => ({
       templateId,
+      surface: { kind: 'world', allianceId: null },
       season: 1,
       nodeId,
       name: templateId,

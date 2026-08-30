@@ -44,7 +44,7 @@ vi.mock('../templates/local-store.js', () => ({
     hiddenColours: [],
   }),
   isTemplateVisible: () => harness.visible,
-  displayTemplates: () =>
+  displayTemplatesForSurface: () =>
     Array.from({ length: harness.templateCount }, (_, index) => ({
       id: `visible-template-${index}`,
       originX: harness.originX,

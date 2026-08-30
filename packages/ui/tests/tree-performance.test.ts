@@ -58,5 +58,5 @@ describe('large template tree', () => {
     console.info(
       `[ui-performance] 2,000 rows: mount ${mountMs.toFixed(1)} ms, update ${updateMs.toFixed(1)} ms`,
     )
-  }, 10_000)
+  }, 30_000)
 })

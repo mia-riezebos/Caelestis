@@ -1,20 +1,6 @@
 import type { TileKey } from './tiles.js'
 import type { Millis, Seconds } from './time.js'
 
-/** Stable public identity assigned by wplace. */
-/**
- * The most pixels one paint report may claim, per tile and in total.
- *
- * This lives in `@caelestis/shared` because both sides of the boundary have to agree on it and neither
- * may depend on the other: `@caelestis/wire-schema` decides what a request is allowed to contain, and
- * `apps/backend`'s CounterStore decides what a delta is allowed to contain. Restating it in both
- * was a comment claiming a test pinned them together — there was no such test, and there could not
- * be one, since nothing links the two packages. A shared constant needs no pinning.
- *
- * The value is a bound on absurdity, not on play: a full Wplace charge drain is around 10,000
- * pixels, so this is an order of magnitude of headroom.
- */
-export const MAX_PAINT_COUNT = 100_000
 /** Bound one hash-first offer request without turning ordinary panning into one request per tile. */
 export const MAX_TILE_OFFERS = 64
 
@@ -246,4 +232,9 @@ export interface Alarm {
   readonly pixelsLost: number
   readonly firstSeen: Millis
   readonly lastSeen: Millis
+}
+
+/** Active server-owned alarms for templates visible to the caller. */
+export interface AlarmsResponse {
+  readonly alarms: readonly Alarm[]
 }

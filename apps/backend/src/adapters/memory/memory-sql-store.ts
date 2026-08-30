@@ -1,18 +1,25 @@
 import {
+  type Alarm,
   type ContributionDay,
   type Millis,
   type Seconds,
+  sameTemplateSurface,
   seconds,
   type TemplateStatus,
   type TileCoord,
   type TileHistoryFrame,
   tileKey,
   WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
 import {
   type AccessToken,
   type AccessTokenQuery,
+  type AlarmEvaluationPhase,
+  type AlarmPolicyResult,
+  type AlarmProbe,
+  type AlarmTileRecord,
   assertValidAccessToken,
   assertValidBuckets,
   assertValidContributionQuery,
@@ -46,19 +53,31 @@ import {
   TELEMETRY_DECAY_EDGES,
   type TelemetryBucket,
   type TelemetryTarget,
+  type TemplateAlarmSnapshot,
+  type TemplateAlarmState,
   type TemplateDeletePrecondition,
   TemplateIdentityError,
+  type TemplateManifestScope,
   TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
   type TemplateTileStatusRecord,
   type TemplateVersionRecord,
   TILE_HISTORY_DECAY_EDGES,
+  type TileBlobCandidateResult,
+  type TileBlobClaimResult,
+  type TileBlobObject,
+  type TileBlobReservation,
+  type TileBlobScanState,
   type TileHistoryQuery,
   type TileHistoryReporterRow,
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
+import {
+  ALARM_FOLLOW_UP_DELAY_MILLISECONDS,
+  evaluateAlarmSnapshot,
+} from '../../telemetry/alarm-policy.js'
 
 /**
  * Fold a path the way SQLite's `lower()` does, which is ASCII only.
@@ -77,6 +96,12 @@ const bucketKey = (bucket: TelemetryBucket): string =>
 /** One `tile_history` row: an observation as one account reported it, keyed like D1's primary key. */
 type TileHistoryRow = TileHistoryReporterRow
 
+interface StoredTemplateAlarmState extends TemplateAlarmState {
+  readonly probeDueAt: Millis | null
+  readonly probePixelsLost: number | null
+  readonly evaluatedAt: Millis
+}
+
 const tileHistoryRowKey = (row: TileHistoryRow): string =>
   [
     row.season,
@@ -93,7 +118,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly nodes = new Map<string, NodeRecord>()
   private readonly templates = new Map<
     string,
-    Pick<TemplateVersionRecord, 'season' | 'nodeId' | 'name' | 'createdAt'> & {
+    Pick<TemplateVersionRecord, 'surface' | 'season' | 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
       publishedAt: Millis | null
       timelapseFrozenAt: Millis | null
@@ -104,11 +129,18 @@ export class MemorySqlStore implements SqlStore {
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
   private readonly canvasTiles = new Map<string, TileObservation>()
+  private readonly serverOwnedCanvasTiles = new Set<string>()
   private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
+  private readonly serverOwnedTemplateStatuses = new Set<string>()
+  private readonly templateAlarmTileStatuses = new Map<string, TemplateTileStatusRecord>()
   private readonly appliedEvents = new Set<string>()
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
   private readonly tileHistory = new Map<string, TileHistoryRow>()
+  private readonly tileBlobObjects = new Map<string, TileBlobObject>()
+  private readonly tileBlobReservations = new Map<string, TileBlobReservation>()
+  private tileBlobScanState: TileBlobScanState = { completedSweeps: 0 }
+  private readonly alarmStates = new Map<string, StoredTemplateAlarmState>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -393,10 +425,17 @@ export class MemorySqlStore implements SqlStore {
       throw new TemplateNotFoundError(`template does not exist: ${version.templateId}`)
     }
     if (previous !== undefined) {
+      if (!sameTemplateSurface(previous.surface, version.surface)) {
+        throw new TemplateIdentityError(
+          `template ${version.templateId} belongs to ${previous.surface.kind}, not ${version.surface.kind}`,
+        )
+      }
       const current = this.templateVersions.get(previous.currentVersionId)
       const dimensions = (bbox: TemplateVersionRecord['bbox']) => ({
         width:
-          bbox.maxX >= bbox.minX ? bbox.maxX - bbox.minX : WORLD_PIXELS - bbox.minX + bbox.maxX,
+          version.surface.kind !== 'world' || bbox.maxX >= bbox.minX
+            ? bbox.maxX - bbox.minX
+            : WORLD_PIXELS - bbox.minX + bbox.maxX,
         height: bbox.maxY - bbox.minY,
       })
       const was = current === undefined ? null : dimensions(current.bbox)
@@ -410,6 +449,7 @@ export class MemorySqlStore implements SqlStore {
 
     const existingTemplate = previous
     const template = existingTemplate ?? {
+      surface: version.surface,
       season: version.season,
       nodeId: version.nodeId,
       name: version.name,
@@ -454,6 +494,7 @@ export class MemorySqlStore implements SqlStore {
     if (template === undefined) return null
     return {
       id: templateId,
+      surface: template.surface,
       season: template.season,
       nodeId: template.nodeId,
       name: template.name,
@@ -537,14 +578,15 @@ export class MemorySqlStore implements SqlStore {
   }
 
   async listManifestTemplates(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTemplateRecord[]> {
     const records: ManifestTemplateRecord[] = []
     for (const [id, template] of this.templates) {
       const version = this.templateVersions.get(template.currentVersionId)
       if (
-        template.season !== season ||
+        template.season !== scope.season ||
+        !sameTemplateSurface(template.surface, scope.surface) ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       ) {
@@ -569,14 +611,15 @@ export class MemorySqlStore implements SqlStore {
   }
 
   async listManifestTiles(
-    season: number,
+    scope: TemplateManifestScope,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]> {
     const records: ManifestTileRecord[] = []
     for (const [templateId, template] of this.templates) {
       const version = this.templateVersions.get(template.currentVersionId)
       if (
-        template.season !== season ||
+        template.season !== scope.season ||
+        !sameTemplateSurface(template.surface, scope.surface) ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       ) {
@@ -593,6 +636,17 @@ export class MemorySqlStore implements SqlStore {
     return records
   }
 
+  async listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]> {
+    const tiles = await this.listManifestTiles({ season, surface: WORLD_TEMPLATE_SURFACE }, true)
+    return tiles.map((tile) => {
+      const key = `${tile.templateId}\u0000${tile.versionId}\u0000${tileKey({ x: tile.tileX, y: tile.tileY })}`
+      return {
+        ...tile,
+        observedAt: this.templateAlarmTileStatuses.get(key)?.observedAt ?? null,
+      }
+    })
+  }
+
   async listTelemetryTargets(
     season: number,
     tile: { readonly x: number; readonly y: number },
@@ -603,6 +657,7 @@ export class MemorySqlStore implements SqlStore {
       const version = this.templateVersions.get(template.currentVersionId)
       if (
         template.season !== season ||
+        template.surface.kind !== 'world' ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       )
@@ -637,6 +692,7 @@ export class MemorySqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
+    forceCurrent = false,
   ): Promise<void> {
     // The raw tile-history tier, mirroring D1's insert-or-ignore: resolution 0, bucketed at the
     // report time itself. Without this row the memory oracle had no timelapse at all, so a
@@ -656,15 +712,262 @@ export class MemorySqlStore implements SqlStore {
     }
     const key = `${observation.season}\u0000${tileKey(observation.tile)}`
     const held = this.canvasTiles.get(key)
-    if (held === undefined || held.observedAt <= observation.observedAt) {
+    if (
+      held === undefined ||
+      held.observedAt <= observation.observedAt ||
+      (forceCurrent && !this.serverOwnedCanvasTiles.has(key))
+    ) {
       this.canvasTiles.set(key, { ...observation, tile: { ...observation.tile } })
+      if (forceCurrent) this.serverOwnedCanvasTiles.add(key)
+      else this.serverOwnedCanvasTiles.delete(key)
     }
     for (const status of statuses) {
       const statusKey = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
       const current = this.templateTileStatuses.get(statusKey)
-      if (current === undefined || current.observedAt <= status.observedAt) {
+      if (
+        current === undefined ||
+        current.observedAt <= status.observedAt ||
+        (forceCurrent && !this.serverOwnedTemplateStatuses.has(statusKey))
+      ) {
         this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
+        if (forceCurrent) this.serverOwnedTemplateStatuses.add(statusKey)
+        else this.serverOwnedTemplateStatuses.delete(statusKey)
       }
+      if (forceCurrent) {
+        const authoritative = this.templateAlarmTileStatuses.get(statusKey)
+        if (authoritative === undefined || authoritative.observedAt <= status.observedAt) {
+          this.templateAlarmTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
+        }
+      }
+    }
+  }
+
+  private expireTileBlobReservations(now: number): void {
+    for (const [id, reservation] of this.tileBlobReservations) {
+      if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
+    }
+  }
+
+  private tileBlobIsReferenced(hash: string): boolean {
+    return (
+      [...this.canvasTiles.values()].some((row) => row.hash === hash) ||
+      [...this.tileHistory.values()].some((row) => row.hash === hash)
+    )
+  }
+
+  private copyTileBlob(object: TileBlobObject): TileBlobObject {
+    return { ...object }
+  }
+
+  async readTileBlob(hash: string): Promise<TileBlobObject | null> {
+    const object = [...this.tileBlobObjects.values()]
+      .filter((candidate) => candidate.hash === hash && candidate.state === 'active')
+      .sort((left, right) => left.blobKey.localeCompare(right.blobKey))[0]
+    return object === undefined ? null : this.copyTileBlob(object)
+  }
+
+  async reserveTileBlob(
+    hash: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null> {
+    this.expireTileBlobReservations(now)
+    if (
+      [...this.tileBlobObjects.values()].some(
+        (object) => object.hash === hash && object.state === 'deleting',
+      )
+    ) {
+      return null
+    }
+    const object = [...this.tileBlobObjects.values()]
+      .filter(
+        (candidate) =>
+          candidate.hash === hash &&
+          (candidate.state === 'active' ||
+            candidate.state === 'candidate' ||
+            candidate.state === 'uploading'),
+      )
+      .sort((left, right) => left.blobKey.localeCompare(right.blobKey))[0]
+    if (object === undefined) return null
+    const active = { ...object, state: 'active' as const }
+    this.tileBlobObjects.set(active.blobKey, active)
+    const reservation = { id: reservationId, hash, blobKey: active.blobKey, expiresAt }
+    this.tileBlobReservations.set(reservationId, reservation)
+    return { ...reservation }
+  }
+
+  async reserveTileBlobUpload(
+    hash: string,
+    blobKey: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<TileBlobReservation | null> {
+    this.expireTileBlobReservations(now)
+    if (
+      [...this.tileBlobObjects.values()].some(
+        (object) => object.hash === hash && object.state === 'deleting',
+      )
+    ) {
+      return null
+    }
+    const existing = [...this.tileBlobObjects.values()]
+      .filter(
+        (object) =>
+          object.hash === hash && (object.state === 'active' || object.state === 'uploading'),
+      )
+      .sort(
+        (left, right) =>
+          ['active', 'uploading'].indexOf(left.state) -
+            ['active', 'uploading'].indexOf(right.state) ||
+          left.blobKey.localeCompare(right.blobKey),
+      )[0]
+    const selectedBlobKey = existing?.blobKey ?? blobKey
+    if (existing === undefined) {
+      const held = this.tileBlobObjects.get(blobKey)
+      if (held !== undefined) return null
+      this.tileBlobObjects.set(blobKey, {
+        blobKey,
+        hash,
+        state: 'uploading',
+        discoveredAt: now,
+        deleteStartedAt: null,
+        deleteAttempts: 0,
+        reclaimedAt: null,
+      })
+    }
+    const reservation = { id: reservationId, hash, blobKey: selectedBlobKey, expiresAt }
+    this.tileBlobReservations.set(reservationId, reservation)
+    return { ...reservation }
+  }
+
+  async commitTileBlobReservation(
+    reservationId: string,
+    now: Millis,
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+    recordHistory = true,
+    forceCurrent = false,
+  ): Promise<boolean> {
+    this.expireTileBlobReservations(now)
+    const reservation = this.tileBlobReservations.get(reservationId)
+    if (reservation === undefined || reservation.hash !== observation.hash) return false
+    if (
+      [...this.tileBlobObjects.values()].some(
+        (object) => object.hash === reservation.hash && object.state === 'deleting',
+      )
+    ) {
+      return false
+    }
+    const object = this.tileBlobObjects.get(reservation.blobKey)
+    if (object === undefined || object.hash !== reservation.hash) return false
+    this.tileBlobObjects.set(object.blobKey, {
+      ...object,
+      state: 'active',
+      reclaimedAt: null,
+    })
+    await this.recordTileObservation(observation, statuses, recordHistory, forceCurrent)
+    this.tileBlobReservations.delete(reservationId)
+    return true
+  }
+
+  async releaseTileBlobReservation(reservationId: string): Promise<void> {
+    this.tileBlobReservations.delete(reservationId)
+  }
+
+  async noteTileBlobObject(
+    hash: string,
+    blobKey: string,
+    now: Millis,
+  ): Promise<TileBlobCandidateResult> {
+    this.expireTileBlobReservations(now)
+    const held = this.tileBlobObjects.get(blobKey)
+    if (held?.state === 'deleting') return 'deleting'
+    const hasExactReservation = [...this.tileBlobReservations.values()].some(
+      (reservation) => reservation.hash === hash && reservation.blobKey === blobKey,
+    )
+    const hasOtherActiveGeneration = [...this.tileBlobObjects.values()].some(
+      (object) => object.hash === hash && object.blobKey !== blobKey && object.state === 'active',
+    )
+    const referenced =
+      hasExactReservation ||
+      (this.tileBlobIsReferenced(hash) && (held?.state === 'active' || !hasOtherActiveGeneration))
+    const state = referenced ? 'active' : 'candidate'
+    this.tileBlobObjects.set(blobKey, {
+      blobKey,
+      hash,
+      state,
+      discoveredAt: held?.discoveredAt ?? now,
+      deleteStartedAt: null,
+      deleteAttempts: held?.deleteAttempts ?? 0,
+      reclaimedAt: null,
+    })
+    return referenced ? 'referenced' : 'candidate'
+  }
+
+  async listTileBlobDeletionWork(limit: number): Promise<readonly TileBlobObject[]> {
+    return [...this.tileBlobObjects.values()]
+      .filter((object) => object.state === 'deleting' || object.state === 'candidate')
+      .sort(
+        (left, right) =>
+          (left.state === 'deleting' ? 0 : 1) - (right.state === 'deleting' ? 0 : 1) ||
+          left.discoveredAt - right.discoveredAt ||
+          left.blobKey.localeCompare(right.blobKey),
+      )
+      .slice(0, limit)
+      .map((object) => this.copyTileBlob(object))
+  }
+
+  async claimTileBlobDeletion(blobKey: string, now: Millis): Promise<TileBlobClaimResult> {
+    this.expireTileBlobReservations(now)
+    const object = this.tileBlobObjects.get(blobKey)
+    if (object === undefined || (object.state !== 'candidate' && object.state !== 'deleting')) {
+      return 'missing'
+    }
+    const hasExactReservation = [...this.tileBlobReservations.values()].some(
+      (reservation) => reservation.hash === object.hash && reservation.blobKey === object.blobKey,
+    )
+    const hasOtherActiveGeneration = [...this.tileBlobObjects.values()].some(
+      (candidate) =>
+        candidate.hash === object.hash &&
+        candidate.blobKey !== object.blobKey &&
+        candidate.state === 'active',
+    )
+    if (
+      hasExactReservation ||
+      (this.tileBlobIsReferenced(object.hash) && !hasOtherActiveGeneration)
+    ) {
+      this.tileBlobObjects.set(blobKey, {
+        ...object,
+        state: 'active',
+        deleteStartedAt: null,
+      })
+      return 'blocked'
+    }
+    this.tileBlobObjects.set(blobKey, {
+      ...object,
+      state: 'deleting',
+      deleteStartedAt: object.deleteStartedAt ?? now,
+      deleteAttempts: object.deleteAttempts + 1,
+    })
+    return 'claimed'
+  }
+
+  async finishTileBlobDeletion(blobKey: string, reclaimedAt: Millis): Promise<void> {
+    const object = this.tileBlobObjects.get(blobKey)
+    if (object?.state !== 'deleting') return
+    this.tileBlobObjects.set(blobKey, { ...object, state: 'deleted', reclaimedAt })
+  }
+
+  async readTileBlobScanState(): Promise<TileBlobScanState> {
+    return { ...this.tileBlobScanState }
+  }
+
+  async writeTileBlobScanState(cursor: string | undefined): Promise<void> {
+    this.tileBlobScanState = {
+      ...(cursor === undefined ? {} : { cursor }),
+      completedSweeps: this.tileBlobScanState.completedSweeps + (cursor === undefined ? 1 : 0),
     }
   }
 
@@ -742,6 +1045,7 @@ export class MemorySqlStore implements SqlStore {
   async readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
+    options: { readonly serverOwnedOnly?: boolean } = {},
   ): Promise<readonly TemplateStatus[]> {
     const out: TemplateStatus[] = []
     for (const [templateId, template] of this.templates) {
@@ -752,9 +1056,16 @@ export class MemorySqlStore implements SqlStore {
         (!includeUnpublished && template.publishedAt === null)
       )
         continue
-      const statuses = [...this.templateTileStatuses.values()].filter(
-        (status) => status.templateId === templateId && status.versionId === version.versionId,
-      )
+      const source =
+        options.serverOwnedOnly === true
+          ? this.templateAlarmTileStatuses
+          : this.templateTileStatuses
+      const statuses = [...source.entries()]
+        .filter(
+          ([, status]) =>
+            status.templateId === templateId && status.versionId === version.versionId,
+        )
+        .map(([, status]) => status)
       if (statuses.length === 0) continue
       const classified = new Map<
         number,
@@ -804,6 +1115,119 @@ export class MemorySqlStore implements SqlStore {
       })
     }
     return out.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async evaluateTemplateAlarm(
+    snapshot: TemplateAlarmSnapshot,
+    phase: AlarmEvaluationPhase,
+    alarmId: string,
+  ): Promise<AlarmPolicyResult> {
+    const previous = this.alarmStates.get(snapshot.templateId) ?? null
+    if (
+      phase.kind === 'follow-up' &&
+      (previous === null ||
+        previous.versionId !== snapshot.versionId ||
+        previous.alarm?.id !== phase.alarmId ||
+        previous.probeDueAt !== phase.dueAt ||
+        previous.probePixelsLost !== phase.pixelsLost)
+    ) {
+      return evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
+    }
+    if (previous !== null && snapshot.observedAt < previous.evaluatedAt) {
+      return { state: previous, scheduleFollowUp: false }
+    }
+    const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
+    const probe = result.scheduleFollowUp
+      ? {
+          probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
+          probePixelsLost: result.state.alarm?.pixelsLost ?? null,
+        }
+      : { probeDueAt: null, probePixelsLost: null }
+    this.alarmStates.set(snapshot.templateId, {
+      ...result.state,
+      ...probe,
+      evaluatedAt: snapshot.observedAt,
+    })
+    return result
+  }
+
+  async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {
+    const alarms: Alarm[] = []
+    for (const [templateId, state] of this.alarmStates) {
+      const template = this.templates.get(templateId)
+      if (
+        state.alarm === null ||
+        template === undefined ||
+        template.season !== season ||
+        template.currentVersionId !== state.versionId ||
+        (!includeUnpublished && template.publishedAt === null)
+      )
+        continue
+      alarms.push({ ...state.alarm })
+    }
+    return alarms.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]> {
+    const probes: AlarmProbe[] = []
+    for (const [templateId, state] of this.alarmStates) {
+      const template = this.templates.get(templateId)
+      if (
+        template === undefined ||
+        template.currentVersionId !== state.versionId ||
+        state.alarm === null ||
+        state.probeDueAt === null ||
+        state.probeDueAt > now ||
+        state.probePixelsLost === null
+      )
+        continue
+      probes.push({
+        templateId,
+        versionId: state.versionId,
+        season: template.season,
+        alarmId: state.alarm.id,
+        pixelsLost: state.probePixelsLost,
+        dueAt: state.probeDueAt,
+      })
+    }
+    return probes.sort((left, right) => left.dueAt - right.dueAt)
+  }
+
+  async nextAlarmProbeAt(): Promise<Millis | null> {
+    let next: Millis | null = null
+    for (const [templateId, state] of this.alarmStates) {
+      const template = this.templates.get(templateId)
+      if (
+        state.alarm !== null &&
+        template?.currentVersionId === state.versionId &&
+        state.probeDueAt !== null &&
+        (next === null || state.probeDueAt < next)
+      ) {
+        next = state.probeDueAt
+      }
+    }
+    return next
+  }
+
+  async clearAlarmProbe(templateId: string, alarmId: string, dueAt: Millis): Promise<void> {
+    const state = this.alarmStates.get(templateId)
+    if (state?.alarm?.id !== alarmId || state.probeDueAt !== dueAt) return
+    this.alarmStates.set(templateId, {
+      ...state,
+      probeDueAt: null,
+      probePixelsLost: null,
+    })
+  }
+
+  async deferAlarmProbe(
+    templateId: string,
+    alarmId: string,
+    dueAt: Millis,
+    retryAt: Millis,
+  ): Promise<void> {
+    const state = this.alarmStates.get(templateId)
+    if (state?.alarm?.id !== alarmId || state.probeDueAt !== dueAt) return
+    this.alarmStates.set(templateId, { ...state, probeDueAt: retryAt })
   }
 
   async claimPaintEvent(eventId: string, _wplaceUserId: number, _seenAt: Millis): Promise<boolean> {

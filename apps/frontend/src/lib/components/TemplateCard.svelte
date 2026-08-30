@@ -29,7 +29,14 @@ const { template } = $derived(entry)
         {template.totalPixels.toLocaleString()} px
       </span>
     </div>
-    <TemplateState compact finished={template.finished} frozen={template.timelapseFrozen} griefed={template.finished && entry.progress.mismatched > 0} />
+    <TemplateState
+      compact
+      finished={template.finished}
+      frozen={template.timelapseFrozen}
+      griefed={template.finished && entry.progress.mismatched > 0}
+      alarmKind={entry.alarm?.kind}
+      pixelsLost={entry.alarm?.pixelsLost}
+    />
     <ProgressMeter progress={entry.progress} size="sm" />
   </div>
 </a>

@@ -8,7 +8,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { BlobNamespace, BlobStore } from '../ports/index.js'
+import type { BlobListPage, BlobNamespace, BlobStore } from '../ports/index.js'
 import { StoreTemplateError, storeTemplate } from './store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -35,6 +35,13 @@ class CountingBlobStore implements BlobStore {
     this.hasAllCalls.push({ namespace, hashes: [...hashes] })
     return this.inner.hasAll(namespace, hashes)
   }
+
+  async list(
+    namespace: BlobNamespace,
+    options: { cursor?: string; limit: number },
+  ): Promise<BlobListPage> {
+    return this.inner.list(namespace, options)
+  }
 }
 
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
@@ -54,6 +61,7 @@ const harness = async () => {
 }
 
 const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
+  surface: { kind: 'world', allianceId: null } as const,
   season: 1,
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
   name: 'Test template',

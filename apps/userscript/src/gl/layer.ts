@@ -1,4 +1,10 @@
-import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import {
+  PALETTE_SIZE,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+  WORLD_TEMPLATE_SURFACE,
+  WPLACE_PALETTE,
+} from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { isOverlayPeekActive } from '../overlay-peek.js'
@@ -15,7 +21,7 @@ import { appearanceWithPreview, hasAppearancePreview } from '../templates/appear
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
   appearanceOf,
-  displayTemplates,
+  displayTemplatesForSurface,
   isTemplateVisible,
   type PlacedTemplate,
 } from '../templates/local-store.js'
@@ -27,7 +33,8 @@ import { colourFades, outlineFades, templateFades } from './fade.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
 import { movingOverlayTapCap } from './minify-quality.js'
-import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
+import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
+import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE } from './shaders.js'
 
 /**
  * The overlay, drawn inside wplace's own canvas.
@@ -152,24 +159,6 @@ export const setNudge = (x: number, y: number): { x: number; y: number } => {
  * There is no projection here on purpose. The positions come from wplace's own tile draws, so the
  * only thing left is the viewport mapping, which is exact.
  */
-const corner = (
-  deviceX: number,
-  deviceY: number,
-  bufferWidth: number,
-  bufferHeight: number,
-  u: number,
-  v: number,
-  into: Float32Array,
-  offset: number,
-): void => {
-  into[offset] = (2 * deviceX) / bufferWidth - 1
-  into[offset + 1] = 1 - (2 * deviceY) / bufferHeight
-  into[offset + 2] = 0
-  into[offset + 3] = 1
-  into[offset + 4] = u
-  into[offset + 5] = v
-}
-
 /**
  * The context these handles belong to.
  *
@@ -206,46 +195,6 @@ export const overlayGpuMemoryBytes = (): number => {
 
 /** Upload chunks are ephemeral; no full-template CPU staging copy is retained. */
 export const overlayStagingMemoryBytes = (): number => 0
-
-const compile = (gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null => {
-  const shader = gl.createShader(type)
-  if (shader === null) return null
-  gl.shaderSource(shader, source)
-  gl.compileShader(shader)
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    warn('install', 'overlay shader failed to compile', gl.getShaderInfoLog(shader))
-    gl.deleteShader(shader)
-    return null
-  }
-  return shader
-}
-
-const link = (gl: WebGL2RenderingContext, fragmentSource: string): WebGLProgram | null => {
-  const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX_SOURCE)
-  const fragment = compile(gl, gl.FRAGMENT_SHADER, fragmentSource)
-  if (vertex === null || fragment === null) {
-    if (vertex !== null) gl.deleteShader(vertex)
-    if (fragment !== null) gl.deleteShader(fragment)
-    return null
-  }
-  const created = gl.createProgram()
-  if (created === null) {
-    gl.deleteShader(vertex)
-    gl.deleteShader(fragment)
-    return null
-  }
-  gl.attachShader(created, vertex)
-  gl.attachShader(created, fragment)
-  gl.linkProgram(created)
-  gl.deleteShader(vertex)
-  gl.deleteShader(fragment)
-  if (!gl.getProgramParameter(created, gl.LINK_STATUS)) {
-    warn('install', 'overlay program failed to link', gl.getProgramInfoLog(created))
-    gl.deleteProgram(created)
-    return null
-  }
-  return created
-}
 
 const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation | null => {
   if (!uniforms.has(name)) {
@@ -619,10 +568,10 @@ const visitIntersections = (
         const v0 = (source.inset - topMargin + cutTop - top) / source.textureHeight
         const v1 = (source.inset - topMargin + cutBottom - top) / source.textureHeight
 
-        corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
-        corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
-        corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
-        corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
+        writeClipCorner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
+        writeClipCorner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
+        writeClipCorner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
+        writeClipCorner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
         draw(source, corners)
         count++
       }
@@ -655,7 +604,7 @@ export const overlayLayer = {
         maximumTextureSize = Math.max(1, Math.floor(measured))
       }
     } catch {}
-    program = link(gl, FRAGMENT_SOURCE)
+    program = linkTemplateProgram(gl, FRAGMENT_SOURCE)
     if (program === null) return
     quad = gl.createBuffer()
     vao = gl.createVertexArray()
@@ -720,7 +669,7 @@ export const overlayLayer = {
     const bufferWidth = gl.drawingBufferWidth
     const bufferHeight = gl.drawingBufferHeight
 
-    const all = displayTemplates()
+    const all = displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE)
     renderGeneration++
 
     // Switched off is a destination, not an exclusion: a template on its way out is still drawn,
@@ -997,7 +946,7 @@ export const outlineLayer = {
     outlineUniforms.clear()
     lastOutlineQuadKey = ''
     outlineOwner = gl
-    outlineProgram = link(gl, OUTLINE_FRAGMENT_SOURCE)
+    outlineProgram = linkTemplateProgram(gl, OUTLINE_FRAGMENT_SOURCE)
     if (outlineProgram === null) return
     outlineQuad = gl.createBuffer()
     outlineVao = gl.createVertexArray()
@@ -1076,7 +1025,7 @@ export const outlineLayer = {
     let drawIntersections = 0
     let visibleTemplates = 0
     let animating = false
-    for (const template of displayTemplates()) {
+    for (const template of displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE)) {
       const entry = gpu.get(template.id)
       if (entry === undefined) continue
       const fade = templateFades.advance(

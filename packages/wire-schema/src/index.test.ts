@@ -3,6 +3,7 @@ import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   Alarm,
+  AlarmsResponse,
   CanvasTilesResponse,
   Chunk,
   ContributionsResponse,
@@ -111,10 +112,11 @@ const encoders = [
   Schema.encodeSync(TemplateStatus),
   Schema.encodeSync(NodeStatus),
   Schema.encodeSync(Alarm),
+  Schema.encodeSync(AlarmsResponse),
 ]
 
 it('exposes every exported wire schema as a bidirectional codec', () => {
-  expect(encoders).toHaveLength(13)
+  expect(encoders).toHaveLength(14)
 })
 
 describe('tile and template schemas', () => {
@@ -320,11 +322,9 @@ describe('PaintPixels', () => {
     expect(Schema.decodeUnknownSync(PaintPixels)(pixels)).toEqual(pixels)
   })
 
-  it('caps one tile payload at the counter-store guardrail', () => {
-    // Distinct coordinates, or the duplicate-coordinate rule does the rejecting and the cap this
-    // test names can be raised a hundredfold with the suite green. `distinctPixels` exists for
-    // exactly this and was applied to some fixtures and not this one.
-    expectRejected(PaintPixels, distinctPixels(100_001))
+  it('accepts one tile payload above the old arbitrary pixel cap', () => {
+    const pixels = distinctPixels(100_001)
+    expect(Schema.decodeUnknownSync(PaintPixels)(pixels)).toEqual(pixels)
   })
 })
 
@@ -352,52 +352,27 @@ describe('PaintEvent', () => {
     expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
   })
 
-  it('caps the pixels submitted across the whole event, not merely per tile', () => {
-    // The per-tile cap bounds nothing on its own: MAX_PAINT_TILES tiles at the per-tile cap is a
-    // ten-billion-pixel payload. `painted` is well within its own bound here, so only the total
-    // can do the rejecting — provided the pixels are distinct. With repeated coordinates the
-    // duplicate rule rejects first and this conjunct becomes deletable, which is what it was.
-    expectRejected(PaintEvent, {
+  it('accepts an event above the old arbitrary total-pixel cap', () => {
+    const event = {
       ...validEvent,
       tiles: [
         { x: 0, y: 0, pixels: distinctPixels(100_000) },
         { x: 1, y: 0, pixels: { x: [0], y: [0], colors: [0] } },
       ],
-      painted: 1,
-    })
-  })
-
-  it('accepts a two-tile event summing to exactly the pixel total', () => {
-    // The accept side of the same bound, so it fails whichever way the cap moves.
-    const event = {
-      ...validEvent,
-      tiles: [
-        { x: 0, y: 0, pixels: distinctPixels(50_000) },
-        { x: 1, y: 0, pixels: distinctPixels(50_000) },
-      ],
-      painted: 100_000,
+      painted: 100_001,
     }
     expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
   })
 
-  it('rejects a two-tile event one pixel over the total', () => {
+  it('rejects painted above the submitted total even above the old cap', () => {
     expectRejected(PaintEvent, {
       ...validEvent,
       tiles: [
         { x: 0, y: 0, pixels: distinctPixels(50_000) },
         { x: 1, y: 0, pixels: distinctPixels(50_001) },
       ],
-      painted: 1,
+      painted: 100_002,
     })
-  })
-
-  it('accepts an event submitting exactly the pixel total', () => {
-    const event = {
-      ...validEvent,
-      tiles: [{ x: 0, y: 0, pixels: distinctPixels(100_000) }],
-      painted: 100_000,
-    }
-    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
   })
 
   it('accepts an ordinary paint event spanning two tiles', () => {
@@ -413,7 +388,6 @@ describe('PaintEvent', () => {
   })
 
   it('rejects a tile carrying no pixels', () => {
-    // Without this, MAX_PAINT_TILES empty entries are a legal payload that reports nothing.
     expectRejected(PaintEvent, {
       ...validEvent,
       tiles: [...validEvent.tiles, { x: 5, y: 5, pixels: { x: [], y: [], colors: [] } }],
@@ -486,6 +460,55 @@ describe('cross-field and time-unit schemas', () => {
   it('accepts a manifest for wplace season zero', () => {
     const manifest = { ...validManifest, season: 0 }
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it('accepts signed chunks on a scoped headquarters manifest', () => {
+    const template = {
+      ...validTemplate,
+      bbox: { minX: -1, minY: -1, maxX: 1, maxY: 0 },
+      totalPixels: 2,
+      chunks: [
+        { tile: '-1/-1', hash: HASH },
+        { tile: '0/-1', hash: 'a'.repeat(64) },
+      ],
+    }
+    const manifest = {
+      ...validManifest,
+      surface: { kind: 'alliance-headquarters' as const, allianceId: 535_245 },
+      templates: [template],
+      tiles: ['-1/-1', '0/-1'],
+    }
+
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it('rejects signed chunks when the manifest omits its alliance surface', () => {
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [
+        {
+          ...validTemplate,
+          bbox: { minX: -1, minY: -1, maxX: 0, maxY: 0 },
+          chunks: [{ tile: '-1/-1', hash: HASH }],
+        },
+      ],
+      tiles: ['-1/-1'],
+    })
+  })
+
+  it('rejects a template outside the selected asset canvas', () => {
+    expectRejected(Manifest, {
+      ...validManifest,
+      surface: { kind: 'alliance-picture', allianceId: 1 },
+      templates: [
+        {
+          ...validTemplate,
+          bbox: { minX: 63, minY: 0, maxX: 65, maxY: 1 },
+          chunks: [{ tile: '0/0', hash: HASH }],
+        },
+      ],
+      tiles: ['0/0'],
+    })
   })
 
   it('requires manifest tiles to exactly match the unique tiles referenced by chunks', () => {
@@ -869,6 +892,20 @@ describe('cross-field and time-unit schemas', () => {
       lastSeen: MILLIS,
     }
     expect(Schema.decodeUnknownSync(Alarm)(alarm)).toEqual(alarm)
+  })
+
+  it('accepts a bounded active-alarm response', () => {
+    const alarm = {
+      id: EVENT_ID,
+      templateId: TEMPLATE_ID,
+      kind: 'regression' as const,
+      pixelsLost: 100,
+      firstSeen: MILLIS,
+      lastSeen: MILLIS,
+    }
+    expect(Schema.decodeUnknownSync(AlarmsResponse)({ alarms: [alarm] })).toEqual({
+      alarms: [alarm],
+    })
   })
 
   it('rejects a template with a zero progress denominator', () => {

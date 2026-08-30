@@ -1,4 +1,9 @@
-import type { ServerInfo } from '@caelestis/shared'
+import {
+  type ServerInfo,
+  type TemplateSurface,
+  templateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import { assembleManifest } from '../manifest/assemble.js'
@@ -7,12 +12,25 @@ import { resolveServerInfo } from './server.js'
 
 // Wplace's first and current canvas is season 0; later seasons increment from there.
 const SEASON_NUMBER = /^(?:0|[1-9]\d*)$/
+const POSITIVE_NUMBER = /^[1-9]\d*$/
 
 const parseSeason = (value: string | undefined, fallback: number): number | null => {
   if (value === undefined) return fallback
   if (!SEASON_NUMBER.test(value)) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+const parseSurface = (
+  kind: string | undefined,
+  allianceId: string | undefined,
+): TemplateSurface | null => {
+  if (kind === undefined && allianceId === undefined) return WORLD_TEMPLATE_SURFACE
+  if (kind === 'world') return allianceId === undefined ? WORLD_TEMPLATE_SURFACE : null
+  if (kind === undefined || allianceId === undefined || !POSITIVE_NUMBER.test(allianceId))
+    return null
+  const parsedAllianceId = Number(allianceId)
+  return Number.isSafeInteger(parsedAllianceId) ? templateSurface(kind, parsedAllianceId) : null
 }
 
 export const createManifestRoutes = (
@@ -27,6 +45,13 @@ export const createManifestRoutes = (
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'), options.currentSeason)
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
+    const surface = parseSurface(c.req.query('surface'), c.req.query('allianceId'))
+    if (surface === null) {
+      return c.json(
+        { error: 'surface must be world or an alliance surface with a positive allianceId' },
+        400,
+      )
+    }
 
     const manifest = await assembleManifest(ports, {
       // Resolved rather than the configured value: the manifest carries the server's name too, and
@@ -34,6 +59,7 @@ export const createManifestRoutes = (
       // old one — which is exactly where anyone would look to check the rename worked.
       server: await resolveServerInfo(ports, options.server),
       season,
+      surface,
       includeUnpublished: c.get('caller').scope === 'admin',
     })
     const etag = `"${manifest.version}"`

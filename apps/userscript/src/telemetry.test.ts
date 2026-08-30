@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
     shareTiles: true,
     reportPaints: true,
     servers: [] as unknown[],
+    hiddenScopes: [] as string[],
   },
 }))
 
@@ -61,7 +62,7 @@ const server: ConnectedServer = {
 }
 
 const template: ServerTemplate = {
-  id: 'template',
+  id: '01890f3e-7b2c-7abc-8def-0123456789ab',
   nodeId: null,
   name: 'Template',
   version: 'version',
@@ -80,7 +81,7 @@ beforeEach(() => {
   harness.tileInterest = null
   harness.acceptedPaint = null
   harness.stateListeners = []
-  harness.state = { shareTiles: true, reportPaints: true, servers: [server] }
+  harness.state = { shareTiles: true, reportPaints: true, servers: [server], hiddenScopes: [] }
 })
 
 afterEach(() => {
@@ -88,6 +89,58 @@ afterEach(() => {
 })
 
 describe('server telemetry client', () => {
+  it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/alarms')) {
+          return Response.json({
+            alarms: [
+              {
+                id: '01890f3e-7b2c-7abc-8def-0123456789ac',
+                templateId: template.id,
+                kind: 'regression',
+                pixelsLost: 12,
+                firstSeen: 1_000,
+                lastSeen: 2_000,
+              },
+            ],
+          })
+        }
+        return Response.json({ templates: [] })
+      }),
+    )
+    const { installTelemetry, onServerAlarmChange, serverAlarmFor } = await import('./telemetry.js')
+    const changed = vi.fn()
+    onServerAlarmChange(changed)
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    await vi.waitFor(() =>
+      expect(serverAlarmFor(server, template)).toMatchObject({
+        kind: 'regression',
+        pixelsLost: 12,
+      }),
+    )
+
+    harness.serverContents?.(server, { nodes: [], templates: [{ ...template }] })
+    expect(serverAlarmFor(server, template)).toBeNull()
+    await vi.waitFor(() => expect(serverAlarmFor(server, template)?.id).toBeDefined())
+
+    const unpublished = { ...template, published: false }
+    harness.serverContents?.(server, { nodes: [], templates: [unpublished] })
+    await vi.waitFor(() => expect(serverAlarmFor(server, unpublished)?.id).toBeDefined())
+
+    harness.state = {
+      ...harness.state,
+      hiddenScopes: [`srv:${encodeURIComponent(server.url)}:${template.id}`],
+    }
+    harness.stateListeners.at(-1)?.()
+    expect(serverAlarmFor(server, template)).toBeNull()
+    expect(changed).toHaveBeenCalled()
+  })
+
   it('reads tile bodies only while a connected server may want them', async () => {
     vi.stubGlobal(
       'fetch',

@@ -1,9 +1,17 @@
-import { type Manifest, type ServerInfo, sha256Hex, tileKey } from '@caelestis/shared'
+import {
+  type Manifest,
+  type ServerInfo,
+  type SurfaceChunkKey,
+  sha256Hex,
+  type TemplateSurface,
+  tileKey,
+} from '@caelestis/shared'
 import type { Ports } from '../ports/index.js'
 
 export interface AssembleManifestOptions {
   readonly server: ServerInfo
   readonly season: number
+  readonly surface?: TemplateSurface
   readonly includeUnpublished: boolean
 }
 
@@ -18,10 +26,14 @@ export const assembleManifest = async (
   ports: Pick<Ports, 'sql'>,
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
+  const surface = options.surface ?? { kind: 'world', allianceId: null }
   const [nodeRecords, templateRecords, tileRecords] = await Promise.all([
     ports.sql.listNodes(options.season),
-    ports.sql.listManifestTemplates(options.season, options.includeUnpublished),
-    ports.sql.listManifestTiles(options.season, options.includeUnpublished),
+    ports.sql.listManifestTemplates(
+      { season: options.season, surface },
+      options.includeUnpublished,
+    ),
+    ports.sql.listManifestTiles({ season: options.season, surface }, options.includeUnpublished),
   ])
 
   const nodes = nodeRecords
@@ -32,12 +44,12 @@ export const assembleManifest = async (
     )
     .sort((left, right) => left.id.localeCompare(right.id))
 
-  const chunksByVersion = new Map<
-    string,
-    Array<{ tile: ReturnType<typeof tileKey>; hash: string }>
-  >()
+  const chunksByVersion = new Map<string, Array<{ tile: SurfaceChunkKey; hash: string }>>()
   for (const record of tileRecords) {
-    const chunk = { tile: tileKey({ x: record.tileX, y: record.tileY }), hash: record.hash }
+    const chunk = {
+      tile: tileKey({ x: record.tileX, y: record.tileY }) as SurfaceChunkKey,
+      hash: record.hash,
+    }
     const key = `${record.templateId}:${record.versionId}`
     const chunks = chunksByVersion.get(key)
     if (chunks === undefined) chunksByVersion.set(key, [chunk])
@@ -123,6 +135,7 @@ export const assembleManifest = async (
   const unsigned: Manifest = {
     version: VERSION_PLACEHOLDER,
     season: options.season,
+    ...(surface.kind === 'world' ? {} : { surface }),
     server: normalizedServer,
     nodes,
     templates,

@@ -1,4 +1,10 @@
-import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import {
+  sameTemplateSurface,
+  type TemplateSurface,
+  TRANSPARENT_INDEX,
+  WORLD_TEMPLATE_SURFACE,
+  WPLACE_PALETTE,
+} from '@caelestis/shared'
 import type {
   AppearanceEditorIntent,
   AppearanceEditorModel,
@@ -11,6 +17,12 @@ import type {
   SettingsIntent,
   SettingsModel,
 } from '@caelestis/ui/elements'
+import { onAllianceManifestChange } from '../alliance-server-sync.js'
+import {
+  type ActiveAllianceSurface,
+  activeAllianceSurface,
+  onActiveAllianceSurfaceChange,
+} from '../alliance-surface.js'
 import {
   accessTokensModel,
   createServerAccessToken,
@@ -69,7 +81,7 @@ import {
   setState,
   upsertServer,
 } from '../state.js'
-import { onServerStatusChange } from '../telemetry.js'
+import { onServerAlarmChange, onServerStatusChange } from '../telemetry.js'
 import {
   APPEARANCE_CONTROLS,
   DEFAULT_APPEARANCE,
@@ -135,6 +147,8 @@ import { findWplaceRail } from './wplace-rail.js'
  * directly beneath whichever native rail is on screen.
  */
 const BUTTON_ID = 'caelestis-rail-button'
+const ALLIANCE_BUTTON_WRAPPER_ID = 'caelestis-alliance-rail'
+const ALLIANCE_BUTTON_ID = 'caelestis-alliance-rail-button'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
 const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
@@ -159,6 +173,10 @@ let currentView: View = 'tree'
 let open = false
 let alarmBadge = 0
 let searchQuery = ''
+let panelSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE
+let panelHost: HTMLElement | null = null
+const panelOpenListeners = new Set<() => void>()
+const treeVisibleListeners = new Set<() => void>()
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -175,9 +193,10 @@ const panelRailModel = (): RailControlModel => ({
 })
 
 const syncRailButtonState = (): void => {
-  const button = document.getElementById(BUTTON_ID) as CaelestisRailControl | null
-  if (button === null) return
-  button.model = panelRailModel()
+  for (const id of [BUTTON_ID, ALLIANCE_BUTTON_ID]) {
+    const button = document.getElementById(id) as CaelestisRailControl | null
+    if (button !== null) button.model = panelRailModel()
+  }
 }
 
 const railButton = (): CaelestisRailControl => {
@@ -192,6 +211,38 @@ const railButton = (): CaelestisRailControl => {
     if (intent.id === 'panel') togglePanel()
   })
   return button
+}
+
+const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl => {
+  const existing = active.stage.querySelector(`#${ALLIANCE_BUTTON_ID}`)
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = active.stage.ownerDocument.createElement(
+    'caelestis-rail-control',
+  ) as CaelestisRailControl
+  button.id = ALLIANCE_BUTTON_ID
+  button.model = panelRailModel()
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id === 'panel') togglePanel()
+  })
+  return button
+}
+
+const mountAllianceRail = (active: ActiveAllianceSurface): void => {
+  document.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)?.remove()
+  const wrapper = active.stage.ownerDocument.createElement('div')
+  wrapper.id = ALLIANCE_BUTTON_WRAPPER_ID
+  wrapper.className = 'tooltip tooltip-right'
+  wrapper.dataset.tip = 'Caelestis — alliance templates'
+  Object.assign(wrapper.style, {
+    position: 'absolute',
+    left: '12px',
+    top: '80px',
+    zIndex: '20',
+  } satisfies Partial<CSSStyleDeclaration>)
+  wrapper.appendChild(allianceRailButton(active))
+  active.stage.appendChild(wrapper)
 }
 
 /**
@@ -778,7 +829,7 @@ const currentPanelWidth = (panel: CaelestisPanel): number =>
 
 /** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
 const buildSveltePanel = (): CaelestisPanel => {
-  const panel = document.createElement('caelestis-panel')
+  const panel = (panelHost?.ownerDocument ?? document).createElement('caelestis-panel')
   panel.id = PANEL_ID
   panel.setAttribute('aria-label', PANEL_TITLE)
   Object.assign(panel.style, {
@@ -872,7 +923,7 @@ const rerenderTree = (): void => {
   if (!open || currentView !== 'tree') return
   const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
   if (panel === null) return
-  activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
+  activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery, panelSurface)
   panel.model = panelModel(currentPanelWidth(panel))
 }
 
@@ -890,7 +941,12 @@ const showView = (view: View): void => {
 
   if (view === 'settings') settingsModel()
   if (view === 'tree') {
-    activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
+    activeTreeAdapter = templateTreeAdapter(
+      treeCallbacks(),
+      rerenderTree,
+      searchQuery,
+      panelSurface,
+    )
     void primeFromCache(rerenderTree)
   } else {
     activeTreeAdapter = null
@@ -898,6 +954,9 @@ const showView = (view: View): void => {
   }
   panel.model = panelModel(currentPanelWidth(panel))
   syncProfileTimer()
+  if (open && view === 'tree') {
+    for (const listener of treeVisibleListeners) listener()
+  }
   log('install', `panel view: ${view}`)
 }
 
@@ -914,14 +973,55 @@ const setOpen = (next: boolean): void => {
     return
   }
   if (existing !== null) return
-  document.body.appendChild(buildSveltePanel())
+  const host = panelHost ?? document.body
+  host.appendChild(buildSveltePanel())
   showView(currentView)
+  for (const listener of panelOpenListeners) listener()
   // The panel's measured left edge is now the map controls' right edge.
   redraw()
 }
 
 /** Open or close the main Caelestis panel through the same path as its rail button. */
 export const togglePanel = (): void => setOpen(!open)
+
+const selectAlliancePanelSurface = (active: ActiveAllianceSurface | null): void => {
+  document.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)?.remove()
+  if (active === null) {
+    if (panelSurface.kind !== 'world' && open) setOpen(false)
+    panelSurface = WORLD_TEMPLATE_SURFACE
+    panelHost = document.body
+    return
+  }
+
+  mountAllianceRail(active)
+  const nextHost = active.stage.closest('dialog') ?? active.stage
+  const changed = !sameTemplateSurface(panelSurface, active.surface) || panelHost !== nextHost
+  if (!changed) {
+    syncRailButtonState()
+    return
+  }
+
+  const reopen = open
+  if (reopen) setOpen(false)
+  panelSurface = active.surface
+  panelHost = nextHost as HTMLElement
+  if (reopen) setOpen(true)
+  syncRailButtonState()
+}
+
+export const isPanelOpen = (): boolean => open
+
+export const isTemplateTreeVisible = (): boolean => open && currentView === 'tree'
+
+export const onPanelOpen = (listener: () => void): (() => void) => {
+  panelOpenListeners.add(listener)
+  return () => panelOpenListeners.delete(listener)
+}
+
+export const onTemplateTreeVisible = (listener: () => void): (() => void) => {
+  treeVisibleListeners.add(listener)
+  return () => treeVisibleListeners.delete(listener)
+}
 
 const RAIL_ID = 'caelestis-rail'
 
@@ -1020,6 +1120,7 @@ export const syncColourModeState = (): void => {
  */
 export const installPanel = (): void => {
   loadState()
+  panelHost = document.body
   void refreshStoredServers(refreshView)
   installServerConnectionRetry(refreshView)
   const rail = railContainer()
@@ -1067,6 +1168,9 @@ export const installPanel = (): void => {
   // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per
   // change.
   onStateChange(refreshView)
+  onAllianceManifestChange(refreshView)
+  onActiveAllianceSurfaceChange(selectAlliancePanelSurface)
+  selectAlliancePanelSurface(activeAllianceSurface())
   onLocalChange(
     frameQueue(() => {
       if (currentView === 'tree') refreshView()
@@ -1083,6 +1187,9 @@ export const installPanel = (): void => {
     }),
   )
   onServerStatusChange(() => {
+    if (currentView === 'tree') refreshView()
+  })
+  onServerAlarmChange(() => {
     if (currentView === 'tree') refreshView()
   })
   for (const ending of ['dragend', 'focusout'])

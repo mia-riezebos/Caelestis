@@ -44,6 +44,9 @@ declare namespace Cloudflare {
 
     /** Runtime mount stripped before the portable app sees a request. */
     BASE_PATH?: string
+
+    /** `dry-run` inventories candidates; `delete` also performs fenced physical reclamation. */
+    TILE_BLOB_GC_MODE?: string
   }
 }
 
@@ -52,4 +55,5 @@ interface Env {
   readonly SEASON?: string
   readonly OPEN_ACCESS?: string
   readonly BASE_PATH?: string
+  readonly TILE_BLOB_GC_MODE?: string
 }

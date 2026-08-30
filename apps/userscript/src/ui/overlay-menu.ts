@@ -1,4 +1,9 @@
-import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import {
+  sameTemplateSurface,
+  TRANSPARENT_INDEX,
+  WORLD_TEMPLATE_SURFACE,
+  WPLACE_PALETTE,
+} from '@caelestis/shared'
 import type {
   AppearanceEditorIntent,
   AppearanceEditorModel,
@@ -1646,7 +1651,10 @@ const cornerOnScreen = (
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   lastRerender = rerender
-  withFrameTemplates(localTemplates(), (templates) => {
+  const templates = localTemplates().filter((template) =>
+    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
+  )
+  withFrameTemplates(templates, (templates) => {
     renderControls(rerender, mapCanvas, templates)
   })
 }

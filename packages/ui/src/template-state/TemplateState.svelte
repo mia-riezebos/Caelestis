@@ -5,15 +5,24 @@
     finished = false,
     frozen = false,
     griefed = false,
+    alarmKind,
+    pixelsLost,
     compact = false,
   }: TemplateStateProps = $props()
+
+  const alarmLabel = $derived(
+    alarmKind === undefined
+      ? null
+      : `${alarmKind === 'sustained-griefing' ? 'Sustained griefing' : 'Regression'}${pixelsLost === undefined ? '' : ` · ${pixelsLost.toLocaleString()} px lost`}`,
+  )
 </script>
 
-{#if finished || frozen}
+{#if finished || frozen || alarmLabel !== null}
   <span class:compact class="states" aria-label="Template state">
     {#if finished}<span class="state finished">Finished</span>{/if}
     {#if frozen}<span class="state frozen">Timelapse frozen</span>{/if}
     {#if finished && griefed}<span class="state griefed" role="status">Grief detected</span>{/if}
+    {#if alarmLabel !== null}<span class="state alarm" class:sustained={alarmKind === 'sustained-griefing'} role="status">{alarmLabel}</span>{/if}
   </span>
 {/if}
 
@@ -47,6 +56,8 @@
   .finished { color: var(--_finished); }
   .frozen { color: var(--_frozen); }
   .griefed { color: var(--_danger); font-weight: 750; }
+  .alarm { color: var(--_danger); font-weight: 750; }
+  .alarm.sustained { background: color-mix(in oklch, var(--_danger) 18%, transparent); }
 
   .compact .state {
     min-block-size: 1.15rem;

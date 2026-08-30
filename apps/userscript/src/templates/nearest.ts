@@ -1,4 +1,4 @@
-import { TRANSPARENT_INDEX } from '@caelestis/shared'
+import { sameTemplateSurface, TRANSPARENT_INDEX, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { viewportCentre } from '../main.js'
 import { claimedHiddenFor } from './colour-filter.js'
 import {
@@ -45,7 +45,9 @@ export const focusedTemplate = (options: FocusedTemplateOptions = {}): PlacedTem
   let containingVisible: PlacedTemplate | null = null
   let containingHidden: PlacedTemplate | null = null
   let nearestVisible: { template: PlacedTemplate; distance: number } | null = null
-  for (const template of displayTemplates()) {
+  for (const template of displayTemplates().filter((candidate) =>
+    sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
+  )) {
     const visible = isTemplateVisible(template)
     const sourceX = sourceXAt(template, centre.x)
     const sourceY = centre.y - template.originY
