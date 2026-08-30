@@ -20,7 +20,9 @@ import {
   activeServerToken,
   type ConnectedServer,
   getState,
+  isCurrentServerConnection,
   serverConnectionIdentity,
+  serverConnectionSignal,
 } from './state.js'
 import { syncServerTemplates } from './templates/server-sync.js'
 
@@ -91,7 +93,9 @@ const readServer = async (
   const requestSequence = (requestSequences.get(key) ?? 0) + 1
   requestSequences.set(key, requestSequence)
   const requestCurrent = (): boolean =>
-    requestSequences.get(key) === requestSequence && currentSurface(surface, ownGeneration)
+    requestSequences.get(key) === requestSequence &&
+    currentSurface(surface, ownGeneration) &&
+    isCurrentServerConnection(server)
   try {
     count('alliance-sync:manifest requested')
     const token = activeServerToken(server)
@@ -104,7 +108,11 @@ const readServer = async (
             ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
             ...(token === null ? {} : { authorization: `Bearer ${token}` }),
           },
-          signal: AbortSignal.any([signal, AbortSignal.timeout(MANIFEST_TIMEOUT_MS)]),
+          signal: AbortSignal.any([
+            signal,
+            serverConnectionSignal(server),
+            AbortSignal.timeout(MANIFEST_TIMEOUT_MS),
+          ]),
         }),
     )
     if (!response.ok || !requestCurrent()) {

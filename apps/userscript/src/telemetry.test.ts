@@ -34,6 +34,7 @@ vi.mock('./state.js', () => ({
   getState: () => harness.state,
   isCurrentServerConnection: () => true,
   serverConnectionIdentity: (server: object) => server,
+  serverConnectionSignal: () => new AbortController().signal,
   onServerContents: (listener: (server: unknown, contents: unknown) => void) => {
     harness.serverContents = listener
     return vi.fn()

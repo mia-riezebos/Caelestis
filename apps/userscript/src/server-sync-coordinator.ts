@@ -37,14 +37,18 @@ interface Schedule {
   readonly dueAt: number
 }
 
+interface PendingResourceRequest {
+  allReason?: ReconciliationReason
+  readonly servers: Map<object, ReconciliationReason>
+}
+
 const resources = new Map<string, ServerSyncResource>()
 const schedules = new Map<string, Schedule>()
 const running = new WeakMap<object, Map<string, Promise<void>>>()
 let installed = false
 let timer: ReturnType<typeof setTimeout> | null = null
 let sweepRun: Promise<void> | null = null
-let requestedResources: Set<string> | null = new Set()
-let requestedReason: ReconciliationReason = 'connect'
+let requestedResources: Map<string, PendingResourceRequest> | null = new Map()
 
 const connected = (): readonly ConnectedServer[] =>
   getState().servers.filter(
@@ -138,8 +142,7 @@ const runResource = async (
 }
 
 const sweep = async (
-  reason: ReconciliationReason,
-  selected: ReadonlySet<string> | null,
+  requested: ReadonlyMap<string, PendingResourceRequest> | null,
 ): Promise<void> => {
   if (!activeDocument()) return
   const now = Date.now()
@@ -151,9 +154,13 @@ const sweep = async (
       if (scope === null) continue
       const key = scheduleKey(server, scope, resource.id)
       liveKeys.add(key)
-      if (selected !== null && !selected.has(resource.id)) continue
+      const explicit = requested?.get(resource.id)
+      const targeted = explicit?.servers.get(serverConnectionIdentity(server))
+      if (requested !== null && explicit?.allReason === undefined && targeted === undefined)
+        continue
       const scheduled = schedules.get(key)
-      if (selected === null && scheduled !== undefined && scheduled.dueAt > now) continue
+      if (requested === null && scheduled !== undefined && scheduled.dueAt > now) continue
+      const reason = targeted ?? explicit?.allReason ?? 'interval'
       work.push(() => runResource(resource, server, scope, reason))
     }
   }
@@ -170,11 +177,9 @@ function runRequestedSweep(): void {
     let first = true
     while (activeDocument() && (first || requestedResources !== null)) {
       first = false
-      const selected = requestedResources
-      const reason = requestedReason
+      const requested = requestedResources
       requestedResources = null
-      requestedReason = 'interval'
-      await sweep(reason, selected)
+      await sweep(requested)
     }
   })().finally(() => {
     sweepRun = null
@@ -183,17 +188,18 @@ function runRequestedSweep(): void {
 }
 
 /** Coalesce event bursts into one bounded active-document refresh. */
-export const requestServerSync = (reason: ReconciliationReason, resource?: string): void => {
-  if (requestedResources !== null && resource === undefined) {
-    requestedResources = new Set(resources.keys())
-  } else if (resource === undefined) {
-    requestedResources = new Set(resources.keys())
-  } else if (requestedResources === null) {
-    requestedResources = new Set([resource])
-  } else {
-    requestedResources.add(resource)
+export const requestServerSync = (
+  reason: ReconciliationReason,
+  resource?: string,
+  server?: ConnectedServer,
+): void => {
+  requestedResources ??= new Map()
+  for (const id of resource === undefined ? resources.keys() : [resource]) {
+    const pending: PendingResourceRequest = requestedResources.get(id) ?? { servers: new Map() }
+    if (server === undefined) pending.allReason = reason
+    else pending.servers.set(serverConnectionIdentity(server), reason)
+    requestedResources.set(id, pending)
   }
-  requestedReason = reason
   armTimer()
 }
 

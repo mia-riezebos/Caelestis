@@ -35,6 +35,7 @@ import {
   onStateChange,
   type ServerContents,
   serverConnectionIdentity,
+  serverConnectionSignal,
 } from './state.js'
 import type { TemplateColourProgress, TemplateProgress } from './templates/mismatch.js'
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
@@ -148,7 +149,10 @@ const fetchWithRetry = async (url: string, init: RequestInit): Promise<Response 
     try {
       const response = await fetch(url, {
         ...init,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal:
+          init.signal == null
+            ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+            : AbortSignal.any([init.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       })
       if (response.ok || (response.status >= 400 && response.status < 500)) return response
     } catch {
@@ -250,7 +254,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     ),
   )
   const uploaded = await uploadWanted(server, identity, entries, wanted)
-  requestServerSync('post-offer', 'telemetry-status')
+  requestServerSync('post-offer', 'telemetry-status', server)
   const previousDedupe = offered.get(server.url)
   const dedupe =
     previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
@@ -408,7 +412,7 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   if (!isCurrentServerConnection(server)) return
   coverage.set(server.url, { server, tiles: coverageFrom(contents), contents })
   replayRecent(server)
-  requestServerSync('manifest-applied', 'telemetry-alarms')
+  requestServerSync('manifest-applied', 'telemetry-alarms', server)
 }
 
 const alarmFrom = (value: unknown): Alarm | null => {
@@ -499,6 +503,7 @@ const refreshStatus = async (
             ...authHeaders(server),
             ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
           },
+          signal: serverConnectionSignal(server),
         },
       )
       if (response === null || !response.ok || !isCurrentServerConnection(server))
@@ -560,6 +565,7 @@ const refreshAlarms = async (
             ...authHeaders(server),
             ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
           },
+          signal: serverConnectionSignal(server),
         },
       )
       if (

@@ -488,6 +488,42 @@ describe('server state boundaries', () => {
     await expect(picker).resolves.toEqual({ status: 'ok', nodes: [newerNode] })
   })
 
+  it('cancels a shared manifest read when its connection is removed', async () => {
+    let aborted = false
+    const fetchMock = vi.fn<typeof fetch>(
+      async (_input, init) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+              reject(init.signal?.reason)
+            },
+            { once: true },
+          )
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { listServerContents, removeServer, setState } = await import('./state.js')
+    const server = {
+      url: 'https://retired.example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+
+    const pending = listServerContents(server)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    removeServer(server.url)
+
+    await expect(pending).resolves.toBeNull()
+    expect(aborted).toBe(true)
+  })
+
   it('keeps folder helpers on the retained tree when the newest manifest is rejected', async () => {
     const acceptedNode = {
       id: NODE_A,

@@ -48,7 +48,9 @@ vi.mock('./alliance-surface.js', () => ({
 vi.mock('./state.js', () => ({
   activeServerToken: () => null,
   getState: () => state.current,
+  isCurrentServerConnection: () => true,
   serverConnectionIdentity: (server: object) => server,
+  serverConnectionSignal: () => new AbortController().signal,
   onStateChange: (listener: (next: { servers: readonly MockServer[] }) => void) => {
     state.listener = listener
   },
