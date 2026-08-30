@@ -20,7 +20,7 @@ import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
 import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
-import { userscriptRequestHeaders } from './server-observability.js'
+import { observedUserscriptRequest } from './server-observability.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -139,9 +139,9 @@ const fetchWithRetry = async (
 ): Promise<Response | null> => {
   for (let attempt = 0; attempt < RETRIES; attempt += 1) {
     try {
-      const response = await fetch(url, {
-        ...init,
-        headers: userscriptRequestHeaders(init.headers, metadata),
+      const request = observedUserscriptRequest(url, init, metadata)
+      const response = await fetch(request.input, {
+        ...request.init,
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       if (response.ok || (response.status >= 400 && response.status < 500)) return response
