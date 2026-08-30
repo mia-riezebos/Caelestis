@@ -9,6 +9,7 @@ import {
 } from '../runtime/backend-runtime.js'
 import { BackendStorageError, SqlStoreReadError } from '../runtime/errors.js'
 import { runBackendHttp } from '../runtime/hono.js'
+import { mergeServerInfo } from '../server-info.js'
 import { publishManifestChange } from '../status-read-model/port.js'
 
 const MAX_NAME_LENGTH = 256
@@ -21,20 +22,6 @@ const MAX_DESCRIPTION_LENGTH = 4096
  * redeploy — the whole point of moving it out of `[vars]`. The vars stay the value a fresh
  * deployment begins with; anything set here wins for as long as it is set.
  */
-const mergeServerInfo = (
-  base: ServerInfo,
-  settings: { readonly name: string | null; readonly description: string | null },
-): ServerInfo => {
-  const description = settings.description ?? base.description
-  const resolved = {
-    id: base.id,
-    name: settings.name ?? base.name,
-    auth: base.auth,
-    ...(base.liveSync === undefined ? {} : { liveSync: base.liveSync }),
-  }
-  return description === undefined || description === null ? resolved : { ...resolved, description }
-}
-
 export const resolveServerInfoEffect = (
   base: ServerInfo,
 ): Effect.Effect<ServerInfo, SqlStoreReadError, SqlStoreService> =>
