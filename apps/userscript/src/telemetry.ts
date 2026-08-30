@@ -7,7 +7,9 @@ import {
   type StatusResponse,
   seconds,
   sha256Hex,
+  TELEMETRY_STATUS_POLL_MS,
   type TemplateStatus,
+  TILE_OFFER_BATCH_DELAY_MS,
   type TileCoord,
   type TileOffer,
   tileKey,
@@ -31,8 +33,6 @@ import type { TemplateColourProgress, TemplateProgress } from './templates/misma
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
 import { accountIdentity, loadAccount } from './wplace-account.js'
 
-const OFFER_DELAY_MS = 250
-const STATUS_POLL_MS = 30_000
 const REQUEST_TIMEOUT_MS = 15_000
 const RETRIES = 3
 const MAX_RECENT_TILES = 32
@@ -259,7 +259,10 @@ const scheduleFlush = (serverUrl: string): void => {
   if (flushTimers.has(serverUrl)) return
   flushTimers.set(
     serverUrl,
-    setTimeout(() => void flushOffers(serverUrl).catch(reportTelemetryError), OFFER_DELAY_MS),
+    setTimeout(
+      () => void flushOffers(serverUrl).catch(reportTelemetryError),
+      TILE_OFFER_BATCH_DELAY_MS,
+    ),
   )
 }
 
@@ -693,7 +696,7 @@ export const installTelemetry = (): void => {
       if (server.status === 'connected')
         void refreshServerTelemetry(server).catch(reportTelemetryError)
     }
-  }, STATUS_POLL_MS)
+  }, TELEMETRY_STATUS_POLL_MS)
   for (const server of getState().servers) {
     if (server.status === 'connected')
       void refreshServerTelemetry(server).catch(reportTelemetryError)

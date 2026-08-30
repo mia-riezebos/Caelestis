@@ -63,7 +63,7 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
 ## TODOs
 
 - [x] Reconcile the capacity contract with the current telemetry pipeline and Cloudflare limits.
-- [ ] Implement and test the capacity model for Workers, Durable Objects, D1, and R2.
+- [x] Implement and test the capacity model for Workers, Durable Objects, D1, and R2.
 - [ ] Add a repeatable live measurement command and compare a production window with the model.
 - [ ] Document the measured ceiling and first knob in the README, then run repository validation.
 
@@ -81,6 +81,11 @@ Workers Paid" — plus whatever the model reveals about which knob to turn first
   therefore report cumulative blob growth rather than implying that SQL retention frees R2 space.
 - `per-template` sharding cannot extend the free request quota. It becomes relevant only if a paid
   deployment measures single-shard latency or overload before its account quotas.
+- The model uses Poisson occupancy for active time buckets and fixed-window request batching. It
+  reports logical D1 mutations and a conservative table-plus-index ceiling, including the full
+  lifetime cost of each decay-ladder row. Live analytics supplies the actual billed count.
+- Focused validation: `pnpm --dir apps/backend exec vitest run src/capacity/model.test.ts` passed 7
+  tests; backend, shared, and userscript type checks passed after building workspace outputs.
 - Limit sources, checked 2026-08-30:
   - https://developers.cloudflare.com/workers/platform/limits/
   - https://developers.cloudflare.com/durable-objects/platform/pricing/
