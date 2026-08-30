@@ -250,13 +250,17 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   const server = pending.server
   const season = server.season
   if (season === null) return
-  await loadAccount()
-  const identity = accountIdentity()
-  if (identity === null) return
   const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
   const owner = serverConnectionIdentity(server)
   for (const entry of entries)
     tileOfferAcknowledgements.started(server.url, owner, season, offerKey(entry))
+  await loadAccount()
+  const identity = accountIdentity()
+  if (identity === null || !isCurrentServerConnection(server)) {
+    for (const entry of entries)
+      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+    return
+  }
   tileOfferMetric('requested', entries.length)
   const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
     method: 'POST',
