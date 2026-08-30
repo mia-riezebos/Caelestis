@@ -161,7 +161,11 @@ const sweep = async (
       const scheduled = schedules.get(key)
       if (requested === null && scheduled !== undefined && scheduled.dueAt > now) continue
       const reason = targeted ?? explicit?.allReason ?? 'interval'
-      work.push(() => runResource(resource, server, scope, reason))
+      work.push(() =>
+        isCurrentServerConnection(server)
+          ? runResource(resource, server, scope, reason)
+          : Promise.resolve(),
+      )
     }
   }
   for (const key of schedules.keys()) if (!liveKeys.has(key)) schedules.delete(key)

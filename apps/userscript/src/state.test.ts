@@ -524,6 +524,26 @@ describe('server state boundaries', () => {
     expect(aborted).toBe(true)
   })
 
+  it('keeps retirement observable before a connection signal is first requested', async () => {
+    const { removeServer, serverConnectionIdentity, serverConnectionSignal, setState } =
+      await import('./state.js')
+    const server = {
+      url: 'https://queued-retired.example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+    serverConnectionIdentity(server)
+
+    removeServer(server.url)
+
+    expect(serverConnectionSignal(server).aborted).toBe(true)
+  })
+
   it('keeps folder helpers on the retained tree when the newest manifest is rejected', async () => {
     const acceptedNode = {
       id: NODE_A,

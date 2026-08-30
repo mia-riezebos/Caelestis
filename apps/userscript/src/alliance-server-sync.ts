@@ -72,7 +72,7 @@ const readServer = async (
   reason: ReconciliationReason,
 ): Promise<ServerSyncResult> => {
   count('alliance-sync:server considered')
-  if (server.status !== 'connected') {
+  if (server.status !== 'connected' || !isCurrentServerConnection(server)) {
     count('alliance-sync:server not connected')
     return { status: 'skipped' }
   }
