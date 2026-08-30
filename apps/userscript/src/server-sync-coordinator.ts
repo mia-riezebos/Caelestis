@@ -13,9 +13,12 @@ const MAX_UNCHANGED_POLL_MS = 5 * 60_000
 const JITTER_RANGE_MS = 30_000
 const REFRESH_CONCURRENCY = 4
 const LIVE_PROTOCOL = 'caelestis.live.v1'
-const LIVE_AUTH_PREFIX = 'caelestis.auth.'
+const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_RECONNECT_MS = 30_000
+const LIVE_HEARTBEAT_MS = 15 * 60_000
+const LIVE_HEARTBEAT_TIMEOUT_MS = 10_000
+const LIVE_RECOVERY_POLL_MS = 15 * 60_000
 
 export interface ServerSyncResult {
   readonly status: 'changed' | 'unchanged' | 'failed' | 'skipped'
@@ -55,6 +58,8 @@ interface LiveConnection {
   readonly server: ConnectedServer
   socket: WebSocket | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
+  heartbeatTimer: ReturnType<typeof setTimeout> | null
+  heartbeatTimeout: ReturnType<typeof setTimeout> | null
   attempts: number
   healthy: boolean
 }
@@ -88,6 +93,14 @@ const liveHealthy = (server: ConnectedServer): boolean => {
   return held?.healthy === true && held.server === server && isCurrentServerConnection(server)
 }
 
+const liveCredentialProtocol = (token: string): string => {
+  const bytes = new TextEncoder().encode(token)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const encoded = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return `${LIVE_AUTH_PREFIX}${encoded}`
+}
+
 /** Terminal unchanged cadence is never below five minutes; jitter only spreads it later. */
 export const adaptiveServerSyncDelay = (unchanged: number, jitter = Math.random()): number => {
   const base = Math.min(INITIAL_POLL_MS * 2 ** Math.max(0, unchanged), MAX_UNCHANGED_POLL_MS)
@@ -107,7 +120,6 @@ const armTimer = (): void => {
   let next = Number.POSITIVE_INFINITY
   for (const schedule of schedules.values()) {
     if (!isCurrentServerConnection(schedule.server)) continue
-    if (resources.get(schedule.resource)?.live === true && liveHealthy(schedule.server)) continue
     next = Math.min(next, schedule.dueAt)
   }
   if (requestedResources !== null || next !== Number.POSITIVE_INFINITY) {
@@ -128,6 +140,10 @@ const applyResult = (
   const revisionChanged = result.revision !== undefined && result.revision !== previous?.revision
   const changed = result.status === 'changed' || revisionChanged
   const unchanged = result.status === 'failed' || changed ? 0 : (previous?.unchanged ?? 0) + 1
+  const delay =
+    result.status !== 'failed' && resources.get(resource)?.live === true && liveHealthy(server)
+      ? LIVE_RECOVERY_POLL_MS
+      : adaptiveServerSyncDelay(unchanged)
   schedules.set(key, {
     server,
     scope,
@@ -138,7 +154,7 @@ const applyResult = (
         : { revision: previous.revision }
       : { revision: result.revision }),
     unchanged,
-    dueAt: Date.now() + adaptiveServerSyncDelay(unchanged),
+    dueAt: Date.now() + delay,
   })
 }
 
@@ -186,7 +202,6 @@ const sweep = async (
       if (requested !== null && explicit?.allReason === undefined && targeted === undefined)
         continue
       const scheduled = schedules.get(key)
-      if (requested === null && resource.live === true && liveHealthy(server)) continue
       if (requested === null && scheduled !== undefined && scheduled.dueAt > now) continue
       const reason = targeted ?? explicit?.allReason ?? 'interval'
       work.push(() =>
@@ -365,11 +380,37 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
 
 const closeLiveConnection = (connection: LiveConnection): void => {
   if (connection.reconnectTimer !== null) clearTimeout(connection.reconnectTimer)
+  if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
+  if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
   connection.reconnectTimer = null
+  connection.heartbeatTimer = null
+  connection.heartbeatTimeout = null
   connection.healthy = false
   const socket = connection.socket
   connection.socket = null
   if (socket !== null && socket.readyState < 2) socket.close(1000, 'retired')
+}
+
+const armLiveHeartbeat = (connection: LiveConnection): void => {
+  if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
+  if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
+  connection.heartbeatTimeout = null
+  connection.heartbeatTimer = setTimeout(() => {
+    connection.heartbeatTimer = null
+    const socket = connection.socket
+    if (socket === null || socket.readyState !== 1) return
+    socket.send('ping')
+    connection.heartbeatTimeout = setTimeout(() => {
+      connection.heartbeatTimeout = null
+      if (connection.socket === socket) socket.close(1001, 'live sync heartbeat timeout')
+    }, LIVE_HEARTBEAT_TIMEOUT_MS)
+  }, LIVE_HEARTBEAT_MS)
+}
+
+const confirmLiveConnection = (connection: LiveConnection): void => {
+  connection.attempts = 0
+  connection.healthy = true
+  armLiveHeartbeat(connection)
 }
 
 const scheduleLiveReconnect = (connection: LiveConnection): void => {
@@ -400,7 +441,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
   if (revision !== undefined) endpoint.searchParams.set('revision', revision)
   const protocols = [LIVE_PROTOCOL]
   if (server.token !== null && server.tokenUsable !== false) {
-    protocols.push(`${LIVE_AUTH_PREFIX}${server.token}`)
+    protocols.push(liveCredentialProtocol(server.token))
   }
   let socket: WebSocket
   try {
@@ -413,19 +454,29 @@ const openLiveConnection = (connection: LiveConnection): void => {
   socket.addEventListener('open', () => {
     if (connection.socket !== socket || !isCurrentServerConnection(server)) return
     connection.healthy = true
-    connection.attempts = 0
+    armLiveHeartbeat(connection)
     requestServerSync('connect', 'telemetry-status', server)
     requestServerSync('connect', 'world-manifest', server)
     armTimer()
   })
   socket.addEventListener('message', (message) => {
-    if (connection.socket === socket) handleLiveEvent(server, message.data)
+    if (connection.socket !== socket) return
+    if (message.data === 'pong') {
+      confirmLiveConnection(connection)
+      return
+    }
+    handleLiveEvent(server, message.data)
+    confirmLiveConnection(connection)
   })
   socket.addEventListener('error', () => socket.close())
   socket.addEventListener('close', () => {
     if (connection.socket !== socket) return
     connection.socket = null
     connection.healthy = false
+    if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
+    if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
+    connection.heartbeatTimer = null
+    connection.heartbeatTimeout = null
     if (!isCurrentServerConnection(server)) return
     requestServerSync('reconnect', 'telemetry-status', server)
     requestServerSync('reconnect', 'world-manifest', server)
@@ -446,6 +497,8 @@ const reconcileLiveConnections = (): void => {
         server,
         socket: null,
         reconnectTimer: null,
+        heartbeatTimer: null,
+        heartbeatTimeout: null,
         attempts: 0,
         healthy: false,
       }

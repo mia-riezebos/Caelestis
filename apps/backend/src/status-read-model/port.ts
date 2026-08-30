@@ -20,6 +20,8 @@ export interface StatusReadModelPort {
   ) => Promise<StatusSnapshotRead>
   /** Optional on portable adapters; production uses it to wake hibernating manifest subscribers. */
   readonly notifyManifestChange?: (season: number) => Promise<void>
+  /** Optional on portable adapters; production closes live sessions for a revoked credential. */
+  readonly closeCredential?: (season: number, tokenHash: string) => Promise<void>
 }
 
 /** Projection failure never changes the outcome of the authoritative write that preceded it. */
@@ -43,6 +45,19 @@ export const publishManifestChange = async (
 ): Promise<void> => {
   try {
     await readModel.notifyManifestChange?.(season)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+/** Credential revocation is authoritative even if the optional live-session cleanup fails. */
+export const closeLiveCredential = async (
+  readModel: StatusReadModelPort,
+  season: number,
+  tokenHash: string,
+): Promise<void> => {
+  try {
+    await readModel.closeCredential?.(season, tokenHash)
   } catch (error) {
     console.error(error)
   }

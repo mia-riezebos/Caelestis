@@ -53,7 +53,20 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
 const LIVE_PROTOCOL = 'caelestis.live.v1'
-const LIVE_AUTH_PREFIX = 'caelestis.auth.'
+const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
+
+const decodeLiveCredential = (encoded: string): string | null => {
+  if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return null
+  try {
+    const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')
+    const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0))
+    const token = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes)
+    return token.length === 0 ? null : token
+  } catch {
+    return null
+  }
+}
 
 const liveAuthorization = (
   header: string | undefined,
@@ -65,8 +78,8 @@ const liveAuthorization = (
   if (credentials.length > 1) return null
   const credential = credentials[0]
   if (credential === undefined) return {}
-  const token = credential.slice(LIVE_AUTH_PREFIX.length)
-  return /^[A-Z0-9]+$/.test(token) ? { authorization: `Bearer ${token}` } : null
+  const token = decodeLiveCredential(credential.slice(LIVE_AUTH_PREFIX.length))
+  return token === null ? null : { authorization: `Bearer ${token}` }
 }
 
 const wholeNumber = (value: string | undefined): number | null => {
@@ -156,6 +169,7 @@ export const createTelemetryRoutes = (
       connection: {
         readonly season: number
         readonly scope: 'public' | 'admin'
+        readonly tokenHash: string
         readonly lastRevision: number | null
       },
     ) => Promise<Response>
@@ -195,7 +209,12 @@ export const createTelemetryRoutes = (
       if (lastRevisionRaw !== undefined && lastRevision === null) {
         return c.json({ error: 'revision must be a non-negative integer' }, 400)
       }
-      return options.connectStatusLive(c.req.raw, { season, scope, lastRevision })
+      return options.connectStatusLive(c.req.raw, {
+        season,
+        scope,
+        tokenHash: c.get('caller').tokenHash,
+        lastRevision,
+      })
     },
   )
 
