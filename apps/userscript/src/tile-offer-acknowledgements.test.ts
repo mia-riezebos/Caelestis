@@ -72,6 +72,18 @@ describe('tile offer acknowledgements', () => {
     expect(afterRestart.decision('https://one.example', owner, 1, '1/2\u0000hash')).toBe('fresh')
   })
 
+  it('invalidates only rejection receipts when manifest coverage changes', () => {
+    const receipts = book()
+    const owner = {}
+    receipts.rejected('https://one.example', owner, 1, '1/2\u0000rejected')
+    receipts.acknowledged('https://one.example', owner, 1, '1/3\u0000accepted')
+
+    receipts.invalidateRejections('https://one.example', owner, 1)
+
+    expect(receipts.decision('https://one.example', owner, 1, '1/2\u0000rejected')).toBe('fresh')
+    expect(receipts.decision('https://one.example', owner, 1, '1/3\u0000accepted')).toBe('avoid')
+  })
+
   it('bounds receipts and server scopes with oldest-first eviction', () => {
     const receipts = book()
     const one = {}

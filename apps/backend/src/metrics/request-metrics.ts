@@ -33,9 +33,27 @@ interface RequestMetricState {
   d1UnmeasuredQueries: number
 }
 
+export interface D1Usage {
+  readonly rowsRead: number
+  readonly rowsWritten: number
+  readonly measuredQueries: number
+  readonly unmeasuredQueries: number
+}
+
+export interface MeasuredD1Operation<A> {
+  readonly value: A
+  readonly usage: D1Usage
+}
+
 type MetricDataset = Pick<AnalyticsEngineDataset, 'writeDataPoint'>
 
 const requestMetricStorage = new AsyncLocalStorage<RequestMetricState>()
+const d1UsageStorage = new AsyncLocalStorage<{
+  rowsRead: number
+  rowsWritten: number
+  measuredQueries: number
+  unmeasuredQueries: number
+}>()
 const deploymentVersion =
   typeof __CAELESTIS_DEPLOYMENT_VERSION__ === 'string'
     ? __CAELESTIS_DEPLOYMENT_VERSION__.slice(0, 12)
@@ -109,18 +127,47 @@ const finiteCount = (value: unknown): number =>
 const recordMeasuredD1Queries = (count = 1): void => {
   const state = requestMetricStorage.getStore()
   if (state !== undefined) state.d1MeasuredQueries += count
+  const usage = d1UsageStorage.getStore()
+  if (usage !== undefined) usage.measuredQueries += count
 }
 
 const recordD1Rows = (result: D1Result): void => {
   const state = requestMetricStorage.getStore()
-  if (state === undefined) return
-  state.d1RowsRead += finiteCount(result.meta.rows_read)
-  state.d1RowsWritten += finiteCount(result.meta.rows_written)
+  const rowsRead = finiteCount(result.meta.rows_read)
+  const rowsWritten = finiteCount(result.meta.rows_written)
+  if (state !== undefined) {
+    state.d1RowsRead += rowsRead
+    state.d1RowsWritten += rowsWritten
+  }
+  const usage = d1UsageStorage.getStore()
+  if (usage !== undefined) {
+    usage.rowsRead += rowsRead
+    usage.rowsWritten += rowsWritten
+  }
 }
 
 const recordUnmeasuredD1Query = (): void => {
   const state = requestMetricStorage.getStore()
   if (state !== undefined) state.d1UnmeasuredQueries++
+  const usage = d1UsageStorage.getStore()
+  if (usage !== undefined) usage.unmeasuredQueries++
+}
+
+/** Collect D1 work inside a Durable Object so its caller can attribute the RPC to one request. */
+export const measureD1Usage = async <A>(run: () => Promise<A>): Promise<MeasuredD1Operation<A>> => {
+  const usage = { rowsRead: 0, rowsWritten: 0, measuredQueries: 0, unmeasuredQueries: 0 }
+  const value = await d1UsageStorage.run(usage, run)
+  return { value, usage }
+}
+
+/** Merge Durable Object D1 metadata into the originating Worker's active request metric. */
+export const mergeD1Usage = (usage: D1Usage): void => {
+  const state = requestMetricStorage.getStore()
+  if (state === undefined) return
+  state.d1RowsRead += finiteCount(usage.rowsRead)
+  state.d1RowsWritten += finiteCount(usage.rowsWritten)
+  state.d1MeasuredQueries += finiteCount(usage.measuredQueries)
+  state.d1UnmeasuredQueries += finiteCount(usage.unmeasuredQueries)
 }
 
 export const recordCacheOutcome = (outcome: Exclude<CacheOutcome, 'none'>): void => {

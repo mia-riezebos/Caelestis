@@ -22,6 +22,7 @@ const harness = vi.hoisted(() => ({
 
 const coordinator = vi.hoisted(() => ({
   snapshots: [] as unknown[],
+  requests: [] as Array<{ reason: string; resourceId?: string }>,
   resources: new Map<
     string,
     {
@@ -96,6 +97,7 @@ vi.mock('./server-sync-coordinator.js', () => ({
     })
   },
   requestServerSync: (reason: 'connect' | 'manifest-applied', resourceId?: string) => {
+    coordinator.requests.push({ reason, ...(resourceId === undefined ? {} : { resourceId }) })
     queueMicrotask(() => {
       for (const [id, resource] of coordinator.resources) {
         if (resourceId !== undefined && resourceId !== id) continue
@@ -157,6 +159,7 @@ beforeEach(() => {
   harness.retiredServers = new WeakSet<object>()
   coordinator.resources.clear()
   coordinator.snapshots = []
+  coordinator.requests = []
   harness.state = { shareTiles: true, reportPaints: true, servers: [server], hiddenScopes: [] }
 })
 
@@ -236,6 +239,66 @@ describe('server telemetry client', () => {
     harness.stateListeners.at(-1)?.()
     expect(serverAlarmFor(server, template)).toBeNull()
     expect(changed).toHaveBeenCalled()
+  })
+
+  it('refreshes status and alarms after applying a manifest', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ templates: [], alarms: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    coordinator.requests = []
+
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    expect(coordinator.requests).toEqual([
+      { reason: 'manifest-applied', resourceId: 'telemetry-status' },
+      { reason: 'manifest-applied', resourceId: 'telemetry-alarms' },
+    ])
+  })
+
+  it('does not apply an alarm response parsed against superseded coverage', async () => {
+    let releaseBody: ((value: unknown) => void) | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (!String(input).includes('/telemetry/alarms')) return Response.json({ templates: [] })
+        return {
+          ok: true,
+          json: () =>
+            new Promise((resolve) => {
+              releaseBody = resolve
+            }),
+        } as Response
+      }),
+    )
+    const { installTelemetry, onServerAlarmChange, serverAlarmFor } = await import('./telemetry.js')
+    const changed = vi.fn()
+    onServerAlarmChange(changed)
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    const resource = coordinator.resources.get('telemetry-alarms')
+    const refreshing = resource?.refresh(server, 'connect', 'recovery')
+    await vi.waitFor(() => expect(releaseBody).toBeTypeOf('function'))
+
+    harness.serverContents?.(server, { nodes: [], templates: [{ ...template }] })
+    releaseBody?.({
+      alarms: [
+        {
+          id: '01890f3e-7b2c-7abc-8def-0123456789ac',
+          templateId: template.id,
+          kind: 'regression',
+          pixelsLost: 12,
+          firstSeen: 1_000,
+          lastSeen: 2_000,
+        },
+      ],
+    })
+
+    await expect(refreshing).resolves.toEqual({ status: 'failed' })
+    expect(serverAlarmFor(server, template)).toBeNull()
+    expect(changed).not.toHaveBeenCalled()
   })
 
   it('reads tile bodies only while a connected server may want them', async () => {
@@ -656,7 +719,11 @@ describe('server telemetry client', () => {
     )
     const { installTelemetry } = await import('./telemetry.js')
     installTelemetry()
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.serverContents?.(server, {
+      revision: 'manifest-1',
+      nodes: [],
+      templates: [template],
+    })
 
     const bytes = new Uint8Array([1, 2, 3])
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
@@ -666,6 +733,21 @@ describe('server telemetry client', () => {
     expect(offers).toBe(1)
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-rejected', 1)
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-avoided', 1)
+
+    harness.serverContents?.(server, {
+      revision: 'manifest-1',
+      nodes: [],
+      templates: [{ ...template }],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+
+    harness.serverContents?.(server, {
+      revision: 'manifest-2',
+      nodes: [],
+      templates: [{ ...template, chunks: [...template.chunks, { tile: '2/2', hash: 'other' }] }],
+    })
+    await vi.waitFor(() => expect(offers).toBe(2))
   })
 
   it('strips out-of-scope tiles from paint reports', async () => {
