@@ -80,6 +80,65 @@ describe('active alliance surface observation', () => {
     })
   })
 
+  it('keeps the member alliance identity for assets after viewing another public HQ', async () => {
+    window.fetch = vi.fn<typeof fetch>((input) =>
+      String(input).endsWith('/alliance') ? json({ id: 111 }) : json({}),
+    )
+    installAllianceSurfaceObserver()
+    const hq = stage('Headquarters canvas')
+    await window.fetch('https://backend.wplace.live/alliance')
+    await window.fetch('https://backend.wplace.live/alliances/222/headquarters/snapshot', {
+      method: 'POST',
+    })
+    await settle()
+    expect(activeAllianceSurface()?.surface).toEqual({
+      kind: 'alliance-headquarters',
+      allianceId: 222,
+    })
+
+    hq.remove()
+    const asset = stage('Alliance asset canvas')
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 64
+    asset.querySelector('.artboard-frame')?.append(canvas)
+    await settle()
+
+    expect(activeAllianceSurface()?.surface).toEqual({
+      kind: 'alliance-picture',
+      allianceId: 111,
+    })
+  })
+
+  it('does not let an older member HQ response replace a public HQ request', async () => {
+    let finishMemberHq!: (response: Response) => void
+    const memberHq = new Promise<Response>((resolve) => {
+      finishMemberHq = resolve
+    })
+    window.fetch = vi.fn<typeof fetch>((input) => {
+      const url = String(input)
+      if (url.endsWith('/alliance')) return json({ id: 111 })
+      if (url.endsWith('/alliance/headquarters')) return memberHq
+      return json({})
+    })
+    installAllianceSurfaceObserver()
+    stage('Headquarters canvas')
+    await window.fetch('https://backend.wplace.live/alliance')
+    const older = window.fetch('https://backend.wplace.live/alliance/headquarters')
+    await window.fetch('https://backend.wplace.live/alliances/222/headquarters/snapshot', {
+      method: 'POST',
+    })
+
+    finishMemberHq(new Response(JSON.stringify({ allianceId: 111 })))
+    await older
+    await settle()
+
+    expect(activeAllianceSurface()?.surface).toEqual({
+      kind: 'alliance-headquarters',
+      allianceId: 222,
+    })
+  })
+
   it('requires the stage to belong to an open dialog and follows Svelte remounts', async () => {
     window.fetch = vi.fn<typeof fetch>(() => json({ allianceId: 535_245 }))
     installAllianceSurfaceObserver()
@@ -182,6 +241,47 @@ describe('active alliance surface observation', () => {
       surface: { kind: 'alliance-banner', allianceId: 535_245 },
       draftId: 130,
     })
+  })
+
+  it('uses the new asset canvas while its metadata request is pending', async () => {
+    let finishBanner!: (response: Response) => void
+    const banner = new Promise<Response>((resolve) => {
+      finishBanner = resolve
+    })
+    window.fetch = vi.fn<typeof fetch>((input) => {
+      const url = String(input)
+      if (url.endsWith('/alliance')) return json({ id: 535_245 })
+      if (url.includes('/129/')) return json({ assetType: 'picture', draftId: 129 })
+      return banner
+    })
+    installAllianceSurfaceObserver()
+    const dialog = stage('Alliance asset canvas')
+    const frame = dialog.querySelector('.artboard-frame')
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 64
+    frame?.append(canvas)
+    await window.fetch('https://backend.wplace.live/alliance')
+    await window.fetch(
+      'https://backend.wplace.live/alliance/assets/drafts/129/canvas?metadataOnly=true',
+    )
+    await settle()
+
+    canvas.width = 384
+    canvas.height = 128
+    const pending = window.fetch(
+      'https://backend.wplace.live/alliance/assets/drafts/130/canvas?metadataOnly=true',
+    )
+    frame?.classList.add('banner-editor')
+    await settle()
+
+    expect(activeAllianceSurface()).toMatchObject({
+      surface: { kind: 'alliance-banner', allianceId: 535_245 },
+      draftId: null,
+    })
+
+    finishBanner(new Response(JSON.stringify({ assetType: 'banner', draftId: 130 })))
+    await pending
   })
 
   it('notifies only when the active surface identity or DOM attachment changes', async () => {

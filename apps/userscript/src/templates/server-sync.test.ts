@@ -220,16 +220,59 @@ describe('server template sync', () => {
       release = resolve
     })
     state.listServerContents.mockReturnValueOnce(firstContents)
+    const template = {
+      id: 'kept',
+      nodeId: null,
+      name: 'Kept',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [],
+    }
+    store.localTemplates.mockReturnValue([
+      {
+        id: 'srv:https%3A%2F%2Fexample.test:kept',
+        serverUrl: connected.url,
+        serverVersion: 'v1',
+      },
+    ])
     const { syncServerTemplates } = await import('./server-sync.js')
 
     const first = syncServerTemplates(connected)
     await vi.waitFor(() => expect(state.listServerContents).toHaveBeenCalledOnce())
-    const mutation = syncServerTemplates(connected, [])
+    const mutation = syncServerTemplates(connected, [template])
     const blindPoll = syncServerTemplates(connected)
     release({ nodes: [], templates: [] })
     await Promise.all([first, mutation, blindPoll])
 
     expect(state.listServerContents).toHaveBeenCalledOnce()
+    expect(store.forgetServerTemplate).not.toHaveBeenCalled()
+  })
+
+  it('does not let world reconciliation invalidate an alliance download', async () => {
+    const surface = { kind: 'alliance-headquarters' as const, allianceId: 535_245 }
+    const template = {
+      id: 'hq-template',
+      nodeId: null,
+      name: 'HQ template',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [],
+      surface,
+    }
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    const alliance = syncServerTemplates(connected, [template], undefined, surface)
+    await syncServerTemplates(connected, [])
+    await alliance
+
+    expect(store.putServerTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ surface, serverTemplateId: 'hq-template' }),
+      expect.any(Function),
+    )
   })
 
   it('drops a manifest response superseded by a newer request', async () => {

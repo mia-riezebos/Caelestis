@@ -26,14 +26,19 @@ let installed = false
 let observer: MutationObserver | null = null
 let restoreFetch: (() => void) | null = null
 let reconcileQueued = false
-let allianceId: number | null = null
-let hqBounds: PixelBounds | null = null
+let memberAllianceId: number | null = null
+let headquarters: {
+  readonly allianceId: number
+  readonly bounds: PixelBounds | null
+} | null = null
 let draft: {
   readonly id: number
   readonly kind: AllianceTemplateSurfaceKind
 } | null = null
-let allianceSequence = 0
-let acceptedAllianceSequence = 0
+let memberSequence = 0
+let acceptedMemberSequence = 0
+let headquartersSequence = 0
+let acceptedHeadquartersSequence = 0
 let draftSequence = 0
 let acceptedDraftSequence = 0
 let allianceEpoch = 0
@@ -117,37 +122,38 @@ const reconcile = (): void => {
   reconcileQueued = false
   const realm = pageWindow()
   const hqStage = realm.document.querySelector<HTMLElement>(HQ_STAGE)
-  if (hqStage !== null && allianceId !== null) {
+  const hqAllianceId = headquarters?.allianceId ?? memberAllianceId
+  if (hqStage !== null && hqAllianceId !== null) {
     const frame = hqStage.querySelector<HTMLElement>(ARTBOARD_FRAME)
     if (frame !== null) {
       publish({
-        surface: { kind: 'alliance-headquarters', allianceId },
+        surface: { kind: 'alliance-headquarters', allianceId: hqAllianceId },
         stage: hqStage,
         frame,
         draftId: null,
-        bounds: hqBounds,
+        bounds: headquarters?.allianceId === hqAllianceId ? headquarters.bounds : null,
       })
       return
     }
   }
 
   const assetStage = realm.document.querySelector<HTMLElement>(ASSET_STAGE)
-  if (assetStage !== null && allianceId !== null) {
+  if (assetStage !== null && memberAllianceId !== null) {
     const frame = assetStage.querySelector<HTMLElement>(ARTBOARD_FRAME)
     if (frame !== null) {
       // Wplace may reuse a cached draft without issuing the metadata request after a late dev
       // injection. The two asset canvases have fixed, disjoint dimensions, so their native
       // artboard canvas is a safe fallback for kind detection; the request still owns the draft id.
-      const kind = draft?.kind ?? assetKindFromCanvas(frame)
+      const kind = assetKindFromCanvas(frame) ?? draft?.kind ?? null
       if (kind === null) {
         publish(null)
         return
       }
       publish({
-        surface: { kind, allianceId },
+        surface: { kind, allianceId: memberAllianceId },
         stage: assetStage,
         frame,
-        draftId: draft?.id ?? null,
+        draftId: draft?.kind === kind ? draft.id : null,
         bounds: null,
       })
       return
@@ -175,25 +181,46 @@ const readJson = (response: Response, accept: (body: unknown) => void): void => 
   }
 }
 
-const observeAlliance = (
+const observeMemberAlliance = (response: Response, sequence: number): void => {
+  readJson(response, (body) => {
+    if (sequence < acceptedMemberSequence || !isRecord(body)) return
+    const nextAllianceId = positiveInteger(body.id)
+    if (nextAllianceId === null) return
+    acceptedMemberSequence = sequence
+    if (memberAllianceId !== null && memberAllianceId !== nextAllianceId) allianceEpoch++
+    if (memberAllianceId !== nextAllianceId) {
+      const previous = memberAllianceId
+      memberAllianceId = nextAllianceId
+      draft = null
+      if (headquarters?.allianceId === previous) headquarters = null
+    }
+    queueReconcile()
+  })
+}
+
+const selectHeadquartersRequest = (nextAllianceId: number | null, sequence: number): void => {
+  acceptedHeadquartersSequence = sequence
+  headquarters =
+    nextAllianceId === null
+      ? null
+      : {
+          allianceId: nextAllianceId,
+          bounds: headquarters?.allianceId === nextAllianceId ? headquarters.bounds : null,
+        }
+  queueReconcile()
+}
+
+const observeHeadquarters = (
   response: Response,
   sequence: number,
-  headquarters: boolean,
   knownAllianceId?: number,
 ): void => {
   readJson(response, (body) => {
-    if (sequence < acceptedAllianceSequence || !isRecord(body)) return
-    const nextAllianceId =
-      knownAllianceId ?? positiveInteger(headquarters ? body.allianceId : body.id)
+    if (sequence < acceptedHeadquartersSequence || !isRecord(body)) return
+    const nextAllianceId = knownAllianceId ?? positiveInteger(body.allianceId)
     if (nextAllianceId === null) return
-    acceptedAllianceSequence = sequence
-    if (allianceId !== null && allianceId !== nextAllianceId) allianceEpoch++
-    if (allianceId !== nextAllianceId) {
-      allianceId = nextAllianceId
-      draft = null
-      hqBounds = null
-    }
-    if (headquarters) hqBounds = parseHqBounds(body.bounds)
+    acceptedHeadquartersSequence = sequence
+    headquarters = { allianceId: nextAllianceId, bounds: parseHqBounds(body.bounds) }
     queueReconcile()
   })
 }
@@ -249,34 +276,40 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
         if (url.origin === BACKEND_ORIGIN) {
           const publicHq = PUBLIC_HEADQUARTERS.exec(url.pathname)
           const publicAllianceId = publicHq === null ? null : positiveInteger(Number(publicHq[1]))
-          if (publicAllianceId !== null && allianceId !== publicAllianceId) {
-            if (allianceId !== null) allianceEpoch++
-            allianceId = publicAllianceId
-            draft = null
-            hqBounds = null
-            queueReconcile()
+          const publicSequence = publicAllianceId === null ? null : ++headquartersSequence
+          if (publicAllianceId !== null && publicSequence !== null) {
+            selectHeadquartersRequest(publicAllianceId, publicSequence)
           }
           if (
             publicAllianceId !== null &&
+            publicSequence !== null &&
             (url.pathname === `/alliances/${publicAllianceId}/headquarters` ||
               url.pathname === `/alliances/${publicAllianceId}/headquarters/manifest`)
           ) {
             observation = {
               kind: 'public-hq',
-              sequence: ++allianceSequence,
+              sequence: publicSequence,
               allianceId: publicAllianceId,
             }
           } else if (url.pathname === '/alliance') {
-            observation = { kind: 'alliance', sequence: ++allianceSequence }
+            observation = { kind: 'alliance', sequence: ++memberSequence }
           } else if (url.pathname === '/alliance/headquarters') {
-            observation = { kind: 'hq', sequence: ++allianceSequence }
+            const sequence = ++headquartersSequence
+            selectHeadquartersRequest(memberAllianceId, sequence)
+            observation = { kind: 'hq', sequence }
           } else if (url.searchParams.get('metadataOnly') === 'true') {
             const match = DRAFT_CANVAS.exec(url.pathname)
             const id = match === null ? null : positiveInteger(Number(match[1]))
             if (id !== null) {
+              const sequence = ++draftSequence
+              acceptedDraftSequence = sequence
+              if (draft?.id !== id) {
+                draft = null
+                queueReconcile()
+              }
               observation = {
                 kind: 'draft',
-                sequence: ++draftSequence,
+                sequence,
                 draftId: id,
                 allianceEpoch,
               }
@@ -293,11 +326,12 @@ const installFetchObserver = (realm: Window & typeof globalThis): (() => void) |
     return pending.then((response) => {
       if (observation.kind === 'draft') {
         observeDraft(response, observation.sequence, observation.draftId, observation.allianceEpoch)
+      } else if (observation.kind === 'alliance') {
+        observeMemberAlliance(response, observation.sequence)
       } else {
-        observeAlliance(
+        observeHeadquarters(
           response,
           observation.sequence,
-          observation.kind !== 'alliance',
           observation.kind === 'public-hq' ? observation.allianceId : undefined,
         )
       }
@@ -350,11 +384,13 @@ export const resetAllianceSurfaceObserver = (): void => {
   restoreFetch = null
   installed = false
   reconcileQueued = false
-  allianceId = null
-  hqBounds = null
+  memberAllianceId = null
+  headquarters = null
   draft = null
-  allianceSequence = 0
-  acceptedAllianceSequence = 0
+  memberSequence = 0
+  acceptedMemberSequence = 0
+  headquartersSequence = 0
+  acceptedHeadquartersSequence = 0
   draftSequence = 0
   acceptedDraftSequence = 0
   allianceEpoch = 0

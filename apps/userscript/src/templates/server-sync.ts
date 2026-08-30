@@ -322,6 +322,19 @@ export const serverTemplateKey = (
     : `${prefix}@${templateSurfaceKey(surface)}:${id}`
 }
 
+const serverTemplateBelongsToSurface = (
+  key: string,
+  serverUrl: string,
+  surface: TemplateSurface,
+): boolean => {
+  const prefix = serverTemplateKey(serverUrl, '')
+  if (!key.startsWith(prefix)) return false
+  const scopedId = key.slice(prefix.length)
+  return surface.kind === 'world'
+    ? !scopedId.startsWith('@')
+    : scopedId.startsWith(`@${templateSurfaceKey(surface)}:`)
+}
+
 /** Templates already in flight, so a second sync while one runs does not download everything twice. */
 const inFlight = new Map<string, number>()
 
@@ -418,7 +431,7 @@ const syncServerTemplatesOnce = async (
       // The manifest coordinator queues either this admitted snapshot or the previous admitted one
       // when the new response exceeds aggregate budgets. In both cases that explicit authority must
       // replace this blind result rather than being reconciled after it.
-      if (pendingServerSyncs.get(server.url)?.known !== undefined) return
+      if (pendingServerSyncs.get(serverSyncKey(server.url, surface))?.known !== undefined) return
     }
     // The folders as well as the templates, because a template's visibility answers to the folders
     // above it and this is the only place that learns of them changing between polls.
@@ -446,9 +459,10 @@ const syncServerTemplatesOnce = async (
     if (!wanted.has(held.id)) await forgetServerTemplate(held.id)
   }
   if (!current()) return
-  const ourPrefix = serverTemplateKey(server.url, '', surface)
   for (const key of [...latestVersion.keys()]) {
-    if (key.startsWith(ourPrefix) && !wanted.has(key)) latestVersion.delete(key)
+    if (serverTemplateBelongsToSurface(key, server.url, surface) && !wanted.has(key)) {
+      latestVersion.delete(key)
+    }
   }
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
