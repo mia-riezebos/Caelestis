@@ -7,6 +7,7 @@ import { createApp } from '../app.js'
 import { hashToken } from '../auth/tokens.js'
 import type { TemplateVersionRecord } from '../ports/index.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
+import { DirectStatusReadModel } from '../status-read-model/port.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const MEMBER = 'member-token'
@@ -39,13 +40,22 @@ const template = (templateId: string, versionId: string, tileX: number): Templat
 describe('server and manifest routes', () => {
   let sql: MemorySqlStore
   let app: ReturnType<typeof createApp>
+  let notifyManifestChange: ReturnType<typeof vi.fn<(season: number) => Promise<void>>>
 
   beforeEach(async () => {
     sql = new MemorySqlStore()
+    const directStatus = new DirectStatusReadModel(sql)
+    notifyManifestChange = vi.fn(async (_season: number) => undefined)
     const context = makeBackendContext(
       new MemoryBlobStore(),
       sql,
       new MemoryCounterStore(sql, () => createdAt),
+      {
+        applyCommittedChange: (season, mutation) =>
+          directStatus.applyCommittedChange(season, mutation),
+        reconcileSnapshot: (season, scope) => directStatus.reconcileSnapshot(season, scope),
+        notifyManifestChange,
+      },
     )
     await sql.insertNode({
       id: '01890f3a-6b7c-7def-8123-456789abcde0',
@@ -269,6 +279,7 @@ describe('server and manifest routes', () => {
 
     it('renames it for everyone, without a redeploy', async () => {
       expect((await patch({ name: 'Caelestis' })).status).toBe(200)
+      expect(notifyManifestChange).toHaveBeenCalledWith(serverOptions.currentSeason)
 
       const info = (await (await app.request('/server')).json()) as { name: string }
       expect(info.name).toBe('Caelestis')

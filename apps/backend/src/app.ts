@@ -36,6 +36,7 @@ export interface AppOptions {
         connection: {
           readonly season: number
           readonly scope: 'public' | 'admin'
+          readonly tokenHash: string
           readonly lastRevision: number | null
         },
       ) => Promise<Response>)
@@ -104,10 +105,10 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
     runBackendHttp(c, runtime, Effect.succeed({ ok: true }), (health) => c.json(health)),
   )
   app.route('/server', createServerRoutes(runtime, server))
-  app.route('/admin/server', createServerAdminRoutes(runtime, auth))
+  app.route('/admin/server', createServerAdminRoutes(runtime, auth, currentSeason))
   app.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
 
-  app.route('/admin/tokens', createTokenRoutes(runtime, auth))
+  app.route('/admin/tokens', createTokenRoutes(runtime, auth, currentSeason))
   app.route('/admin/nodes', createNodeRoutes(runtime, auth))
   app.route('/admin/templates', createTemplateRoutes(runtime, auth))
   app.route('/chunks', createChunkRoutes(runtime, auth))

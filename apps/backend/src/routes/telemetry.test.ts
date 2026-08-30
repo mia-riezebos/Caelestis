@@ -11,6 +11,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
+import { hashToken } from '../auth/tokens.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
 import type { StatusReadModelPort } from '../status-read-model/port.js'
 
@@ -139,10 +140,9 @@ describe('telemetry routes', () => {
       connectStatusLive,
     })
     const readToken = await mintToken(app, 'read')
-    const adminToken = await mintToken(app, 'admin')
     const upgrade = (token: string) => ({
       upgrade: 'websocket',
-      'sec-websocket-protocol': `caelestis.live.v1, caelestis.auth.${token}`,
+      'sec-websocket-protocol': `caelestis.live.v1, caelestis.auth.b64.${btoa(token).replace(/=+$/, '')}`,
     })
 
     await expect((await app.request('/server')).json()).resolves.toMatchObject({ liveSync: 1 })
@@ -171,16 +171,18 @@ describe('telemetry routes', () => {
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'public',
+      tokenHash: await hashToken(readToken),
       lastRevision: 4,
     })
 
     const adminResponse = await app.request('/telemetry/live?season=7&scope=admin', {
-      headers: upgrade(adminToken),
+      headers: upgrade(BOOTSTRAP),
     })
     expect(adminResponse.status).toBe(204)
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'admin',
+      tokenHash: await hashToken(BOOTSTRAP),
       lastRevision: null,
     })
   })

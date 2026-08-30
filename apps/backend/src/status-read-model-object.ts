@@ -23,6 +23,7 @@ const LIVE_PROTOCOL = 'caelestis.live.v1'
 interface LiveSubscriberAttachment {
   readonly season: number
   readonly scope: StatusVisibilityScope
+  readonly tokenHash: string
   readonly lastRevision: number | null
 }
 
@@ -227,6 +228,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
         attachment !== null &&
         attachment.season === this.bound?.season &&
         (attachment.scope === 'public' || attachment.scope === 'admin') &&
+        /^[0-9a-f]{64}$/.test(attachment.tokenHash) &&
         (scope === undefined || attachment.scope === scope)
       )
     })
@@ -271,6 +273,14 @@ export class StatusReadModelObject extends DurableObject<Env> {
     for (const socket of this.subscribers()) this.send(socket, event)
   }
 
+  async closeCredential(season: number, tokenHash: string): Promise<void> {
+    this.model(season)
+    for (const socket of this.subscribers()) {
+      const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
+      if (attachment?.tokenHash === tokenHash) socket.close(1008, 'credential revoked')
+    }
+  }
+
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('WebSocket upgrade required', { status: 426 })
@@ -281,11 +291,15 @@ export class StatusReadModelObject extends DurableObject<Env> {
     }
     const season = Number(seasonHeader)
     const scope = request.headers.get('x-caelestis-scope')
+    const tokenHash = request.headers.get('x-caelestis-token-hash')
     const revisionHeader = request.headers.get('x-caelestis-revision')
     const lastRevision = revisionHeader === null ? null : Number(revisionHeader)
     if (!Number.isSafeInteger(season)) return new Response('Invalid season', { status: 400 })
     if (scope !== 'public' && scope !== 'admin')
       return new Response('Invalid scope', { status: 400 })
+    if (tokenHash === null || !/^[0-9a-f]{64}$/.test(tokenHash)) {
+      return new Response('Invalid credential identity', { status: 400 })
+    }
     if (lastRevision !== null && (!Number.isSafeInteger(lastRevision) || lastRevision < 0)) {
       return new Response('Invalid revision', { status: 400 })
     }
@@ -293,7 +307,12 @@ export class StatusReadModelObject extends DurableObject<Env> {
     const pair = new WebSocketPair()
     const client = pair[0]
     const server = pair[1]
-    server.serializeAttachment({ season, scope, lastRevision } satisfies LiveSubscriberAttachment)
+    server.serializeAttachment({
+      season,
+      scope,
+      tokenHash,
+      lastRevision,
+    } satisfies LiveSubscriberAttachment)
     this.objectState.acceptWebSocket(server, ['status'])
     try {
       const { snapshot } = await this.model(season).reconcileSnapshot(scope)

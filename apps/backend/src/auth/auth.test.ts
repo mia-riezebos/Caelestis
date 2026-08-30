@@ -12,12 +12,21 @@ const BOOTSTRAP = 'bootstrap-operator-token'
 
 const harness = () => {
   const sql = new MemorySqlStore()
+  const closeCredential = vi.fn(async () => undefined)
   const context = makeBackendContext(
     new MemoryBlobStore(),
     sql,
     new MemoryCounterStore(sql, () => millis(Date.now())),
+    {
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      closeCredential,
+    },
   )
-  return { sql, app: createApp(context, { bootstrapAdminToken: BOOTSTRAP }) }
+  return { sql, closeCredential, app: createApp(context, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
 const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
@@ -385,7 +394,7 @@ describe('the admin token surface', () => {
 
 describe('revocation', () => {
   it('stops a revoked token working immediately', async () => {
-    const { app } = harness()
+    const { app, closeCredential } = harness()
     const holder = await mint(app, 'leaked', 'admin')
     const token = holder.body.token as string
 
@@ -396,6 +405,7 @@ describe('revocation', () => {
       method: 'DELETE',
       ...bearer(BOOTSTRAP),
     })
+    expect(closeCredential).toHaveBeenCalledWith(0, holder.body.tokenHash)
 
     const after = await app.request('/admin/tokens', bearer(token))
     expect(after.status).toBe(401)

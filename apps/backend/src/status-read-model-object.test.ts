@@ -146,9 +146,24 @@ describe('status read-model Durable Object', () => {
         send: vi.fn(),
         close: vi.fn(),
       }) as unknown as WebSocket
-    const publicSocket = socket({ season: 8, scope: 'public', lastRevision: 2 })
-    const adminSocket = socket({ season: 8, scope: 'admin', lastRevision: 2 })
-    const otherSeason = socket({ season: 9, scope: 'public', lastRevision: 2 })
+    const publicSocket = socket({
+      season: 8,
+      scope: 'public',
+      tokenHash: 'a'.repeat(64),
+      lastRevision: 2,
+    })
+    const adminSocket = socket({
+      season: 8,
+      scope: 'admin',
+      tokenHash: 'b'.repeat(64),
+      lastRevision: 2,
+    })
+    const otherSeason = socket({
+      season: 9,
+      scope: 'public',
+      tokenHash: 'a'.repeat(64),
+      lastRevision: 2,
+    })
     const missingAttachment = socket(undefined)
     const state = objectState(held, Number.POSITIVE_INFINITY, [
       publicSocket,
@@ -174,6 +189,7 @@ describe('status read-model Durable Object', () => {
       ],
     })
     await recovered.notifyManifestChange(8)
+    await recovered.closeCredential(8, 'b'.repeat(64))
 
     for (const subscriber of [publicSocket, adminSocket]) {
       expect(subscriber.send).toHaveBeenCalledWith(expect.stringContaining('"type":"status-delta"'))
@@ -181,6 +197,8 @@ describe('status read-model Durable Object', () => {
     }
     expect(otherSeason.send).not.toHaveBeenCalled()
     expect(missingAttachment.send).not.toHaveBeenCalled()
+    expect(adminSocket.close).toHaveBeenCalledWith(1008, 'credential revoked')
+    expect(publicSocket.close).not.toHaveBeenCalled()
   })
 
   it('rejects missing internal routing headers before creating a socket pair', async () => {
@@ -194,5 +212,17 @@ describe('status read-model Durable Object', () => {
 
     expect(response.status).toBe(400)
     await expect(response.text()).resolves.toBe('Invalid season')
+
+    const missingIdentity = await object.fetch(
+      new Request('https://object.test/', {
+        headers: {
+          upgrade: 'websocket',
+          'x-caelestis-season': '8',
+          'x-caelestis-scope': 'public',
+        },
+      }),
+    )
+    expect(missingIdentity.status).toBe(400)
+    await expect(missingIdentity.text()).resolves.toBe('Invalid credential identity')
   })
 })
