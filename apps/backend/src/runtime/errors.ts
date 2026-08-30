@@ -6,6 +6,12 @@ export class SqlStoreReadError extends Data.TaggedError('SqlStoreReadError')<{
   readonly cause: unknown
 }> {}
 
+/** The reconstructible status projection could not read or repair its D1-backed snapshot. */
+export class StatusReadModelError extends Data.TaggedError('StatusReadModelError')<{
+  readonly operation: string
+  readonly cause: unknown
+}> {}
+
 /** A telemetry dependency rejected an otherwise valid operation. */
 export class TelemetryStorageError extends Data.TaggedError('TelemetryStorageError')<{
   readonly operation: string
@@ -47,6 +53,7 @@ export class AuthenticationError extends Data.TaggedError('AuthenticationError')
 
 export type BackendHttpError =
   | SqlStoreReadError
+  | StatusReadModelError
   | TelemetryStorageError
   | TelemetryValidationError
   | RequestValidationError

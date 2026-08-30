@@ -16,6 +16,7 @@ import {
   PaintPixels,
   PaintTile,
   ServerInfo,
+  StatusResponse,
   Template,
   TemplateStatus,
   TileHistoryResponse,
@@ -1337,6 +1338,12 @@ describe('cross-field and time-unit schemas', () => {
       total: 0,
       observedAt: SECONDS,
     })
+  })
+
+  it('requires a non-negative season revision on status snapshots', () => {
+    const response = { season: 2, revision: 7, templates: [] }
+    expect(Schema.decodeUnknownSync(StatusResponse)(response)).toEqual(response)
+    expectRejected(StatusResponse, { ...response, revision: -1 })
   })
 
   it('rejects template status components whose sum exceeds total by one', () => {

@@ -2,18 +2,24 @@ import { millis } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from './adapters/memory/memory-blob-store.js'
+import { createMemoryStatusReadModel } from './adapters/memory/memory-status-read-model.js'
 import { ALARM_RETRY_DELAY_MILLISECONDS, runAlarmWatcherCycle } from './alarm-watcher-cycle.js'
 import type { SqlStore } from './ports/index.js'
-import { BlobStoreService, SqlStoreService } from './runtime/backend-runtime.js'
+import {
+  BlobStoreService,
+  SqlStoreService,
+  StatusReadModelService,
+} from './runtime/backend-runtime.js'
 
 const run = <A, E>(
   sql: SqlStore,
-  effect: Effect.Effect<A, E, BlobStoreService | SqlStoreService>,
+  effect: Effect.Effect<A, E, BlobStoreService | SqlStoreService | StatusReadModelService>,
 ) =>
   Effect.runPromise(
     effect.pipe(
       Effect.provideService(BlobStoreService, new MemoryBlobStore()),
       Effect.provideService(SqlStoreService, sql),
+      Effect.provideService(StatusReadModelService, createMemoryStatusReadModel(sql)),
     ),
   )
 

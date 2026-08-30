@@ -24,6 +24,7 @@ import type {
   CounterDelta,
   CounterStore,
   SqlStore,
+  StatusReadModel,
   TelemetryTarget,
   TemplateTileStatusRecord,
   TileObservation,
@@ -32,6 +33,7 @@ import {
   BlobStoreService,
   CounterStoreService,
   SqlStoreService,
+  StatusReadModelService,
 } from '../runtime/backend-runtime.js'
 import { TelemetryStorageError, TelemetryValidationError } from '../runtime/errors.js'
 import { readTileBlob, reserveTileBlob, reserveTileBlobUpload } from './tile-blobs.js'
@@ -222,7 +224,11 @@ const readMismatchMaskPromise = async (
  * and viewer context.
  */
 const recordObservationPromise = async (
-  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
+  ports: {
+    readonly blobs: BlobStore
+    readonly sql: SqlStore
+    readonly statusReadModel?: StatusReadModel
+  },
   metadata: TileMetadata,
   bytes: Uint8Array,
   reservationId: string,
@@ -262,6 +268,7 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
+  await publishCommittedStatuses(ports, metadata.season, statuses)
   await ports.sql.foldTileHistory(
     metadata.season,
     metadata.tile,
@@ -269,10 +276,30 @@ const recordObservationPromise = async (
   )
 }
 
+const publishCommittedStatuses = async (
+  ports: { readonly sql: SqlStore; readonly statusReadModel?: StatusReadModel },
+  season: number,
+  statuses: readonly TemplateTileStatusRecord[],
+): Promise<void> => {
+  if (statuses.length === 0) return
+  const revision = await ports.sql.advanceStatusProjectionRevision(season)
+  try {
+    await ports.statusReadModel?.applyCommittedChange({ season, revision })
+  } catch (error) {
+    // D1 already owns the committed write and revision. The next bounded snapshot reconciliation
+    // observes the gap and rebuilds; projection loss must not turn an accepted tile into a retry.
+    console.error('status projection update failed after committed tile observation', error)
+  }
+}
+
 /** Reclassify bytes already held by the current canvas hash without another upload or history fold. */
 /** @internal Shared promise implementation for service-backed background jobs. */
 export const refreshAuthoritativeTileWithStores = async (
-  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
+  ports: {
+    readonly blobs: BlobStore
+    readonly sql: SqlStore
+    readonly statusReadModel?: StatusReadModel
+  },
   metadata: TileMetadata,
   bytes: Uint8Array,
 ): Promise<void> => {
@@ -307,11 +334,16 @@ export const refreshAuthoritativeTileWithStores = async (
     false,
     true,
   )
+  await publishCommittedStatuses(ports, metadata.season, statuses)
 }
 
 /** Process an offer immediately when the content-addressed bytes already exist. */
 const offerTilePromise = async (
-  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
+  ports: {
+    readonly blobs: BlobStore
+    readonly sql: SqlStore
+    readonly statusReadModel?: StatusReadModel
+  },
   metadata: TileMetadata,
 ): Promise<'ignored' | 'wanted' | 'recorded'> => {
   const targets = await ports.sql.listTelemetryTargets(
@@ -328,7 +360,11 @@ const offerTilePromise = async (
 
 /** @internal Shared promise implementation for service-backed background jobs. */
 export const uploadTileWithStores = async (
-  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
+  ports: {
+    readonly blobs: BlobStore
+    readonly sql: SqlStore
+    readonly statusReadModel?: StatusReadModel
+  },
   metadata: TileMetadata,
   bytes: Uint8Array,
   options: {
@@ -475,12 +511,15 @@ export const refreshAuthoritativeTile = (
 ): Effect.Effect<
   void,
   TelemetryStorageError | TelemetryValidationError,
-  BlobStoreService | SqlStoreService
+  BlobStoreService | SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    return yield* upload(() => refreshAuthoritativeTileWithStores({ blobs, sql }, metadata, bytes))
+    const statusReadModel = yield* StatusReadModelService
+    return yield* upload(() =>
+      refreshAuthoritativeTileWithStores({ blobs, sql, statusReadModel }, metadata, bytes),
+    )
   })
 
 /** Decide whether the server needs one offered tile, recording known bytes immediately. */
@@ -489,12 +528,15 @@ export const offerTile = (
 ): Effect.Effect<
   'ignored' | 'wanted' | 'recorded',
   TelemetryStorageError,
-  BlobStoreService | SqlStoreService
+  BlobStoreService | SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    return yield* storage('offerTile', () => offerTilePromise({ blobs, sql }, metadata))
+    const statusReadModel = yield* StatusReadModelService
+    return yield* storage('offerTile', () =>
+      offerTilePromise({ blobs, sql, statusReadModel }, metadata),
+    )
   })
 
 export const offerTiles = (
@@ -507,7 +549,7 @@ export const offerTiles = (
     readonly rejected: number
   },
   TelemetryStorageError,
-  BlobStoreService | SqlStoreService
+  BlobStoreService | SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const wanted: string[] = []
@@ -534,12 +576,15 @@ export const uploadTile = (
 ): Effect.Effect<
   void,
   TelemetryStorageError | TelemetryValidationError,
-  BlobStoreService | SqlStoreService
+  BlobStoreService | SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    return yield* upload(() => uploadTileWithStores({ blobs, sql }, metadata, bytes, options))
+    const statusReadModel = yield* StatusReadModelService
+    return yield* upload(() =>
+      uploadTileWithStores({ blobs, sql, statusReadModel }, metadata, bytes, options),
+    )
   })
 
 /** Classify one accepted paint while preserving claim, counter, and contribution ordering. */

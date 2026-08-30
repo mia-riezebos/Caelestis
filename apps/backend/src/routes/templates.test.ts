@@ -1,15 +1,17 @@
 import { encodeIndexedPng, millis } from '@caelestis/shared'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
+import { createMemoryStatusReadModel } from '../adapters/memory/memory-status-read-model.js'
 import { createApp } from '../app.js'
+import type { SqlStore, StatusReadModel } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 
-const harness = async () => {
+const harness = async (statusReadModelFor?: (sql: SqlStore) => StatusReadModel) => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
@@ -23,7 +25,13 @@ const harness = async () => {
     createdAt: millis(Date.now()),
   })
   const runtime = createBackendRuntime(
-    makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
+    makeBackendContext(
+      blobs,
+      sql,
+      counters,
+      { bootstrapAdminToken: BOOTSTRAP },
+      statusReadModelFor?.(sql) ?? createMemoryStatusReadModel(sql),
+    ),
   )
   return { blobs, sql, app: createApp(runtime) }
 }
@@ -228,6 +236,40 @@ describe('template routes', () => {
       published: true,
       updatedAt: expect.any(Number),
     })
+  })
+
+  it('keeps a committed publication accepted when projection publication fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const applyCommittedChange = vi.fn(async () => {
+      throw new Error('projection unavailable')
+    })
+    const { app, sql } = await harness((store) => ({
+      ...createMemoryStatusReadModel(store),
+      applyCommittedChange,
+    }))
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const created = await app.request('/admin/templates', {
+      method: 'POST',
+      body: templateForm(png),
+      ...bearer(BOOTSTRAP),
+    })
+    const template = (await created.json()) as { templateId: string }
+
+    const published = await app.request(`/admin/templates/${template.templateId}`, {
+      method: 'PATCH',
+      headers: { ...bearer(BOOTSTRAP).headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ published: true }),
+    })
+
+    expect(published.status).toBe(200)
+    expect((await sql.readTemplate(template.templateId))?.published).toBe(true)
+    expect(await sql.readStatusProjectionRevision(1)).toBe(1)
+    expect(applyCommittedChange).toHaveBeenCalledWith({ season: 1, revision: 1 })
+    expect(consoleError).toHaveBeenCalledWith(
+      'status projection update failed after template commit',
+      expect.any(Error),
+    )
+    consoleError.mockRestore()
   })
 })
 

@@ -1,5 +1,6 @@
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
+import { DurableObjectStatusReadModel } from './adapters/cloudflare/do-status-read-model.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { type App, createApp } from './app.js'
 import { meterD1Database, SyncRequestMetrics } from './observability/sync-metrics.js'
@@ -12,6 +13,7 @@ import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
 export { AlarmWatcher } from './alarm-watcher.js'
+export { StatusReadModelObject } from './status-read-model-object.js'
 export { TelemetryShard } from './telemetry-shard.js'
 
 /**
@@ -76,11 +78,18 @@ export const prepareBackendForEvent = (
     requestMetrics === undefined ? env.DB : meterD1Database(env.DB, requestMetrics),
   )
   const counters = new DurableObjectCounterStore(env.TELEMETRY)
+  const statusReadModel = new DurableObjectStatusReadModel(env.STATUS_READ_MODEL)
   const runtime = createBackendRuntime(
-    makeBackendContext(blobs, sql, counters, {
-      bootstrapAdminToken: env.ADMIN_TOKEN,
-      openAccess: env.OPEN_ACCESS === 'true',
-    }),
+    makeBackendContext(
+      blobs,
+      sql,
+      counters,
+      {
+        bootstrapAdminToken: env.ADMIN_TOKEN,
+        openAccess: env.OPEN_ACCESS === 'true',
+      },
+      statusReadModel,
+    ),
   )
   const app = createApp(runtime, {
     serverId: env.SERVER_ID,

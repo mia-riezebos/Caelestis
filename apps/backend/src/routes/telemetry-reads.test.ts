@@ -15,8 +15,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
+import { createMemoryStatusReadModel } from '../adapters/memory/memory-status-read-model.js'
 import { createApp } from '../app.js'
-import type { ContributionDelta } from '../ports/index.js'
+import type { ContributionDelta, SqlStore, StatusReadModel } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 import { selectTelemetryHistoryResolution, selectTileHistoryResolution } from './telemetry.js'
 
@@ -28,10 +29,11 @@ const NEXT_DAY = seconds(1_750_032_000 + 86_400)
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
-const harness = async () => {
+const harness = async (statusReadModelFor?: (sql: SqlStore) => StatusReadModel) => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
+  const statusReadModel = statusReadModelFor?.(sql) ?? createMemoryStatusReadModel(sql)
   await sql.insertNode({
     id: NODE_ID,
     season: 0,
@@ -47,7 +49,13 @@ const harness = async () => {
     counters,
     app: createApp(
       createBackendRuntime(
-        makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
+        makeBackendContext(
+          blobs,
+          sql,
+          counters,
+          { bootstrapAdminToken: BOOTSTRAP },
+          statusReadModel,
+        ),
       ),
       { currentSeason: 1 },
     ),
@@ -186,6 +194,59 @@ describe('telemetry read routes', () => {
     expect(response.status).toBe(500)
     expect(await response.text()).toBe('Internal Server Error')
     expect(consoleError).toHaveBeenCalledWith(error)
+  })
+
+  it('serves repeated status reads from one revisioned materialization', async () => {
+    const { app, sql } = await harness()
+    await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const reportToken = await mintToken(app, 'report')
+    const aggregate = vi.spyOn(sql, 'readTemplateStatuses')
+
+    await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    const afterCommit = aggregate.mock.calls.length
+    const first = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+    const second = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+
+    expect(first.status).toBe(200)
+    await expect(first.json()).resolves.toMatchObject({ season: 0, revision: 2 })
+    await expect(second.json()).resolves.toMatchObject({ season: 0, revision: 2 })
+    expect(aggregate).toHaveBeenCalledTimes(afterCommit)
+  })
+
+  it('repairs a failed post-commit projection without rolling back the accepted tile', async () => {
+    const failure = new Error('Durable Object unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { app } = await harness((sql) => {
+      const delegate = createMemoryStatusReadModel(sql)
+      return {
+        ...delegate,
+        applyCommittedChange: vi.fn(async () => Promise.reject(failure)),
+      }
+    })
+    await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const reportToken = await mintToken(app, 'report')
+
+    await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    const repaired = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+
+    expect(repaired.status).toBe(200)
+    await expect(repaired.json()).resolves.toMatchObject({
+      season: 0,
+      revision: 2,
+      templates: [expect.objectContaining({ correct: 1, wrong: 1, blank: 1 })],
+    })
+    expect(consoleError).toHaveBeenCalledWith(
+      'status projection update failed after committed tile observation',
+      failure,
+    )
   })
 
   it('serves the server-classified mismatch mask for one visible template tile', async () => {

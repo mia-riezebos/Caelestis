@@ -36,6 +36,7 @@ import {
   nodes,
   painters,
   serverSettings,
+  statusProjectionRevisions,
   telemetryBuckets,
   templateAlarmStates,
   templateAlarmTileStatuses,
@@ -1943,6 +1944,30 @@ export class D1SqlStore implements SqlStore {
         observedAt: Number(row.observedAt) as Millis,
       }
     })
+  }
+
+  async readStatusProjectionRevision(season: number): Promise<number> {
+    const row = await this.database
+      .select({ revision: statusProjectionRevisions.revision })
+      .from(statusProjectionRevisions)
+      .where(eq(statusProjectionRevisions.season, season))
+      .limit(1)
+    return row[0]?.revision ?? 0
+  }
+
+  async advanceStatusProjectionRevision(season: number): Promise<number> {
+    const row = await this.client
+      .prepare(
+        `INSERT INTO status_projection_revisions (season, revision) VALUES (?, 1)
+         ON CONFLICT(season) DO UPDATE SET revision = revision + 1
+         RETURNING revision`,
+      )
+      .bind(season)
+      .first<{ revision: number }>()
+    if (row === null || !Number.isSafeInteger(row.revision) || row.revision < 1) {
+      throw new Error(`status projection revision did not advance for season ${season}`)
+    }
+    return row.revision
   }
 
   async evaluateTemplateAlarm(

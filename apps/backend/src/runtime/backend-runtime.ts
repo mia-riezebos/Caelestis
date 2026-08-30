@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from 'effect'
-import type { BlobStore, CounterStore, SqlStore } from '../ports/index.js'
+import { createMemoryStatusReadModel } from '../adapters/memory/memory-status-read-model.js'
+import type { BlobStore, CounterStore, SqlStore, StatusReadModel } from '../ports/index.js'
 
 export interface AuthenticationConfig {
   readonly bootstrapAdminToken?: string | undefined
@@ -18,6 +19,11 @@ export class CounterStoreService extends Context.Service<CounterStoreService, Co
   '@caelestis/backend/CounterStore',
 ) {}
 
+export class StatusReadModelService extends Context.Service<
+  StatusReadModelService,
+  StatusReadModel
+>()('@caelestis/backend/StatusReadModel') {}
+
 export class AuthenticationConfigService extends Context.Service<
   AuthenticationConfigService,
   AuthenticationConfig
@@ -27,6 +33,7 @@ export type BackendServices =
   | BlobStoreService
   | SqlStoreService
   | CounterStoreService
+  | StatusReadModelService
   | AuthenticationConfigService
 
 export const makeBackendContext = (
@@ -34,10 +41,12 @@ export const makeBackendContext = (
   sql: SqlStore,
   counters: CounterStore,
   authentication: AuthenticationConfig = {},
+  statusReadModel: StatusReadModel = createMemoryStatusReadModel(sql),
 ): Context.Context<BackendServices> =>
   Context.make(BlobStoreService, blobs).pipe(
     Context.add(SqlStoreService, sql),
     Context.add(CounterStoreService, counters),
+    Context.add(StatusReadModelService, statusReadModel),
     Context.add(AuthenticationConfigService, authentication),
   )
 

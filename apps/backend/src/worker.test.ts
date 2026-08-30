@@ -5,6 +5,7 @@ import {
   BlobStoreService,
   CounterStoreService,
   SqlStoreService,
+  StatusReadModelService,
 } from './runtime/backend-runtime.js'
 import worker, { prepareBackendForEvent } from './worker.js'
 
@@ -45,6 +46,17 @@ const env = () => {
     // answer `getByName` even on a path that never calls the shard.
     TELEMETRY: { getByName: () => ({}) },
     ALARM_WATCHER: { getByName: () => ({ schedule: async () => undefined }) },
+    STATUS_READ_MODEL: {
+      getByName: () => ({
+        applyCommittedChange: async () => undefined,
+        reconcileSnapshot: async ({ season }: { season: number }) => ({
+          season,
+          revision: 0,
+          templates: [],
+        }),
+        attachSubscriber: async () => ({ revision: 0, snapshot: null }),
+      }),
+    },
     ADMIN_TOKEN: BOOTSTRAP,
   } as unknown as Env
 }
@@ -79,6 +91,9 @@ it('derives binding-backed clients for every Worker event', () => {
   )
   expect(Context.get(first.runtime.context, CounterStoreService)).not.toBe(
     Context.get(second.runtime.context, CounterStoreService),
+  )
+  expect(Context.get(first.runtime.context, StatusReadModelService)).not.toBe(
+    Context.get(second.runtime.context, StatusReadModelService),
   )
 })
 

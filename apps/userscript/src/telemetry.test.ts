@@ -98,6 +98,24 @@ const startTelemetry = async (): Promise<typeof import('./telemetry.js')> => {
 }
 
 describe('server telemetry client', () => {
+  it('uses a revisioned snapshot identity while retaining legacy response compatibility', async () => {
+    const responses = [
+      { season: 0, revision: 12, templates: [] },
+      { season: 1, revision: 13, templates: [] },
+      { templates: [] },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json(responses.shift())),
+    )
+    const { refreshServerStatus } = await import('./telemetry.js')
+    const metadata = { mode: 'recovery', reason: 'connect' } as const
+
+    await expect(refreshServerStatus(server, metadata)).resolves.toBe('season:0:revision:12')
+    await expect(refreshServerStatus(server, metadata)).resolves.toBeNull()
+    await expect(refreshServerStatus(server, metadata)).resolves.toBe('[]')
+  })
+
   it('keeps anonymous status polling CORS-simple while attributing it in the query', async () => {
     const openServer: ConnectedServer = {
       ...server,
