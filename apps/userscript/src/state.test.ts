@@ -401,23 +401,14 @@ describe('server state boundaries', () => {
     ).resolves.toBeNull()
   })
 
-  it('orders overlapping manifest responses across tree refreshes and polls', async () => {
+  it('coalesces overlapping manifest reads for the same connection and scope', async () => {
     let finishFirst = (_response: Response): void => undefined
-    let finishSecond = (_response: Response): void => undefined
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockImplementationOnce(
-        async () =>
-          await new Promise<Response>((resolve) => {
-            finishFirst = resolve
-          }),
-      )
-      .mockImplementationOnce(
-        async () =>
-          await new Promise<Response>((resolve) => {
-            finishSecond = resolve
-          }),
-      )
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        await new Promise<Response>((resolve) => {
+          finishFirst = resolve
+        }),
+    )
     vi.stubGlobal('fetch', fetchMock)
     const { isLatestServerContents, listServerContents, onServerContents, setState } = await import(
       './state.js'
@@ -437,39 +428,28 @@ describe('server state boundaries', () => {
 
     const first = listServerContents(server)
     const second = listServerContents(server)
-    finishSecond(new Response(JSON.stringify(manifest), { status: 200 }))
-    const newer = await second
     finishFirst(new Response(JSON.stringify(manifest), { status: 200 }))
-    const older = await first
+    const [firstContents, secondContents] = await Promise.all([first, second])
 
-    expect(newer).not.toBeNull()
-    expect(older).not.toBeNull()
-    if (newer === null || older === null) throw new Error('expected valid manifests')
-    expect(isLatestServerContents(server.url, newer)).toBe(true)
-    expect(isLatestServerContents(server.url, older)).toBe(false)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(firstContents).not.toBeNull()
+    expect(secondContents).toBe(firstContents)
+    if (firstContents === null) throw new Error('expected valid manifest')
+    expect(isLatestServerContents(server.url, firstContents)).toBe(true)
     expect(observed).toHaveBeenCalledOnce()
-    expect(observed).toHaveBeenCalledWith(server, newer)
+    expect(observed).toHaveBeenCalledWith(server, firstContents)
   })
 
-  it('gives a folder picker the admitted newer tree when its own response loses the race', async () => {
+  it('gives a folder picker the admitted tree from a shared in-flight read', async () => {
     let finishPicker = (_response: Response): void => undefined
-    let finishPoll = (_response: Response): void => undefined
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn<typeof fetch>()
-        .mockImplementationOnce(
-          async () =>
-            await new Promise<Response>((resolve) => {
-              finishPicker = resolve
-            }),
-        )
-        .mockImplementationOnce(
-          async () =>
-            await new Promise<Response>((resolve) => {
-              finishPoll = resolve
-            }),
-        ),
+      vi.fn<typeof fetch>(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finishPicker = resolve
+          }),
+      ),
     )
     const { admitServerContents, listServerContents, listServerNodes, onServerContents, setState } =
       await import('./state.js')
@@ -502,9 +482,8 @@ describe('server state boundaries', () => {
 
     const picker = listServerNodes(server)
     const poll = listServerContents(server)
-    finishPoll(new Response(JSON.stringify({ ...manifest, nodes: [newerNode] }), { status: 200 }))
+    finishPicker(new Response(JSON.stringify({ ...manifest, nodes: [newerNode] }), { status: 200 }))
     await poll
-    finishPicker(new Response(JSON.stringify({ ...manifest, nodes: [olderNode] }), { status: 200 }))
 
     await expect(picker).resolves.toEqual({ status: 'ok', nodes: [newerNode] })
   })

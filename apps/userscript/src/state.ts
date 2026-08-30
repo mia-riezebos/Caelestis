@@ -11,6 +11,7 @@ import {
   type ServerInfo,
   type TreeNode,
 } from './server-manifest.js'
+import { coalesceServerRead } from './server-read-coalescer.js'
 import {
   requestServerManifest,
   requestServerMetadata,
@@ -102,6 +103,10 @@ const serverConnectionLifetime = (server: ConnectedServer): object => {
   serverConnectionLifetimes.set(server, created)
   return created
 }
+
+/** Opaque owner for sharing reads without exposing credentials in a cache key. */
+export const serverConnectionIdentity = (server: ConnectedServer): object =>
+  serverConnectionLifetime(server)
 
 /** The saved token remains sealed in state; only a currently accepted token leaves in a request. */
 export const activeServerToken = (server: ConnectedServer): string | null =>
@@ -1247,6 +1252,8 @@ export const countNodeSubtree = async (
  * than a tree that has thrown, and the cached copy is what it falls back to.
  */
 export interface ServerContents {
+  /** Opaque manifest revision, retained so the coordinator can back off while it is unchanged. */
+  readonly revision?: string
   readonly nodes: readonly TreeNode[]
   readonly templates: readonly ServerTemplate[]
 }
@@ -1310,6 +1317,26 @@ export const forgetAdmittedServerContents = (serverUrl: string): void => {
   admittedServerContents.delete(serverUrl)
 }
 
+const awaitReadOrAbort = <T>(read: Promise<T>, signal: AbortSignal): Promise<T | null> =>
+  new Promise<T | null>((resolve, reject) => {
+    const aborted = (): void => {
+      cleanup()
+      resolve(null)
+    }
+    const cleanup = (): void => signal.removeEventListener('abort', aborted)
+    signal.addEventListener('abort', aborted, { once: true })
+    void read.then(
+      (value) => {
+        cleanup()
+        resolve(value)
+      },
+      (error: unknown) => {
+        cleanup()
+        reject(error)
+      },
+    )
+  })
+
 export const listServerContents = async (
   server: ConnectedServer,
   signal?: AbortSignal,
@@ -1318,49 +1345,62 @@ export const listServerContents = async (
   if (server.info === null || server.season === null) return null
   if (!isCurrentServerConnection(server)) return null
   try {
-    const {
-      response,
-      body,
-      sequence: request,
-    } = await requestServerManifest(
-      serverEndpoint(server.url, `/manifest?season=${server.season}`),
-      {
-        headers:
-          activeServerToken(server) === null
-            ? userscriptClientHeaders({ transport: 'compatibility-poll', reason })
-            : {
-                ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
-                authorization: `Bearer ${activeServerToken(server)}`,
-              },
-        ...(signal === undefined ? {} : { signal }),
-      },
-      () => isCurrentServerConnection(server),
-    )
-    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
-    if (!response.ok) return null
-    const manifest = parseServerManifest(body, server.info)
-    if (manifest === null || manifest.season !== server.season) return null
-    const contents: ServerContents = {
-      nodes: manifest.nodes,
-      templates: manifest.templates,
-    }
-    manifestResponseOf.set(contents, request)
-    const current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (
-      current !== undefined &&
-      isCurrentServerConnection(server) &&
-      request > (latestManifestResponse.get(server.url) ?? 0)
-    ) {
-      latestManifestResponse.set(server.url, request)
-      for (const listener of serverContentsListeners) {
-        try {
-          listener(current, contents)
-        } catch (error) {
-          warn('install', 'could not publish fresh manifest contents', String(error))
+    const info = server.info
+    const season = server.season
+    const owner = serverConnectionIdentity(server)
+    const read = coalesceServerRead(
+      owner,
+      `${season}\u0000world\u0000manifest`,
+      async (): Promise<ServerContents | null> => {
+        const {
+          response,
+          body,
+          sequence: request,
+        } = await requestServerManifest(
+          serverEndpoint(server.url, `/manifest?season=${season}`),
+          {
+            headers:
+              activeServerToken(server) === null
+                ? userscriptClientHeaders({ transport: 'compatibility-poll', reason })
+                : {
+                    ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+                    authorization: `Bearer ${activeServerToken(server)}`,
+                  },
+          },
+          () => isCurrentServerConnection(server),
+        )
+        if (response.status === 401 || response.status === 403)
+          noteAuthFailure(server, response.status)
+        if (!response.ok) return null
+        const manifest = parseServerManifest(body, info)
+        if (manifest === null || manifest.season !== season) return null
+        const contents: ServerContents = {
+          revision: manifest.version,
+          nodes: manifest.nodes,
+          templates: manifest.templates,
         }
-      }
-    }
-    return contents
+        manifestResponseOf.set(contents, request)
+        const current = getState().servers.find((candidate) => candidate.url === server.url)
+        if (
+          current !== undefined &&
+          isCurrentServerConnection(server) &&
+          request > (latestManifestResponse.get(server.url) ?? 0)
+        ) {
+          latestManifestResponse.set(server.url, request)
+          for (const listener of serverContentsListeners) {
+            try {
+              listener(current, contents)
+            } catch (error) {
+              warn('install', 'could not publish fresh manifest contents', String(error))
+            }
+          }
+        }
+        return contents
+      },
+    )
+    if (signal === undefined) return await read
+    if (signal.aborted) return null
+    return await awaitReadOrAbort(read, signal)
   } catch {
     return null
   }
