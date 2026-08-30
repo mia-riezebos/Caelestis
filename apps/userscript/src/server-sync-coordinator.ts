@@ -38,9 +38,10 @@ let installed = false
 let suspended = false
 let timer: ReturnType<typeof setTimeout> | null = null
 
+const online = (): boolean => typeof navigator === 'undefined' || navigator.onLine !== false
+
 const active = (): boolean =>
-  (typeof document === 'undefined' || document.visibilityState !== 'hidden') &&
-  (typeof navigator === 'undefined' || navigator.onLine !== false)
+  (typeof document === 'undefined' || document.visibilityState !== 'hidden') && online()
 
 const connectedServers = (): readonly ConnectedServer[] =>
   getState().servers.filter((server) => server.status === 'connected' && server.season !== null)
@@ -211,13 +212,13 @@ export const requestServerSyncAfterCurrent = async (
   resources: readonly ServerSyncResource[],
   metadata: SyncRequestMetadata,
 ): Promise<void> => {
-  if (!isCurrentServerConnection(server) || !active()) return
+  if (!isCurrentServerConnection(server) || !online()) return
   const state = stateFor(server)
   await Promise.all(
     resources.map(async (resource) => {
       const current = resourceStateFor(state, resource).inFlight
       if (current !== undefined) await current
-      if (connections.get(server.url) !== state || !isCurrentServerConnection(server) || !active())
+      if (connections.get(server.url) !== state || !isCurrentServerConnection(server) || !online())
         return
       await runResource(state, resource, metadata)
     }),
@@ -230,7 +231,7 @@ const recover = (reason: 'visibility' | 'online'): void => {
   if (!active() || !suspended) return
   suspended = false
   for (const server of connectedServers()) {
-    void refreshConnection(stateFor(server), [...refreshers.keys()], {
+    void requestServerSyncAfterCurrent(server, [...refreshers.keys()], {
       mode: 'recovery',
       reason,
     })

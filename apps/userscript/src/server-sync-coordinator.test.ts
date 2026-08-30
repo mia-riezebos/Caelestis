@@ -178,6 +178,56 @@ describe('server sync coordinator', () => {
     expect(manifest).toHaveBeenCalledWith(server, { mode: 'recovery', reason: 'online' })
   })
 
+  it('runs recovery after a request that began before suspension', async () => {
+    let first = true
+    let releaseStatus: (() => void) | undefined
+    const status = vi.fn(async () => {
+      if (!first) return 'status-v1'
+      first = false
+      return await new Promise<string>((resolve) => {
+        releaseStatus = () => resolve('status-v0')
+      })
+    })
+    const coordinator = await import('./server-sync-coordinator.js')
+    coordinator.registerServerSyncResource('status', status)
+    coordinator.installServerSyncCoordinator()
+    await flush()
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(status).toHaveBeenCalledOnce()
+
+    releaseStatus?.()
+    await flush()
+    expect(status).toHaveBeenCalledTimes(2)
+    expect(status).toHaveBeenLastCalledWith(server, {
+      mode: 'recovery',
+      reason: 'visibility',
+    })
+  })
+
+  it('allows response-driven follow-ups while hidden without restarting fallback polling', async () => {
+    const status = vi.fn(async () => 'status-v1')
+    const coordinator = await import('./server-sync-coordinator.js')
+    coordinator.registerServerSyncResource('status', status)
+    coordinator.installServerSyncCoordinator()
+    await flush()
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await coordinator.requestServerSyncAfterCurrent(server, ['status'], {
+      mode: 'response-applied',
+      reason: 'post-offer',
+    })
+
+    expect(status).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(status).toHaveBeenCalledTimes(2)
+  })
+
   it('treats a new season or scope as a new connection lifetime', async () => {
     let release: (() => void) | undefined
     const manifest = vi.fn(

@@ -21,7 +21,6 @@ import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
 import { observedUserscriptRequest } from './server-observability.js'
 import {
-  installServerSyncCoordinator,
   registerServerSyncResource,
   requestServerSyncAfterCurrent,
 } from './server-sync-coordinator.js'
@@ -735,7 +734,6 @@ export const installTelemetry = (): void => {
   })
   registerServerSyncResource('alarms', refreshAlarms)
   registerServerSyncResource('status', refreshServerStatus)
-  installServerSyncCoordinator()
 }
 
 export const reportTelemetryError = (error: unknown): void => {
