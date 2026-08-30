@@ -117,4 +117,67 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(refresh).toHaveBeenCalledTimes(2)
   })
+
+  it('runs one follow-up when an event arrives during the resource read', async () => {
+    const { installServerSyncCoordinator, registerServerSyncResource, requestServerSync } =
+      await import('./server-sync-coordinator.js')
+    let release!: () => void
+    const refresh = vi
+      .fn()
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<{ status: 'unchanged' }>((resolve) => {
+            release = () => resolve({ status: 'unchanged' })
+          }),
+      )
+      .mockResolvedValue({ status: 'unchanged' })
+    registerServerSyncResource({ id: 'status', scope: () => 'world', refresh })
+    installServerSyncCoordinator()
+    vi.advanceTimersByTime(0)
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+
+    requestServerSync('post-offer', 'status')
+    requestServerSync('post-offer', 'status')
+    release()
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2))
+  })
+
+  it('keeps the concurrency bound across work requested during an active sweep', async () => {
+    const { installServerSyncCoordinator, registerServerSyncResource } = await import(
+      './server-sync-coordinator.js'
+    )
+    let active = 0
+    let peak = 0
+    const releases: Array<() => void> = []
+    const blockedRefresh = async (): Promise<{ status: 'unchanged' }> => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise<void>((resolve) => {
+        releases.push(resolve)
+      })
+      active--
+      return { status: 'unchanged' }
+    }
+    for (let index = 0; index < 4; index++) {
+      registerServerSyncResource({
+        id: `initial-${index}`,
+        scope: () => 'world',
+        refresh: blockedRefresh,
+      })
+    }
+    installServerSyncCoordinator()
+    vi.advanceTimersByTime(0)
+    await vi.waitFor(() => expect(active).toBe(4))
+
+    registerServerSyncResource({ id: 'later', scope: () => 'world', refresh: blockedRefresh })
+    await Promise.resolve()
+    expect(active).toBe(4)
+    expect(peak).toBe(4)
+
+    for (const release of releases.splice(0)) release()
+    await vi.waitFor(() => expect(active).toBe(1))
+    expect(peak).toBe(4)
+    releases.shift()?.()
+    await vi.waitFor(() => expect(active).toBe(0))
+  })
 })
