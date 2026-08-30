@@ -1,13 +1,15 @@
 import {
+  millis,
   type Seconds,
   seconds,
   sha256Hex,
   type TileCoord,
   tileKey,
   WORLD_TEMPLATE_SURFACE,
+  uuidV7,
   WORLD_TILES,
 } from '@caelestis/shared'
-import type { Ports } from '../ports/index.js'
+import type { AlarmProbe, Ports } from '../ports/index.js'
 import { MAX_CANVAS_TILE_BYTES, uploadTile } from './ingest.js'
 
 /**
@@ -47,6 +49,13 @@ export interface FetchReport {
   readonly failed: number
   /** Tiles left for the next run after the per-run budget was spent. */
   readonly deferred: number
+  /** Whether at least one regression asked the watcher for a ten-minute probe. */
+  readonly followUpScheduled: boolean
+}
+
+export interface AlarmFollowUpReport {
+  readonly evaluated: number
+  readonly failed: number
 }
 
 const wplaceTileUrl = (season: number, tile: TileCoord): string =>
@@ -58,10 +67,12 @@ export const fetchCanvasTiles = async (
     readonly season: number
     readonly now?: Seconds
     readonly fetchImpl?: typeof fetch
+    readonly alarmIdFactory?: () => string
   },
 ): Promise<FetchReport> => {
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
   const fetchImpl = options.fetchImpl ?? fetch
+  const alarmIdFactory = options.alarmIdFactory ?? uuidV7
   const { season } = options
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
@@ -98,6 +109,7 @@ export const fetchCanvasTiles = async (
   let unchanged = 0
   let fresh = 0
   let failed = 0
+  const completedTemplateTiles = new Set<string>()
   const budgeted = work.slice(0, MAX_FETCH_TILES_PER_RUN)
   for (const { tile, ring } of budgeted) {
     const latest = await ports.sql.readLatestTile(season, tile)
@@ -125,6 +137,7 @@ export const fetchCanvasTiles = async (
       const hash = await sha256Hex(bytes)
       if (latest?.hash === hash) {
         unchanged++
+        if (!ring) completedTemplateTiles.add(tileKey(tile))
         continue
       }
       await uploadTile(
@@ -143,11 +156,153 @@ export const fetchCanvasTiles = async (
         { requireCoverage: false },
       )
       fetched++
+      if (!ring) completedTemplateTiles.add(tileKey(tile))
     } catch {
       // One unreachable tile must not starve the rest of the run.
       failed++
     }
   }
 
-  return { fetched, unchanged, fresh, failed, deferred: work.length - budgeted.length }
+  const templates = await ports.sql.listManifestTemplates(season, true)
+  const requiredTiles = new Map<string, string[]>()
+  for (const row of manifestTiles) {
+    const held = requiredTiles.get(row.templateId)
+    if (held === undefined)
+      requiredTiles.set(row.templateId, [tileKey({ x: row.tileX, y: row.tileY })])
+    else held.push(tileKey({ x: row.tileX, y: row.tileY }))
+  }
+  const statuses = await ports.sql.readTemplateStatuses(season, true)
+  const statusesById = new Map(statuses.map((status) => [status.templateId, status]))
+  let followUpScheduled = false
+  for (const template of templates) {
+    const required = requiredTiles.get(template.id) ?? []
+    const status = statusesById.get(template.id)
+    if (
+      required.length === 0 ||
+      !required.every((key) => completedTemplateTiles.has(key)) ||
+      status === undefined ||
+      status.total !== template.totalPixels
+    ) {
+      continue
+    }
+    const result = await ports.sql.evaluateTemplateAlarm(
+      {
+        templateId: template.id,
+        versionId: template.versionId,
+        total: status.total,
+        correct: status.correct,
+        observedAt: millis(now * 1_000),
+      },
+      { kind: 'scan' },
+      alarmIdFactory(),
+    )
+    followUpScheduled ||= result.scheduleFollowUp
+  }
+
+  return {
+    fetched,
+    unchanged,
+    fresh,
+    failed,
+    deferred: work.length - budgeted.length,
+    followUpScheduled,
+  }
+}
+
+/** Refetch only the templates whose six-hour scan opened a regression episode. */
+export const fetchAlarmFollowUps = async (
+  ports: Ports,
+  probes: readonly AlarmProbe[],
+  options: {
+    readonly now?: Seconds
+    readonly fetchImpl?: typeof fetch
+  } = {},
+): Promise<AlarmFollowUpReport> => {
+  const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
+  const fetchImpl = options.fetchImpl ?? fetch
+  const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
+  let evaluated = 0
+  let failed = 0
+  let remaining = MAX_FETCH_TILES_PER_RUN
+
+  for (const probe of probes) {
+    const template = (await ports.sql.listManifestTemplates(probe.season, true)).find(
+      (candidate) => candidate.id === probe.templateId && candidate.versionId === probe.versionId,
+    )
+    const tiles = (await ports.sql.listManifestTiles(probe.season, true)).filter(
+      (row) => row.templateId === probe.templateId && row.versionId === probe.versionId,
+    )
+    if (template === undefined || tiles.length === 0 || tiles.length > MAX_FETCH_TILES_PER_RUN) {
+      await ports.sql.clearAlarmProbe(probe.templateId, probe.alarmId)
+      failed++
+      continue
+    }
+    if (tiles.length > remaining) break
+    remaining -= tiles.length
+
+    let complete = true
+    for (const row of tiles) {
+      const tile = { x: row.tileX, y: row.tileY }
+      try {
+        const response = await fetchImpl(wplaceTileUrl(probe.season, tile), {
+          headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
+        })
+        if (!response.ok) {
+          complete = false
+          break
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
+          complete = false
+          break
+        }
+        const hash = await sha256Hex(bytes)
+        const latest = await ports.sql.readLatestTile(probe.season, tile)
+        if (latest?.hash === hash) continue
+        await uploadTile(
+          ports,
+          {
+            wplaceUserId: FETCHER_USER_ID,
+            displayName: FETCHER_DISPLAY_NAME,
+            tokenHash,
+            season: probe.season,
+            tile,
+            hash,
+            observedAt: now,
+            includeUnpublished: true,
+          },
+          bytes,
+          { requireCoverage: false },
+        )
+      } catch {
+        complete = false
+        break
+      }
+    }
+
+    const status = complete
+      ? (await ports.sql.readTemplateStatuses(probe.season, true)).find(
+          (candidate) => candidate.templateId === probe.templateId,
+        )
+      : undefined
+    if (status === undefined || status.total !== template.totalPixels) {
+      await ports.sql.clearAlarmProbe(probe.templateId, probe.alarmId)
+      failed++
+      continue
+    }
+    await ports.sql.evaluateTemplateAlarm(
+      {
+        templateId: probe.templateId,
+        versionId: probe.versionId,
+        total: status.total,
+        correct: status.correct,
+        observedAt: millis(now * 1_000),
+      },
+      { kind: 'follow-up', alarmId: probe.alarmId, pixelsLost: probe.pixelsLost },
+      'unused',
+    )
+    evaluated++
+  }
+
+  return { evaluated, failed }
 }

@@ -1,35 +1,18 @@
-import type { Alarm, Millis } from '@caelestis/shared'
+import type {
+  AlarmEvaluationPhase,
+  AlarmPolicyResult,
+  TemplateAlarmSnapshot,
+  TemplateAlarmState,
+} from '../ports/index.js'
+
+export type {
+  AlarmEvaluationPhase,
+  AlarmPolicyResult,
+  TemplateAlarmSnapshot,
+  TemplateAlarmState,
+} from '../ports/index.js'
 
 export const ALARM_FOLLOW_UP_DELAY_MILLISECONDS = 10 * 60 * 1_000
-
-export interface TemplateAlarmSnapshot {
-  readonly templateId: string
-  readonly versionId: string
-  readonly total: number
-  readonly correct: number
-  readonly observedAt: Millis
-}
-
-export interface TemplateAlarmState {
-  readonly templateId: string
-  readonly versionId: string
-  readonly total: number
-  readonly peakCorrect: number
-  readonly alarm: Alarm | null
-}
-
-export type AlarmEvaluationPhase =
-  | { readonly kind: 'scan' }
-  | {
-      readonly kind: 'follow-up'
-      readonly alarmId: string
-      readonly pixelsLost: number
-    }
-
-export interface AlarmPolicyResult {
-  readonly state: TemplateAlarmState
-  readonly scheduleFollowUp: boolean
-}
 
 /** Scale ordinary templates while keeping both tiny and continent-sized art useful. */
 export const alarmThreshold = (total: number): number =>
@@ -74,6 +57,9 @@ export const evaluateAlarmSnapshot = (
   }
 
   const current = previous.alarm
+  if (phase.kind === 'follow-up' && (current === null || phase.alarmId !== current.id)) {
+    return { state: previous, scheduleFollowUp: false }
+  }
   if (current === null && pixelsLost < alarmThreshold(snapshot.total)) {
     return { state: { ...baseState, alarm: null }, scheduleFollowUp: false }
   }
@@ -95,8 +81,7 @@ export const evaluateAlarmSnapshot = (
     }
   }
 
-  const belongsToCurrentEpisode =
-    phase.kind === 'follow-up' && phase.alarmId === current.id
+  const belongsToCurrentEpisode = phase.kind === 'follow-up' && phase.alarmId === current.id
   const kind =
     current.kind === 'sustained-griefing' ||
     (belongsToCurrentEpisode && pixelsLost > phase.pixelsLost)

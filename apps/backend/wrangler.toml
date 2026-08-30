@@ -24,9 +24,17 @@ migrations_dir = "./migrations"
 name = "TELEMETRY"
 class_name = "TelemetryShard"
 
+[[durable_objects.bindings]]
+name = "ALARM_WATCHER"
+class_name = "AlarmWatcher"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TelemetryShard"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["AlarmWatcher"]
 
 [vars]
 SHARD_STRATEGY = "single"

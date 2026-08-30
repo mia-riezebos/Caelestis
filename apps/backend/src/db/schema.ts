@@ -716,3 +716,48 @@ export const templateTileStatuses = sqliteTable(
     ),
   ],
 )
+
+/** Version-local high-water state and the one active alarm episode a template may own. */
+export const templateAlarmStates = sqliteTable(
+  'template_alarm_states',
+  {
+    templateId: text('template_id')
+      .primaryKey()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id').notNull(),
+    total: integer('total').notNull(),
+    peakCorrect: integer('peak_correct').notNull(),
+    alarmId: text('alarm_id'),
+    kind: text('kind', { enum: ['regression', 'sustained-griefing'] }),
+    pixelsLost: integer('pixels_lost'),
+    firstSeenMs: integer('first_seen_ms').$type<Millis>(),
+    lastSeenMs: integer('last_seen_ms').$type<Millis>(),
+    probeDueAtMs: integer('probe_due_at_ms').$type<Millis>(),
+    probePixelsLost: integer('probe_pixels_lost'),
+  },
+  (table) => [
+    index('template_alarm_states_probe_due_idx').on(table.probeDueAtMs),
+    check(
+      'template_alarm_states_counter_check',
+      sql`typeof(${table.total}) = 'integer' AND ${table.total} >= 0
+        AND typeof(${table.peakCorrect}) = 'integer'
+        AND ${table.peakCorrect} BETWEEN 0 AND ${table.total}`,
+    ),
+    check(
+      'template_alarm_states_episode_check',
+      sql`(${table.alarmId} IS NULL AND ${table.kind} IS NULL AND ${table.pixelsLost} IS NULL
+          AND ${table.firstSeenMs} IS NULL AND ${table.lastSeenMs} IS NULL
+          AND ${table.probeDueAtMs} IS NULL AND ${table.probePixelsLost} IS NULL)
+        OR (${table.alarmId} IS NOT NULL
+          AND ${table.kind} IN ('regression', 'sustained-griefing')
+          AND typeof(${table.pixelsLost}) = 'integer' AND ${table.pixelsLost} > 0
+          AND typeof(${table.firstSeenMs}) = 'integer'
+          AND typeof(${table.lastSeenMs}) = 'integer'
+          AND ${table.firstSeenMs} <= ${table.lastSeenMs}
+          AND ((${table.probeDueAtMs} IS NULL AND ${table.probePixelsLost} IS NULL)
+            OR (typeof(${table.probeDueAtMs}) = 'integer'
+              AND typeof(${table.probePixelsLost}) = 'integer'
+              AND ${table.probePixelsLost} > 0)))`,
+    ),
+  ],
+)

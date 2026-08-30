@@ -1,4 +1,5 @@
 import {
+  type Alarm,
   type ContributionDay,
   type Millis,
   PALETTE_SIZE,
@@ -575,6 +576,46 @@ export interface ManifestTemplateRecord {
   readonly updatedAt: Millis
 }
 
+/** One complete current-state observation used by the server-owned alarm policy. */
+export interface TemplateAlarmSnapshot {
+  readonly templateId: string
+  readonly versionId: string
+  readonly total: number
+  readonly correct: number
+  readonly observedAt: Millis
+}
+
+export interface TemplateAlarmState {
+  readonly templateId: string
+  readonly versionId: string
+  readonly total: number
+  readonly peakCorrect: number
+  readonly alarm: Alarm | null
+}
+
+export type AlarmEvaluationPhase =
+  | { readonly kind: 'scan' }
+  | {
+      readonly kind: 'follow-up'
+      readonly alarmId: string
+      readonly pixelsLost: number
+    }
+
+export interface AlarmPolicyResult {
+  readonly state: TemplateAlarmState
+  readonly scheduleFollowUp: boolean
+}
+
+/** A durable delayed recheck claimed by the alarm-watcher Durable Object. */
+export interface AlarmProbe {
+  readonly templateId: string
+  readonly versionId: string
+  readonly season: number
+  readonly alarmId: string
+  readonly pixelsLost: number
+  readonly dueAt: Millis
+}
+
 export interface ManifestTileRecord {
   readonly templateId: string
   readonly versionId: string
@@ -953,6 +994,22 @@ export interface SqlStore {
     season: number,
     includeUnpublished: boolean,
   ): Promise<readonly TemplateStatus[]>
+
+  /** Atomically evaluate and persist one complete template snapshot. */
+  evaluateTemplateAlarm(
+    snapshot: TemplateAlarmSnapshot,
+    phase: AlarmEvaluationPhase,
+    alarmId: string,
+  ): Promise<AlarmPolicyResult>
+
+  readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]>
+
+  listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]>
+
+  nextAlarmProbeAt(): Promise<Millis | null>
+
+  /** Drop a probe that could not produce a complete snapshot, if it still names this episode. */
+  clearAlarmProbe(templateId: string, alarmId: string): Promise<void>
 
   /** Claims an idempotency key. False means this paint event was already accepted. */
   claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>

@@ -2,6 +2,7 @@ import {
   encodeIndexedPng,
   millis,
   seconds,
+  sha256Hex,
   TILE_SIZE,
   TRANSPARENT_INDEX,
   tileKey,
@@ -11,7 +12,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import type { Ports, TemplateVersionRecord } from '../ports/index.js'
-import { fetchCanvasTiles, RING_STALENESS_SECONDS } from './fetcher.js'
+import { fetchAlarmFollowUps, fetchCanvasTiles, RING_STALENESS_SECONDS } from './fetcher.js'
 
 const TOKEN = 'a'.repeat(64)
 const NOW = seconds(1_750_032_000)
@@ -152,5 +153,60 @@ describe('the 6-hour tile fetcher', () => {
       const match = url.match(/tiles\/(\d+)\/(\d+)\.png$/)
       expect(templateKeys.has(`${match?.[1] ?? ''}/${match?.[2] ?? ''}`)).toBe(true)
     }
+  }, 20_000)
+
+  it('opens on a six-hour regression and promotes only after a worsening follow-up', async () => {
+    const { ports, sql } = harness()
+    const chunk = await encodeIndexedPng(20, 1, new Uint8Array(20).fill(1))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('watched', [{ x: 5, y: 5 }]),
+      versionId: 'watched-version',
+      bbox: {
+        minX: 5 * TILE_SIZE,
+        minY: 5 * TILE_SIZE,
+        maxX: 5 * TILE_SIZE + 20,
+        maxY: 5 * TILE_SIZE + 1,
+      },
+      totalPixels: 20,
+      chunks: [{ tileX: 5, tileY: 5, hash }],
+    })
+    await sql.setTemplatePublishedAt('watched', millis(NOW * 1_000), millis(NOW * 1_000))
+
+    let lost = 0
+    const canvas = async () => {
+      const indices = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+      indices.fill(1, 0, 20 - lost)
+      return encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
+    }
+    const fetchImpl = (async () => new Response((await canvas()).slice())) as typeof fetch
+
+    await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    lost = 10
+    const scanAt = seconds(NOW + 6 * 60 * 60)
+    const scan = await fetchCanvasTiles(ports, {
+      season: 0,
+      now: scanAt,
+      fetchImpl,
+      alarmIdFactory: () => 'alarm-1',
+    })
+    expect(scan.followUpScheduled).toBe(true)
+    await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
+      expect.objectContaining({ id: 'alarm-1', kind: 'regression', pixelsLost: 10 }),
+    ])
+
+    lost = 11
+    const followAt = seconds(scanAt + 10 * 60)
+    const probes = await sql.listDueAlarmProbes(millis(followAt * 1_000))
+    await expect(fetchAlarmFollowUps(ports, probes, { now: followAt, fetchImpl })).resolves.toEqual(
+      {
+        evaluated: 1,
+        failed: 0,
+      },
+    )
+    await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
+      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 11 }),
+    ])
   }, 20_000)
 })

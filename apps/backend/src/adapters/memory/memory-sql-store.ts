@@ -1,4 +1,5 @@
 import {
+  type Alarm,
   type ContributionDay,
   type Millis,
   type Seconds,
@@ -14,6 +15,9 @@ import {
 import {
   type AccessToken,
   type AccessTokenQuery,
+  type AlarmEvaluationPhase,
+  type AlarmPolicyResult,
+  type AlarmProbe,
   assertValidAccessToken,
   assertValidBuckets,
   assertValidContributionQuery,
@@ -47,6 +51,8 @@ import {
   TELEMETRY_DECAY_EDGES,
   type TelemetryBucket,
   type TelemetryTarget,
+  type TemplateAlarmSnapshot,
+  type TemplateAlarmState,
   type TemplateDeletePrecondition,
   TemplateIdentityError,
   type TemplateManifestScope,
@@ -66,6 +72,10 @@ import {
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
+import {
+  ALARM_FOLLOW_UP_DELAY_MILLISECONDS,
+  evaluateAlarmSnapshot,
+} from '../../telemetry/alarm-policy.js'
 
 /**
  * Fold a path the way SQLite's `lower()` does, which is ASCII only.
@@ -83,6 +93,11 @@ const bucketKey = (bucket: TelemetryBucket): string =>
 
 /** One `tile_history` row: an observation as one account reported it, keyed like D1's primary key. */
 type TileHistoryRow = TileHistoryReporterRow
+
+interface StoredTemplateAlarmState extends TemplateAlarmState {
+  readonly probeDueAt: Millis | null
+  readonly probePixelsLost: number | null
+}
 
 const tileHistoryRowKey = (row: TileHistoryRow): string =>
   [
@@ -119,6 +134,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly tileBlobObjects = new Map<string, TileBlobObject>()
   private readonly tileBlobReservations = new Map<string, TileBlobReservation>()
   private tileBlobScanState: TileBlobScanState = { completedSweeps: 0 }
+  private readonly alarmStates = new Map<string, StoredTemplateAlarmState>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -1054,6 +1070,91 @@ export class MemorySqlStore implements SqlStore {
       })
     }
     return out.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async evaluateTemplateAlarm(
+    snapshot: TemplateAlarmSnapshot,
+    phase: AlarmEvaluationPhase,
+    alarmId: string,
+  ): Promise<AlarmPolicyResult> {
+    const previous = this.alarmStates.get(snapshot.templateId) ?? null
+    const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
+    const probe = result.scheduleFollowUp
+      ? {
+          probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
+          probePixelsLost: result.state.alarm?.pixelsLost ?? null,
+        }
+      : { probeDueAt: null, probePixelsLost: null }
+    this.alarmStates.set(snapshot.templateId, { ...result.state, ...probe })
+    return result
+  }
+
+  async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {
+    const alarms: Alarm[] = []
+    for (const [templateId, state] of this.alarmStates) {
+      const template = this.templates.get(templateId)
+      if (
+        state.alarm === null ||
+        template === undefined ||
+        template.season !== season ||
+        template.currentVersionId !== state.versionId ||
+        (!includeUnpublished && template.publishedAt === null)
+      )
+        continue
+      alarms.push({ ...state.alarm })
+    }
+    return alarms.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]> {
+    const probes: AlarmProbe[] = []
+    for (const [templateId, state] of this.alarmStates) {
+      const template = this.templates.get(templateId)
+      if (
+        template === undefined ||
+        template.currentVersionId !== state.versionId ||
+        state.alarm === null ||
+        state.probeDueAt === null ||
+        state.probeDueAt > now ||
+        state.probePixelsLost === null
+      )
+        continue
+      probes.push({
+        templateId,
+        versionId: state.versionId,
+        season: template.season,
+        alarmId: state.alarm.id,
+        pixelsLost: state.probePixelsLost,
+        dueAt: state.probeDueAt,
+      })
+    }
+    return probes.sort((left, right) => left.dueAt - right.dueAt)
+  }
+
+  async nextAlarmProbeAt(): Promise<Millis | null> {
+    let next: Millis | null = null
+    for (const [templateId, state] of this.alarmStates) {
+      const template = this.templates.get(templateId)
+      if (
+        state.alarm !== null &&
+        template?.currentVersionId === state.versionId &&
+        state.probeDueAt !== null &&
+        (next === null || state.probeDueAt < next)
+      ) {
+        next = state.probeDueAt
+      }
+    }
+    return next
+  }
+
+  async clearAlarmProbe(templateId: string, alarmId: string): Promise<void> {
+    const state = this.alarmStates.get(templateId)
+    if (state?.alarm?.id !== alarmId) return
+    this.alarmStates.set(templateId, {
+      ...state,
+      probeDueAt: null,
+      probePixelsLost: null,
+    })
   }
 
   async claimPaintEvent(eventId: string, _wplaceUserId: number, _seenAt: Millis): Promise<boolean> {

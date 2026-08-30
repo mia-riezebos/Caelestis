@@ -6,6 +6,7 @@ import type { Ports } from './ports/index.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
+export { AlarmWatcher } from './alarm-watcher.js'
 export { TelemetryShard } from './telemetry-shard.js'
 
 /**
@@ -84,7 +85,11 @@ export default {
     }
     ctx.waitUntil(
       Promise.all([
-        fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }),
+        fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).then(async (report) => {
+          if (report.followUpScheduled) {
+            await env.ALARM_WATCHER.getByName('global').schedule()
+          }
+        }),
         runTileBlobGc(ports, { mode: tileBlobGcMode(env.TILE_BLOB_GC_MODE) }),
       ]).then(() => undefined),
     )

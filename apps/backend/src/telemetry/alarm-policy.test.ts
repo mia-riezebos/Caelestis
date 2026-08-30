@@ -1,10 +1,6 @@
 import { millis } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
-import {
-  alarmThreshold,
-  evaluateAlarmSnapshot,
-  type TemplateAlarmState,
-} from './alarm-policy.js'
+import { alarmThreshold, evaluateAlarmSnapshot, type TemplateAlarmState } from './alarm-policy.js'
 
 const TEMPLATE_ID = '01890f3a-6b7c-7def-8123-456789abcde1'
 const VERSION_ID = '01890f3a-6b7c-7def-8123-456789abcde2'
@@ -28,16 +24,18 @@ describe('template alarm policy', () => {
   })
 
   it('seeds a new template version without treating incomplete work as a regression', () => {
-    expect(evaluateAlarmSnapshot(null, snapshot(60_000), { kind: 'scan' }, () => ALARM_ID)).toEqual({
-      state: {
-        templateId: TEMPLATE_ID,
-        versionId: VERSION_ID,
-        total: 100_000,
-        peakCorrect: 60_000,
-        alarm: null,
+    expect(evaluateAlarmSnapshot(null, snapshot(60_000), { kind: 'scan' }, () => ALARM_ID)).toEqual(
+      {
+        state: {
+          templateId: TEMPLATE_ID,
+          versionId: VERSION_ID,
+          total: 100_000,
+          peakCorrect: 60_000,
+          alarm: null,
+        },
+        scheduleFollowUp: false,
       },
-      scheduleFollowUp: false,
-    })
+    )
   })
 
   it('opens a regression and requests a targeted follow-up after threshold loss', () => {
@@ -139,5 +137,24 @@ describe('template alarm policy', () => {
     )
     expect(recovered.state.alarm).toBeNull()
     expect(recovered.scheduleFollowUp).toBe(false)
+  })
+
+  it('ignores an obsolete follow-up after its alarm episode has cleared', () => {
+    const inactive: TemplateAlarmState = {
+      templateId: TEMPLATE_ID,
+      versionId: VERSION_ID,
+      total: 100_000,
+      peakCorrect: 60_000,
+      alarm: null,
+    }
+
+    expect(
+      evaluateAlarmSnapshot(
+        inactive,
+        snapshot(59_800, FOLLOW_UP),
+        { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+        () => 'must-not-be-used',
+      ),
+    ).toEqual({ state: inactive, scheduleFollowUp: false })
   })
 })
