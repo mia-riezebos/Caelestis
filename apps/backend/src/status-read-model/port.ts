@@ -18,6 +18,10 @@ export interface StatusReadModelPort {
     season: number,
     scope: StatusVisibilityScope,
   ) => Promise<StatusSnapshotRead>
+  /** Optional on portable adapters; production uses it to wake hibernating manifest subscribers. */
+  readonly notifyManifestChange?: (season: number) => Promise<void>
+  /** Optional on portable adapters; production closes live sessions for a revoked credential. */
+  readonly closeCredential?: (season: number, tokenHash: string) => Promise<void>
 }
 
 /** Projection failure never changes the outcome of the authoritative write that preceded it. */
@@ -32,6 +36,27 @@ export const repairCommittedStatusProjection = async (
     console.error(error)
     return null
   }
+}
+
+/** Manifest publication is reconstructible and must never roll back its authoritative mutation. */
+export const publishManifestChange = async (
+  readModel: StatusReadModelPort,
+  season: number,
+): Promise<void> => {
+  try {
+    await readModel.notifyManifestChange?.(season)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+/** Production adapters propagate cleanup failure so idempotent revocation can be retried. */
+export const closeLiveCredential = async (
+  readModel: StatusReadModelPort,
+  season: number,
+  tokenHash: string,
+): Promise<void> => {
+  await readModel.closeCredential?.(season, tokenHash)
 }
 
 /** Portable process-local adapter used by tests and non-Worker entry points. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseServerManifest, type ServerInfo } from './server-manifest.js'
+import { parseServerInfo, parseServerManifest, type ServerInfo } from './server-manifest.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
@@ -44,6 +44,13 @@ const manifest = {
 }
 
 describe('server manifest template lifecycle', () => {
+  it('accepts only the explicit live-sync capability version', () => {
+    expect(parseServerInfo({ ...server, liveSync: 1 })).toEqual({ ...server, liveSync: 1 })
+    expect(parseServerInfo(server)).toEqual(server)
+    expect(parseServerInfo({ ...server, liveSync: true })).toBeNull()
+    expect(parseServerInfo({ ...server, liveSync: 2 })).toBeNull()
+  })
+
   it('retains current lifecycle state from a fresh manifest', () => {
     const parsed = parseServerManifest(
       {

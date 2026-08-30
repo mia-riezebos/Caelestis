@@ -112,6 +112,7 @@ it('forwards the configured identity, season and open access to the app', async 
     name: 'Second Season Server',
     description: 'Configured, not defaulted',
     auth: 'none',
+    liveSync: 1,
   })
   expect(manifest.status).toBe(200)
   await expect(manifest.json()).resolves.toMatchObject({ season: 0 })

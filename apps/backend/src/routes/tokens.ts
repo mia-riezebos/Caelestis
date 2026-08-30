@@ -2,7 +2,11 @@ import { millis } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
 import { SCOPES, type Scope } from '../auth/tokens.js'
-import { listAccessTokens, mintAccessToken, revokeAccessToken } from '../auth/use-cases.js'
+import {
+  listAccessTokens,
+  mintAccessToken,
+  revokeAccessTokenAndLiveSessions,
+} from '../auth/use-cases.js'
 import type { AccessToken } from '../ports/index.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
@@ -50,7 +54,11 @@ const tokenCursor = (token: AccessToken): string => `${token.createdAt}:${token.
  *
  * @see .scratch/v1/issues/03-auth-model.md
  */
-export const createTokenRoutes = (runtime: BackendRuntime, auth: AuthOptions) => {
+export const createTokenRoutes = (
+  runtime: BackendRuntime,
+  auth: AuthOptions,
+  currentSeason: number,
+) => {
   const routes = new Hono()
 
   routes.use('/*', requireScopeEffect(runtime, auth, 'admin'))
@@ -135,7 +143,12 @@ export const createTokenRoutes = (runtime: BackendRuntime, auth: AuthOptions) =>
     //
     // It also removes an existence oracle: 404-versus-200 told an admin whether a hash it does not
     // hold exists. Admin-gated, so minor, but free to close.
-    return runBackendHttp(c, runtime, revokeAccessToken(tokenHash), () => c.body(null, 204))
+    return runBackendHttp(
+      c,
+      runtime,
+      revokeAccessTokenAndLiveSessions(tokenHash, currentSeason),
+      () => c.body(null, 204),
+    )
   })
 
   return routes
