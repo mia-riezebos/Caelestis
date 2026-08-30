@@ -12,6 +12,7 @@ import {
 import type { AlarmProbe, BlobStore, CounterStore, SqlStore } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 import { DirectStatusReadModel, type StatusReadModelPort } from '../status-read-model/port.js'
+import { createDerivedArtifactWriteBatch } from './derived-classification.js'
 import {
   createStatusProjectionBatch,
   MAX_CANVAS_TILE_BYTES,
@@ -113,6 +114,7 @@ export const fetchCanvasTiles = async (
     makeBackendContext(ports.blobs, ports.sql, ports.counters, statusReadModel),
   )
   const projectionBatch = createStatusProjectionBatch(statusReadModel)
+  const artifactWriteBatch = createDerivedArtifactWriteBatch(ports.blobs)
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
   // admin's draft deserves the same timelapse the published version will show.
@@ -197,7 +199,7 @@ export const fetchCanvasTiles = async (
                   includeUnpublished: true,
                 },
                 bytes,
-                { projectionBatch },
+                { projectionBatch, artifactWriteBatch },
               ),
             )
             serverRefreshedTemplateTiles.add(tileKey(tile))
@@ -217,7 +219,12 @@ export const fetchCanvasTiles = async (
               includeUnpublished: true,
             },
             bytes,
-            { requireCoverage: false, authoritative: true, projectionBatch },
+            {
+              requireCoverage: false,
+              authoritative: true,
+              projectionBatch,
+              artifactWriteBatch,
+            },
           ),
         )
         if (!ring) serverRefreshedTemplateTiles.add(tileKey(tile))
@@ -228,7 +235,11 @@ export const fetchCanvasTiles = async (
       }
     }
   } finally {
-    await projectionBatch.flush()
+    try {
+      await projectionBatch.flush()
+    } finally {
+      await artifactWriteBatch.flush()
+    }
   }
 
   const templates = await ports.sql.listManifestTemplates(
@@ -316,6 +327,7 @@ export const fetchAlarmFollowUps = async (
     makeBackendContext(ports.blobs, ports.sql, ports.counters, statusReadModel),
   )
   const projectionBatch = createStatusProjectionBatch(statusReadModel)
+  const artifactWriteBatch = createDerivedArtifactWriteBatch(ports.blobs)
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
   let evaluated = 0
   let failed = 0
@@ -387,7 +399,7 @@ export const fetchAlarmFollowUps = async (
                   includeUnpublished: true,
                 },
                 bytes,
-                { projectionBatch },
+                { projectionBatch, artifactWriteBatch },
               ),
             )
             continue
@@ -405,7 +417,12 @@ export const fetchAlarmFollowUps = async (
                 includeUnpublished: true,
               },
               bytes,
-              { requireCoverage: false, authoritative: true, projectionBatch },
+              {
+                requireCoverage: false,
+                authoritative: true,
+                projectionBatch,
+                artifactWriteBatch,
+              },
             ),
           )
         } catch {
@@ -468,7 +485,11 @@ export const fetchAlarmFollowUps = async (
       evaluated++
     }
   } finally {
-    await projectionBatch.flush()
+    try {
+      await projectionBatch.flush()
+    } finally {
+      await artifactWriteBatch.flush()
+    }
   }
 
   return { evaluated, failed, pending }
