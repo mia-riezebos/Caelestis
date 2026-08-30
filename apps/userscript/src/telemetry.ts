@@ -16,7 +16,7 @@ import {
   uuidV7,
 } from '@caelestis/shared'
 import { userscriptClientHeaders } from './client-metrics.js'
-import { warn } from './debug.js'
+import { count, warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
 import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
@@ -42,6 +42,7 @@ import {
   serverConnectionSignal,
 } from './state.js'
 import type { TemplateColourProgress, TemplateProgress } from './templates/mismatch.js'
+import { TileOfferAcknowledgements } from './tile-offer-acknowledgements.js'
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
 import { accountIdentity, loadAccount } from './wplace-account.js'
 
@@ -52,6 +53,8 @@ const MAX_RECENT_TILES = 32
 const MAX_RECENT_TILE_BYTES = 32 * 1_024 * 1_024
 const MAX_RECENT_PAINTS = 64
 const MAX_DEDUPE_VALUES = 4_096
+const TILE_OFFER_ACKNOWLEDGEMENT_TTL_MS = 5 * 60_000
+const MAX_TILE_OFFER_SERVERS = 32
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 interface OfferedTile extends TileOffer {
@@ -87,7 +90,6 @@ interface ObservedPaint {
 
 const coverage = new Map<string, ServerCoverage>()
 const queued = new Map<string, ServerQueue>()
-const offered = new Map<string, ServerDedupe>()
 const reportedPaints = new Map<string, ServerDedupe>()
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const statuses = new Map<string, ServerStatus>()
@@ -104,6 +106,18 @@ const alarmListeners = new Set<() => void>()
 const recentTiles = new Map<string, OfferedTile>()
 const recentPaints: ObservedPaint[] = []
 let recentTileBytes = 0
+const tileOfferAcknowledgements = new TileOfferAcknowledgements({
+  ttlMs: TILE_OFFER_ACKNOWLEDGEMENT_TTL_MS,
+  maxServers: MAX_TILE_OFFER_SERVERS,
+  maxReceiptsPerServer: MAX_DEDUPE_VALUES,
+})
+
+const tileOfferMetric = (
+  outcome: 'avoided' | 'retried' | 'requested' | 'accepted' | 'rejected',
+  by = 1,
+): void => count(`telemetry:tile-offers-${outcome}`, by)
+
+const offerKey = (entry: TileOffer): string => `${entry.tile}\u0000${entry.sha256}`
 
 /** Remember bounded recent delivery IDs; old values may safely be offered again after eviction. */
 const rememberDedupe = (values: Set<string>, value: string): void => {
@@ -234,20 +248,34 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   )
     return
   const server = pending.server
+  const season = server.season
+  if (season === null) return
+  const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
+  const owner = serverConnectionIdentity(server)
+  for (const entry of entries)
+    tileOfferAcknowledgements.started(server.url, owner, season, offerKey(entry))
   await loadAccount()
   const identity = accountIdentity()
-  if (identity === null) return
-  const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
+  if (identity === null || !isCurrentServerConnection(server)) {
+    for (const entry of entries)
+      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+    return
+  }
+  tileOfferMetric('requested', entries.length)
   const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
     method: 'POST',
     headers: { ...authHeaders(server), 'content-type': 'application/json' },
     body: JSON.stringify({
       ...identity,
-      season: server.season,
+      season,
       offers: entries.map(({ tile, sha256, ts }) => ({ tile, sha256, ts })),
     }),
   })
   if (response === null || !response.ok) {
+    for (const entry of entries)
+      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+    if (response !== null && response.status >= 400 && response.status < 500)
+      tileOfferMetric('rejected', entries.length)
     if (response !== null)
       warn('install', 'telemetry tile offer was rejected', {
         server: server.url,
@@ -260,27 +288,68 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     typeof body !== 'object' ||
     body === null ||
     !Array.isArray((body as { wanted?: unknown }).wanted)
-  )
+  ) {
+    for (const entry of entries)
+      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
     return
-  const responseBody = body as { wanted: unknown[]; status?: unknown }
+  }
+  const responseBody = body as {
+    wanted: unknown[]
+    acknowledged?: unknown
+    rejected?: unknown
+    status?: unknown
+  }
+  const offeredTiles = new Set<string>(entries.map((entry) => entry.tile))
   const wanted = new Set(
-    responseBody.wanted.filter((tile): tile is string => typeof tile === 'string'),
+    responseBody.wanted.filter(
+      (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
+    ),
   )
+  const acknowledged = Array.isArray(responseBody.acknowledged)
+    ? new Set(
+        responseBody.acknowledged.filter(
+          (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
+        ),
+      )
+    : null
+  const rejected = Array.isArray(responseBody.rejected)
+    ? new Set(
+        responseBody.rejected.filter(
+          (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
+        ),
+      )
+    : null
+  const completeDisposition =
+    acknowledged !== null &&
+    rejected !== null &&
+    entries.every(
+      (entry) =>
+        Number(wanted.has(entry.tile)) +
+          Number(acknowledged.has(entry.tile)) +
+          Number(rejected.has(entry.tile)) ===
+        1,
+    )
   const offeredStatus = statusDeltaFrom(responseBody.status)
   if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
   const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
   if (offeredStatus === null || missingStatus)
     requestServerSync('post-offer', 'telemetry-status', server)
-  const previousDedupe = offered.get(server.url)
-  const dedupe =
-    previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
-      ? previousDedupe
-      : { server, values: new Set<string>() }
+  let accepted = 0
   for (const entry of entries) {
-    const offerKey = `${entry.tile}\u0000${entry.sha256}`
-    if (!wanted.has(entry.tile) || uploaded.has(offerKey)) rememberDedupe(dedupe.values, offerKey)
+    const key = offerKey(entry)
+    if ((completeDisposition && acknowledged.has(entry.tile)) || uploaded.has(key)) {
+      tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+      accepted++
+    } else if (completeDisposition && rejected.has(entry.tile)) {
+      // A refusal is still a definitive acknowledgement. Re-offering it on every canvas read would
+      // turn stale client coverage into a hot loop; TTL/reconnect/content changes retain recovery.
+      tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+    } else {
+      tileOfferAcknowledgements.retryable(server.url, owner, season, key)
+    }
   }
-  offered.set(server.url, dedupe)
+  tileOfferMetric('accepted', accepted)
+  if (completeDisposition) tileOfferMetric('rejected', rejected.size)
   if (pending.entries.size > entries.length) {
     const rest = new Map([...pending.entries].slice(entries.length))
     queued.set(serverUrl, { server, entries: rest })
@@ -305,13 +374,18 @@ const shareObservedTile = (entry: OfferedTile): void => {
       !coverageFor(server)?.has(entry.tile)
     )
       continue
-    const previousDedupe = offered.get(server.url)
-    const dedupe =
-      previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
-        ? previousDedupe
-        : { server, values: new Set<string>() }
-    const offerKey = `${entry.tile}\u0000${entry.sha256}`
-    if (dedupe.values.has(offerKey)) continue
+    const decision = tileOfferAcknowledgements.decision(
+      server.url,
+      serverConnectionIdentity(server),
+      server.season,
+      offerKey(entry),
+    )
+    if (decision === 'avoid') {
+      tileOfferMetric('avoided')
+      continue
+    }
+    if (decision === 'pending') continue
+    if (decision === 'retry') tileOfferMetric('retried')
     const previousQueue = queued.get(server.url)
     const serverQueue =
       previousQueue !== undefined && isCurrentServerConnection(previousQueue.server)

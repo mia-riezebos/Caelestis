@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   tileInterest: null as ((tile: { x: number; y: number }) => boolean) | null,
   acceptedPaint: null as ((paint: unknown) => void) | null,
   stateListeners: [] as Array<() => void>,
+  retiredServers: new WeakSet<object>(),
   state: {
     shareTiles: true,
     reportPaints: true,
@@ -28,12 +29,17 @@ const coordinator = vi.hoisted(() => ({
   >(),
 }))
 
-vi.mock('./debug.js', () => ({ warn: vi.fn() }))
+const debug = vi.hoisted(() => ({ count: vi.fn(), warn: vi.fn() }))
+const account = vi.hoisted(() => ({
+  loadAccount: vi.fn<() => Promise<void>>(async () => undefined),
+}))
+
+vi.mock('./debug.js', () => debug)
 vi.mock('./state.js', () => ({
   activeServerToken: (server: ConnectedServer) =>
     server.tokenUsable === false ? null : server.token,
   getState: () => harness.state,
-  isCurrentServerConnection: () => true,
+  isCurrentServerConnection: (server: object) => !harness.retiredServers.has(server),
   serverConnectionIdentity: (server: object) => server,
   serverConnectionSignal: () => new AbortController().signal,
   onServerContents: (listener: (server: unknown, contents: unknown) => void) => {
@@ -104,7 +110,7 @@ vi.mock('./tile-transform.js', () => ({
 }))
 vi.mock('./wplace-account.js', () => ({
   accountIdentity: () => ({ wplaceUserId: 42, displayName: 'Mía 🎨' }),
-  loadAccount: vi.fn(async () => undefined),
+  loadAccount: account.loadAccount,
 }))
 
 const server: ConnectedServer = {
@@ -131,11 +137,13 @@ const template: ServerTemplate = {
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
+  account.loadAccount.mockImplementation(async () => undefined)
   harness.serverContents = null
   harness.fetchedTile = null
   harness.tileInterest = null
   harness.acceptedPaint = null
   harness.stateListeners = []
+  harness.retiredServers = new WeakSet<object>()
   coordinator.resources.clear()
   coordinator.snapshots = []
   harness.state = { shareTiles: true, reportPaints: true, servers: [server], hiddenScopes: [] }
@@ -433,6 +441,218 @@ describe('server telemetry client', () => {
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
 
     await vi.waitFor(() => expect(statusReadsAfterOffer).toBe(1))
+  })
+
+  it('suppresses an explicitly acknowledged duplicate and exposes offer metrics', async () => {
+    const offers: unknown[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers.push(JSON.parse(String(init?.body)))
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(offers).toHaveLength(1))
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(offers).toHaveLength(1)
+    expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-requested', 1)
+    expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-accepted', 1)
+    expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-avoided', 1)
+  })
+
+  it('does not queue an identical observation while its first offer is in flight', async () => {
+    let offers = 0
+    let acknowledge: (() => void) | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return new Promise<Response>((resolve) => {
+            acknowledge = () =>
+              resolve(Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] }))
+          })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(offers).toBe(1))
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+
+    acknowledge?.()
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+  })
+
+  it('fences duplicate observations while account identity is loading', async () => {
+    let offers = 0
+    let finishAccountLoad: (() => void) | undefined
+    account.loadAccount.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishAccountLoad = resolve
+        }),
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(0)
+
+    finishAccountLoad?.()
+    await vi.waitFor(() => expect(offers).toBe(1))
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+  })
+
+  it('does not let a retired account-load completion clear its replacement fence', async () => {
+    let offers = 0
+    let finishAccountLoad: (() => void) | undefined
+    const accountLoad = new Promise<void>((resolve) => {
+      finishAccountLoad = resolve
+    })
+    account.loadAccount.mockImplementation(() => accountLoad)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+
+    const replacement = { ...server }
+    harness.retiredServers.add(server)
+    harness.state = { ...harness.state, servers: [replacement] }
+    harness.serverContents?.(replacement, { nodes: [], templates: [template] })
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2))
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(0)
+
+    finishAccountLoad?.()
+    await vi.waitFor(() => expect(offers).toBe(1))
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+  })
+
+  it('retries ambiguous old-server responses and explicit server requests', async () => {
+    let mode: 'old' | 'requested' = 'old'
+    let offers = 0
+    let uploads = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return mode === 'old'
+            ? Response.json({ wanted: [] })
+            : Response.json({ wanted: ['1/2'], acknowledged: [], rejected: [] })
+        }
+        if (url.includes('/telemetry/tiles/1/2/')) {
+          uploads++
+          return new Response(null, { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(offers).toBe(1))
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await vi.waitFor(() => expect(offers).toBe(2))
+
+    mode = 'requested'
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_002)
+    await vi.waitFor(() => expect(uploads).toBe(3))
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_003)
+    await vi.waitFor(() => expect(offers).toBe(4))
+    expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-retried', 1)
+  })
+
+  it('suppresses an explicit rejection until its acknowledgement expires', async () => {
+    let offers = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          return Response.json({ wanted: [], acknowledged: [], rejected: ['1/2'] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    const bytes = new Uint8Array([1, 2, 3])
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
+    await vi.waitFor(() => expect(offers).toBe(1))
+    harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offers).toBe(1)
+    expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-rejected', 1)
+    expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-avoided', 1)
   })
 
   it('strips out-of-scope tiles from paint reports', async () => {
