@@ -188,6 +188,7 @@ export const ServerInfo = Schema.Struct({
   name: Name,
   description: Schema.optionalKey(Description),
   auth: Schema.Literals(['none', 'access_token']),
+  liveSync: Schema.optionalKey(Schema.Literal(1)),
 })
 
 /**

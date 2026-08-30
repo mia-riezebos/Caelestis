@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import {
   createChunkedStatusPersistence,
+  createLiveSessionFence,
   StatusReadModelObject,
 } from './status-read-model-object.js'
 
@@ -21,6 +22,7 @@ describe('status read-model Durable Object', () => {
   const objectState = (
     held: Map<string, unknown>,
     maximumValueBytes = Number.POSITIVE_INFINITY,
+    sockets: readonly WebSocket[] = [],
   ) => {
     const storage = (target: Map<string, unknown>) => ({
       get: async <A>(key: string) => target.get(key) as A | undefined,
@@ -33,6 +35,7 @@ describe('status read-model Durable Object', () => {
       delete: async (key: string) => target.delete(key),
     })
     return {
+      getWebSockets: (tag?: string) => (tag === undefined || tag === 'status' ? sockets : []),
       storage: {
         ...storage(held),
         transaction: async (run: (transaction: ReturnType<typeof storage>) => Promise<void>) => {
@@ -133,5 +136,134 @@ describe('status read-model Durable Object', () => {
 
     expect(() => object.reconcileSnapshot(-1, 'public')).toThrow('non-negative')
     expect(get).not.toHaveBeenCalled()
+  })
+
+  it('reconstructs hibernating subscriber scope from serialized socket attachments', async () => {
+    database = new SqliteD1Database()
+    const held = new Map<string, unknown>()
+    const socket = (attachment: unknown) =>
+      ({
+        deserializeAttachment: () => attachment,
+        send: vi.fn(),
+        close: vi.fn(),
+      }) as unknown as WebSocket
+    const publicSocket = socket({
+      season: 8,
+      scope: 'public',
+      tokenHash: 'a'.repeat(64),
+      revocable: true,
+      lastRevision: 2,
+    })
+    const adminSocket = socket({
+      season: 8,
+      scope: 'admin',
+      tokenHash: 'b'.repeat(64),
+      revocable: true,
+      lastRevision: 2,
+    })
+    const otherSeason = socket({
+      season: 9,
+      scope: 'public',
+      tokenHash: 'a'.repeat(64),
+      revocable: true,
+      lastRevision: 2,
+    })
+    const missingAttachment = socket(undefined)
+    const state = objectState(held, Number.POSITIVE_INFINITY, [
+      publicSocket,
+      adminSocket,
+      otherSeason,
+      missingAttachment,
+    ])
+
+    const initial = new StatusReadModelObject(state, { DB: database } as unknown as Env)
+    await initial.reconcileSnapshot(8, 'public')
+    const recovered = new StatusReadModelObject(state, { DB: database } as unknown as Env)
+    await recovered.applyCommittedChange(8, {
+      baseRevision: 1,
+      revision: 2,
+      changes: [
+        {
+          templateId: '01890f3e-7b2c-7abc-8def-000000000008',
+          published: true,
+          total: 1,
+          previous: null,
+          current: { correct: 1, wrong: 0, blank: 0, observedAt: millis(1_750_000_000_000) },
+        },
+      ],
+    })
+    await recovered.notifyManifestChange(8)
+    await recovered.closeCredential(8, 'b'.repeat(64))
+
+    for (const subscriber of [publicSocket, adminSocket]) {
+      expect(subscriber.send).toHaveBeenCalledWith(expect.stringContaining('"type":"status-delta"'))
+      expect(subscriber.send).toHaveBeenCalledWith(JSON.stringify({ type: 'manifest-reconcile' }))
+    }
+    expect(otherSeason.send).not.toHaveBeenCalled()
+    expect(missingAttachment.send).not.toHaveBeenCalled()
+    expect(adminSocket.close).toHaveBeenCalledWith(1008, 'credential revoked')
+    expect(publicSocket.close).not.toHaveBeenCalled()
+  })
+
+  it('rejects missing internal routing headers before creating a socket pair', async () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const response = await object.fetch(
+      new Request('https://object.test/', { headers: { upgrade: 'websocket' } }),
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.text()).resolves.toBe('Invalid season')
+
+    const missingIdentity = await object.fetch(
+      new Request('https://object.test/', {
+        headers: {
+          upgrade: 'websocket',
+          'x-caelestis-season': '8',
+          'x-caelestis-scope': 'public',
+        },
+      }),
+    )
+    expect(missingIdentity.status).toBe(400)
+    await expect(missingIdentity.text()).resolves.toBe('Invalid credential identity')
+  })
+
+  it('serializes an in-flight attachment ahead of revocation cleanup', async () => {
+    const fence = createLiveSessionFence()
+    let release!: (active: boolean) => void
+    let attached = false
+    const close = vi.fn()
+    const attaching = fence.attach(
+      async () =>
+        new Promise<boolean>((resolve) => {
+          release = resolve
+        }),
+      () => {
+        attached = true
+        return 'attached'
+      },
+    )
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    const revoking = fence.revoke(() => {
+      if (attached) close()
+    })
+
+    release(true)
+    await expect(attaching).resolves.toBe('attached')
+    await expect(revoking).resolves.toBeUndefined()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('rejects attachment after revocation and propagates cleanup failure', async () => {
+    const fence = createLiveSessionFence()
+    await expect(fence.revoke(() => Promise.reject(new Error('close failed')))).rejects.toThrow(
+      'close failed',
+    )
+    const attach = vi.fn(() => 'attached')
+
+    await expect(fence.attach(async () => false, attach)).resolves.toBeNull()
+    expect(attach).not.toHaveBeenCalled()
   })
 })

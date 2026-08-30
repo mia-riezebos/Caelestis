@@ -18,7 +18,10 @@ import {
   ResourceConflictError,
   ResourceNotFoundError,
 } from '../runtime/errors.js'
-import { repairCommittedStatusProjection } from '../status-read-model/port.js'
+import {
+  publishManifestChange,
+  repairCommittedStatusProjection,
+} from '../status-read-model/port.js'
 import { readTileBlob } from '../telemetry/tile-blobs.js'
 import { type StoredTemplate, StoreTemplateError, storeTemplate } from './store.js'
 
@@ -68,10 +71,15 @@ export interface CreateTemplateInput {
 
 export const createTemplate = (
   input: CreateTemplateInput,
-): Effect.Effect<StoredTemplate, TemplateError, BlobStoreService | SqlStoreService> =>
+): Effect.Effect<
+  StoredTemplate,
+  TemplateError,
+  BlobStoreService | SqlStoreService | StatusReadModelService
+> =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
+    const statusReadModel = yield* StatusReadModelService
     let season = input.season
     if (season === undefined) {
       if (input.nodeId === null) {
@@ -93,7 +101,7 @@ export const createTemplate = (
       season = parent.season
     }
 
-    return yield* Effect.tryPromise({
+    const stored = yield* Effect.tryPromise({
       try: () =>
         storeTemplate(blobs, sql, {
           surface: input.surface,
@@ -108,6 +116,8 @@ export const createTemplate = (
         }),
       catch: (cause) => templateFailure('storeTemplate', cause),
     })
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, season))
+    return stored
   })
 
 export const replaceTemplateVersion = (input: {
@@ -162,6 +172,7 @@ export const replaceTemplateVersion = (input: {
       catch: (cause) => templateFailure('replaceTemplateVersion', cause),
     })
     yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, existing.season))
     return stored
   })
 
@@ -238,6 +249,7 @@ export const patchTemplate = (
     if (input.published !== undefined) {
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
     }
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, existing.season))
 
     return {
       id: input.templateId,
@@ -280,6 +292,7 @@ export const deleteTemplate = (
     })
     if (deleted) {
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
+      yield* Effect.promise(() => publishManifestChange(statusReadModel, existing.season))
       return
     }
     const current = yield* Effect.tryPromise({
