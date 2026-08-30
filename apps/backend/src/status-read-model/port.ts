@@ -58,10 +58,17 @@ export class DirectStatusReadModel implements StatusReadModelPort {
       },
       revisions: {
         current: (requestedSeason) => this.sql.readStatusProjectionRevision(requestedSeason),
-        commit: (requestedSeason, expectedRevision, publicFingerprint, adminFingerprint) =>
+        commit: (
+          requestedSeason,
+          expectedRevision,
+          retainRevision,
+          publicFingerprint,
+          adminFingerprint,
+        ) =>
           this.sql.commitStatusProjectionRevision(
             requestedSeason,
             expectedRevision,
+            retainRevision,
             publicFingerprint,
             adminFingerprint,
           ),

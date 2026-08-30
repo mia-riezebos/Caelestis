@@ -19,6 +19,7 @@ const harness = vi.hoisted(() => ({
 }))
 
 const coordinator = vi.hoisted(() => ({
+  snapshots: [] as unknown[],
   resources: new Map<
     string,
     {
@@ -56,6 +57,19 @@ vi.mock('./server-sync-coordinator.js', () => ({
     apply()
     return 'applied'
   },
+  applyServerSyncSnapshot: (
+    _server: unknown,
+    _scope: string,
+    _resource: string,
+    _startedRevision: string | undefined,
+    result: unknown,
+    apply: () => void,
+  ) => {
+    coordinator.snapshots.push(result)
+    apply()
+    return 'applied'
+  },
+  serverSyncRevision: () => undefined,
   registerServerSyncResource: (resource: {
     id: string
     refresh: (server: unknown, reason: 'connect' | 'manifest-applied') => Promise<unknown>
@@ -123,6 +137,7 @@ beforeEach(() => {
   harness.acceptedPaint = null
   harness.stateListeners = []
   coordinator.resources.clear()
+  coordinator.snapshots = []
   harness.state = { shareTiles: true, reportPaints: true, servers: [server], hiddenScopes: [] }
 })
 
@@ -141,10 +156,13 @@ describe('server telemetry client', () => {
     installTelemetry()
 
     const resource = coordinator.resources.get('telemetry-status')
-    await expect(resource?.refresh(server, 'connect')).resolves.toEqual({
-      status: 'unchanged',
-      revision: '12',
-    })
+    await expect(resource?.refresh(server, 'connect')).resolves.toEqual({ status: 'skipped' })
+    expect(coordinator.snapshots).toEqual([
+      {
+        status: 'unchanged',
+        revision: '12',
+      },
+    ])
   })
 
   it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
@@ -378,6 +396,43 @@ describe('server telemetry client', () => {
       known: 3,
       total: 3,
     })
+  })
+
+  it('reconciles when a successful wanted upload omits its committed status delta', async () => {
+    let offered = false
+    let statusReadsAfterOffer = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) {
+          if (!offered) return Response.json({ revision: 1, templates: [] })
+          statusReadsAfterOffer += 1
+          return Response.json({ revision: 3, templates: [] })
+        }
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offered = true
+          return Response.json({
+            wanted: ['1/2'],
+            status: {
+              baseRevision: 1,
+              revision: 2,
+              templates: [],
+              removedTemplateIds: [],
+            },
+          })
+        }
+        if (url.includes('/telemetry/tiles/1/2/')) return Response.json({})
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+
+    await vi.waitFor(() => expect(statusReadsAfterOffer).toBe(1))
   })
 
   it('strips out-of-scope tiles from paint reports', async () => {

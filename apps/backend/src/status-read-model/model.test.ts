@@ -49,7 +49,13 @@ const harness = (
     persistence: { load: async () => stored, save },
     revisions: {
       current: async () => revisions.revision,
-      commit: async (_season, expectedRevision, nextPublicFingerprint, nextAdminFingerprint) => {
+      commit: async (
+        _season,
+        expectedRevision,
+        _retainRevision,
+        nextPublicFingerprint,
+        nextAdminFingerprint,
+      ) => {
         if (expectedRevision !== revisions.revision) return null
         if (
           revisions.revision === 0 ||

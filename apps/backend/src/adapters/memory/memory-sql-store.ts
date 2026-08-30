@@ -896,6 +896,7 @@ export class MemorySqlStore implements SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
     forceCurrent = false,
+    includeUnpublished = false,
   ): Promise<TileObservationCommit | null> {
     this.expireTileBlobReservations(now)
     const reservation = this.tileBlobReservations.get(reservationId)
@@ -914,24 +915,47 @@ export class MemorySqlStore implements SqlStore {
       state: 'active',
       reclaimedAt: null,
     })
+    const acceptedStatuses = statuses.flatMap((status) => {
+      const template = this.templates.get(status.templateId)
+      const version = this.templateVersions.get(status.versionId)
+      return template !== undefined &&
+        version !== undefined &&
+        template.currentVersionId === status.versionId &&
+        (includeUnpublished || template.publishedAt !== null)
+        ? [{ status, template, version }]
+        : []
+    })
     const previous = new Map(
-      statuses.map((status) => {
+      acceptedStatuses.map(({ status }) => {
         const key = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
         return [key, this.templateTileStatuses.get(key) ?? null] as const
       }),
     )
-    await this.recordTileObservation(observation, statuses, recordHistory, forceCurrent)
+    await this.recordTileObservation(
+      observation,
+      acceptedStatuses.map(({ status }) => status),
+      recordHistory,
+      forceCurrent,
+    )
     this.tileBlobReservations.delete(reservationId)
-    const statusChanges = statuses.flatMap((status) => {
+    const statusChanges = acceptedStatuses.flatMap(({ status, template, version }) => {
       const key = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
       const current = this.templateTileStatuses.get(key)
       const before = previous.get(key) ?? null
       return current !== undefined && JSON.stringify(current) !== JSON.stringify(before)
-        ? [{ previous: before, current }]
+        ? [
+            {
+              published: template.publishedAt !== null,
+              totalPixels: version.totalPixels,
+              ...(version.colourTotals === undefined ? {} : { colourTotals: version.colourTotals }),
+              previous: before,
+              current,
+            },
+          ]
         : []
     })
     let revision: number | null = null
-    if (statuses.length > 0) {
+    if (acceptedStatuses.length > 0) {
       const held = this.statusRevisions.get(observation.season)
       revision = (held?.revision ?? 0) + 1
       this.statusRevisions.set(observation.season, {
@@ -1198,6 +1222,7 @@ export class MemorySqlStore implements SqlStore {
   async commitStatusProjectionRevision(
     season: number,
     expectedRevision: number,
+    retainRevision: boolean,
     publicFingerprint: string,
     adminFingerprint: string,
   ): Promise<number | null> {
@@ -1217,11 +1242,12 @@ export class MemorySqlStore implements SqlStore {
       held === undefined ||
       held.publicFingerprint !== publicFingerprint ||
       held.adminFingerprint !== adminFingerprint
-    const revision = held?.fingerprintsDirty
-      ? held.revision
-      : changed
-        ? (held?.revision ?? 0) + 1
-        : held.revision
+    const revision =
+      held?.fingerprintsDirty && retainRevision
+        ? held.revision
+        : changed || held?.fingerprintsDirty
+          ? (held?.revision ?? 0) + 1
+          : held.revision
     this.statusRevisions.set(season, {
       revision,
       publicFingerprint,
