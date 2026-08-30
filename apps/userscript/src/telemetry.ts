@@ -7,6 +7,7 @@ import {
   type ReconciliationReason,
   type StatusDelta,
   type StatusResponse,
+  type SyncTransport,
   seconds,
   sha256Hex,
   type TemplateStatus,
@@ -41,6 +42,7 @@ import {
   serverConnectionIdentity,
   serverConnectionSignal,
 } from './state.js'
+import { ClientStatusProjection } from './status-client-projection.js'
 import type { TemplateColourProgress, TemplateProgress } from './templates/mismatch.js'
 import { TileOfferAcknowledgements } from './tile-offer-acknowledgements.js'
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
@@ -78,11 +80,6 @@ interface ServerDedupe {
   readonly values: Set<string>
 }
 
-interface ServerStatus {
-  readonly server: ConnectedServer
-  readonly value: TemplateStatus
-}
-
 interface ObservedPaint {
   readonly eventId: string
   readonly paint: AcceptedPaint
@@ -92,7 +89,7 @@ const coverage = new Map<string, ServerCoverage>()
 const queued = new Map<string, ServerQueue>()
 const reportedPaints = new Map<string, ServerDedupe>()
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const statuses = new Map<string, ServerStatus>()
+const statuses = new ClientStatusProjection<ConnectedServer>()
 const alarms = new Map<
   string,
   {
@@ -578,7 +575,7 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
   return candidate as TemplateStatus
 }
 
-const statusDeltaFrom = (value: unknown): StatusDelta | null => {
+export const statusDeltaFrom = (value: unknown): StatusDelta | null => {
   if (typeof value !== 'object' || value === null) return null
   const candidate = value as Partial<StatusDelta>
   if (
@@ -640,23 +637,14 @@ const applyStatusDelta = (
     String(delta.baseRevision),
     String(delta.revision),
     () => {
-      let changed = false
-      for (const status of delta.templates) {
-        const key = statusKey(server.url, status.templateId)
-        if (JSON.stringify(statuses.get(key)?.value) === JSON.stringify(status)) continue
-        statuses.set(key, { server, value: status })
-        changed = true
-      }
-      for (const templateId of delta.removedTemplateIds) {
-        changed = statuses.delete(statusKey(server.url, templateId)) || changed
-      }
-      if (changed) notifyStatusListeners()
+      if (statuses.applyDelta(server, delta)) notifyStatusListeners()
     },
   )
 
 const refreshStatus = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
+  transport: SyncTransport,
 ): Promise<ServerSyncResult> => {
   if (server.season === null || !isCurrentServerConnection(server)) return { status: 'skipped' }
   return coalesceServerRead(
@@ -669,7 +657,7 @@ const refreshStatus = async (
         {
           headers: {
             ...authHeaders(server),
-            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+            ...userscriptClientHeaders({ transport, reason }),
           },
           signal: serverConnectionSignal(server),
         },
@@ -685,34 +673,18 @@ const refreshStatus = async (
       )
         return { status: 'failed' }
       const next: TemplateStatus[] = []
-      const present = new Set<string>()
       for (const raw of body.templates) {
         const status = templateStatusFrom(raw)
         if (status === null) return { status: 'failed' }
-        const key = statusKey(server.url, status.templateId)
-        present.add(key)
         next.push(status)
       }
-      const changed =
-        next.some(
-          (status) =>
-            JSON.stringify(statuses.get(statusKey(server.url, status.templateId))?.value) !==
-            JSON.stringify(status),
-        ) ||
-        [...statuses.keys()].some(
-          (key) => key.startsWith(`${server.url}\u0000`) && !present.has(key),
-        )
+      const changed = statuses.differs(server.url, next)
       const result: ServerSyncResult = {
         status: changed ? 'changed' : 'unchanged',
         ...(body.revision === undefined ? {} : { revision: String(body.revision) }),
       }
       applyServerSyncSnapshot(server, 'world', 'telemetry-status', startedRevision, result, () => {
-        for (const status of next)
-          statuses.set(statusKey(server.url, status.templateId), { server, value: status })
-        for (const key of [...statuses.keys()]) {
-          if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
-          statuses.delete(key)
-        }
+        statuses.replace(server, next)
         if (changed) notifyStatusListeners()
       })
       return { status: 'skipped' }
@@ -723,6 +695,7 @@ const refreshStatus = async (
 const refreshAlarms = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
+  transport: SyncTransport,
 ): Promise<ServerSyncResult> => {
   if (server.season === null || !isCurrentServerConnection(server)) return { status: 'skipped' }
   const snapshot = coverage.get(server.url)
@@ -737,7 +710,7 @@ const refreshAlarms = async (
         {
           headers: {
             ...authHeaders(server),
-            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+            ...userscriptClientHeaders({ transport, reason }),
           },
           signal: serverConnectionSignal(server),
         },
@@ -862,7 +835,7 @@ export const serverProgressFor = (
   server: ConnectedServer,
   template: Pick<ServerTemplate, 'id' | 'totalPixels'>,
 ): TemplateProgress | null => {
-  const known = statuses.get(statusKey(server.url, template.id))
+  const known = statuses.entry(server.url, template.id)
   const status = known !== undefined && isCurrentServerConnection(known.server) ? known.value : null
   const total = template.totalPixels ?? 0
   if (status === null || status.total !== total) return null
@@ -879,7 +852,7 @@ export const serverColourProgressFor = (
   server: ConnectedServer,
   template: Pick<ServerTemplate, 'id' | 'totalPixels'>,
 ): readonly TemplateColourProgress[] | null => {
-  const known = statuses.get(statusKey(server.url, template.id))
+  const known = statuses.entry(server.url, template.id)
   const status = known !== undefined && isCurrentServerConnection(known.server) ? known.value : null
   const total = template.totalPixels ?? 0
   if (status === null || status.total !== total || status.colours === undefined) return null
@@ -931,6 +904,7 @@ export const installTelemetry = (): void => {
   })
   registerServerSyncResource({
     id: 'telemetry-alarms',
+    live: true,
     scope: (server) =>
       server.status === 'connected' && server.season !== null && coverageFor(server) !== null
         ? 'world'

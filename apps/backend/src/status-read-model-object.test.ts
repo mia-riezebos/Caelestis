@@ -9,6 +9,15 @@ import {
   StatusReadModelObject,
 } from './status-read-model-object.js'
 
+class FakeWebSocketRequestResponsePair {
+  constructor(
+    readonly request: string,
+    readonly response: string,
+  ) {}
+}
+
+vi.stubGlobal('WebSocketRequestResponsePair', FakeWebSocketRequestResponsePair)
+
 vi.mock('cloudflare:workers', () => ({
   DurableObject: class {},
 }))
@@ -44,6 +53,7 @@ describe('status read-model Durable Object', () => {
     })
     return {
       getWebSockets: (tag?: string) => (tag === undefined || tag === 'status' ? sockets : []),
+      setWebSocketAutoResponse: vi.fn(),
       storage: {
         ...storage(held),
         transaction: async (run: (transaction: ReturnType<typeof storage>) => Promise<void>) => {
@@ -74,6 +84,60 @@ describe('status read-model Durable Object', () => {
       cacheOutcome: 'hit',
       snapshot: { revision: 1, templates: [] },
     })
+  })
+
+  it('lets hibernation answer heartbeat pings without waking the object', () => {
+    database = new SqliteD1Database()
+    const state = objectState(new Map())
+
+    new StatusReadModelObject(state, { DB: database } as unknown as Env)
+
+    expect(state.setWebSocketAutoResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ request: 'ping', response: 'pong' }),
+    )
+  })
+
+  it('fans one committed status update out to five clients within two seconds', async () => {
+    database = new SqliteD1Database()
+    const socket = () =>
+      ({
+        deserializeAttachment: () => ({
+          season: 8,
+          scope: 'public',
+          tokenHash: 'a'.repeat(64),
+          revocable: false,
+          lastRevision: 1,
+        }),
+        send: vi.fn(),
+        close: vi.fn(),
+      }) as unknown as WebSocket
+    const subscribers = Array.from({ length: 5 }, socket)
+    const object = new StatusReadModelObject(
+      objectState(new Map(), Number.POSITIVE_INFINITY, subscribers),
+      { DB: database } as unknown as Env,
+    )
+    await object.reconcileSnapshot(8, 'public')
+
+    const startedAt = performance.now()
+    await object.applyCommittedChange(8, {
+      baseRevision: 1,
+      revision: 2,
+      changes: [
+        {
+          templateId: '01890f3e-7b2c-7abc-8def-000000000008',
+          published: true,
+          total: 1,
+          previous: null,
+          current: { correct: 1, wrong: 0, blank: 0, observedAt: millis(1_750_000_000_000) },
+        },
+      ],
+    })
+
+    expect(performance.now() - startedAt).toBeLessThan(2_000)
+    for (const subscriber of subscribers) {
+      expect(subscriber.send).toHaveBeenCalledOnce()
+      expect(subscriber.send).toHaveBeenCalledWith(expect.stringContaining('"type":"status-delta"'))
+    }
   })
 
   it('chunks a valid projection larger than the per-value storage limit and reconstructs it', async () => {
@@ -397,6 +461,7 @@ describe('status read-model Durable Object', () => {
       ],
     })
     await recovered.notifyManifestChange(8)
+    await recovered.notifyAlarmChange(8)
     await recovered.closeCredential(8, 'b'.repeat(64))
 
     for (const subscriber of [publicSocket, adminSocket]) {
@@ -404,6 +469,7 @@ describe('status read-model Durable Object', () => {
       expect(subscriber.send).toHaveBeenCalledWith(
         JSON.stringify({ type: 'manifest-reconcile', revision: 2 }),
       )
+      expect(subscriber.send).toHaveBeenCalledWith(JSON.stringify({ type: 'alarms-reconcile' }))
     }
     expect(otherSeason.send).not.toHaveBeenCalled()
     expect(missingAttachment.send).not.toHaveBeenCalled()

@@ -193,11 +193,13 @@ describe('request capacity metrics', () => {
         await measured.prepare('SELECT 1').first()
         await measured.prepare('SELECT 1').raw()
         await measured.exec('VACUUM')
+        recordCacheOutcome('stale')
         return new Response(null, { status: 304 })
       },
     )
 
-    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[7]).toBe('not-modified')
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[7]).toBe('stale')
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[9]).toBe('304')
     expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.slice(2, 6)).toEqual([0, 0, 0, 3])
   })
 

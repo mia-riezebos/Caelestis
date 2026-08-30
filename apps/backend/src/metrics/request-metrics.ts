@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { parseClientMetricsAccept } from '@caelestis/shared'
 
-export type CacheOutcome = 'none' | 'hit' | 'miss' | 'stale' | 'not-modified'
+export type CacheOutcome = 'none' | 'hit' | 'miss' | 'stale'
 export type TileOfferBatchOutcome =
   | 'none'
   | 'requested'
@@ -235,9 +235,6 @@ export const measureRequest = async (
   return requestMetricStorage.run(state, async () => {
     try {
       const response = await run()
-      if (state.route === 'GET /manifest' && response.status === 304) {
-        state.cacheOutcome = 'not-modified'
-      }
       writeRequestMetric(dataset, state, response.status, performance.now() - startedAt)
       return response
     } catch (error) {

@@ -296,9 +296,9 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(status).toHaveBeenCalledOnce()
-    expect(status).toHaveBeenCalledWith(server, 'post-offer')
+    expect(status).toHaveBeenCalledWith(server, 'post-offer', 'compatibility-poll')
     expect(alarms).toHaveBeenCalledOnce()
-    expect(alarms).toHaveBeenCalledWith(server, 'manifest-applied')
+    expect(alarms).toHaveBeenCalledWith(server, 'manifest-applied', 'compatibility-poll')
   })
 
   it('uses one authenticated live connection and suppresses healthy interval polls', async () => {
@@ -314,6 +314,7 @@ describe('server sync coordinator', () => {
     )
     const status = vi.fn(async () => ({ status: 'unchanged' as const, revision: '7' }))
     const manifest = vi.fn(async () => ({ status: 'unchanged' as const }))
+    const alarms = vi.fn(async () => ({ status: 'unchanged' as const }))
     registerServerSyncResource({
       id: 'telemetry-status',
       scope: () => 'world',
@@ -325,6 +326,12 @@ describe('server sync coordinator', () => {
       id: 'world-manifest',
       scope: () => 'world',
       refresh: manifest,
+      live: true,
+    })
+    registerServerSyncResource({
+      id: 'telemetry-alarms',
+      scope: () => 'world',
+      refresh: alarms,
       live: true,
     })
 
@@ -345,18 +352,37 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+    expect(alarms).toHaveBeenCalledOnce()
+    expect(status).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
+    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
     status.mockClear()
     manifest.mockClear()
+    alarms.mockClear()
 
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect(status).not.toHaveBeenCalled()
     expect(manifest).not.toHaveBeenCalled()
+    expect(alarms).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(5 * 60_000)
     expect(socket.sent).toEqual(['ping'])
+    expect(status).not.toHaveBeenCalled()
+    expect(manifest).not.toHaveBeenCalled()
+    expect(alarms).not.toHaveBeenCalled()
+    socket.receiveRaw('pong')
+
+    for (let heartbeat = 2; heartbeat <= 4; heartbeat++) {
+      await vi.advanceTimersByTimeAsync(15 * 60_000)
+      expect(socket.sent).toHaveLength(heartbeat)
+      socket.receiveRaw('pong')
+    }
+
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
-    socket.receiveRaw('pong')
+    expect(alarms).toHaveBeenCalledOnce()
+    expect(status).toHaveBeenCalledWith(liveServer, 'interval', 'recovery')
+    expect(manifest).toHaveBeenCalledWith(liveServer, 'interval', 'recovery')
+    expect(alarms).toHaveBeenCalledWith(liveServer, 'interval', 'recovery')
   })
 
   it('coalesces malformed, out-of-order, and reconnect recovery into bounded reads', async () => {
@@ -368,6 +394,7 @@ describe('server sync coordinator', () => {
     )
     const status = vi.fn(async () => ({ status: 'unchanged' as const, revision: '7' }))
     const manifest = vi.fn(async () => ({ status: 'unchanged' as const }))
+    const alarms = vi.fn(async () => ({ status: 'unchanged' as const }))
     const applyLiveEvent = vi.fn(() => false)
     registerServerSyncResource({
       id: 'telemetry-status',
@@ -382,6 +409,12 @@ describe('server sync coordinator', () => {
       refresh: manifest,
       live: true,
     })
+    registerServerSyncResource({
+      id: 'telemetry-alarms',
+      scope: () => 'world',
+      refresh: alarms,
+      live: true,
+    })
     installServerSyncCoordinator()
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
@@ -389,31 +422,38 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(0)
     status.mockClear()
     manifest.mockClear()
+    alarms.mockClear()
 
     socket.receive({ type: 'status-delta', delta: { baseRevision: 5, revision: 6 } })
     socket.receive({ type: 'status-reconcile', revision: 9 })
     // Older servers omitted the revision; that event remains an unconditional manifest reconcile.
     socket.receive({ type: 'manifest-reconcile' })
     socket.receive({ type: 'manifest-reconcile', revision: 4 })
+    socket.receive({ type: 'alarms-reconcile' })
     await vi.advanceTimersByTimeAsync(0)
     expect(applyLiveEvent).toHaveBeenCalledOnce()
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+    expect(alarms).toHaveBeenCalledOnce()
 
     status.mockClear()
     manifest.mockClear()
+    alarms.mockClear()
     socket.receive({ type: 'manifest-reconcile', revision: 4 })
     socket.receive({ type: 'manifest-reconcile', revision: 3 })
     await vi.advanceTimersByTimeAsync(0)
     expect(status).not.toHaveBeenCalled()
     expect(manifest).not.toHaveBeenCalled()
+    expect(alarms).not.toHaveBeenCalled()
 
     status.mockClear()
     manifest.mockClear()
+    alarms.mockClear()
     socket.close()
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+    expect(alarms).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(1_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
   })

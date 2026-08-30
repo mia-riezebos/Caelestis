@@ -1,6 +1,7 @@
 import {
   PALETTE_SIZE,
   type ReconciliationReason,
+  type SyncTransport,
   type TemplateSurface,
   templateSurface,
   templateSurfaceKey,
@@ -1474,6 +1475,7 @@ export const listServerContents = async (
   server: ConnectedServer,
   signal?: AbortSignal,
   reason: ReconciliationReason = 'unknown',
+  transport: SyncTransport = 'compatibility-poll',
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
   if (!isCurrentServerConnection(server)) return null
@@ -1494,9 +1496,9 @@ export const listServerContents = async (
           {
             headers:
               activeServerToken(server) === null
-                ? userscriptClientHeaders({ transport: 'compatibility-poll', reason })
+                ? userscriptClientHeaders({ transport, reason })
                 : {
-                    ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+                    ...userscriptClientHeaders({ transport, reason }),
                     authorization: `Bearer ${activeServerToken(server)}`,
                   },
             signal: serverConnectionSignal(server),

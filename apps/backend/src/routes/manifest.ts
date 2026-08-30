@@ -7,6 +7,7 @@ import {
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
 import { readManifestProjection } from '../manifest/use-cases.js'
+import { recordCacheOutcome } from '../metrics/request-metrics.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
 
@@ -73,6 +74,7 @@ export const createManifestRoutes = (
         cacheable: season === options.currentSeason,
       }),
       (projection) => {
+        recordCacheOutcome(projection.cacheOutcome)
         const etag = `"${projection.version}"`
         const headers = { ETag: etag, Vary: 'Authorization' }
         // RFC 9110 lets If-None-Match carry a comma-separated list and mark each entry weak with `W/`.

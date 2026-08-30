@@ -1,4 +1,4 @@
-import type { LiveSyncServerEvent, ReconciliationReason } from '@caelestis/shared'
+import type { LiveSyncServerEvent, ReconciliationReason, SyncTransport } from '@caelestis/shared'
 import { serverEndpoint } from './server-url.js'
 import {
   type ConnectedServer,
@@ -18,9 +18,9 @@ const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_RECONNECT_MS = 30_000
 const LIVE_HEARTBEAT_MS = 15 * 60_000
 const LIVE_HEARTBEAT_TIMEOUT_MS = 10_000
-const LIVE_RECOVERY_POLL_MS = 15 * 60_000
+const LIVE_RECOVERY_POLL_MS = 60 * 60_000
 
-type ParsedLiveEvent =
+export type ParsedLiveEvent =
   | Exclude<LiveSyncServerEvent, { readonly type: 'manifest-reconcile' }>
   | { readonly type: 'manifest-reconcile'; readonly revision: number | null }
 
@@ -37,6 +37,7 @@ export interface ServerSyncResource {
   readonly refresh: (
     server: ConnectedServer,
     reason: ReconciliationReason,
+    transport: SyncTransport,
   ) => Promise<ServerSyncResult>
   /** Healthy live transport suppresses interval polling for this resource. */
   readonly live?: boolean
@@ -179,7 +180,11 @@ const runResource = async (
   const pending = owned.get(key)
   if (pending !== undefined) return pending
   const started = resource
-    .refresh(server, reason)
+    .refresh(
+      server,
+      reason,
+      resource.live === true && liveHealthy(server) ? 'recovery' : 'compatibility-poll',
+    )
     .then((result) => applyResult(server, scope, resource.id, result))
     .catch(() => applyResult(server, scope, resource.id, { status: 'failed' }))
     .finally(() => {
@@ -331,7 +336,7 @@ export const applyServerSyncDelta = (
   return 'applied'
 }
 
-const parseLiveEvent = (data: unknown): ParsedLiveEvent | null => {
+export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
   if (
     typeof data !== 'string' ||
     new TextEncoder().encode(data).byteLength > MAX_LIVE_MESSAGE_BYTES
@@ -366,12 +371,13 @@ const parseLiveEvent = (data: unknown): ParsedLiveEvent | null => {
   if (candidate.type === 'status-delta' && candidate.delta !== undefined) {
     return { type: 'status-delta', delta: candidate.delta as never }
   }
+  if (candidate.type === 'alarms-reconcile') return { type: 'alarms-reconcile' }
   return null
 }
 
 const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
   if (!isCurrentServerConnection(server)) return
-  const event = parseLiveEvent(raw)
+  const event = parseLiveServerEvent(raw)
   if (event === null) {
     requestServerSync('revision-gap', 'telemetry-status', server)
     return
@@ -385,6 +391,10 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     if (live === undefined || event.revision <= (live.manifestRevision ?? -1)) return
     live.manifestRevision = event.revision
     requestServerSync('revision-gap', 'world-manifest', server)
+    return
+  }
+  if (event.type === 'alarms-reconcile') {
+    requestServerSync('revision-gap', 'telemetry-alarms', server)
     return
   }
   if (event.type === 'status-delta') {
@@ -478,6 +488,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
     armLiveHeartbeat(connection)
     requestServerSync('connect', 'telemetry-status', server)
     requestServerSync('connect', 'world-manifest', server)
+    requestServerSync('connect', 'telemetry-alarms', server)
     armTimer()
   })
   socket.addEventListener('message', (message) => {
@@ -501,6 +512,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
     if (!isCurrentServerConnection(server)) return
     requestServerSync('reconnect', 'telemetry-status', server)
     requestServerSync('reconnect', 'world-manifest', server)
+    requestServerSync('reconnect', 'telemetry-alarms', server)
     scheduleLiveReconnect(connection)
     armTimer()
   })

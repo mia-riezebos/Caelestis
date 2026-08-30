@@ -369,6 +369,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   ) {
     super(objectState, env)
     this.sql = new D1SqlStore(env.DB)
+    this.objectState.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'))
   }
 
   private model(season: number): SeasonStatusReadModel {
@@ -499,6 +500,12 @@ export class StatusReadModelObject extends DurableObject<Env> {
   async notifyManifestChange(season: number): Promise<void> {
     const revision = await this.manifestModel(season).invalidate()
     this.broadcastManifest(revision)
+  }
+
+  async notifyAlarmChange(season: number): Promise<void> {
+    this.bindSeason(season)
+    const event: LiveSyncServerEvent = { type: 'alarms-reconcile' }
+    for (const socket of this.subscribers()) this.send(socket, event)
   }
 
   async closeCredential(season: number, tokenHash: string): Promise<void> {
