@@ -4,7 +4,7 @@ import { D1SqlStore } from '../adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from '../adapters/cloudflare/sqlite-d1.test-helper.js'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { Ports, SqlStore, TileBlobReservation, TileObservation } from '../ports/index.js'
+import type { BlobStore, SqlStore, TileBlobReservation, TileObservation } from '../ports/index.js'
 import {
   readTileBlob,
   reserveTileBlob,
@@ -29,7 +29,12 @@ const observation = (): TileObservation => ({
   reportedByUserId: 7,
 })
 
-type Harness = { ports: Ports; sql: SqlStore; blobs: MemoryBlobStore; close(): void }
+type Harness = {
+  ports: { readonly sql: SqlStore; readonly blobs: BlobStore }
+  sql: SqlStore
+  blobs: MemoryBlobStore
+  close(): void
+}
 
 const adapters: readonly { name: string; make(): Harness }[] = [
   {
@@ -38,7 +43,7 @@ const adapters: readonly { name: string; make(): Harness }[] = [
       const sql = new MemorySqlStore()
       const blobs = new MemoryBlobStore()
       return {
-        ports: { sql, blobs, counters: {} as Ports['counters'] },
+        ports: { sql, blobs },
         sql,
         blobs,
         close: () => {},
@@ -52,7 +57,7 @@ const adapters: readonly { name: string; make(): Harness }[] = [
       const sql = new D1SqlStore(database as unknown as D1Database)
       const blobs = new MemoryBlobStore()
       return {
-        ports: { sql, blobs, counters: {} as Ports['counters'] },
+        ports: { sql, blobs },
         sql,
         blobs,
         close: () => database.close(),

@@ -2,7 +2,7 @@ import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { type App, createApp } from './app.js'
-import type { Ports } from './ports/index.js'
+import { makeBackendContext } from './runtime/backend-runtime.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
@@ -54,12 +54,12 @@ const appFor = (env: Env): App => {
   const prepared = preparedApps.get(env)
   if (prepared !== undefined) return prepared
 
-  const ports: Ports = {
-    blobs: new R2BlobStore(env.BLOBS),
-    sql: new D1SqlStore(env.DB),
-    counters: new DurableObjectCounterStore(env.TELEMETRY),
-  }
-  const app = createApp(ports, {
+  const context = makeBackendContext(
+    new R2BlobStore(env.BLOBS),
+    new D1SqlStore(env.DB),
+    new DurableObjectCounterStore(env.TELEMETRY),
+  )
+  const app = createApp(context, {
     bootstrapAdminToken: env.ADMIN_TOKEN,
     serverId: env.SERVER_ID,
     serverName: env.SERVER_NAME,
@@ -87,19 +87,19 @@ export default {
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
   async scheduled(_controller, env, ctx): Promise<void> {
-    const ports: Ports = {
+    const stores = {
       blobs: new R2BlobStore(env.BLOBS),
       sql: new D1SqlStore(env.DB),
       counters: new DurableObjectCounterStore(env.TELEMETRY),
     }
     const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
     ctx.waitUntil(
-      fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
+      fetchCanvasTiles(stores, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
         // A prior template may already have persisted a probe when later scan work fails. Always
         // reconcile the watcher so that durable work cannot be stranded until the next cron.
         await env.ALARM_WATCHER.getByName('global').schedule()
       }),
     )
-    ctx.waitUntil(runTileBlobGc(ports, { mode: gcMode }).then(() => undefined))
+    ctx.waitUntil(runTileBlobGc(stores, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>
