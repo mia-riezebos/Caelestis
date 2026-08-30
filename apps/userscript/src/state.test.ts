@@ -1120,9 +1120,9 @@ describe('server state boundaries', () => {
       }),
     )
     expect(refreshed).toHaveBeenCalledOnce()
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
-      authorization: 'Bearer keep-me',
-    })
+    const reconnectHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
+    expect(reconnectHeaders.get('authorization')).toBe('Bearer keep-me')
+    expect(reconnectHeaders.get('x-caelestis-client')).toBe('userscript')
   })
 
   it('uses open access without deleting a rejected persisted token', async () => {
@@ -1146,10 +1146,12 @@ describe('server state boundaries', () => {
       }),
     )
     expect(activeServerToken(connected)).toBeNull()
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
-      authorization: 'Bearer stale-code',
-    })
-    expect(fetchMock.mock.calls[2]?.[1]?.headers).toEqual({})
+    const rejectedHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
+    expect(rejectedHeaders.get('authorization')).toBe('Bearer stale-code')
+    expect(rejectedHeaders.get('x-caelestis-sync-mode')).toBe('recovery')
+    const openHeaders = new Headers(fetchMock.mock.calls[2]?.[1]?.headers)
+    expect(openHeaders.get('authorization')).toBeNull()
+    expect(openHeaders.get('x-caelestis-client')).toBe('userscript')
   })
 
   it('publishes each stored-server refresh as soon as that server settles', async () => {

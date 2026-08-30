@@ -1,6 +1,7 @@
 import {
   PALETTE_RGB,
   quantiseToPalette,
+  type SyncRequestMetadata,
   sha256Hex,
   TILE_SIZE,
   TRANSPARENT_INDEX,
@@ -8,6 +9,7 @@ import {
 } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
+import { userscriptRequestHeaders } from '../server-observability.js'
 import { serverEndpoint } from '../server-url.js'
 import {
   activeServerToken,
@@ -123,10 +125,11 @@ export const fetchChunkWithinBudget = async (
   const readLimit = Math.min(MAX_CHUNK_BYTES, remainingBytes)
   try {
     const response = await fetch(serverEndpoint(server.url, `/chunks/${hash}`), {
-      headers:
+      headers: userscriptRequestHeaders(
         activeServerToken(server) === null
           ? {}
           : { authorization: `Bearer ${activeServerToken(server)}` },
+      ),
       signal: AbortSignal.any([generationSignal, AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS)]),
     })
     if (!response.ok) return null
@@ -379,6 +382,7 @@ const syncServerTemplatesOnce = async (
   /** The manifest's templates, when the caller has just read them and would only re-read them. */
   known?: readonly ServerTemplate[],
   snapshotCurrent: () => boolean = () => true,
+  metadata?: SyncRequestMetadata,
 ): Promise<void> => {
   const connectionCurrent = (): boolean => isCurrentServerConnection(server)
   if (server.status !== 'connected' || !connectionCurrent() || !snapshotCurrent()) return
@@ -391,7 +395,7 @@ const syncServerTemplatesOnce = async (
     snapshotCurrent()
   let available = known ?? null
   if (known === undefined) {
-    const contents = await listServerContents(server, signal)
+    const contents = await listServerContents(server, signal, metadata)
     if (!current()) return
     if (contents !== null) {
       snapshotCurrent = () => isLatestServerContents(server.url, contents)
@@ -518,6 +522,7 @@ interface PendingServerSync {
   readonly server: ConnectedServer
   readonly known?: readonly ServerTemplate[]
   readonly snapshotCurrent?: () => boolean
+  readonly metadata?: SyncRequestMetadata
 }
 
 /** The newest request per server. Slow downloads must never make minute polls pile up behind them. */
@@ -534,7 +539,12 @@ const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
       const requested = pendingServerSyncs.get(serverUrl)
       if (requested === undefined) return
       pendingServerSyncs.delete(serverUrl)
-      await syncServerTemplatesOnce(requested.server, requested.known, requested.snapshotCurrent)
+      await syncServerTemplatesOnce(
+        requested.server,
+        requested.known,
+        requested.snapshotCurrent,
+        requested.metadata,
+      )
     }
   })()
   serverSyncRuns.set(serverUrl, running)
@@ -555,6 +565,7 @@ export const syncServerTemplates = async (
   server: ConnectedServer,
   known?: readonly ServerTemplate[],
   snapshotCurrent?: () => boolean,
+  metadata?: SyncRequestMetadata,
 ): Promise<void> => {
   // Immutable state rows may change cosmetic server metadata in place. Credentials, deployment,
   // season, scope, and connectivity define the lifetime that is allowed to continue this work.
@@ -571,12 +582,14 @@ export const syncServerTemplates = async (
       ...(pending.snapshotCurrent === undefined
         ? {}
         : { snapshotCurrent: pending.snapshotCurrent }),
+      ...(metadata === undefined ? {} : { metadata }),
     })
   } else {
     pendingServerSyncs.set(server.url, {
       server,
       ...(known === undefined ? {} : { known }),
       ...(snapshotCurrent === undefined ? {} : { snapshotCurrent }),
+      ...(metadata === undefined ? {} : { metadata }),
     })
   }
   while (pendingServerSyncs.has(server.url) || serverSyncRuns.has(server.url)) {
@@ -588,8 +601,9 @@ export const syncServerTemplates = async (
 const POLL_MS = 60_000
 let timer: ReturnType<typeof setInterval> | null = null
 
-const syncAll = (): void => {
-  for (const server of getState().servers) void syncServerTemplates(server)
+const syncAll = (metadata: SyncRequestMetadata): void => {
+  for (const server of getState().servers)
+    void syncServerTemplates(server, undefined, undefined, metadata)
 }
 
 /**
@@ -600,9 +614,9 @@ const syncAll = (): void => {
  * uploading new artwork — rather than against paint activity, which this does not track.
  */
 export const installServerSync = (): void => {
-  syncAll()
+  syncAll({ mode: 'recovery', reason: 'connect' })
   if (timer !== null) clearInterval(timer)
-  timer = setInterval(syncAll, POLL_MS)
+  timer = setInterval(() => syncAll({ mode: 'compatibility-poll', reason: 'interval' }), POLL_MS)
   /**
    * And whenever the set of servers changes.
    *
@@ -629,7 +643,7 @@ export const installServerSync = (): void => {
       }
     }
     lastConnected = connected
-    syncAll()
+    syncAll({ mode: 'recovery', reason: 'state-change' })
   })
 }
 

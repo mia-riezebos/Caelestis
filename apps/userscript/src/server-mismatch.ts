@@ -5,6 +5,7 @@ import {
   readCachedServerMismatch,
   writeCachedServerMismatch,
 } from './server-mismatch-cache.js'
+import { userscriptRequestHeaders } from './server-observability.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -105,7 +106,7 @@ const readMask = async (
       `/telemetry/templates/${templateId}/versions/${version}/tiles/${tile.x}/${tile.y}/mismatches?season=${server.season}`,
     ),
     {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+      headers: userscriptRequestHeaders(token === null ? {} : { authorization: `Bearer ${token}` }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
   ).catch(() => null)

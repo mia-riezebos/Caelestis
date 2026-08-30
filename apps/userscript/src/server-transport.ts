@@ -1,4 +1,6 @@
+import type { SyncRequestMetadata } from '@caelestis/shared'
 import { discardResponseBody } from './response.js'
+import { userscriptRequestHeaders } from './server-observability.js'
 
 const REMOTE_TIMEOUT_MS = 10_000
 const LARGE_TRANSFER_TIMEOUT_MS = 120_000
@@ -83,6 +85,7 @@ const request = async <Result>(
   init: RequestInit,
   timeoutMs: number,
   read: (response: Response) => Promise<Result>,
+  metadata?: SyncRequestMetadata,
 ): Promise<Result> => {
   const controller = new AbortController()
   const upstream = init.signal
@@ -91,7 +94,13 @@ const request = async <Result>(
   else upstream?.addEventListener('abort', abortFromUpstream, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
   try {
-    return await read(await fetch(input, { ...init, signal: controller.signal }))
+    return await read(
+      await fetch(input, {
+        ...init,
+        headers: userscriptRequestHeaders(init.headers, metadata),
+        signal: controller.signal,
+      }),
+    )
   } finally {
     clearTimeout(timeout)
     upstream?.removeEventListener('abort', abortFromUpstream)
@@ -103,40 +112,52 @@ const requestJson = async (
   init: RequestInit,
   maxBytes: number,
   timeoutMs: number,
+  metadata?: SyncRequestMetadata,
 ): Promise<{ response: Response; body: unknown }> =>
-  request(input, init, timeoutMs, async (response) => ({
-    response,
-    body: await readBoundedJson(response, maxBytes),
-  }))
+  request(
+    input,
+    init,
+    timeoutMs,
+    async (response) => ({
+      response,
+      body: await readBoundedJson(response, maxBytes),
+    }),
+    metadata,
+  )
 
 export const requestServerMetadata = (
   input: string,
   init: RequestInit = {},
+  metadata?: SyncRequestMetadata,
 ): Promise<{ response: Response; body: unknown }> =>
-  requestJson(input, init, SERVER_JSON_BYTES, REMOTE_TIMEOUT_MS)
+  requestJson(input, init, SERVER_JSON_BYTES, REMOTE_TIMEOUT_MS, metadata)
 
 export const requestServerMutation = (
   input: string,
   init: RequestInit = {},
+  metadata?: SyncRequestMetadata,
 ): Promise<{ response: Response; body: unknown }> =>
-  requestJson(input, init, MUTATION_JSON_BYTES, REMOTE_TIMEOUT_MS)
+  requestJson(input, init, MUTATION_JSON_BYTES, REMOTE_TIMEOUT_MS, metadata)
 
 export const requestServerTree = (
   input: string,
   init: RequestInit = {},
+  metadata?: SyncRequestMetadata,
 ): Promise<{ response: Response; body: unknown }> =>
-  requestJson(input, init, TREE_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS)
+  requestJson(input, init, TREE_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS, metadata)
 
 export const requestServerUpload = (
   input: string,
   init: RequestInit = {},
+  metadata?: SyncRequestMetadata,
 ): Promise<{ response: Response; body: unknown }> =>
-  requestJson(input, init, MUTATION_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS)
+  requestJson(input, init, MUTATION_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS, metadata)
 
 export const requestServerManifest = async (
   input: string,
   init: RequestInit = {},
   canStart?: () => boolean,
+  metadata?: SyncRequestMetadata,
 ): Promise<{ response: Response; body: unknown; sequence: number }> => {
   const signal = init.signal ?? undefined
   const admission = acquireManifestRead(signal)
@@ -146,7 +167,7 @@ export const requestServerManifest = async (
     // replaced during that wait, so validate their lifetime again before sending captured headers.
     if (canStart?.() === false) throw new Error('manifest read superseded before it started')
     const sequence = ++manifestSequence
-    return { ...(await requestServerTree(input, init)), sequence }
+    return { ...(await requestServerTree(input, init, metadata)), sequence }
   } finally {
     releaseManifestRead()
   }
@@ -157,8 +178,15 @@ export const serverManifestSequence = (): number => manifestSequence
 export const requestServerStatus = async (
   input: string,
   init: RequestInit = {},
+  metadata?: SyncRequestMetadata,
 ): Promise<Response> =>
-  request(input, init, LARGE_TRANSFER_TIMEOUT_MS, async (response) => {
-    await discardResponseBody(response)
-    return response
-  })
+  request(
+    input,
+    init,
+    LARGE_TRANSFER_TIMEOUT_MS,
+    async (response) => {
+      await discardResponseBody(response)
+      return response
+    },
+    metadata,
+  )

@@ -3,6 +3,7 @@ import {
   PALETTE_SIZE,
   type PaintEvent,
   type StatusResponse,
+  type SyncRequestMetadata,
   seconds,
   sha256Hex,
   type TemplateStatus,
@@ -14,6 +15,7 @@ import {
 import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
+import { userscriptRequestHeaders } from './server-observability.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -116,11 +118,16 @@ const wantsObservedTile = (tile: TileCoord): boolean => {
   return awaitingCoverage
 }
 
-const fetchWithRetry = async (url: string, init: RequestInit): Promise<Response | null> => {
+const fetchWithRetry = async (
+  url: string,
+  init: RequestInit,
+  metadata?: SyncRequestMetadata,
+): Promise<Response | null> => {
   for (let attempt = 0; attempt < RETRIES; attempt += 1) {
     try {
       const response = await fetch(url, {
         ...init,
+        headers: userscriptRequestHeaders(init.headers, metadata),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       if (response.ok || (response.status >= 400 && response.status < 500)) return response
@@ -162,6 +169,7 @@ const uploadWanted = async (
             },
             body: entry.bytes.slice().buffer,
           },
+          { mode: 'none', reason: 'user-action' },
         )
         if (response?.ok) {
           uploaded.add(`${entry.tile}\u0000${entry.sha256}`)
@@ -193,15 +201,19 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   const identity = accountIdentity()
   if (identity === null) return
   const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
-  const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
-    method: 'POST',
-    headers: { ...authHeaders(server), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      ...identity,
-      season: server.season,
-      offers: entries.map(({ tile, sha256, ts }) => ({ tile, sha256, ts })),
-    }),
-  })
+  const response = await fetchWithRetry(
+    serverEndpoint(server.url, '/telemetry/tiles/offers'),
+    {
+      method: 'POST',
+      headers: { ...authHeaders(server), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...identity,
+        season: server.season,
+        offers: entries.map(({ tile, sha256, ts }) => ({ tile, sha256, ts })),
+      }),
+    },
+    { mode: 'none', reason: 'user-action' },
+  )
   if (response === null || !response.ok) {
     if (response !== null)
       warn('install', 'telemetry tile offer was rejected', {
@@ -223,7 +235,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     ),
   )
   const uploaded = await uploadWanted(server, identity, entries, wanted)
-  await refreshStatus(server)
+  await refreshStatus(server, { mode: 'response-applied', reason: 'post-offer' })
   const previousDedupe = offered.get(server.url)
   const dedupe =
     previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
@@ -347,11 +359,15 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
               ? scopedSubmitted
               : null,
       }
-      const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/paints'), {
-        method: 'POST',
-        headers: { ...authHeaders(server), 'content-type': 'application/json' },
-        body: JSON.stringify(event),
-      })
+      const response = await fetchWithRetry(
+        serverEndpoint(server.url, '/telemetry/paints'),
+        {
+          method: 'POST',
+          headers: { ...authHeaders(server), 'content-type': 'application/json' },
+          body: JSON.stringify(event),
+        },
+        { mode: 'none', reason: 'user-action' },
+      )
       if (response?.ok) return
       dedupe.values.delete(eventId)
       if (response !== null)
@@ -381,7 +397,10 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   if (!isCurrentServerConnection(server)) return
   coverage.set(server.url, { server, tiles: coverageFrom(contents) })
   replayRecent(server)
-  void refreshStatus(server).catch(reportTelemetryError)
+  void refreshStatus(server, {
+    mode: 'response-applied',
+    reason: 'manifest-applied',
+  }).catch(reportTelemetryError)
 }
 
 const templateStatusFrom = (value: unknown): TemplateStatus | null => {
@@ -437,11 +456,15 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
   return candidate as TemplateStatus
 }
 
-const refreshStatus = async (server: ConnectedServer): Promise<void> => {
+const refreshStatus = async (
+  server: ConnectedServer,
+  metadata: SyncRequestMetadata,
+): Promise<void> => {
   if (server.season === null || !isCurrentServerConnection(server)) return
   const response = await fetchWithRetry(
     serverEndpoint(server.url, `/telemetry/status?season=${server.season}`),
     { headers: authHeaders(server) },
+    metadata,
   )
   if (response === null || !response.ok || !isCurrentServerConnection(server)) return
   const body = (await response.json().catch(() => null)) as Partial<StatusResponse> | null
@@ -530,16 +553,24 @@ export const installTelemetry = (): void => {
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
       replayRecent(server)
-      void refreshStatus(server).catch(reportTelemetryError)
+      void refreshStatus(server, { mode: 'recovery', reason: 'state-change' }).catch(
+        reportTelemetryError,
+      )
     }
   })
   setInterval(() => {
     for (const server of getState().servers) {
-      if (server.status === 'connected') void refreshStatus(server).catch(reportTelemetryError)
+      if (server.status === 'connected')
+        void refreshStatus(server, { mode: 'compatibility-poll', reason: 'interval' }).catch(
+          reportTelemetryError,
+        )
     }
   }, STATUS_POLL_MS)
   for (const server of getState().servers) {
-    if (server.status === 'connected') void refreshStatus(server).catch(reportTelemetryError)
+    if (server.status === 'connected')
+      void refreshStatus(server, { mode: 'recovery', reason: 'connect' }).catch(
+        reportTelemetryError,
+      )
   }
 }
 
