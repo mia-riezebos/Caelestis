@@ -1,5 +1,9 @@
+import { Effect } from 'effect'
 import type { MiddlewareHandler } from 'hono'
 import type { AccessToken, SqlStore } from '../ports/index.js'
+import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
+import { BackendStorageError, ForbiddenError, UnauthorizedError } from '../runtime/errors.js'
+import { runBackendMiddleware } from '../runtime/hono.js'
 import { hashToken, type Scope, satisfiesScope } from './tokens.js'
 
 /** What a request proved about itself. */
@@ -101,6 +105,72 @@ export interface AuthOptions {
  * still receive something of the right shape.
  */
 const OPEN_ACCESS_HASH = '0'.repeat(64)
+
+type AuthConfig = Pick<AuthOptions, 'bootstrapAdminToken' | 'openAccess'>
+
+/** Authenticate one request against the SQL service supplied by the prepared Effect runtime. */
+export const authenticateRequest = (
+  authorization: string | undefined,
+  config: AuthConfig,
+  required: Scope,
+): Effect.Effect<
+  Caller,
+  UnauthorizedError | ForbiddenError | BackendStorageError,
+  SqlStoreService
+> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const presented = bearerToken(authorization)
+    const anonymousRead = required === 'read' && config.openAccess === true
+    if (presented === null) {
+      if (!anonymousRead) {
+        return yield* Effect.fail(new UnauthorizedError({ message: 'unauthorized' }))
+      }
+      return { scope: 'read', token: null, tokenHash: OPEN_ACCESS_HASH }
+    }
+
+    if (
+      config.bootstrapAdminToken !== undefined &&
+      config.bootstrapAdminToken.length > 0 &&
+      equalsConstantTime(presented, config.bootstrapAdminToken)
+    ) {
+      const tokenHash = yield* Effect.tryPromise({
+        try: () => hashToken(presented),
+        catch: (cause) => new BackendStorageError({ operation: 'hashToken', cause }),
+      })
+      return { scope: 'admin', token: null, tokenHash }
+    }
+
+    const tokenHash = yield* Effect.tryPromise({
+      try: () => hashToken(presented),
+      catch: (cause) => new BackendStorageError({ operation: 'hashToken', cause }),
+    })
+    const token = yield* Effect.tryPromise({
+      try: () => sql.readAccessToken(tokenHash),
+      catch: (cause) => new BackendStorageError({ operation: 'readAccessToken', cause }),
+    })
+    if (token === null) {
+      return yield* Effect.fail(new UnauthorizedError({ message: 'unauthorized' }))
+    }
+    if (!satisfiesScope(token.scope, required)) {
+      return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
+    }
+    return { scope: token.scope, token, tokenHash: token.tokenHash }
+  })
+
+/** Effect-backed scope middleware for routes migrated off hand-passed SQL authentication. */
+export const requireScopeEffect =
+  (runtime: BackendRuntime, config: AuthConfig, required: Scope): MiddlewareHandler =>
+  async (c, next) =>
+    runBackendMiddleware(
+      c,
+      runtime,
+      authenticateRequest(c.req.header('authorization'), config, required),
+      (caller) => {
+        c.set('caller', caller)
+        return next()
+      },
+    )
 
 export const requireScope =
   ({ sql, bootstrapAdminToken, openAccess }: AuthOptions, required: Scope): MiddlewareHandler =>
