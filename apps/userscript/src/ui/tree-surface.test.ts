@@ -43,6 +43,7 @@ afterEach(() => {
 describe('surface-scoped template tree', () => {
   it('renders the selected alliance manifest without world navigation or editing actions', () => {
     scoped.manifest = {
+      version: 'alliance-manifest-v1',
       season: 0,
       surface,
       server: serverInfo,

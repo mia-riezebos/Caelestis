@@ -29,6 +29,7 @@ export interface TreeNode {
 }
 
 export interface ServerManifest {
+  readonly version: string
   readonly season: number
   readonly surface: TemplateSurface
   readonly server: ServerInfo
@@ -375,5 +376,12 @@ export const parseServerManifest = (
       surface,
     }),
   )
-  return { season: Number(value.season), surface, server, nodes, templates }
+  return {
+    version: value.version,
+    season: Number(value.season),
+    surface,
+    server,
+    nodes,
+    templates,
+  }
 }

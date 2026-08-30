@@ -18,12 +18,23 @@ const harness = vi.hoisted(() => ({
   },
 }))
 
+const coordinator = vi.hoisted(() => ({
+  resources: new Map<
+    string,
+    {
+      refresh: (server: unknown, reason: 'connect' | 'manifest-applied') => Promise<unknown>
+    }
+  >(),
+}))
+
 vi.mock('./debug.js', () => ({ warn: vi.fn() }))
 vi.mock('./state.js', () => ({
   activeServerToken: (server: ConnectedServer) =>
     server.tokenUsable === false ? null : server.token,
   getState: () => harness.state,
   isCurrentServerConnection: () => true,
+  serverConnectionIdentity: (server: object) => server,
+  serverConnectionSignal: () => new AbortController().signal,
   onServerContents: (listener: (server: unknown, contents: unknown) => void) => {
     harness.serverContents = listener
     return vi.fn()
@@ -31,6 +42,25 @@ vi.mock('./state.js', () => ({
   onStateChange: (listener: () => void) => {
     harness.stateListeners.push(listener)
     return vi.fn()
+  },
+}))
+vi.mock('./server-sync-coordinator.js', () => ({
+  registerServerSyncResource: (resource: {
+    id: string
+    refresh: (server: unknown, reason: 'connect' | 'manifest-applied') => Promise<unknown>
+  }) => {
+    coordinator.resources.set(resource.id, resource)
+    queueMicrotask(() => {
+      for (const server of harness.state.servers) void resource.refresh(server, 'connect')
+    })
+  },
+  requestServerSync: (reason: 'connect' | 'manifest-applied', resourceId?: string) => {
+    queueMicrotask(() => {
+      for (const [id, resource] of coordinator.resources) {
+        if (resourceId !== undefined && resourceId !== id) continue
+        for (const server of harness.state.servers) void resource.refresh(server, reason)
+      }
+    })
   },
 }))
 vi.mock('./tile-transform.js', () => ({
@@ -81,6 +111,7 @@ beforeEach(() => {
   harness.tileInterest = null
   harness.acceptedPaint = null
   harness.stateListeners = []
+  coordinator.resources.clear()
   harness.state = { shareTiles: true, reportPaints: true, servers: [server], hiddenScopes: [] }
 })
 
