@@ -9,7 +9,7 @@ import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
-import { createBackendRuntime } from './runtime/backend-runtime.js'
+import { type BackendRuntime, createBackendRuntime } from './runtime/backend-runtime.js'
 import { runBackendHttp } from './runtime/hono.js'
 
 /**
@@ -33,13 +33,8 @@ export interface AppOptions {
   readonly currentSeason?: number | undefined
 }
 
-export const createApp = (ports: Ports, options: AppOptions = {}) => {
+export const createAppWithRuntime = (runtime: BackendRuntime, options: AppOptions = {}) => {
   const app = new Hono()
-  const authentication = {
-    bootstrapAdminToken: options.bootstrapAdminToken,
-    openAccess: options.openAccess,
-  }
-  const runtime = createBackendRuntime(ports, authentication)
   // `??` guards `undefined` and nothing else, and every one of these is a wrangler.toml var an
   // operator edits by hand. A non-UUIDv7 id, an empty name or an empty description all passed
   // through and then failed the wire schema — so the deployment's own manifest became undecodable
@@ -106,5 +101,15 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
 
   return app
 }
+
+/** Compatibility constructor for tests and adapters until #158 removes the global Ports bag. */
+export const createApp = (ports: Ports, options: AppOptions = {}) =>
+  createAppWithRuntime(
+    createBackendRuntime(ports, {
+      bootstrapAdminToken: options.bootstrapAdminToken,
+      openAccess: options.openAccess,
+    }),
+    options,
+  )
 
 export type App = ReturnType<typeof createApp>

@@ -1,8 +1,9 @@
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
-import { createApp } from './app.js'
+import { type App, createAppWithRuntime } from './app.js'
 import type { Ports } from './ports/index.js'
+import { type BackendRuntime, createBackendRuntime } from './runtime/backend-runtime.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 
 export { TelemetryShard } from './telemetry-shard.js'
@@ -39,42 +40,84 @@ const requestAtBasePath = (request: Request, configured: string | undefined): Re
   return new Request(url, request)
 }
 
+export interface PreparedBackend {
+  readonly app: App
+  readonly runtime: BackendRuntime
+  readonly season: number
+}
+
+interface PreparedBackendCache extends PreparedBackend {
+  readonly db: Env['DB']
+  readonly blobs: Env['BLOBS']
+  readonly telemetry: Env['TELEMETRY']
+  readonly configuration: string
+}
+
+let preparedBackend: PreparedBackendCache | undefined
+
+/** Prepare adapters, Context, and route graph once for a stable Worker environment. */
+export const prepareBackend = (env: Env): PreparedBackend => {
+  if (env.SHARD_STRATEGY !== 'single') {
+    throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
+  }
+  const season = parseSeason(env.SEASON) ?? 0
+  const configuration = JSON.stringify([
+    env.ADMIN_TOKEN,
+    env.SERVER_ID,
+    env.SERVER_NAME,
+    env.SERVER_DESCRIPTION,
+    season,
+    env.OPEN_ACCESS,
+  ])
+  if (
+    preparedBackend !== undefined &&
+    preparedBackend.db === env.DB &&
+    preparedBackend.blobs === env.BLOBS &&
+    preparedBackend.telemetry === env.TELEMETRY &&
+    preparedBackend.configuration === configuration
+  ) {
+    return preparedBackend
+  }
+
+  const ports: Ports = {
+    blobs: new R2BlobStore(env.BLOBS),
+    sql: new D1SqlStore(env.DB),
+    counters: new DurableObjectCounterStore(env.TELEMETRY),
+  }
+  const runtime = createBackendRuntime(ports, {
+    bootstrapAdminToken: env.ADMIN_TOKEN,
+    openAccess: env.OPEN_ACCESS === 'true',
+  })
+  const app = createAppWithRuntime(runtime, {
+    bootstrapAdminToken: env.ADMIN_TOKEN,
+    serverId: env.SERVER_ID,
+    serverName: env.SERVER_NAME,
+    serverDescription: env.SERVER_DESCRIPTION,
+    currentSeason: season,
+    openAccess: env.OPEN_ACCESS === 'true',
+  })
+  preparedBackend = {
+    app,
+    runtime,
+    season,
+    db: env.DB,
+    blobs: env.BLOBS,
+    telemetry: env.TELEMETRY,
+    configuration,
+  }
+  return preparedBackend
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (env.SHARD_STRATEGY !== 'single') {
-      throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
-    }
-
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
     if (mountedRequest === null) return new Response('Not Found', { status: 404 })
-
-    const ports: Ports = {
-      blobs: new R2BlobStore(env.BLOBS),
-      sql: new D1SqlStore(env.DB),
-      counters: new DurableObjectCounterStore(env.TELEMETRY),
-    }
-
-    return createApp(ports, {
-      bootstrapAdminToken: env.ADMIN_TOKEN,
-      serverId: env.SERVER_ID,
-      serverName: env.SERVER_NAME,
-      serverDescription: env.SERVER_DESCRIPTION,
-      // Both were reachable only from tests. Without the season, every deployment answered as
-      // season 0 — a later-season server served season 0's manifest, which for a fresh one is empty,
-      // and `ServerInfo` carries no season for a client to notice. Without openAccess, a server
-      // could not be opened at all.
-      currentSeason: parseSeason(env.SEASON),
-      openAccess: env.OPEN_ACCESS === 'true',
-    }).fetch(mountedRequest)
+    return prepareBackend(env).app.fetch(mountedRequest)
   },
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
   async scheduled(_controller, env, ctx): Promise<void> {
-    const ports: Ports = {
-      blobs: new R2BlobStore(env.BLOBS),
-      sql: new D1SqlStore(env.DB),
-      counters: new DurableObjectCounterStore(env.TELEMETRY),
-    }
-    ctx.waitUntil(fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }))
+    const prepared = prepareBackend(env)
+    ctx.waitUntil(prepared.runtime.run(fetchCanvasTiles({ season: prepared.season })))
   },
 } satisfies ExportedHandler<Env>

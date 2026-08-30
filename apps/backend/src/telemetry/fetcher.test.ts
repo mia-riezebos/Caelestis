@@ -11,6 +11,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import type { Ports, TemplateVersionRecord } from '../ports/index.js'
+import { createBackendRuntime } from '../runtime/backend-runtime.js'
 import { fetchCanvasTiles, RING_STALENESS_SECONDS } from './fetcher.js'
 
 const TOKEN = 'a'.repeat(64)
@@ -54,6 +55,7 @@ const harness = () => {
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
   const ports: Ports = { blobs, sql, counters }
+  const runtime = createBackendRuntime(ports)
   const requested: string[] = []
   const userAgents: (string | null)[] = []
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -65,18 +67,18 @@ const harness = () => {
     const body = await tileBytes(Number(match[1]) * 7 + Number(match[2]))
     return new Response(body.slice())
   }) as typeof fetch
-  return { ports, sql, requested, userAgents, fetchImpl }
+  return { ports, runtime, sql, requested, userAgents, fetchImpl }
 }
 
 describe('the 6-hour tile fetcher', () => {
   it('fetches each tile once even when templates overlap, plus a deduplicated ring', async () => {
-    const { ports, sql, requested, userAgents, fetchImpl } = harness()
+    const { runtime, sql, requested, userAgents, fetchImpl } = harness()
     // Two templates on the same tile, one a neighbour — the shared tile must fetch exactly once.
     await sql.insertTemplateVersion(version('overlap-a', [{ x: 100, y: 100 }]))
     await sql.insertTemplateVersion(version('overlap-b', [{ x: 100, y: 100 }]))
     await sql.insertTemplateVersion(version('neighbour', [{ x: 101, y: 100 }]))
 
-    const report = await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    const report = await runtime.run(fetchCanvasTiles({ season: 0, now: NOW, fetchImpl }))
 
     expect(new Set(requested).size).toBe(requested.length)
     expect(new Set(userAgents)).toEqual(new Set(['Caelestis-Tile-Fetcher/1.0']))
@@ -91,36 +93,40 @@ describe('the 6-hour tile fetcher', () => {
   })
 
   it('skips unchanged tiles entirely and leaves fresh ring tiles alone', async () => {
-    const { ports, sql, requested, fetchImpl } = harness()
+    const { runtime, sql, requested, fetchImpl } = harness()
     await sql.insertTemplateVersion(version('lone', [{ x: 5, y: 5 }]))
 
-    const first = await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    const first = await runtime.run(fetchCanvasTiles({ season: 0, now: NOW, fetchImpl }))
     expect(first.fetched).toBe(9)
 
     // A second run soon after: the template tile is refetched but its bytes have not changed, so
     // nothing new is stored; ring tiles are still fresh and are not even requested.
     requested.length = 0
-    const second = await fetchCanvasTiles(ports, {
-      season: 0,
-      now: seconds(NOW + 21_600),
-      fetchImpl,
-    })
+    const second = await runtime.run(
+      fetchCanvasTiles({
+        season: 0,
+        now: seconds(NOW + 21_600),
+        fetchImpl,
+      }),
+    )
     expect(second).toMatchObject({ fetched: 0, unchanged: 1, fresh: 8, failed: 0 })
     expect(requested).toHaveLength(1)
     expect(requested[0]).toContain(`tiles/5/5.png`)
 
     // Once the ring goes stale it is fetched again — and being unchanged, still stores nothing.
     requested.length = 0
-    const third = await fetchCanvasTiles(ports, {
-      season: 0,
-      now: seconds(NOW + 21_600 + RING_STALENESS_SECONDS),
-      fetchImpl,
-    })
+    const third = await runtime.run(
+      fetchCanvasTiles({
+        season: 0,
+        now: seconds(NOW + 21_600 + RING_STALENESS_SECONDS),
+        fetchImpl,
+      }),
+    )
     expect(third).toMatchObject({ fetched: 0, unchanged: 9, fresh: 0 })
   })
 
   it('survives an upstream failure without abandoning the run', async () => {
-    const { ports, sql } = harness()
+    const { ports, runtime, sql } = harness()
     await sql.insertTemplateVersion(version('lone', [{ x: 5, y: 5 }]))
     let calls = 0
     const flaky = (async () => {
@@ -129,13 +135,13 @@ describe('the 6-hour tile fetcher', () => {
       return new Response(null, { status: 502 })
     }) as typeof fetch
 
-    const report = await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl: flaky })
+    const report = await runtime.run(fetchCanvasTiles({ season: 0, now: NOW, fetchImpl: flaky }))
     expect(report).toMatchObject({ fetched: 0, failed: 9 })
     expect(await ports.sql.readLatestTile(0, { x: 5, y: 5 })).toBeNull()
   })
 
   it('spends its budget on template tiles before any ring tile', async () => {
-    const { ports, sql, requested, fetchImpl } = harness()
+    const { runtime, sql, requested, fetchImpl } = harness()
     // 250 distinct template tiles: over the 200-tile budget before the ring is even considered.
     const tiles = Array.from({ length: 250 }, (_, i) => ({
       x: 10 + (i % 50),
@@ -143,7 +149,7 @@ describe('the 6-hour tile fetcher', () => {
     }))
     await sql.insertTemplateVersion(version('wide', tiles))
 
-    const report = await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    const report = await runtime.run(fetchCanvasTiles({ season: 0, now: NOW, fetchImpl }))
     expect(report.fetched).toBe(200)
     expect(report.deferred).toBeGreaterThan(0)
     const templateKeys = new Set<string>(tiles.map((tile) => tileKey(tile)))
