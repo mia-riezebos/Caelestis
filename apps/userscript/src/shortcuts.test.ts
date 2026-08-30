@@ -49,6 +49,16 @@ describe('shortcutFor', () => {
     expect(shortcutFor(keydown('f', { repeat: true }))).toBeNull()
   })
 
+  it('does not claim keys retargeted across a shadow input boundary', () => {
+    const input = Object.assign(new EventTarget(), { tagName: 'INPUT' })
+    const host = Object.assign(new EventTarget(), { tagName: 'CAELESTIS-SETTINGS' })
+    const event = Object.assign(keydown('t', { target: host }), {
+      composedPath: () => [input, host],
+    })
+
+    expect(shortcutFor(event)).toBeNull()
+  })
+
   it('uses only Cmd for repeatable undo and redo on macOS', () => {
     expect(shortcutFor(keydown('z', { metaKey: true }), 'mac')).toBe('undo-paint')
     expect(shortcutFor(keydown('z', { metaKey: true, repeat: true }), 'mac')).toBe('undo-paint')
