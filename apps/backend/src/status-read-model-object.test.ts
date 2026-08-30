@@ -94,7 +94,7 @@ describe('status read-model Durable Object', () => {
 
     const measured = await object.reconcileSnapshotMeasured(3, 'public')
 
-    expect(measured.value.cacheOutcome).toBe('miss')
+    expect(measured).toMatchObject({ success: true, value: { cacheOutcome: 'miss' } })
     expect(measured.usage.measuredQueries + measured.usage.unmeasuredQueries).toBeGreaterThan(0)
   })
 

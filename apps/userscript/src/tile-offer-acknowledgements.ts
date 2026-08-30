@@ -3,12 +3,14 @@ export type TileOfferDecision = 'fresh' | 'retry' | 'pending' | 'avoid'
 interface TileOfferReceipt {
   readonly state: 'in-flight' | 'retryable' | 'acknowledged' | 'rejected'
   readonly expiresAt: number
+  readonly coverageGeneration?: number
 }
 
 interface ServerAcknowledgements {
   readonly owner: object
   readonly season: number
   readonly receipts: Map<string, TileOfferReceipt>
+  coverageGeneration: number
 }
 
 export interface TileOfferAcknowledgementsOptions {
@@ -57,8 +59,10 @@ export class TileOfferAcknowledgements {
   }
 
   started(serverUrl: string, owner: object, season: number, observation: string): void {
-    this.#remember(this.#server(serverUrl, owner, season), observation, {
+    const server = this.#server(serverUrl, owner, season)
+    this.#remember(server, observation, {
       state: 'in-flight',
+      coverageGeneration: server.coverageGeneration,
       // A thrown or abandoned request cannot suppress observations forever.
       expiresAt: this.#now() + this.#ttlMs,
     })
@@ -82,18 +86,28 @@ export class TileOfferAcknowledgements {
     })
   }
 
-  rejected(serverUrl: string, owner: object, season: number, observation: string): void {
+  rejected(serverUrl: string, owner: object, season: number, observation: string): boolean {
     const server = this.#settlementServer(serverUrl, owner, season)
-    if (server === null) return
+    if (server === null) return false
+    const pending = server.receipts.get(observation)
+    if (
+      pending?.state === 'in-flight' &&
+      pending.coverageGeneration !== server.coverageGeneration
+    ) {
+      this.#remember(server, observation, { state: 'retryable', expiresAt: 0 })
+      return false
+    }
     this.#remember(server, observation, {
       state: 'rejected',
       expiresAt: this.#now() + this.#ttlMs,
     })
+    return true
   }
 
   invalidateRejections(serverUrl: string, owner: object, season: number): void {
     const server = this.#servers.get(serverUrl)
     if (server === undefined || server.owner !== owner || server.season !== season) return
+    server.coverageGeneration++
     for (const [observation, receipt] of server.receipts) {
       if (receipt.state === 'rejected') server.receipts.delete(observation)
     }
@@ -135,7 +149,12 @@ export class TileOfferAcknowledgements {
       if (oldest.done) break
       this.#servers.delete(oldest.value)
     }
-    const created = { owner, season, receipts: new Map<string, TileOfferReceipt>() }
+    const created = {
+      owner,
+      season,
+      receipts: new Map<string, TileOfferReceipt>(),
+      coverageGeneration: 0,
+    }
     this.#servers.set(serverUrl, created)
     return created
   }
