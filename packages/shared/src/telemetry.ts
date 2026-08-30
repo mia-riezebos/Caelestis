@@ -3,10 +3,6 @@ import type { Millis, Seconds } from './time.js'
 
 /** Bound one hash-first offer request without turning ordinary panning into one request per tile. */
 export const MAX_TILE_OFFERS = 64
-/** Collect one burst of fetched tiles before sending its hash-first offer request. */
-export const TILE_OFFER_BATCH_DELAY_MS = 250
-/** Refresh server-derived template status while the userscript is open. */
-export const TELEMETRY_STATUS_POLL_MS = 30_000
 
 export type WplaceUserId = number
 
