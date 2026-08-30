@@ -1,4 +1,5 @@
 import {
+  type Alarm,
   type ContributionDay,
   type Millis,
   type Seconds,
@@ -7,6 +8,7 @@ import {
   type TileHistoryFrame,
   templateSurface,
   WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
   WORLD_TILES,
 } from '@caelestis/shared'
 import {
@@ -35,6 +37,8 @@ import {
   painters,
   serverSettings,
   telemetryBuckets,
+  templateAlarmStates,
+  templateAlarmTileStatuses,
   templates,
   templateTileStatuses,
   templateVersions,
@@ -46,6 +50,10 @@ import {
 import {
   type AccessToken,
   type AccessTokenQuery,
+  type AlarmEvaluationPhase,
+  type AlarmPolicyResult,
+  type AlarmProbe,
+  type AlarmTileRecord,
   assertValidBuckets,
   assertValidContributionQuery,
   assertValidPublishedFilter,
@@ -78,6 +86,8 @@ import {
   TELEMETRY_DECAY_EDGES,
   type TelemetryBucket,
   type TelemetryTarget,
+  type TemplateAlarmSnapshot,
+  type TemplateAlarmState,
   type TemplateDeletePrecondition,
   TemplateIdentityError,
   type TemplateManifestScope,
@@ -97,6 +107,44 @@ import {
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
+import {
+  ALARM_FOLLOW_UP_DELAY_MILLISECONDS,
+  evaluateAlarmSnapshot,
+} from '../../telemetry/alarm-policy.js'
+
+const storedAlarmState = (row: typeof templateAlarmStates.$inferSelect): TemplateAlarmState => {
+  if (row.alarmId === null) {
+    return {
+      templateId: row.templateId,
+      versionId: row.versionId,
+      total: row.total,
+      peakCorrect: row.peakCorrect,
+      alarm: null,
+    }
+  }
+  if (
+    row.kind === null ||
+    row.pixelsLost === null ||
+    row.firstSeenMs === null ||
+    row.lastSeenMs === null
+  ) {
+    throw new Error(`alarm state ${row.templateId} has a partial episode`)
+  }
+  return {
+    templateId: row.templateId,
+    versionId: row.versionId,
+    total: row.total,
+    peakCorrect: row.peakCorrect,
+    alarm: {
+      id: row.alarmId,
+      templateId: row.templateId,
+      kind: row.kind,
+      pixelsLost: row.pixelsLost,
+      firstSeen: row.firstSeenMs,
+      lastSeen: row.lastSeenMs,
+    },
+  }
+}
 
 const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
   tokenHash: row.tokenHash,
@@ -1050,6 +1098,39 @@ export class D1SqlStore implements SqlStore {
       .where(includeUnpublished ? scoped : and(scoped, isNotNull(templates.publishedAt)))
   }
 
+  async listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]> {
+    return this.database
+      .select({
+        templateId: templates.id,
+        versionId: templateVersions.id,
+        tileX: versionTiles.tileX,
+        tileY: versionTiles.tileY,
+        hash: versionTiles.hash,
+        observedAt: templateAlarmTileStatuses.observedAtMs,
+      })
+      .from(versionTiles)
+      .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
+      .innerJoin(
+        templates,
+        and(
+          eq(templates.id, templateVersions.templateId),
+          eq(templates.currentVersionId, templateVersions.id),
+        ),
+      )
+      .leftJoin(
+        templateAlarmTileStatuses,
+        and(
+          eq(templateAlarmTileStatuses.templateId, templates.id),
+          eq(templateAlarmTileStatuses.versionId, templateVersions.id),
+          eq(templateAlarmTileStatuses.tileX, versionTiles.tileX),
+          eq(templateAlarmTileStatuses.tileY, versionTiles.tileY),
+        ),
+      )
+      .where(
+        and(eq(templates.season, season), eq(templates.surfaceKind, WORLD_TEMPLATE_SURFACE.kind)),
+      )
+  }
+
   async listTelemetryTargets(
     season: number,
     tile: { readonly x: number; readonly y: number },
@@ -1127,6 +1208,7 @@ export class D1SqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
+    forceCurrent = false,
   ): Promise<void> {
     const history = this.database
       .insert(tileHistory)
@@ -1149,18 +1231,31 @@ export class D1SqlStore implements SqlStore {
         tileY: observation.tile.y,
         sha256: observation.hash,
         observedAtMs: observation.observedAt,
+        serverOwned: forceCurrent,
       })
       .onConflictDoUpdate({
         target: [canvasTiles.season, canvasTiles.tileX, canvasTiles.tileY],
-        set: { sha256: observation.hash, observedAtMs: observation.observedAt },
-        setWhere: lte(canvasTiles.observedAtMs, observation.observedAt),
+        set: {
+          sha256: observation.hash,
+          observedAtMs: observation.observedAt,
+          serverOwned: forceCurrent,
+        },
+        ...(forceCurrent
+          ? {
+              setWhere: sql`${canvasTiles.serverOwned} = 0
+                OR ${canvasTiles.observedAtMs} <= ${observation.observedAt}`,
+            }
+          : { setWhere: lte(canvasTiles.observedAtMs, observation.observedAt) }),
       })
     if (recordHistory) await this.database.batch([history, current])
     else await current
-    await this.writeTileStatuses(statuses)
+    await this.writeTileStatuses(statuses, forceCurrent)
   }
 
-  private async writeTileStatuses(statuses: readonly TemplateTileStatusRecord[]): Promise<void> {
+  private async writeTileStatuses(
+    statuses: readonly TemplateTileStatusRecord[],
+    forceCurrent = false,
+  ): Promise<void> {
     for (const group of chunkRows(statuses, 50)) {
       const statements = group.map((status) =>
         this.database
@@ -1175,6 +1270,7 @@ export class D1SqlStore implements SqlStore {
             blank: status.blank,
             coloursJson: JSON.stringify(status.colours ?? []),
             observedAtMs: status.observedAt,
+            serverOwned: forceCurrent,
           })
           .onConflictDoUpdate({
             target: [
@@ -1189,13 +1285,53 @@ export class D1SqlStore implements SqlStore {
               blank: status.blank,
               coloursJson: JSON.stringify(status.colours ?? []),
               observedAtMs: status.observedAt,
+              serverOwned: forceCurrent,
             },
-            setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt),
+            ...(forceCurrent
+              ? {
+                  setWhere: sql`${templateTileStatuses.serverOwned} = 0
+                    OR ${templateTileStatuses.observedAtMs} <= ${status.observedAt}`,
+                }
+              : { setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt) }),
           }),
       )
       if (statements.length > 0) {
+        const authoritativeStatements = forceCurrent
+          ? group.map((status) =>
+              this.database
+                .insert(templateAlarmTileStatuses)
+                .values({
+                  templateId: status.templateId,
+                  versionId: status.versionId,
+                  tileX: status.tile.x,
+                  tileY: status.tile.y,
+                  correct: status.correct,
+                  wrong: status.wrong,
+                  blank: status.blank,
+                  coloursJson: JSON.stringify(status.colours ?? []),
+                  observedAtMs: status.observedAt,
+                })
+                .onConflictDoUpdate({
+                  target: [
+                    templateAlarmTileStatuses.templateId,
+                    templateAlarmTileStatuses.versionId,
+                    templateAlarmTileStatuses.tileX,
+                    templateAlarmTileStatuses.tileY,
+                  ],
+                  set: {
+                    correct: status.correct,
+                    wrong: status.wrong,
+                    blank: status.blank,
+                    coloursJson: JSON.stringify(status.colours ?? []),
+                    observedAtMs: status.observedAt,
+                  },
+                  setWhere: lte(templateAlarmTileStatuses.observedAtMs, status.observedAt),
+                }),
+            )
+          : []
+        const writes = [...statements, ...authoritativeStatements]
         await this.database.batch(
-          statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+          writes as [(typeof writes)[number], ...Array<(typeof writes)[number]>],
         )
       }
     }
@@ -1327,6 +1463,7 @@ export class D1SqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
+    forceCurrent = false,
   ): Promise<boolean> {
     const statements: D1PreparedStatement[] = [
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
@@ -1375,16 +1512,21 @@ export class D1SqlStore implements SqlStore {
     statements.push(
       this.client
         .prepare(
-          `INSERT INTO canvas_tiles (season, tile_x, tile_y, sha256, observed_at_ms)
-           SELECT ?, ?, ?, ?, ?
+          `INSERT INTO canvas_tiles (
+             season, tile_x, tile_y, sha256, observed_at_ms, server_owned
+           )
+           SELECT ?, ?, ?, ?, ?, ?
            WHERE EXISTS (
              SELECT 1 FROM tile_blob_reservations AS reservation
              INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
              WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
            )
            ON CONFLICT(season, tile_x, tile_y) DO UPDATE SET
-             sha256 = excluded.sha256, observed_at_ms = excluded.observed_at_ms
-           WHERE canvas_tiles.observed_at_ms <= excluded.observed_at_ms`,
+             sha256 = excluded.sha256,
+             observed_at_ms = excluded.observed_at_ms,
+             server_owned = excluded.server_owned
+           WHERE canvas_tiles.observed_at_ms <= excluded.observed_at_ms
+             OR (excluded.server_owned = 1 AND canvas_tiles.server_owned = 0)`,
         )
         .bind(
           observation.season,
@@ -1392,6 +1534,7 @@ export class D1SqlStore implements SqlStore {
           observation.tile.y,
           observation.hash,
           observation.observedAt,
+          forceCurrent ? 1 : 0,
           reservationId,
           observation.hash,
         ),
@@ -1399,7 +1542,7 @@ export class D1SqlStore implements SqlStore {
     )
     const results = await this.client.batch(statements)
     if (Number(results[1]?.meta.changes) === 0) return false
-    await this.writeTileStatuses(statuses)
+    await this.writeTileStatuses(statuses, forceCurrent)
     return true
   }
 
@@ -1717,25 +1860,28 @@ export class D1SqlStore implements SqlStore {
   async readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
+    options: { readonly serverOwnedOnly?: boolean } = {},
   ): Promise<readonly import('@caelestis/shared').TemplateStatus[]> {
+    const statusTable =
+      options.serverOwnedOnly === true ? templateAlarmTileStatuses : templateTileStatuses
     const rows = await this.database
       .select({
         templateId: templates.id,
-        correct: sql<number>`sum(${templateTileStatuses.correct})`,
-        wrong: sql<number>`sum(${templateTileStatuses.wrong})`,
-        blank: sql<number>`sum(${templateTileStatuses.blank})`,
+        correct: sql<number>`sum(${statusTable.correct})`,
+        wrong: sql<number>`sum(${statusTable.wrong})`,
+        blank: sql<number>`sum(${statusTable.blank})`,
         total: templateVersions.totalPixels,
         colourTotalsJson: templateVersions.colourTotalsJson,
-        colourRowsJson: sql<string>`json_group_array(${templateTileStatuses.coloursJson})`,
-        observedAt: sql<number>`max(${templateTileStatuses.observedAtMs})`,
+        colourRowsJson: sql<string>`json_group_array(${statusTable.coloursJson})`,
+        observedAt: sql<number>`max(${statusTable.observedAtMs})`,
       })
       .from(templates)
       .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
       .innerJoin(
-        templateTileStatuses,
+        statusTable,
         and(
-          eq(templateTileStatuses.templateId, templates.id),
-          eq(templateTileStatuses.versionId, templateVersions.id),
+          eq(statusTable.templateId, templates.id),
+          eq(statusTable.versionId, templateVersions.id),
         ),
       )
       .where(
@@ -1797,6 +1943,185 @@ export class D1SqlStore implements SqlStore {
         observedAt: Number(row.observedAt) as Millis,
       }
     })
+  }
+
+  async evaluateTemplateAlarm(
+    snapshot: TemplateAlarmSnapshot,
+    phase: AlarmEvaluationPhase,
+    alarmId: string,
+  ): Promise<AlarmPolicyResult> {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const previousRow = await this.database
+        .select()
+        .from(templateAlarmStates)
+        .where(eq(templateAlarmStates.templateId, snapshot.templateId))
+        .limit(1)
+        .then((rows) => rows[0])
+      const previousState = previousRow === undefined ? null : storedAlarmState(previousRow)
+      if (
+        phase.kind === 'follow-up' &&
+        (previousRow === undefined ||
+          previousState === null ||
+          previousState.versionId !== snapshot.versionId ||
+          previousState.alarm?.id !== phase.alarmId ||
+          previousRow.probeDueAtMs !== phase.dueAt ||
+          previousRow.probePixelsLost !== phase.pixelsLost)
+      ) {
+        return evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
+      }
+      if (previousRow !== undefined && snapshot.observedAt < previousRow.evaluatedAtMs) {
+        return { state: previousState as TemplateAlarmState, scheduleFollowUp: false }
+      }
+      const result = evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
+      const alarm = result.state.alarm
+      const probeDueAt = result.scheduleFollowUp
+        ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
+        : null
+      const values = {
+        templateId: snapshot.templateId,
+        versionId: result.state.versionId,
+        total: result.state.total,
+        peakCorrect: result.state.peakCorrect,
+        alarmId: alarm?.id ?? null,
+        kind: alarm?.kind ?? null,
+        pixelsLost: alarm?.pixelsLost ?? null,
+        firstSeenMs: alarm?.firstSeen ?? null,
+        lastSeenMs: alarm?.lastSeen ?? null,
+        probeDueAtMs: probeDueAt,
+        probePixelsLost: result.scheduleFollowUp ? (alarm?.pixelsLost ?? null) : null,
+        evaluatedAtMs: snapshot.observedAt,
+        revision: (previousRow?.revision ?? -1) + 1,
+      }
+      const write =
+        previousRow === undefined
+          ? await this.database
+              .insert(templateAlarmStates)
+              .values(values)
+              .onConflictDoNothing({ target: templateAlarmStates.templateId })
+          : await this.database
+              .update(templateAlarmStates)
+              .set(values)
+              .where(
+                and(
+                  eq(templateAlarmStates.templateId, snapshot.templateId),
+                  eq(templateAlarmStates.revision, previousRow.revision),
+                ),
+              )
+      if (Number(write.meta.changes) > 0) return result
+    }
+    throw new Error(`alarm state stayed contended for template ${snapshot.templateId}`)
+  }
+
+  async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {
+    const rows = await this.database
+      .select({ state: templateAlarmStates })
+      .from(templateAlarmStates)
+      .innerJoin(templates, eq(templates.id, templateAlarmStates.templateId))
+      .where(
+        and(
+          eq(templates.season, season),
+          eq(templates.currentVersionId, templateAlarmStates.versionId),
+          isNotNull(templateAlarmStates.alarmId),
+          includeUnpublished ? undefined : isNotNull(templates.publishedAt),
+        ),
+      )
+      .orderBy(asc(templateAlarmStates.templateId))
+    return rows.flatMap(({ state }) => {
+      const alarm = storedAlarmState(state).alarm
+      return alarm === null ? [] : [alarm]
+    })
+  }
+
+  async listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]> {
+    const rows = await this.database
+      .select({
+        templateId: templateAlarmStates.templateId,
+        versionId: templateAlarmStates.versionId,
+        season: templates.season,
+        alarmId: templateAlarmStates.alarmId,
+        pixelsLost: templateAlarmStates.probePixelsLost,
+        dueAt: templateAlarmStates.probeDueAtMs,
+      })
+      .from(templateAlarmStates)
+      .innerJoin(templates, eq(templates.id, templateAlarmStates.templateId))
+      .where(
+        and(
+          eq(templates.currentVersionId, templateAlarmStates.versionId),
+          isNotNull(templateAlarmStates.alarmId),
+          isNotNull(templateAlarmStates.probePixelsLost),
+          isNotNull(templateAlarmStates.probeDueAtMs),
+          lte(templateAlarmStates.probeDueAtMs, now),
+        ),
+      )
+      .orderBy(asc(templateAlarmStates.probeDueAtMs), asc(templateAlarmStates.templateId))
+    return rows.flatMap((row) =>
+      row.alarmId === null || row.pixelsLost === null || row.dueAt === null
+        ? []
+        : [
+            {
+              templateId: row.templateId,
+              versionId: row.versionId,
+              season: row.season,
+              alarmId: row.alarmId,
+              pixelsLost: row.pixelsLost,
+              dueAt: row.dueAt,
+            },
+          ],
+    )
+  }
+
+  async nextAlarmProbeAt(): Promise<Millis | null> {
+    const rows = await this.database
+      .select({ dueAt: sql<number | null>`min(${templateAlarmStates.probeDueAtMs})` })
+      .from(templateAlarmStates)
+      .innerJoin(templates, eq(templates.id, templateAlarmStates.templateId))
+      .where(
+        and(
+          eq(templates.currentVersionId, templateAlarmStates.versionId),
+          isNotNull(templateAlarmStates.alarmId),
+          isNotNull(templateAlarmStates.probeDueAtMs),
+        ),
+      )
+    const dueAt = rows[0]?.dueAt
+    return dueAt === undefined || dueAt === null ? null : (dueAt as Millis)
+  }
+
+  async clearAlarmProbe(templateId: string, alarmId: string, dueAt: Millis): Promise<void> {
+    await this.database
+      .update(templateAlarmStates)
+      .set({
+        probeDueAtMs: null,
+        probePixelsLost: null,
+        revision: sql`${templateAlarmStates.revision} + 1`,
+      })
+      .where(
+        and(
+          eq(templateAlarmStates.templateId, templateId),
+          eq(templateAlarmStates.alarmId, alarmId),
+          eq(templateAlarmStates.probeDueAtMs, dueAt),
+        ),
+      )
+  }
+
+  async deferAlarmProbe(
+    templateId: string,
+    alarmId: string,
+    dueAt: Millis,
+    retryAt: Millis,
+  ): Promise<void> {
+    await this.database
+      .update(templateAlarmStates)
+      .set({
+        probeDueAtMs: retryAt,
+        revision: sql`${templateAlarmStates.revision} + 1`,
+      })
+      .where(
+        and(
+          eq(templateAlarmStates.templateId, templateId),
+          eq(templateAlarmStates.alarmId, alarmId),
+          eq(templateAlarmStates.probeDueAtMs, dueAt),
+        ),
+      )
   }
 
   async claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean> {

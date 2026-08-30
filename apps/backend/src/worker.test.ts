@@ -36,6 +36,7 @@ const env = () => {
     // `DurableObjectCounterStore` resolves its stub in the constructor, so the namespace has to
     // answer `getByName` even on a path that never calls the shard.
     TELEMETRY: { getByName: () => ({}) },
+    ALARM_WATCHER: { getByName: () => ({ schedule: async () => undefined }) },
     ADMIN_TOKEN: BOOTSTRAP,
   } as unknown as Env
 }
@@ -137,7 +138,7 @@ it('runs scheduled tile blob GC in configured dry-run mode without R2 deletion',
     truncated: false,
   }))
   const remove = vi.fn(async () => undefined)
-  let background: Promise<unknown> | undefined
+  const backgrounds: Promise<unknown>[] = []
   const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
   const configured = {
     ...env(),
@@ -147,10 +148,10 @@ it('runs scheduled tile blob GC in configured dry-run mode without R2 deletion',
 
   await worker.scheduled({} as ScheduledController, configured, {
     waitUntil: (promise: Promise<unknown>) => {
-      background = promise
+      backgrounds.push(promise)
     },
   } as ExecutionContext)
-  await background
+  await Promise.all(backgrounds)
 
   expect(list).toHaveBeenCalledWith({ prefix: 'tiles/', limit: 10 })
   expect(remove).not.toHaveBeenCalled()

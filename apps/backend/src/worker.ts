@@ -6,6 +6,7 @@ import type { Ports } from './ports/index.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
+export { AlarmWatcher } from './alarm-watcher.js'
 export { TelemetryShard } from './telemetry-shard.js'
 
 /**
@@ -82,11 +83,14 @@ export default {
       sql: new D1SqlStore(env.DB),
       counters: new DurableObjectCounterStore(env.TELEMETRY),
     }
+    const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
     ctx.waitUntil(
-      Promise.all([
-        fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }),
-        runTileBlobGc(ports, { mode: tileBlobGcMode(env.TILE_BLOB_GC_MODE) }),
-      ]).then(() => undefined),
+      fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
+        // A prior template may already have persisted a probe when later scan work fails. Always
+        // reconcile the watcher so that durable work cannot be stranded until the next cron.
+        await env.ALARM_WATCHER.getByName('global').schedule()
+      }),
     )
+    ctx.waitUntil(runTileBlobGc(ports, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>

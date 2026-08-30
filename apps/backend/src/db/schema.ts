@@ -579,6 +579,8 @@ export const canvasTiles = sqliteTable(
     tileY: integer('tile_y').notNull(),
     sha256: text('sha256').notNull(),
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+    /** Distinguishes the backend mirror from client reports when resolving clock skew. */
+    serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.season, table.tileX, table.tileY] }),
@@ -698,6 +700,8 @@ export const templateTileStatuses = sqliteTable(
     blank: integer('blank').notNull(),
     coloursJson: text('colours_json').notNull(),
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+    /** Distinguishes backend classification from client-reported classification. */
+    serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
@@ -713,6 +717,91 @@ export const templateTileStatuses = sqliteTable(
       sql`typeof(${table.correct}) = 'integer' AND typeof(${table.wrong}) = 'integer'
         AND typeof(${table.blank}) = 'integer'
         AND ${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
+    ),
+  ],
+)
+
+/** Last backend-owned classification per current template chunk, independent of client freshness. */
+export const templateAlarmTileStatuses = sqliteTable(
+  'template_alarm_tile_statuses',
+  {
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id')
+      .notNull()
+      .references(() => templateVersions.id, { onDelete: 'cascade' }),
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    correct: integer('correct').notNull(),
+    wrong: integer('wrong').notNull(),
+    blank: integer('blank').notNull(),
+    coloursJson: text('colours_json').notNull(),
+    observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
+    index('template_alarm_tile_statuses_version_idx').on(table.versionId),
+    check(
+      'template_alarm_tile_statuses_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+    check(
+      'template_alarm_tile_statuses_counter_check',
+      sql`typeof(${table.correct}) = 'integer' AND typeof(${table.wrong}) = 'integer'
+        AND typeof(${table.blank}) = 'integer'
+        AND ${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
+    ),
+  ],
+)
+
+/** Version-local high-water state and the one active alarm episode a template may own. */
+export const templateAlarmStates = sqliteTable(
+  'template_alarm_states',
+  {
+    templateId: text('template_id')
+      .primaryKey()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id').notNull(),
+    total: integer('total').notNull(),
+    peakCorrect: integer('peak_correct').notNull(),
+    alarmId: text('alarm_id'),
+    kind: text('kind', { enum: ['regression', 'sustained-griefing'] }),
+    pixelsLost: integer('pixels_lost'),
+    firstSeenMs: integer('first_seen_ms').$type<Millis>(),
+    lastSeenMs: integer('last_seen_ms').$type<Millis>(),
+    probeDueAtMs: integer('probe_due_at_ms').$type<Millis>(),
+    probePixelsLost: integer('probe_pixels_lost'),
+    /** Rejects a delayed evaluation whose evidence predates the state already persisted. */
+    evaluatedAtMs: integer('evaluated_at_ms').$type<Millis>().notNull().default(sql`0`),
+    /** Optimistic compare-and-swap guard for overlapping cron and follow-up evaluations. */
+    revision: integer('revision').notNull().default(0),
+  },
+  (table) => [
+    index('template_alarm_states_probe_due_idx').on(table.probeDueAtMs),
+    check(
+      'template_alarm_states_counter_check',
+      sql`typeof(${table.total}) = 'integer' AND ${table.total} >= 0
+        AND typeof(${table.peakCorrect}) = 'integer'
+        AND ${table.peakCorrect} BETWEEN 0 AND ${table.total}`,
+    ),
+    check(
+      'template_alarm_states_episode_check',
+      sql`(${table.alarmId} IS NULL AND ${table.kind} IS NULL AND ${table.pixelsLost} IS NULL
+          AND ${table.firstSeenMs} IS NULL AND ${table.lastSeenMs} IS NULL
+          AND ${table.probeDueAtMs} IS NULL AND ${table.probePixelsLost} IS NULL)
+        OR (${table.alarmId} IS NOT NULL
+          AND ${table.kind} IN ('regression', 'sustained-griefing')
+          AND typeof(${table.pixelsLost}) = 'integer' AND ${table.pixelsLost} > 0
+          AND typeof(${table.firstSeenMs}) = 'integer'
+          AND typeof(${table.lastSeenMs}) = 'integer'
+          AND ${table.firstSeenMs} <= ${table.lastSeenMs}
+          AND ((${table.probeDueAtMs} IS NULL AND ${table.probePixelsLost} IS NULL)
+            OR (typeof(${table.probeDueAtMs}) = 'integer'
+              AND typeof(${table.probePixelsLost}) = 'integer'
+              AND ${table.probePixelsLost} > 0)))`,
     ),
   ],
 )

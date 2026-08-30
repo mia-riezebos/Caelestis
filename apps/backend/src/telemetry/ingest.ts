@@ -215,6 +215,7 @@ const recordObservation = async (
   metadata: TileMetadata,
   bytes: Uint8Array,
   reservationId: string,
+  options: { readonly recordHistory?: boolean; readonly authoritative?: boolean } = {},
 ): Promise<void> => {
   const canvas = await decodeCanvas(bytes)
   const targets = await ports.sql.listTelemetryTargets(
@@ -237,13 +238,15 @@ const recordObservation = async (
     reportedByUserId: metadata.wplaceUserId,
   }
   await ports.sql.rememberPainter(metadata.wplaceUserId, metadata.displayName, millis(observedAtMs))
-  const recordHistory = targets.length === 0 || targets.some((target) => !target.finished)
+  const recordHistory =
+    options.recordHistory ?? (targets.length === 0 || targets.some((target) => !target.finished))
   const committed = await ports.sql.commitTileBlobReservation(
     reservationId,
     millis(Date.now()),
     observation,
     statuses,
     recordHistory,
+    options.authoritative ?? false,
   )
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
@@ -252,6 +255,45 @@ const recordObservation = async (
     metadata.season,
     metadata.tile,
     seconds(Math.floor(Date.now() / 1_000)),
+  )
+}
+
+/** Reclassify bytes already held by the current canvas hash without another R2 upload or history fold. */
+export const refreshAuthoritativeTile = async (
+  ports: Ports,
+  metadata: TileMetadata,
+  bytes: Uint8Array,
+): Promise<void> => {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
+    throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
+  }
+  const actualHash = await sha256Hex(bytes)
+  if (actualHash !== metadata.hash) throw new RangeError('tile bytes do not match their sha256')
+  const canvas = await decodeCanvas(bytes)
+  const targets = await ports.sql.listTelemetryTargets(
+    metadata.season,
+    metadata.tile,
+    metadata.includeUnpublished,
+  )
+  const observedAt = millis(metadata.observedAt * 1_000)
+  const statuses = (
+    await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAt)))
+  )
+    .filter((result): result is ClassifiedTarget => result !== null)
+    .map((result) => result.status)
+  await ports.sql.recordTileObservation(
+    {
+      season: metadata.season,
+      tile: metadata.tile,
+      hash: metadata.hash,
+      observedAt,
+      reportedAt: metadata.observedAt,
+      reportedWithToken: metadata.tokenHash,
+      reportedByUserId: metadata.wplaceUserId,
+    },
+    statuses,
+    false,
+    true,
   )
 }
 
@@ -276,7 +318,11 @@ export const uploadTile = async (
   ports: Ports,
   metadata: TileMetadata,
   bytes: Uint8Array,
-  options: { readonly requireCoverage?: boolean } = {},
+  options: {
+    readonly requireCoverage?: boolean
+    readonly recordHistory?: boolean
+    readonly authoritative?: boolean
+  } = {},
 ): Promise<void> => {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_CANVAS_TILE_BYTES) {
     throw new RangeError(`tile must be 1..${MAX_CANVAS_TILE_BYTES} bytes`)
@@ -294,7 +340,10 @@ export const uploadTile = async (
   const reservation = await reserveTileBlobUpload(ports, actualHash)
   try {
     await ports.blobs.put('tiles', reservation.blobKey, bytes)
-    await recordObservation(ports, metadata, bytes, reservation.id)
+    await recordObservation(ports, metadata, bytes, reservation.id, {
+      ...(options.recordHistory === undefined ? {} : { recordHistory: options.recordHistory }),
+      ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
+    })
   } catch (error) {
     await ports.sql.releaseTileBlobReservation(reservation.id)
     throw error

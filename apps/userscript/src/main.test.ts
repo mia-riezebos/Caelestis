@@ -86,6 +86,7 @@ vi.mock('./templates/mismatch-worker.js', () => ({ mismatchWorkerMemoryBytes: vi
 vi.mock('./templates/nearest.js', () => ({ focusedTemplate: vi.fn(() => null) }))
 vi.mock('./templates/server-sync.js', () => ({ installServerSync: vi.fn() }))
 vi.mock('./telemetry.js', () => ({ installTelemetry: vi.fn() }))
+vi.mock('./alarms.js', () => ({ installAlarmNotifications: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
   capturedPixelMemoryBytes: vi.fn(() => 0),
   captureTilePixels: vi.fn(),

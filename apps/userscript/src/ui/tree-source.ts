@@ -19,6 +19,8 @@ export interface TreeItem {
     readonly finished: boolean
     readonly frozen: boolean
     readonly griefed: boolean
+    readonly alarmKind?: import('@caelestis/shared').AlarmKind | undefined
+    readonly pixelsLost?: number | undefined
   }
   readonly progress?: TemplateProgress
   readonly progressReader?: (() => TemplateProgress) | undefined

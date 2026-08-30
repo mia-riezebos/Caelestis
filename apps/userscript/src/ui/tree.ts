@@ -36,7 +36,7 @@ import {
   setScopeVisible,
   setState,
 } from '../state.js'
-import { serverColourProgressFor, serverProgressFor } from '../telemetry.js'
+import { serverAlarmFor, serverColourProgressFor, serverProgressFor } from '../telemetry.js'
 import {
   isServerTemplate,
   localTemplates,
@@ -694,6 +694,7 @@ const buildTree = <Result>(
           const progress =
             surface.kind === 'world' ? serverTemplateProgress(server, template) : undefined
           const visibilityKey = serverTemplateKey(server.url, template.id, surface)
+          const alarm = serverAlarmFor(server, template)
           const templateTarget: TreeTarget = {
             server,
             nodeId: template.nodeId,
@@ -721,6 +722,7 @@ const buildTree = <Result>(
                 finished: template.finished === true,
                 frozen: template.timelapseFrozen === true,
                 griefed: template.finished === true && (progress?.mismatched ?? 0) > 0,
+                ...(alarm === null ? {} : { alarmKind: alarm.kind, pixelsLost: alarm.pixelsLost }),
               },
               ...(colourProgress === undefined
                 ? {}

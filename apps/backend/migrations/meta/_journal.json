@@ -57,6 +57,13 @@
       "when": 1788064574299,
       "tag": "0007_warm_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788067170619,
+      "tag": "0008_magenta_hemingway",
+      "breakpoints": true
     }
   ]
 }

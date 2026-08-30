@@ -250,6 +250,99 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     ).resolves.toEqual([])
   })
 
+  it('lets an authoritative server fetch replace a future-dated client observation', async () => {
+    const tile = { x: 0, y: 0 }
+    await store.insertTemplateVersion(version('template-1'))
+    await store.recordTileObservation(
+      observation({ tile, hash: 'f'.repeat(64), observedAt: millis(2_000) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(2_000),
+        },
+      ],
+    )
+
+    await expect(store.listAlarmTiles(1)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', observedAt: null }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual(
+      [],
+    )
+
+    await store.recordTileObservation(
+      observation({ tile, hash: 'e'.repeat(64), observedAt: millis(1_000) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 1,
+          wrong: 0,
+          blank: 0,
+          observedAt: millis(1_000),
+        },
+      ],
+      false,
+      true,
+    )
+
+    // A slower, older backend request must not roll the authoritative result backward.
+    await store.recordTileObservation(
+      observation({ tile, hash: 'a'.repeat(64), observedAt: millis(500) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(500),
+        },
+      ],
+      false,
+      true,
+    )
+
+    await expect(store.readLatestTile(1, tile)).resolves.toMatchObject({
+      hash: 'e'.repeat(64),
+      observedAt: 1_000,
+    })
+    await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
+
+    await store.recordTileObservation(
+      observation({ tile, hash: 'b'.repeat(64), observedAt: millis(3_000) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(3_000),
+        },
+      ],
+    )
+    await expect(store.listAlarmTiles(1)).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', observedAt: 1_000 }),
+    ])
+    await expect(store.readTemplateStatuses(1, true, { serverOwnedOnly: true })).resolves.toEqual([
+      expect.objectContaining({ templateId: 'template-1', correct: 1, wrong: 0 }),
+    ])
+  })
+
   it('keeps the hash with the most distinct reporters per bucket, ties to the smaller hash', async () => {
     const tile = { x: 3, y: 4 }
     // Bucket one: two reporters agree on one hash, a third dissents — quorum wins.

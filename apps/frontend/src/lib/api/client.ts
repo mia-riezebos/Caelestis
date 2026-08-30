@@ -1,4 +1,5 @@
 import type {
+  AlarmsResponse,
   CanvasTilesResponse,
   ContributionsResponse,
   HistoryResponse,
@@ -91,6 +92,9 @@ export const getManifest = (season?: number): Promise<Manifest> =>
 
 export const getStatus = (season?: number): Promise<StatusResponse> =>
   json(season === undefined ? '/telemetry/status' : `/telemetry/status?season=${season}`)
+
+export const getAlarms = (season?: number): Promise<AlarmsResponse> =>
+  json(season === undefined ? '/telemetry/alarms' : `/telemetry/alarms?season=${season}`)
 
 /** `/server` deliberately exposes no caller scope, so admin admission is probed explicitly. */
 export const probeAdminScope = async (season: number): Promise<boolean> => {

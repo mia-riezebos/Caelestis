@@ -59,6 +59,14 @@ describe.each(adapters)('$name template surface contract', ({ make }) => {
     await expect(store.readTemplateVersion('version-1')).resolves.toMatchObject({ surface })
   })
 
+  it('keeps alliance templates out of world alarm scans', async () => {
+    await store.insertTemplateVersion(
+      version({ kind: 'alliance-headquarters', allianceId: 535_245 }),
+    )
+
+    await expect(store.listAlarmTiles(1)).resolves.toEqual([])
+  })
+
   it('does not let a replacement version cross surfaces', async () => {
     await store.insertTemplateVersion(version({ kind: 'alliance-picture', allianceId: 535_245 }))
 

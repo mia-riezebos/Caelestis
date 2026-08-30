@@ -1,10 +1,12 @@
-import type { Template } from '@caelestis/shared'
+import type { AlarmKind, Template } from '@caelestis/shared'
 
 export type TemplateLifecycleState = Pick<
   Template,
   'finished' | 'finishedAt' | 'timelapseFrozen'
 > & {
   readonly griefed: boolean
+  readonly alarmKind?: AlarmKind | undefined
+  readonly pixelsLost?: number | undefined
 }
 
 export interface TemplateLifecycleChangeDetail {
@@ -15,6 +17,8 @@ export interface TemplateStateProps {
   finished?: boolean
   frozen?: boolean
   griefed?: boolean
+  alarmKind?: AlarmKind | undefined
+  pixelsLost?: number | undefined
   compact?: boolean
 }
 

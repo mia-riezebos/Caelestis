@@ -11,6 +11,7 @@ import { applyWplaceTheme } from './theme.js'
 
 export const PANEL_ID = 'caelestis-panel'
 const NOTIFICATIONS_ID = 'caelestis-notifications'
+const MAX_PENDING_AMBIENT_TOASTS = 20
 
 let root: CaelestisNotifications | null = null
 let sequence = 0
@@ -26,6 +27,8 @@ let pendingConfirm:
   | undefined
 let pendingSecret: { readonly id: string; readonly resolve: () => void } | undefined
 const timers = new Map<string, number>()
+const pendingAmbientToasts: Array<{ readonly message: string; readonly kind: ToastKind }> = []
+let awaitingDocumentBody = false
 
 const model = (): NotificationsModel => ({ toasts: [...toasts], confirm, oneTimeSecret })
 
@@ -125,8 +128,7 @@ const removeToast = (id: string): void => {
   render()
 }
 
-export const showToast = (message: string, kind: ToastKind = 'info'): void => {
-  if (document.getElementById(PANEL_ID) === null) return
+const pushToast = (message: string, kind: ToastKind): void => {
   ensureRoot()
 
   const replaced = kind === 'error' ? toasts : toasts.filter((toast) => toast.kind !== 'error')
@@ -143,6 +145,31 @@ export const showToast = (message: string, kind: ToastKind = 'info'): void => {
       window.setTimeout(() => removeToast(id), 6000),
     )
   }
+}
+
+const flushAmbientToasts = (): void => {
+  awaitingDocumentBody = false
+  if (document.body === null) return
+  for (const toast of pendingAmbientToasts.splice(0)) pushToast(toast.message, toast.kind)
+}
+
+export const showToast = (message: string, kind: ToastKind = 'info'): void => {
+  if (document.getElementById(PANEL_ID) === null) return
+  pushToast(message, kind)
+}
+
+/** Page-level notices such as alarms are valid while the panel itself is closed. */
+export const showAmbientToast = (message: string, kind: ToastKind = 'info'): void => {
+  if (document.body === null) {
+    if (pendingAmbientToasts.length >= MAX_PENDING_AMBIENT_TOASTS) pendingAmbientToasts.shift()
+    pendingAmbientToasts.push({ message, kind })
+    if (!awaitingDocumentBody) {
+      awaitingDocumentBody = true
+      document.addEventListener('DOMContentLoaded', flushAmbientToasts, { once: true })
+    }
+    return
+  }
+  pushToast(message, kind)
 }
 
 export interface ConfirmationRequest {

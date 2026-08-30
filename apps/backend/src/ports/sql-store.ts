@@ -1,4 +1,5 @@
 import {
+  type Alarm,
   type ContributionDay,
   type Millis,
   PALETTE_SIZE,
@@ -575,12 +576,59 @@ export interface ManifestTemplateRecord {
   readonly updatedAt: Millis
 }
 
+/** One complete current-state observation used by the server-owned alarm policy. */
+export interface TemplateAlarmSnapshot {
+  readonly templateId: string
+  readonly versionId: string
+  readonly total: number
+  readonly correct: number
+  readonly observedAt: Millis
+}
+
+export interface TemplateAlarmState {
+  readonly templateId: string
+  readonly versionId: string
+  readonly total: number
+  readonly peakCorrect: number
+  readonly alarm: Alarm | null
+}
+
+export type AlarmEvaluationPhase =
+  | { readonly kind: 'scan' }
+  | {
+      readonly kind: 'follow-up'
+      readonly alarmId: string
+      readonly pixelsLost: number
+      /** Identifies the exact durable probe generation this evaluation may consume. */
+      readonly dueAt: Millis
+    }
+
+export interface AlarmPolicyResult {
+  readonly state: TemplateAlarmState
+  readonly scheduleFollowUp: boolean
+}
+
+/** A durable delayed recheck claimed by the alarm-watcher Durable Object. */
+export interface AlarmProbe {
+  readonly templateId: string
+  readonly versionId: string
+  readonly season: number
+  readonly alarmId: string
+  readonly pixelsLost: number
+  readonly dueAt: Millis
+}
+
 export interface ManifestTileRecord {
   readonly templateId: string
   readonly versionId: string
   readonly tileX: number
   readonly tileY: number
   readonly hash: string
+}
+
+/** A current template tile plus the age of the classification used by alarm evaluation. */
+export interface AlarmTileRecord extends ManifestTileRecord {
+  readonly observedAt: Millis | null
 }
 
 /** One current template chunk affected by a canvas tile observation or paint event. */
@@ -879,6 +927,9 @@ export interface SqlStore {
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]>
 
+  /** Current template tiles ordered by callers for bounded, freshness-aware alarm scans. */
+  listAlarmTiles(season: number): Promise<readonly AlarmTileRecord[]>
+
   listTelemetryTargets(
     season: number,
     tile: TileCoord,
@@ -891,6 +942,8 @@ export interface SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
+    /** Server fetches are authoritative even when a client clock put the current row in the future. */
+    forceCurrent?: boolean,
   ): Promise<void>
 
   /** The preferred readable physical object for a hash, if one is registered and unfenced. */
@@ -926,6 +979,7 @@ export interface SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
+    forceCurrent?: boolean,
   ): Promise<boolean>
 
   releaseTileBlobReservation(reservationId: string): Promise<void>
@@ -952,7 +1006,32 @@ export interface SqlStore {
   readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
+    options?: { readonly serverOwnedOnly?: boolean },
   ): Promise<readonly TemplateStatus[]>
+
+  /** Atomically evaluate and persist one complete template snapshot. */
+  evaluateTemplateAlarm(
+    snapshot: TemplateAlarmSnapshot,
+    phase: AlarmEvaluationPhase,
+    alarmId: string,
+  ): Promise<AlarmPolicyResult>
+
+  readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]>
+
+  listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]>
+
+  nextAlarmProbeAt(): Promise<Millis | null>
+
+  /** Drop a probe only if it is still the exact generation the caller observed. */
+  clearAlarmProbe(templateId: string, alarmId: string, dueAt: Millis): Promise<void>
+
+  /** Move a failed probe behind other due work without touching a replacement generation. */
+  deferAlarmProbe(
+    templateId: string,
+    alarmId: string,
+    dueAt: Millis,
+    retryAt: Millis,
+  ): Promise<void>
 
   /** Claims an idempotency key. False means this paint event was already accepted. */
   claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>

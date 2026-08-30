@@ -81,7 +81,7 @@ import {
   setState,
   upsertServer,
 } from '../state.js'
-import { onServerStatusChange } from '../telemetry.js'
+import { onServerAlarmChange, onServerStatusChange } from '../telemetry.js'
 import {
   APPEARANCE_CONTROLS,
   DEFAULT_APPEARANCE,
@@ -175,6 +175,8 @@ let alarmBadge = 0
 let searchQuery = ''
 let panelSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE
 let panelHost: HTMLElement | null = null
+const panelOpenListeners = new Set<() => void>()
+const treeVisibleListeners = new Set<() => void>()
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -952,6 +954,9 @@ const showView = (view: View): void => {
   }
   panel.model = panelModel(currentPanelWidth(panel))
   syncProfileTimer()
+  if (open && view === 'tree') {
+    for (const listener of treeVisibleListeners) listener()
+  }
   log('install', `panel view: ${view}`)
 }
 
@@ -971,6 +976,7 @@ const setOpen = (next: boolean): void => {
   const host = panelHost ?? document.body
   host.appendChild(buildSveltePanel())
   showView(currentView)
+  for (const listener of panelOpenListeners) listener()
   // The panel's measured left edge is now the map controls' right edge.
   redraw()
 }
@@ -1001,6 +1007,20 @@ const selectAlliancePanelSurface = (active: ActiveAllianceSurface | null): void 
   panelHost = nextHost as HTMLElement
   if (reopen) setOpen(true)
   syncRailButtonState()
+}
+
+export const isPanelOpen = (): boolean => open
+
+export const isTemplateTreeVisible = (): boolean => open && currentView === 'tree'
+
+export const onPanelOpen = (listener: () => void): (() => void) => {
+  panelOpenListeners.add(listener)
+  return () => panelOpenListeners.delete(listener)
+}
+
+export const onTemplateTreeVisible = (listener: () => void): (() => void) => {
+  treeVisibleListeners.add(listener)
+  return () => treeVisibleListeners.delete(listener)
 }
 
 const RAIL_ID = 'caelestis-rail'
@@ -1167,6 +1187,9 @@ export const installPanel = (): void => {
     }),
   )
   onServerStatusChange(() => {
+    if (currentView === 'tree') refreshView()
+  })
+  onServerAlarmChange(() => {
     if (currentView === 'tree') refreshView()
   })
   for (const ending of ['dragend', 'focusout'])
