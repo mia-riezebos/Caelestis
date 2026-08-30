@@ -28,6 +28,8 @@ export interface StatusReadModelPort {
   ) => Promise<StatusSnapshotRead>
   /** Optional on portable adapters; production uses it to wake hibernating manifest subscribers. */
   readonly notifyManifestChange?: (season: number) => Promise<void>
+  /** Optional on portable adapters; production wakes live clients after alarm state changes. */
+  readonly notifyAlarmChange?: (season: number) => Promise<void>
   /** Optional for compatibility adapters; prepared production and direct adapters cache manifests. */
   readonly readManifestProjection?: (
     input: ManifestProjectionInput,
@@ -57,6 +59,18 @@ export const publishManifestChange = async (
 ): Promise<void> => {
   try {
     await readModel.notifyManifestChange?.(season)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+/** Alarm notifications are reconstructible hints; a failed hint never fails authoritative work. */
+export const publishAlarmChange = async (
+  readModel: StatusReadModelPort,
+  season: number,
+): Promise<void> => {
+  try {
+    await readModel.notifyAlarmChange?.(season)
   } catch (error) {
     console.error(error)
   }

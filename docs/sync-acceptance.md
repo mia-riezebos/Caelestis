@@ -10,21 +10,27 @@ Run `pnpm capacity:report` and `pnpm test:capacity` from the repository root.
 
 | Measure | Baseline | Five-client healthy-live projection |
 | --- | ---: | ---: |
-| Avoidable Worker requests | 14,645 conservative lower bound | 975 |
-| Reduction | — | 93.34% |
-| Tile-offer batches still available at the 90% gate | — | 489 |
-| Status and manifest projection RPC reads | — | 970 |
-| Authoritative projection rebuilds | — | 194 |
-| Cache outcomes | — | 2 miss, 192 stale, 776 hit |
+| Avoidable Worker requests | 14,645 conservative lower bound | 400 |
+| Reduction | — | 97.27% |
+| Tile-offer batches still available at the 90% gate | — | 1,064 |
+| Status and manifest projection RPC reads | — | 250 |
+| Authoritative projection rebuilds | — | 50 |
+| Cache outcomes | — | 2 miss, 48 stale, 200 hit |
 | Raw incoming heartbeat messages | — | 480 |
-| Projected billable Durable Object request units | — | 999 |
+| Projected billable Durable Object request units | — | 283 |
 | Heartbeat wakeups | — | 0 |
 
 The model uses the lower edge of each rounded status, manifest, and tile-offer baseline bucket.
 Required paint reports and requested tile writes are excluded and must be reported separately. D1 rows depend on template
 and status cardinality; the request metrics record their actual values rather than substituting a
-fixed estimate. Five simultaneous projection readers share one rebuild per resource cohort, so 970
-reads require at most 194 authoritative rebuilds in this scenario.
+fixed estimate. Five simultaneous projection readers share one rebuild per resource cohort, so 250
+status and manifest reads require at most 50 authoritative rebuilds in this scenario. Alarm reads
+remain direct and are included in the Worker total without being misreported as projection-cache
+hits.
+
+The Worker total also includes five alarm reads after each of the four scheduled scans. Follow-up
+alarm reads are data-dependent and consume the remaining 1,064-request budget alongside tile
+offers; production measurement records both rather than assuming they are zero.
 
 The Durable Object total follows Cloudflare's current rules: RPCs, WebSocket connections, and
 incoming application messages are requests; incoming WebSocket messages are billed in groups of
@@ -38,13 +44,14 @@ and [state API](https://developers.cloudflare.com/durable-objects/api/state/).
 
 | Contract | Executable coverage |
 | --- | --- |
-| Five-client update within two seconds | `status-read-model-object.test.ts`: fans one committed status update out to five clients within two seconds |
+| Five-client update within two seconds | `status-read-model-object.test.ts`: fans one committed update to five sockets; `live-client-acceptance.test.ts`: parses and applies it to five independent client states |
 | Restart and eviction | `status-read-model-object.test.ts`: persists a reconstructible season projection across object eviction |
 | Hibernation and socket attachments | `status-read-model-object.test.ts`: reconstructs hibernating subscriber scope; answers heartbeat pings without waking |
 | Revision gaps and stale reads | `server-sync-coordinator.test.ts`: coalesces malformed, out-of-order, and reconnect recovery; discards an in-flight stale snapshot |
 | Offline and visibility recovery | `server-sync-coordinator.test.ts`: pauses while hidden or offline and coalesces recovery events |
 | Old-server compatibility | `server-sync-coordinator.test.ts`: keeps compatibility polling and opens no socket when capability is absent |
 | Authentication scope | `routes/telemetry.test.ts`: authenticates and scope-binds live upgrades before resolving a season object |
+| Alarm delivery without steady polling | `status-read-model-object.test.ts`: broadcasts alarm reconciliation; `server-sync-coordinator.test.ts`: refreshes alarms from the live event |
 | Paint invariants | `telemetry.test.ts`: retries one immutable paint event without changing count, order, or attribution |
 | Tile-offer retry compatibility | `telemetry.test.ts`: retries ambiguous old-server responses and explicit server requests |
 
@@ -65,8 +72,8 @@ paint path.
 
 - `effect` is exactly `4.0.0-beta.102` in the backend and wire-schema packages and resolves to that
   version in the lockfile.
-- Backend Worker dry-run bundle: 1644.60 KiB upload, 341.43 KiB gzip.
-- Userscript bundle: 568,243 bytes.
+- Backend Worker dry-run bundle: 1645.26 KiB upload, 341.49 KiB gzip.
+- Userscript bundle: 568,750 bytes.
 - Validation commands: `pnpm lint`, `pnpm check`, `pnpm test`, `pnpm build`,
   `pnpm test:release`, and a backend `wrangler deploy --dry-run`.
 
@@ -80,8 +87,9 @@ healthy clients connected for one fixed 24-hour UTC window, then:
 2. Record Durable Object requests and duration for the same UTC window. Keep the raw incoming
    WebSocket-message count distinct from its 20-to-1 billed request units.
 3. Record required `POST /telemetry/paints` and `PUT /telemetry/tiles/:x/:y/:hash` traffic separately.
-4. Run `pnpm capacity:report -- --tile-offer-batches <measured-batches>` and require
-   `reductionPercent >= 90`.
+4. Run
+   `pnpm capacity:report -- --tile-offer-batches <measured-batches> --extra-alarm-reads <measured-follow-up-reads>`
+   and require `reductionPercent >= 90`.
 5. Exercise restart/eviction, revision-gap, offline/online, hidden/visible, old-server, and revoked
    credential recovery once during the window; confirm each client converges without a manual
    refresh.

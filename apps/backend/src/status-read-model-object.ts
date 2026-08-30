@@ -502,6 +502,12 @@ export class StatusReadModelObject extends DurableObject<Env> {
     this.broadcastManifest(revision)
   }
 
+  async notifyAlarmChange(season: number): Promise<void> {
+    this.bindSeason(season)
+    const event: LiveSyncServerEvent = { type: 'alarms-reconcile' }
+    for (const socket of this.subscribers()) this.send(socket, event)
+  }
+
   async closeCredential(season: number, tokenHash: string): Promise<void> {
     this.model(season)
     await this.liveSessions.revoke(() => {

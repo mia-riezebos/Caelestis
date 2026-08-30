@@ -129,13 +129,14 @@ the PRD's 90 percent reduction target.
 ## Five-client acceptance budget
 
 `pnpm capacity:report` reproduces the conservative 24-hour healthy-live projection used by issue
-#167. It counts five socket upgrades, two bootstrap reads per client, and 96 recovery cohorts for
-both status and manifest. Because the captured values are rounded to two-decimal `k` values, the
+#167. It counts five socket upgrades, three bootstrap reads per client, and 24 hourly recovery
+cohorts for status, manifest, and alarms. Because the captured values are rounded to two-decimal `k` values, the
 gate uses the lowest possible baseline of 14,645 requests rather than treating 14,660 as exact. The
-result is 975 avoidable Worker requests, a 93.34 percent reduction. That steady-state result leaves
-a budget of 489 tile-offer batches while retaining a reduction of at least 90 percent.
+result includes four scheduled alarm invalidations and is 400 avoidable Worker requests, a 97.27
+percent reduction. That steady-state result leaves a budget of 1,064 tile-offer batches while
+retaining a reduction of at least 90 percent.
 
 Pass a measured post-rollout offer count back into the same gate with
-`pnpm capacity:report -- --tile-offer-batches <count>`. Required paint reports and requested tile
-writes remain excluded in both modes. The complete recovery matrix and rollout measurement gate are
-in [sync-acceptance.md](./sync-acceptance.md).
+`pnpm capacity:report -- --tile-offer-batches <count> --extra-alarm-reads <count>`. Required paint
+reports and requested tile writes remain excluded in both modes. The complete recovery matrix and
+rollout measurement gate are in [sync-acceptance.md](./sync-acceptance.md).

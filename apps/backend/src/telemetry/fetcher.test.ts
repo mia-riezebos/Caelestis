@@ -12,7 +12,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import type { TemplateVersionRecord } from '../ports/index.js'
-import type { StatusReadModelPort } from '../status-read-model/port.js'
+import { DirectStatusReadModel, type StatusReadModelPort } from '../status-read-model/port.js'
 import {
   type FetcherStores,
   fetchAlarmFollowUps,
@@ -61,7 +61,16 @@ const harness = () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
-  const ports = { blobs, sql, counters }
+  const direct = new DirectStatusReadModel(sql)
+  const notifyAlarmChange = vi.fn(async () => undefined)
+  const statusReadModel: StatusReadModelPort = {
+    applyCommittedChange: (season, mutation) => direct.applyCommittedChange(season, mutation),
+    reconcileSnapshot: (season, scope) => direct.reconcileSnapshot(season, scope),
+    readManifestProjection: (input) => direct.readManifestProjection(input),
+    notifyManifestChange: (season) => direct.notifyManifestChange(season),
+    notifyAlarmChange,
+  }
+  const ports = { blobs, sql, counters, statusReadModel }
   const requested: string[] = []
   const userAgents: (string | null)[] = []
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -73,7 +82,7 @@ const harness = () => {
     const body = await tileBytes(Number(match[1]) * 7 + Number(match[2]))
     return new Response(body.slice())
   }) as typeof fetch
-  return { ports, sql, requested, userAgents, fetchImpl }
+  return { ports, sql, requested, userAgents, fetchImpl, notifyAlarmChange }
 }
 
 describe('the 6-hour tile fetcher', () => {
@@ -386,7 +395,7 @@ describe('the 6-hour tile fetcher', () => {
   }, 20_000)
 
   it('opens on a six-hour regression and promotes only after a worsening follow-up', async () => {
-    const { ports, sql } = harness()
+    const { ports, sql, notifyAlarmChange } = harness()
     const chunk = await encodeIndexedPng(20, 1, new Uint8Array(20).fill(1))
     const hash = await sha256Hex(chunk)
     await ports.blobs.put('chunks', hash, chunk)
@@ -413,6 +422,7 @@ describe('the 6-hour tile fetcher', () => {
     const fetchImpl = (async () => new Response((await canvas()).slice())) as typeof fetch
 
     await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    notifyAlarmChange.mockClear()
     lost = 10
     const scanAt = seconds(NOW + 6 * 60 * 60)
     const scan = await fetchCanvasTiles(ports, {
@@ -422,6 +432,8 @@ describe('the 6-hour tile fetcher', () => {
       alarmIdFactory: () => 'alarm-1',
     })
     expect(scan.followUpScheduled).toBe(true)
+    expect(notifyAlarmChange).toHaveBeenCalledOnce()
+    expect(notifyAlarmChange).toHaveBeenCalledWith(0)
     await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
       expect.objectContaining({ id: 'alarm-1', kind: 'regression', pixelsLost: 10 }),
     ])
@@ -436,6 +448,7 @@ describe('the 6-hour tile fetcher', () => {
         pending: 0,
       },
     )
+    expect(notifyAlarmChange).toHaveBeenCalledTimes(2)
     await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
       expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 11 }),
     ])
