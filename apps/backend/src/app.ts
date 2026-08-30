@@ -35,12 +35,11 @@ export interface AppOptions {
 
 export const createApp = (ports: Ports, options: AppOptions = {}) => {
   const app = new Hono()
-  const auth = {
-    sql: ports.sql,
+  const authentication = {
     bootstrapAdminToken: options.bootstrapAdminToken,
     openAccess: options.openAccess,
   }
-  const runtime = createBackendRuntime(ports, auth)
+  const runtime = createBackendRuntime(ports, authentication)
   // `??` guards `undefined` and nothing else, and every one of these is a wrangler.toml var an
   // operator edits by hand. A non-UUIDv7 id, an empty name or an empty description all passed
   // through and then failed the wire schema — so the deployment's own manifest became undecodable
@@ -103,7 +102,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.route('/admin/templates', createTemplateRoutes(runtime))
   app.route('/chunks', createChunkRoutes(runtime))
   app.route('/tiles', createTileRoutes(runtime))
-  app.route('/telemetry', createTelemetryRoutes(runtime, auth, { currentSeason }))
+  app.route('/telemetry', createTelemetryRoutes(runtime, { currentSeason }))
 
   return app
 }
