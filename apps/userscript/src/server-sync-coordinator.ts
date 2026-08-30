@@ -87,6 +87,10 @@ const scheduleTimer = (): void => {
         for (const [resource, resourceState] of state.resources) {
           if (resourceState.nextAt === null || resourceState.nextAt > now) continue
           resourceState.nextAt = null
+          if (resourceState.inFlight !== undefined) {
+            preserveFallbackAfter(state, resource, resourceState.inFlight)
+            continue
+          }
           due.push(resource)
         }
         if (due.length === 0) continue
@@ -111,6 +115,18 @@ const scheduleFallback = (
   resourceStateFor(state, resource).nextAt =
     Date.now() + base + Math.floor(Math.random() * (MAX_JITTER_MS + 1))
   scheduleTimer()
+}
+
+const preserveFallbackAfter = (
+  state: ConnectionState,
+  resource: ServerSyncResource,
+  running: Promise<void>,
+): void => {
+  void running.then(() => {
+    if (connections.get(state.server.url) !== state) return
+    const resourceState = resourceStateFor(state, resource)
+    if (resourceState.nextAt === null) scheduleFallback(state, resource, false)
+  })
 }
 
 const noteResponse = (

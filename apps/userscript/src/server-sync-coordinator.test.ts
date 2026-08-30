@@ -245,4 +245,29 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(status).toHaveBeenCalledTimes(4)
   })
+
+  it('preserves a future fallback when a deadline expires during a long refresh', async () => {
+    let releaseManifest: (() => void) | undefined
+    const manifest = vi.fn(
+      async () =>
+        await new Promise<null>((resolve) => {
+          harness.contentsListener?.(server, { nodes: [], templates: [] })
+          releaseManifest = () => resolve(null)
+        }),
+    )
+    const coordinator = await import('./server-sync-coordinator.js')
+    coordinator.registerServerSyncResource('manifest', manifest)
+    coordinator.installServerSyncCoordinator()
+    await flush()
+
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(manifest).toHaveBeenCalledOnce()
+    releaseManifest?.()
+    await flush()
+
+    await vi.advanceTimersByTimeAsync(299_999)
+    expect(manifest).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(manifest).toHaveBeenCalledTimes(2)
+  })
 })
