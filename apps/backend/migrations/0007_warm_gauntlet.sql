@@ -1,4 +1,4 @@
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
+PRAGMA defer_foreign_keys=ON;--> statement-breakpoint
 CREATE TABLE `__new_template_versions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`template_id` text NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE `__new_template_versions` (
 INSERT INTO `__new_template_versions`("id", "template_id", "created_at_ms", "created_with_token", "created_by_user_id", "min_x", "min_y", "max_x", "max_y", "total_pixels", "colour_totals_json", "bounds_north", "bounds_south", "bounds_west", "bounds_east") SELECT "id", "template_id", "created_at_ms", "created_with_token", "created_by_user_id", "min_x", "min_y", "max_x", "max_y", "total_pixels", "colour_totals_json", "bounds_north", "bounds_south", "bounds_west", "bounds_east" FROM `template_versions`;--> statement-breakpoint
 DROP TABLE `template_versions`;--> statement-breakpoint
 ALTER TABLE `__new_template_versions` RENAME TO `template_versions`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
+PRAGMA defer_foreign_keys=OFF;--> statement-breakpoint
 CREATE UNIQUE INDEX `template_versions_id_template_idx` ON `template_versions` (`id`,`template_id`);--> statement-breakpoint
 CREATE TABLE `__new_version_tiles` (
 	`version_id` text NOT NULL,

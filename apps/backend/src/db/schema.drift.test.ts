@@ -171,19 +171,42 @@ describe('the Drizzle schema and migration history agree', () => {
         ) VALUES (?, ?, NULL, ?, NULL, NULL, ?, NULL, ?, ?)`,
       )
       .run('legacy', 1, 'Legacy', 'a'.repeat(64), 1_000, 1_000)
-    database.exec(
-      migrations
-        .slice(surfaceIndex)
-        .map(({ sql }) => sql)
-        .join('\n')
-        .replaceAll('--> statement-breakpoint', ''),
-    )
+    database
+      .prepare(
+        `INSERT INTO template_versions (
+          id, template_id, created_at_ms, created_with_token, created_by_user_id,
+          min_x, min_y, max_x, max_y, total_pixels,
+          bounds_north, bounds_south, bounds_west, bounds_east
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
+      )
+      .run('legacy-version', 'legacy', 1_000, 'a'.repeat(64), 0, 0, 1, 1, 1)
+    database
+      .prepare('INSERT INTO version_tiles (version_id, tile_x, tile_y, hash) VALUES (?, ?, ?, ?)')
+      .run('legacy-version', 0, 0, 'b'.repeat(64))
+    database
+      .prepare('UPDATE templates SET current_version_id = ? WHERE id = ?')
+      .run('legacy-version', 'legacy')
+
+    for (const migration of migrations.slice(surfaceIndex)) {
+      database.exec(`BEGIN;\n${migration.sql.replaceAll('--> statement-breakpoint', '')}\nCOMMIT;`)
+    }
 
     expect(
       database
         .prepare('SELECT surface_kind, alliance_id FROM templates WHERE id = ?')
         .get('legacy'),
     ).toEqual({ surface_kind: 'world', alliance_id: null })
+    expect(
+      database
+        .prepare('SELECT template_id, min_x, min_y FROM template_versions WHERE id = ?')
+        .get('legacy-version'),
+    ).toEqual({ template_id: 'legacy', min_x: 0, min_y: 0 })
+    expect(
+      database
+        .prepare('SELECT version_id, tile_x, tile_y FROM version_tiles WHERE version_id = ?')
+        .get('legacy-version'),
+    ).toEqual({ version_id: 'legacy-version', tile_x: 0, tile_y: 0 })
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     database.close()
   })
 })

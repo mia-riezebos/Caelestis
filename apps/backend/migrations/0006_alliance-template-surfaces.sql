@@ -1,5 +1,5 @@
 -- Existing rows predate surface identity and remain world templates.
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
+PRAGMA defer_foreign_keys=ON;--> statement-breakpoint
 CREATE TABLE `__new_templates` (
 	`id` text PRIMARY KEY NOT NULL,
 	`season` integer NOT NULL,
@@ -29,5 +29,5 @@ CREATE TABLE `__new_templates` (
 INSERT INTO `__new_templates`("id", "season", "surface_kind", "alliance_id", "node_id", "name", "current_version_id", "published_at", "timelapse_frozen_at_ms", "finished_at_ms", "created_with_token", "created_by_user_id", "created_at_ms", "updated_at_ms") SELECT "id", "season", 'world', NULL, "node_id", "name", "current_version_id", "published_at", "timelapse_frozen_at_ms", "finished_at_ms", "created_with_token", "created_by_user_id", "created_at_ms", "updated_at_ms" FROM `templates`;--> statement-breakpoint
 DROP TABLE `templates`;--> statement-breakpoint
 ALTER TABLE `__new_templates` RENAME TO `templates`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
+PRAGMA defer_foreign_keys=OFF;--> statement-breakpoint
 CREATE INDEX `templates_surface_idx` ON `templates` (`season`,`surface_kind`,`alliance_id`);
