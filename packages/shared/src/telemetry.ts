@@ -233,3 +233,8 @@ export interface Alarm {
   readonly firstSeen: Millis
   readonly lastSeen: Millis
 }
+
+/** Active server-owned alarms for templates visible to the caller. */
+export interface AlarmsResponse {
+  readonly alarms: readonly Alarm[]
+}

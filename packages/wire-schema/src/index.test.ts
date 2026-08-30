@@ -3,6 +3,7 @@ import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   Alarm,
+  AlarmsResponse,
   CanvasTilesResponse,
   Chunk,
   ContributionsResponse,
@@ -111,10 +112,11 @@ const encoders = [
   Schema.encodeSync(TemplateStatus),
   Schema.encodeSync(NodeStatus),
   Schema.encodeSync(Alarm),
+  Schema.encodeSync(AlarmsResponse),
 ]
 
 it('exposes every exported wire schema as a bidirectional codec', () => {
-  expect(encoders).toHaveLength(13)
+  expect(encoders).toHaveLength(14)
 })
 
 describe('tile and template schemas', () => {
@@ -890,6 +892,20 @@ describe('cross-field and time-unit schemas', () => {
       lastSeen: MILLIS,
     }
     expect(Schema.decodeUnknownSync(Alarm)(alarm)).toEqual(alarm)
+  })
+
+  it('accepts a bounded active-alarm response', () => {
+    const alarm = {
+      id: EVENT_ID,
+      templateId: TEMPLATE_ID,
+      kind: 'regression' as const,
+      pixelsLost: 100,
+      firstSeen: MILLIS,
+      lastSeen: MILLIS,
+    }
+    expect(Schema.decodeUnknownSync(AlarmsResponse)({ alarms: [alarm] })).toEqual({
+      alarms: [alarm],
+    })
   })
 
   it('rejects a template with a zero progress denominator', () => {

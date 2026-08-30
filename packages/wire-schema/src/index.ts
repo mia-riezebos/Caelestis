@@ -919,6 +919,10 @@ export const Alarm = AlarmStruct.pipe(
   ),
 )
 
+export const AlarmsResponse = Schema.Struct({
+  alarms: boundedArray(Alarm, MAX_MANIFEST_TEMPLATES),
+})
+
 type Exact<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
     ? (<T>() => T extends B ? 1 : 2) extends <T>() => T extends A ? 1 : 2
@@ -954,6 +958,7 @@ assertExact<Exact<Schema.Schema.Type<typeof CanvasTilesResponse>, Shared.CanvasT
 assertExact<Exact<Schema.Schema.Type<typeof TileHistoryFrame>, Shared.TileHistoryFrame>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileHistoryResponse>, Shared.TileHistoryResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof Alarm>, Shared.Alarm>>()
+assertExact<Exact<Schema.Schema.Type<typeof AlarmsResponse>, Shared.AlarmsResponse>>()
 
 assertExact<Exact<Schema.Codec.Encoded<typeof ServerInfo>, Shared.ServerInfo>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof BoundingBox>, Shared.BoundingBox>>()
@@ -983,3 +988,4 @@ assertExact<Exact<Schema.Codec.Encoded<typeof CanvasTilesResponse>, Shared.Canva
 assertExact<Exact<Schema.Codec.Encoded<typeof TileHistoryFrame>, Shared.TileHistoryFrame>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileHistoryResponse>, Shared.TileHistoryResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof Alarm>, Shared.Alarm>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof AlarmsResponse>, Shared.AlarmsResponse>>()
