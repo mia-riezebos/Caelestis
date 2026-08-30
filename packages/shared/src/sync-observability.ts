@@ -36,7 +36,6 @@ export const SYNC_REASONS = [
   'retry',
   'user-action',
   'visibility',
-  'focus',
   'online',
   'revision-gap',
   'server-event',

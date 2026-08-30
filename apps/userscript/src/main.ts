@@ -41,7 +41,6 @@ import {
   resetProfile,
 } from './profile.js'
 import { serverMismatchMemoryBytes } from './server-mismatch.js'
-import { installServerSyncCoordinator } from './server-sync-coordinator.js'
 import { getState, loadState, onStateChange } from './state.js'
 import { installTelemetry } from './telemetry.js'
 import {
@@ -312,7 +311,6 @@ const main = (): void => {
   step('server templates', installServerSync)
   step('alliance server templates', installAllianceServerSync)
   step('server telemetry', installTelemetry)
-  step('server sync coordinator', installServerSyncCoordinator)
   step('alarm notifications', installAlarmNotifications)
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {

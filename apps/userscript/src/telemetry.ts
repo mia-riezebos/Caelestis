@@ -8,6 +8,7 @@ import {
   type SyncRequestMetadata,
   seconds,
   sha256Hex,
+  TELEMETRY_STATUS_POLL_MS,
   type TemplateStatus,
   TILE_OFFER_BATCH_DELAY_MS,
   type TileCoord,
@@ -20,10 +21,6 @@ import type { ServerTemplate } from './server-cache.js'
 import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
 import { observedUserscriptRequest } from './server-observability.js'
-import {
-  registerServerSyncResource,
-  requestServerSyncAfterCurrent,
-} from './server-sync-coordinator.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -252,10 +249,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     ),
   )
   const uploaded = await uploadWanted(server, identity, entries, wanted)
-  await requestServerSyncAfterCurrent(server, ['status'], {
-    mode: 'response-applied',
-    reason: 'post-offer',
-  })
+  await refreshStatus(server, { mode: 'response-applied', reason: 'post-offer' })
   const previousDedupe = offered.get(server.url)
   const dedupe =
     previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
@@ -420,10 +414,10 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   if (!isCurrentServerConnection(server)) return
   coverage.set(server.url, { server, tiles: coverageFrom(contents), contents })
   replayRecent(server)
-  void requestServerSyncAfterCurrent(server, ['alarms'], {
+  void refreshServerTelemetry(server, {
     mode: 'response-applied',
     reason: 'manifest-applied',
-  })
+  }).catch(reportTelemetryError)
 }
 
 const alarmFrom = (value: unknown): Alarm | null => {
@@ -498,33 +492,24 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
   return candidate as TemplateStatus
 }
 
-export const refreshServerStatus = async (
+const refreshStatus = async (
   server: ConnectedServer,
   metadata: SyncRequestMetadata,
-): Promise<string | null> => {
-  if (server.season === null || !isCurrentServerConnection(server)) return null
+): Promise<void> => {
+  if (server.season === null || !isCurrentServerConnection(server)) return
   const response = await fetchWithRetry(
     serverEndpoint(server.url, `/telemetry/status?season=${server.season}`),
     { headers: authHeaders(server) },
     metadata,
   )
-  if (response === null || !response.ok || !isCurrentServerConnection(server)) return null
+  if (response === null || !response.ok || !isCurrentServerConnection(server)) return
   const body = (await response.json().catch(() => null)) as Partial<StatusResponse> | null
-  if (body === null || !Array.isArray(body.templates)) return null
+  if (body === null || !Array.isArray(body.templates)) return
   let changed = false
   const present = new Set<string>()
-  const revision: Array<Omit<TemplateStatus, 'observedAt'>> = []
   for (const raw of body.templates) {
     const status = templateStatusFrom(raw)
-    if (status === null) return null
-    revision.push({
-      templateId: status.templateId,
-      correct: status.correct,
-      wrong: status.wrong,
-      blank: status.blank,
-      total: status.total,
-      ...(status.colours === undefined ? {} : { colours: status.colours }),
-    })
+    if (status === null) return
     const key = statusKey(server.url, status.templateId)
     present.add(key)
     if (JSON.stringify(statuses.get(key)?.value) !== JSON.stringify(status)) {
@@ -546,17 +531,15 @@ export const refreshServerStatus = async (
       }
     }
   }
-  revision.sort((left, right) => left.templateId.localeCompare(right.templateId))
-  return JSON.stringify(revision)
 }
 
 const refreshAlarms = async (
   server: ConnectedServer,
   metadata: SyncRequestMetadata,
-): Promise<string | null> => {
-  if (server.season === null || !isCurrentServerConnection(server)) return null
+): Promise<void> => {
+  if (server.season === null || !isCurrentServerConnection(server)) return
   const snapshot = coverage.get(server.url)
-  if (snapshot === undefined || !isCurrentServerConnection(snapshot.server)) return null
+  if (snapshot === undefined || !isCurrentServerConnection(snapshot.server)) return
   const response = await fetchWithRetry(
     serverEndpoint(server.url, `/telemetry/alarms?season=${server.season}`),
     { headers: authHeaders(server) },
@@ -568,15 +551,15 @@ const refreshAlarms = async (
     !isCurrentServerConnection(server) ||
     coverage.get(server.url) !== snapshot
   )
-    return null
+    return
   const body = (await response.json().catch(() => null)) as Partial<AlarmsResponse> | null
   if (body === null || !Array.isArray(body.alarms) || body.alarms.length > MAX_MANIFEST_TEMPLATES)
-    return null
+    return
   const parsed: Alarm[] = []
   const templateIds = new Set<string>()
   for (const raw of body.alarms) {
     const alarm = alarmFrom(raw)
-    if (alarm === null || templateIds.has(alarm.templateId)) return null
+    if (alarm === null || templateIds.has(alarm.templateId)) return
     templateIds.add(alarm.templateId)
     parsed.push(alarm)
   }
@@ -600,8 +583,13 @@ const refreshAlarms = async (
     changed = true
   }
   if (changed) notifyAlarmListeners()
-  parsed.sort((left, right) => left.templateId.localeCompare(right.templateId))
-  return JSON.stringify(parsed)
+}
+
+const refreshServerTelemetry = async (
+  server: ConnectedServer,
+  metadata: SyncRequestMetadata,
+): Promise<void> => {
+  await Promise.all([refreshStatus(server, metadata), refreshAlarms(server, metadata)])
 }
 
 const notifyAlarmListeners = (): void => {
@@ -730,10 +718,26 @@ export const installTelemetry = (): void => {
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
       replayRecent(server)
+      void refreshServerTelemetry(server, { mode: 'recovery', reason: 'state-change' }).catch(
+        reportTelemetryError,
+      )
     }
   })
-  registerServerSyncResource('alarms', refreshAlarms)
-  registerServerSyncResource('status', refreshServerStatus)
+  setInterval(() => {
+    for (const server of getState().servers) {
+      if (server.status === 'connected')
+        void refreshServerTelemetry(server, {
+          mode: 'compatibility-poll',
+          reason: 'interval',
+        }).catch(reportTelemetryError)
+    }
+  }, TELEMETRY_STATUS_POLL_MS)
+  for (const server of getState().servers) {
+    if (server.status === 'connected')
+      void refreshServerTelemetry(server, { mode: 'recovery', reason: 'connect' }).catch(
+        reportTelemetryError,
+      )
+  }
 }
 
 export const reportTelemetryError = (error: unknown): void => {

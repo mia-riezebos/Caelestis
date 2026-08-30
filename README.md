@@ -127,22 +127,21 @@ on alliance membership alone. Against Cloudflare's current Free allowances of
 [100,000 Durable Object requests/day](https://developers.cloudflare.com/durable-objects/platform/pricing/),
 [5 million D1 rows read and 100,000 rows written/day](https://developers.cloudflare.com/d1/platform/pricing/),
 and [R2's monthly storage and operation allowances](https://developers.cloudflare.com/r2/pricing/),
-status-query row scans remain the first measured wall. The adaptive client now checks unchanged
-resources no more often than every five minutes, with faster response-driven and changed-state
-checks kept separate.
+the 30-second status refresh makes D1 reads the first wall.
 
 | Workload | Daily estimate or measurement | Free-tier result |
 | --- | --- | --- |
 | Production, 2026-08-30: 3 reporting clients, 90 templates, 36 covered tiles | 20,779 Worker requests; 58 Durable Object requests; 7.32M D1 rows read; 14,719 D1 rows written | Over: D1 reads reached 146% |
-| 90-template unchanged fallback: 10 users active 8 hours | 960 status requests; about 0.50M D1 rows read before paint, tile, or triggered status traffic | About 10% of the D1 read allowance |
-| 10-template unchanged fallback: 89 users active 8 hours | 8,544 status requests; about 0.50M D1 rows read before paint, tile, or triggered status traffic | About 10% of the D1 read allowance |
+| 90-template periodic-status upper bound: 10 users active 8 hours | 9,600 status requests; 4.99M D1 rows read before paint, tile, or triggered status traffic | At most 10; 11 users exceed 5M on periodic status alone |
+| 10-template periodic-status upper bound: 89 users active 8 hours | 85,440 status requests; 4.96M D1 rows read before paint, tile, or triggered status traffic | At most 89; 90 users exceed 5M on periodic status alone |
 
-The scenario rows isolate only the five-minute unchanged-resource fallback; they are not claims that
-those user counts fit a real painting workload. They deliberately exclude paint, tile, post-offer,
-focus, reconnect, and changed-revision traffic. D1 Insights does not retain the HTTP request ids
-needed to distinguish fallback status reads from refreshes after multi-tile offer batches. Using all
-status calls as an open-time clock therefore depresses per-hour paint and tile rates and is valid
-only as a backfit of the observed window, not as a scalable workload estimate.
+The scenario rows are hard upper bounds on who might fit, not claims that those user counts fit a
+real painting workload. They include only the guaranteed 30-second periodic status traffic and
+deliberately assume zero paint, tile, post-offer, and lifecycle traffic; any real work lowers the
+limit. D1 Insights does not retain the HTTP request ids needed to distinguish periodic status polls
+from refreshes after multi-tile offer batches. Using all status calls as an open-time clock therefore
+depresses per-hour paint and tile rates and is valid only as a backfit of the observed window, not as
+a scalable workload estimate.
 
 The observation command says so in `activeTimeCalibration.workloadRatesScalable`. Supply an
 independently measured total with `CAELESTIS_ACTIVE_USER_HOURS` to produce rates that can be scaled;
@@ -150,9 +149,9 @@ without it, the variable-traffic upper bound is reported as unknown rather than 
 free-tier claim. Offer and upload D1 reads remain one baseline-preserving cost per accepted tile
 observation because the available analytics cannot separate their request counts.
 
-The next knob is the status path: cache or precompute its result and apply authoritative response
-deltas without another read. Paint batching does not reduce fallback, post-offer, or lifecycle
-status reads. Per-template Durable Object sharding also does not extend account quotas; the measured single-object rate was
+The first knob is the status path: lengthen its 30-second interval, or cache or precompute its
+result. Paint batching does not reduce periodic, post-offer, or lifecycle status reads. Per-template
+Durable Object sharding also does not extend account quotas; the measured single-object rate was
 only 0.00031 requests/second against the model's conservative 200 requests/second throughput budget.
 
 R2 was not the measured near-term wall: production held 71.4 MB of payload. The observation command
