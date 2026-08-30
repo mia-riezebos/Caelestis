@@ -1,10 +1,10 @@
 import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScope } from '../auth/middleware.js'
+import { requireRuntimeScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
 import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
-import { SqlStoreReadError } from '../runtime/errors.js'
+import { BackendStorageError, SqlStoreReadError } from '../runtime/errors.js'
 import { runBackendHttp } from '../runtime/hono.js'
 
 const MAX_NAME_LENGTH = 256
@@ -61,10 +61,22 @@ export const createServerRoutes = (runtime: BackendRuntime, base: ServerInfo) =>
  * Its own route under `/admin` rather than a method on the public one, so the read stays reachable
  * without a credential while the write never is.
  */
-export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) => {
+const updateServerInfo = (patch: {
+  readonly name?: string
+  readonly description?: string | null
+}): Effect.Effect<void, BackendStorageError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    return yield* Effect.tryPromise({
+      try: () => sql.writeServerSettings(patch),
+      catch: (cause) => new BackendStorageError({ operation: 'writeServerSettings', cause }),
+    })
+  })
+
+export const createServerAdminRoutes = (runtime: BackendRuntime) => {
   const routes = new Hono()
 
-  routes.use('/*', requireScope(auth, 'admin'))
+  routes.use('/*', requireRuntimeScope(runtime, 'admin'))
 
   routes.patch('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
@@ -92,13 +104,17 @@ export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOpt
       return c.json({ error: 'patch must set at least one of name, description' }, 400)
     }
 
-    await ports.sql.writeServerSettings({
-      ...(name === undefined ? {} : { name: (name as string).trim() }),
-      ...(description === undefined
-        ? {}
-        : { description: description === null ? null : (description as string) }),
-    })
-    return c.json({ ok: true })
+    return runBackendHttp(
+      c,
+      runtime,
+      updateServerInfo({
+        ...(name === undefined ? {} : { name: (name as string).trim() }),
+        ...(description === undefined
+          ? {}
+          : { description: description === null ? null : (description as string) }),
+      }),
+      () => c.json({ ok: true }),
+    )
   })
 
   return routes
