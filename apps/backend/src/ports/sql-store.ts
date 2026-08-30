@@ -873,7 +873,7 @@ export interface SqlStore {
     expiresAt: Millis,
   ): Promise<TileBlobReservation | null>
 
-  /** Reserve a never-reused physical key before its bytes are written. */
+  /** Reuse an active/uploading generation, or reserve a fresh key before its bytes are written. */
   reserveTileBlobUpload(
     hash: string,
     blobKey: string,

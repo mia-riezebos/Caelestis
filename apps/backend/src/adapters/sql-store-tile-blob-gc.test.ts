@@ -145,6 +145,15 @@ describe.each(adapters)('$name tile blob lifecycle contract', ({ make }) => {
     ).resolves.toMatchObject({ blobKey: firstBlobKey })
   })
 
+  it('does not attach a new upload to a reclaimable candidate', async () => {
+    const uploadBlobKey = `${HASH}/01890f3a-6b7c-7def-8123-456789abcdef`
+    await store.noteTileBlobObject(HASH, HASH, millis(1_000))
+
+    await expect(
+      store.reserveTileBlobUpload(HASH, uploadBlobKey, 'upload', millis(1_100), millis(3_100)),
+    ).resolves.toMatchObject({ blobKey: uploadBlobKey })
+  })
+
   it('persists the bounded R2 scan cursor and completed sweeps', async () => {
     await expect(store.readTileBlobScanState()).resolves.toEqual({ completedSweeps: 0 })
     await store.writeTileBlobScanState('cursor-1')

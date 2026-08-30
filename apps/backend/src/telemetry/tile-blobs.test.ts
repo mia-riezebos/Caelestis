@@ -127,6 +127,31 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     expect(duplicate.blobKey).toBe(first.blobKey)
   })
 
+  it('keeps a late expired upload on the replacement generation', async () => {
+    await harness.blobs.put('tiles', HASH, BYTES)
+    await harness.sql.noteTileBlobObject(HASH, HASH, millis(1_000))
+
+    const stale = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
+    expect(stale.blobKey).not.toBe(HASH)
+
+    await gc(harness, 'delete', 302_001)
+    await expect(harness.blobs.get('tiles', HASH)).resolves.toBeNull()
+
+    const retry = await reserveTileBlobUpload(harness.ports, HASH, millis(302_100))
+    expect(retry.blobKey).toBe(stale.blobKey)
+    await harness.blobs.put('tiles', retry.blobKey, BYTES)
+    await expect(
+      harness.sql.commitTileBlobReservation(retry.id, millis(302_200), observation(), []),
+    ).resolves.toBe(true)
+
+    // The first request finally completes after the retry. Both target one physical key.
+    await harness.blobs.put('tiles', stale.blobKey, BYTES)
+    await gc(harness, 'dry-run', 302_300)
+    await expect(harness.blobs.list('tiles', { limit: 10 })).resolves.toEqual({
+      keys: [retry.blobKey],
+    })
+  })
+
   it('keeps dry-run bounded, resumable and unable to delete', async () => {
     const hashes = Array.from({ length: TILE_BLOB_GC_SCAN_LIMIT + 2 }, (_, index) =>
       index.toString(16).padStart(64, '0'),

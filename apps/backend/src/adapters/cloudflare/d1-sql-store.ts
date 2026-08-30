@@ -1251,7 +1251,7 @@ export class D1SqlStore implements SqlStore {
              WHERE sha256 = ? AND state = 'deleting'
            ) AND NOT EXISTS (
              SELECT 1 FROM tile_blob_objects
-             WHERE sha256 = ? AND state IN ('active', 'candidate', 'uploading')
+             WHERE sha256 = ? AND state IN ('active', 'uploading')
            )
            ON CONFLICT(blob_key) DO NOTHING`,
         )
@@ -1262,13 +1262,12 @@ export class D1SqlStore implements SqlStore {
            SELECT ?, object.sha256, object.blob_key, ?
            FROM tile_blob_objects AS object
            WHERE object.sha256 = ?
-             AND object.state IN ('active', 'candidate', 'uploading')
+             AND object.state IN ('active', 'uploading')
              AND NOT EXISTS (
                SELECT 1 FROM tile_blob_objects AS deleting
                WHERE deleting.sha256 = object.sha256 AND deleting.state = 'deleting'
              )
-           ORDER BY CASE object.state WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
-             object.blob_key
+           ORDER BY CASE object.state WHEN 'active' THEN 0 ELSE 1 END, object.blob_key
            LIMIT 1
            ON CONFLICT(id) DO NOTHING`,
         )

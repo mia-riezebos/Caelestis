@@ -753,15 +753,12 @@ export class MemorySqlStore implements SqlStore {
     const existing = [...this.tileBlobObjects.values()]
       .filter(
         (object) =>
-          object.hash === hash &&
-          (object.state === 'active' ||
-            object.state === 'candidate' ||
-            object.state === 'uploading'),
+          object.hash === hash && (object.state === 'active' || object.state === 'uploading'),
       )
       .sort(
         (left, right) =>
-          ['active', 'candidate', 'uploading'].indexOf(left.state) -
-            ['active', 'candidate', 'uploading'].indexOf(right.state) ||
+          ['active', 'uploading'].indexOf(left.state) -
+            ['active', 'uploading'].indexOf(right.state) ||
           left.blobKey.localeCompare(right.blobKey),
       )[0]
     const selectedBlobKey = existing?.blobKey ?? blobKey
