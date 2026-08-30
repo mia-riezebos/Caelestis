@@ -153,7 +153,7 @@ describe('the Drizzle schema and migration history agree', () => {
   it('migrates existing templates onto the world surface', () => {
     const database = new DatabaseSync(':memory:')
     const surfaceIndex = migrations.findIndex(
-      ({ name }) => name === '0005_alliance-template-surfaces.sql',
+      ({ name }) => name === '0006_alliance-template-surfaces.sql',
     )
     expect(surfaceIndex).toBeGreaterThan(0)
     database.exec(

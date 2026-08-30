@@ -1,3 +1,4 @@
+-- Existing rows predate surface identity and remain world templates.
 PRAGMA foreign_keys=OFF;--> statement-breakpoint
 CREATE TABLE `__new_templates` (
 	`id` text PRIMARY KEY NOT NULL,
