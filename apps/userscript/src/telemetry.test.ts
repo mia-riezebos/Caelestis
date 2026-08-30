@@ -750,6 +750,47 @@ describe('server telemetry client', () => {
     await vi.waitFor(() => expect(offers).toBe(2))
   })
 
+  it('reoffers a late rejection from superseded manifest coverage', async () => {
+    let offers = 0
+    let rejectFirst: (() => void) | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offers++
+          if (offers === 1)
+            return new Promise<Response>((resolve) => {
+              rejectFirst = () =>
+                resolve(Response.json({ wanted: [], acknowledged: [], rejected: ['1/2'] }))
+            })
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, {
+      revision: 'manifest-1',
+      nodes: [],
+      templates: [template],
+    })
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+    await vi.waitFor(() => expect(offers).toBe(1))
+
+    harness.serverContents?.(server, {
+      revision: 'manifest-2',
+      nodes: [],
+      templates: [{ ...template, chunks: [...template.chunks, { tile: '2/2', hash: 'other' }] }],
+    })
+    rejectFirst?.()
+
+    await vi.waitFor(() => expect(offers).toBe(2))
+  })
+
   it('strips out-of-scope tiles from paint reports', async () => {
     const reports: unknown[] = []
     vi.stubGlobal(

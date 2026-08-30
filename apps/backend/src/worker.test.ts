@@ -43,6 +43,7 @@ const env = () => {
     STATUS_READ_MODEL: {
       getByName: () => ({
         readManifestProjectionMeasured: async (input: ManifestProjectionInput) => ({
+          success: true as const,
           value: await statusReadModel.readManifestProjection?.(input),
           usage: { rowsRead: 0, rowsWritten: 0, measuredQueries: 0, unmeasuredQueries: 0 },
         }),

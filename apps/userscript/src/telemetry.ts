@@ -340,7 +340,8 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     } else if (completeDisposition && rejected.has(entry.tile)) {
       // A refusal is definitive only for the current manifest coverage. Suppress hot-loop captures,
       // but invalidate this receipt when a later manifest changes the covered tile set.
-      tileOfferAcknowledgements.rejected(server.url, owner, season, key)
+      if (!tileOfferAcknowledgements.rejected(server.url, owner, season, key))
+        shareObservedTile(entry)
     } else {
       tileOfferAcknowledgements.retryable(server.url, owner, season, key)
     }

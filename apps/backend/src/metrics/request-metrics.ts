@@ -40,10 +40,17 @@ export interface D1Usage {
   readonly unmeasuredQueries: number
 }
 
-export interface MeasuredD1Operation<A> {
-  readonly value: A
-  readonly usage: D1Usage
-}
+export type MeasuredD1Operation<A> =
+  | {
+      readonly success: true
+      readonly value: A
+      readonly usage: D1Usage
+    }
+  | {
+      readonly success: false
+      readonly error: unknown
+      readonly usage: D1Usage
+    }
 
 type MetricDataset = Pick<AnalyticsEngineDataset, 'writeDataPoint'>
 
@@ -156,8 +163,13 @@ const recordUnmeasuredD1Query = (): void => {
 /** Collect D1 work inside a Durable Object so its caller can attribute the RPC to one request. */
 export const measureD1Usage = async <A>(run: () => Promise<A>): Promise<MeasuredD1Operation<A>> => {
   const usage = { rowsRead: 0, rowsWritten: 0, measuredQueries: 0, unmeasuredQueries: 0 }
-  const value = await d1UsageStorage.run(usage, run)
-  return { value, usage }
+  try {
+    const value = await d1UsageStorage.run(usage, run)
+    return { success: true, value, usage }
+  } catch (error) {
+    // Durable Object RPC transports returned errors, while thrown RPC errors would discard usage.
+    return { success: false, error, usage }
+  }
 }
 
 /** Merge Durable Object D1 metadata into the originating Worker's active request metric. */

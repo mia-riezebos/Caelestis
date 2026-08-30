@@ -7,10 +7,12 @@ describe('Durable Object status read-model adapter', () => {
   it('routes every operation to the season-scoped object', async () => {
     const stub = {
       applyCommittedChangeMeasured: vi.fn(async () => ({
+        success: true as const,
         value: null,
         usage: { rowsRead: 0, rowsWritten: 0, measuredQueries: 0, unmeasuredQueries: 0 },
       })),
       reconcileSnapshotMeasured: vi.fn(async () => ({
+        success: true as const,
         value: {
           cacheOutcome: 'hit' as const,
           snapshot: { revision: 4, templates: [] },
@@ -71,6 +73,7 @@ describe('Durable Object status read-model adapter', () => {
   it('merges projection D1 usage into the originating request metric', async () => {
     const stub = {
       reconcileSnapshotMeasured: vi.fn(async () => ({
+        success: true as const,
         value: {
           cacheOutcome: 'miss' as const,
           snapshot: { revision: 1, templates: [] },
@@ -95,5 +98,36 @@ describe('Durable Object status read-model adapter', () => {
     )
 
     expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.slice(2, 6)).toEqual([17, 2, 3, 4])
+  })
+
+  it('merges projection D1 usage before rethrowing a failed RPC outcome', async () => {
+    const error = new Error('projection unavailable')
+    const stub = {
+      reconcileSnapshotMeasured: vi.fn(async () => ({
+        success: false as const,
+        error,
+        usage: { rowsRead: 0, rowsWritten: 0, measuredQueries: 2, unmeasuredQueries: 1 },
+      })),
+    }
+    const namespace = {
+      getByName: vi.fn(() => stub),
+    } as unknown as DurableObjectNamespace<StatusReadModelObject>
+    const model = new DurableObjectStatusReadModel(namespace)
+    const writeDataPoint = vi.fn()
+
+    await expect(
+      measureRequest(
+        { writeDataPoint },
+        new Request('https://server.test/telemetry/status'),
+        '/telemetry/status',
+        async () => {
+          await model.reconcileSnapshot(8, 'public')
+          return Response.json({ templates: [] })
+        },
+      ),
+    ).rejects.toBe(error)
+
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[9]).toBe('500')
+    expect(writeDataPoint.mock.calls[0]?.[0]?.doubles?.slice(2, 6)).toEqual([0, 0, 2, 1])
   })
 })
