@@ -13,13 +13,41 @@ import {
   type StoredStatusSnapshot,
 } from './status-read-model/model.js'
 
-const keyFor = (season: number, scope: StatusVisibilityScope): string => `status:${season}:${scope}`
+const headerKey = (season: number, scope: StatusVisibilityScope): string =>
+  `status-header:${season}:${scope}`
+const rowPrefix = (season: number, scope: StatusVisibilityScope, revision?: number): string =>
+  `status-row:${season}:${scope}:${revision === undefined ? '' : `${revision}:`}`
+const STORAGE_PAGE_SIZE = 1_000
+const STORAGE_WRITE_BATCH = 64
 
-class DurableStatusProjectionStorage implements StatusProjectionStorage {
+interface StoredStatusHeader {
+  readonly season: number
+  readonly revision: number
+  readonly reconciledAt: number
+}
+
+export class DurableStatusProjectionStorage implements StatusProjectionStorage {
   constructor(private readonly storage: DurableObjectStorage) {}
 
   async read(season: number, scope: StatusVisibilityScope): Promise<StoredStatusSnapshot | null> {
-    return (await this.storage.get<StoredStatusSnapshot>(keyFor(season, scope))) ?? null
+    const header = await this.storage.get<StoredStatusHeader>(headerKey(season, scope))
+    if (header === undefined) return null
+    const templates: StoredStatusSnapshot['response']['templates'][number][] = []
+    let startAfter: string | undefined
+    do {
+      const page = await this.storage.list<StoredStatusSnapshot['response']['templates'][number]>({
+        prefix: rowPrefix(season, scope, header.revision),
+        ...(startAfter === undefined ? {} : { startAfter }),
+        limit: STORAGE_PAGE_SIZE,
+      })
+      templates.push(...page.values())
+      startAfter = page.size === STORAGE_PAGE_SIZE ? [...page.keys()].at(-1) : undefined
+    } while (startAfter !== undefined)
+    templates.sort((left, right) => left.templateId.localeCompare(right.templateId))
+    return {
+      response: { season: header.season, revision: header.revision, templates },
+      reconciledAt: header.reconciledAt,
+    }
   }
 
   async write(
@@ -27,18 +55,56 @@ class DurableStatusProjectionStorage implements StatusProjectionStorage {
     scope: StatusVisibilityScope,
     snapshot: StoredStatusSnapshot,
   ): Promise<void> {
-    await this.storage.put(keyFor(season, scope), snapshot)
+    // Unknown seasons produce the authoritative empty revision-zero response, but should not
+    // create durable storage merely because an anonymous caller invented a season number.
+    if (snapshot.response.revision === 0 && snapshot.response.templates.length === 0) return
+
+    const entries = snapshot.response.templates.map(
+      (template) =>
+        [
+          `${rowPrefix(season, scope, snapshot.response.revision)}${template.templateId}`,
+          template,
+        ] as const,
+    )
+    for (let offset = 0; offset < entries.length; offset += STORAGE_WRITE_BATCH) {
+      await Promise.all(
+        entries
+          .slice(offset, offset + STORAGE_WRITE_BATCH)
+          .map(([key, value]) => this.storage.put(key, value)),
+      )
+    }
+
+    // The small header is the publication pointer. Rows use immutable revision-qualified keys, so
+    // a failed partial write leaves the previous complete snapshot readable.
+    await this.storage.put(headerKey(season, scope), {
+      season: snapshot.response.season,
+      revision: snapshot.response.revision,
+      reconciledAt: snapshot.reconciledAt,
+    } satisfies StoredStatusHeader)
+
+    const currentPrefix = rowPrefix(season, scope, snapshot.response.revision)
+    let startAfter: string | undefined
+    do {
+      const page = await this.storage.list({
+        prefix: rowPrefix(season, scope),
+        ...(startAfter === undefined ? {} : { startAfter }),
+        limit: STORAGE_PAGE_SIZE,
+      })
+      const stale = [...page.keys()].filter((key) => !key.startsWith(currentPrefix))
+      for (let offset = 0; offset < stale.length; offset += STORAGE_WRITE_BATCH) {
+        await this.storage.delete(stale.slice(offset, offset + STORAGE_WRITE_BATCH))
+      }
+      startAfter = page.size === STORAGE_PAGE_SIZE ? [...page.keys()].at(-1) : undefined
+    } while (startAfter !== undefined)
   }
 }
 
 /** Reconstructible season status projection; D1 remains authoritative for every field and revision. */
 export class StatusReadModelObject extends DurableObject<Env> implements StatusReadModel {
   private readonly model: StatusReadModel
-  private readonly storage: DurableObjectStorage
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
-    this.storage = ctx.storage
     const sql = new D1SqlStore(env.DB)
     this.model = createStatusReadModel({
       source: {
@@ -52,11 +118,6 @@ export class StatusReadModelObject extends DurableObject<Env> implements StatusR
 
   private async runForSeason<A>(season: number, run: () => Promise<A>): Promise<A> {
     if (!Number.isSafeInteger(season) || season < 0) throw new Error('invalid status season')
-    const held = await this.storage.get<number>('season')
-    if (held === undefined) await this.storage.put('season', season)
-    else if (held !== season) {
-      throw new Error(`status read-model object is scoped to season ${held}, not ${season}`)
-    }
     return run()
   }
 
