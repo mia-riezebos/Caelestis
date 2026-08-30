@@ -1126,45 +1126,7 @@ export class D1SqlStore implements SqlStore {
       })
     if (recordHistory) await this.database.batch([history, current])
     else await current
-
-    for (const group of chunkRows(statuses, 50)) {
-      const statements = group.map((status) =>
-        this.database
-          .insert(templateTileStatuses)
-          .values({
-            templateId: status.templateId,
-            versionId: status.versionId,
-            tileX: status.tile.x,
-            tileY: status.tile.y,
-            correct: status.correct,
-            wrong: status.wrong,
-            blank: status.blank,
-            coloursJson: JSON.stringify(status.colours ?? []),
-            observedAtMs: status.observedAt,
-          })
-          .onConflictDoUpdate({
-            target: [
-              templateTileStatuses.templateId,
-              templateTileStatuses.versionId,
-              templateTileStatuses.tileX,
-              templateTileStatuses.tileY,
-            ],
-            set: {
-              correct: status.correct,
-              wrong: status.wrong,
-              blank: status.blank,
-              coloursJson: JSON.stringify(status.colours ?? []),
-              observedAtMs: status.observedAt,
-            },
-            setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt),
-          }),
-      )
-      if (statements.length > 0) {
-        await this.database.batch(
-          statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
-        )
-      }
-    }
+    await this.writeTileStatuses(statuses)
   }
 
   private async writeTileStatuses(statuses: readonly TemplateTileStatusRecord[]): Promise<void> {
@@ -1464,7 +1426,7 @@ export class D1SqlStore implements SqlStore {
   }
 
   async claimTileBlobDeletion(blobKey: string, now: Millis): Promise<TileBlobClaimResult> {
-    await this.client.batch([
+    const results = await this.client.batch([
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
       this.client
         .prepare(
@@ -1497,6 +1459,7 @@ export class D1SqlStore implements SqlStore {
         )
         .bind(now, now, now, now, blobKey),
     ])
+    if (Number(results[1]?.meta.changes) === 0) return 'missing'
     const row = await this.client
       .prepare('SELECT state FROM tile_blob_objects WHERE blob_key = ?')
       .bind(blobKey)

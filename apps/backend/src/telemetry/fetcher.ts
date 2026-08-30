@@ -7,7 +7,7 @@ import {
   WORLD_TILES,
 } from '@caelestis/shared'
 import type { Ports } from '../ports/index.js'
-import { MAX_CANVAS_TILE_BYTES, recordObservation } from './ingest.js'
+import { MAX_CANVAS_TILE_BYTES, uploadTile } from './ingest.js'
 
 /**
  * The server's own tile mirror, run from the 6-hour cron.
@@ -119,8 +119,7 @@ export const fetchCanvasTiles = async (
         unchanged++
         continue
       }
-      await ports.blobs.put('tiles', hash, bytes)
-      await recordObservation(
+      await uploadTile(
         ports,
         {
           wplaceUserId: FETCHER_USER_ID,
@@ -133,6 +132,7 @@ export const fetchCanvasTiles = async (
           includeUnpublished: true,
         },
         bytes,
+        { requireCoverage: false },
       )
       fetched++
     } catch {
