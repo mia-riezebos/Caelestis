@@ -27,36 +27,36 @@ const inputs = (patch: Partial<CapacityInputs> = {}): CapacityInputs => ({
 })
 
 describe('capacity model', () => {
-  it('models the current client as unbatched paints, 250 ms offers, and 30 second polls', () => {
+  it('models the current client with a five-minute unchanged-resource fallback', () => {
     const estimate = estimateCapacity(inputs())
 
     expect(estimate.traffic.paintEvents).toBe(400)
     expect(estimate.traffic.paintReportRequests).toBe(400)
     expect(estimate.traffic.tileOffers).toBe(1_200)
     expect(estimate.traffic.tileOfferRequests).toBeCloseTo(1_197.505, 3)
-    expect(estimate.traffic.periodicStatusPollRequests).toBe(4_800)
+    expect(estimate.traffic.periodicStatusPollRequests).toBe(480)
     expect(estimate.traffic.offerStatusRefreshRequests).toBeCloseTo(1_197.505, 3)
     expect(estimate.traffic.lifecycleStatusRefreshRequests).toBe(20)
-    expect(estimate.traffic.statusRequests).toBeCloseTo(6_017.505, 3)
+    expect(estimate.traffic.statusRequests).toBeCloseTo(1_697.505, 3)
   })
 
-  it('shows that status polling exhausts D1 reads before Workers for 100 eight-hour clients', () => {
+  it('keeps unchanged-resource status fallback below D1 limits for 100 eight-hour clients', () => {
     const estimate = estimateCapacity(
       inputs({
         activeUsers: 100,
         activeHoursPerUser: 8,
-        paintEventsPerUserHour: 10,
+        paintEventsPerUserHour: 0,
         tileFetchesPerUserHour: 0,
         tileVersionsPerCoveredTileDay: 0,
       }),
     )
 
-    expect(estimate.traffic.periodicStatusPollRequests).toBe(96_000)
-    expect(estimate.traffic.statusRequests).toBe(96_200)
-    expect(estimate.daily.workerRequests).toBe(104_200)
-    expect(estimate.daily.d1RowsRead).toBe(9_620_000)
+    expect(estimate.traffic.periodicStatusPollRequests).toBe(9_600)
+    expect(estimate.traffic.statusRequests).toBe(9_800)
+    expect(estimate.daily.workerRequests).toBe(9_800)
+    expect(estimate.daily.d1RowsRead).toBe(980_000)
     expect(estimate.utilization.firstLimit).toBe('d1RowsRead')
-    expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBeNull()
+    expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBe(0)
   })
 
   it('solves a hypothetical paint batch window when fixed traffic leaves enough room', () => {
@@ -86,12 +86,12 @@ describe('capacity model', () => {
         paintEventsPerUserHour: 0,
         tileFetchesPerUserHour: 0,
         tileVersionsPerCoveredTileDay: 0,
-        d1RowsReadPerStatusRequest: 50_000,
+        d1RowsReadPerStatusRequest: 500_000,
         lifecycleStatusRefreshesPerUserDay: 0,
       }),
     )
 
-    expect(estimate.daily.workerRequests).toBe(120)
+    expect(estimate.daily.workerRequests).toBe(12)
     expect(estimate.daily.d1RowsRead).toBe(6_000_000)
     expect(estimate.batching.minimumPaintBatchWindowSecondsForFreeTier).toBeNull()
   })

@@ -3,7 +3,7 @@ import type { ServerTemplate } from './server-cache.js'
 import type { ConnectedServer } from './state.js'
 
 const harness = vi.hoisted(() => ({
-  serverContents: null as ((server: unknown, contents: unknown) => void) | null,
+  serverContents: [] as Array<(server: unknown, contents: unknown) => void>,
   fetchedTile: null as
     | ((tile: { x: number; y: number }, bytes: Uint8Array, observedAt: number) => void)
     | null,
@@ -24,8 +24,9 @@ vi.mock('./state.js', () => ({
     server.tokenUsable === false ? null : server.token,
   getState: () => harness.state,
   isCurrentServerConnection: () => true,
+  sameServerConnection: () => true,
   onServerContents: (listener: (server: unknown, contents: unknown) => void) => {
-    harness.serverContents = listener
+    harness.serverContents.push(listener)
     return vi.fn()
   },
   onStateChange: (listener: () => void) => {
@@ -76,7 +77,7 @@ const template: ServerTemplate = {
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
-  harness.serverContents = null
+  harness.serverContents = []
   harness.fetchedTile = null
   harness.tileInterest = null
   harness.acceptedPaint = null
@@ -87,6 +88,14 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
 })
+
+const startTelemetry = async (): Promise<typeof import('./telemetry.js')> => {
+  const telemetry = await import('./telemetry.js')
+  telemetry.installTelemetry()
+  const { installServerSyncCoordinator } = await import('./server-sync-coordinator.js')
+  installServerSyncCoordinator()
+  return telemetry
+}
 
 describe('server telemetry client', () => {
   it('keeps anonymous status polling CORS-simple while attributing it in the query', async () => {
@@ -106,8 +115,7 @@ describe('server telemetry client', () => {
       }),
     )
 
-    const { installTelemetry } = await import('./telemetry.js')
-    installTelemetry()
+    await startTelemetry()
 
     await vi.waitFor(() =>
       expect(requests.some(({ input }) => input.includes('/telemetry/status'))).toBe(true),
@@ -144,11 +152,12 @@ describe('server telemetry client', () => {
         return Response.json({ templates: [] })
       }),
     )
-    const { installTelemetry, onServerAlarmChange, serverAlarmFor } = await import('./telemetry.js')
+    const { onServerAlarmChange, serverAlarmFor } = await import('./telemetry.js')
     const changed = vi.fn()
     onServerAlarmChange(changed)
-    installTelemetry()
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    await startTelemetry()
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [template] })
 
     await vi.waitFor(() =>
       expect(serverAlarmFor(server, template)).toMatchObject({
@@ -157,19 +166,21 @@ describe('server telemetry client', () => {
       }),
     )
 
-    harness.serverContents?.(server, { nodes: [], templates: [{ ...template }] })
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [{ ...template }] })
     expect(serverAlarmFor(server, template)).toBeNull()
     await vi.waitFor(() => expect(serverAlarmFor(server, template)?.id).toBeDefined())
 
     const unpublished = { ...template, published: false }
-    harness.serverContents?.(server, { nodes: [], templates: [unpublished] })
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [unpublished] })
     await vi.waitFor(() => expect(serverAlarmFor(server, unpublished)?.id).toBeDefined())
 
     harness.state = {
       ...harness.state,
       hiddenScopes: [`srv:${encodeURIComponent(server.url)}:${template.id}`],
     }
-    harness.stateListeners.at(-1)?.()
+    for (const listener of harness.stateListeners) listener()
     expect(serverAlarmFor(server, template)).toBeNull()
     expect(changed).toHaveBeenCalled()
   })
@@ -179,11 +190,11 @@ describe('server telemetry client', () => {
       'fetch',
       vi.fn(async () => Response.json({ templates: [] })),
     )
-    const { installTelemetry } = await import('./telemetry.js')
-    installTelemetry()
+    await startTelemetry()
 
     expect(harness.tileInterest?.({ x: 1, y: 2 })).toBe(true)
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [template] })
     expect(harness.tileInterest?.({ x: 1, y: 2 })).toBe(true)
     expect(harness.tileInterest?.({ x: 9, y: 9 })).toBe(false)
 
@@ -205,8 +216,7 @@ describe('server telemetry client', () => {
         return new Response(null, { status: 204 })
       }),
     )
-    const { installTelemetry } = await import('./telemetry.js')
-    installTelemetry()
+    await startTelemetry()
 
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
     harness.acceptedPaint?.({
@@ -219,7 +229,8 @@ describe('server telemetry client', () => {
     expect(requests.some((url) => url.includes('/telemetry/tiles/offers'))).toBe(false)
     expect(requests.some((url) => url.includes('/telemetry/paints'))).toBe(false)
 
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [template] })
 
     await vi.waitFor(() => {
       expect(requests.some((url) => url.includes('/telemetry/tiles/1/2/'))).toBe(true)
@@ -259,11 +270,9 @@ describe('server telemetry client', () => {
         return new Response(null, { status: 204 })
       }),
     )
-    const { installTelemetry, serverColourProgressFor, serverProgressFor } = await import(
-      './telemetry.js'
-    )
-    installTelemetry()
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    const { serverColourProgressFor, serverProgressFor } = await startTelemetry()
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [template] })
 
     harness.fetchedTile?.({ x: 9, y: 9 }, new Uint8Array([9]), 1_800_000_000)
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
@@ -331,9 +340,9 @@ describe('server telemetry client', () => {
         return new Response(null, { status: 204 })
       }),
     )
-    const { installTelemetry, serverProgressFor } = await import('./telemetry.js')
-    installTelemetry()
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    const { serverProgressFor } = await startTelemetry()
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [template] })
 
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
 
@@ -359,9 +368,9 @@ describe('server telemetry client', () => {
         return new Response(null, { status: 204 })
       }),
     )
-    const { installTelemetry } = await import('./telemetry.js')
-    installTelemetry()
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    await startTelemetry()
+    for (const listener of harness.serverContents)
+      listener(server, { nodes: [], templates: [template] })
     harness.acceptedPaint?.({
       season: 0,
       observedAt: 1_800_000_000,

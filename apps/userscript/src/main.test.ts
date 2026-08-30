@@ -9,6 +9,8 @@ const harness = vi.hoisted(() => ({
   paintListeners: [] as Array<() => void>,
   mismatchListeners: [] as Array<() => void>,
   clearDraftPixels: vi.fn(),
+  installServerSyncCoordinator: vi.fn(),
+  installTelemetry: vi.fn(),
   triggerRepaint: vi.fn(),
   renderOverlayControls: vi.fn(),
   viewportCentreIn: vi.fn(() => ({ x: 12, y: 34 })),
@@ -56,6 +58,9 @@ vi.mock('./paint-palette.js', () => ({
 vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: vi.fn(() => false) }))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
 vi.mock('./server-mismatch.js', () => ({ serverMismatchMemoryBytes: vi.fn(() => 0) }))
+vi.mock('./server-sync-coordinator.js', () => ({
+  installServerSyncCoordinator: harness.installServerSyncCoordinator,
+}))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: { markMismatch: false }, onlySelectedColour: false }),
   loadState: vi.fn(),
@@ -85,7 +90,7 @@ vi.mock('./templates/mismatch.js', () => ({
 vi.mock('./templates/mismatch-worker.js', () => ({ mismatchWorkerMemoryBytes: vi.fn(() => 0) }))
 vi.mock('./templates/nearest.js', () => ({ focusedTemplate: vi.fn(() => null) }))
 vi.mock('./templates/server-sync.js', () => ({ installServerSync: vi.fn() }))
-vi.mock('./telemetry.js', () => ({ installTelemetry: vi.fn() }))
+vi.mock('./telemetry.js', () => ({ installTelemetry: harness.installTelemetry }))
 vi.mock('./alarms.js', () => ({ installAlarmNotifications: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
   capturedPixelMemoryBytes: vi.fn(() => 0),
@@ -134,6 +139,16 @@ beforeEach(() => {
 })
 
 describe('GL frame lifecycle', () => {
+  it('starts server sync even when telemetry hooks fail synchronously', async () => {
+    harness.installTelemetry.mockImplementationOnce(() => {
+      throw new Error('telemetry hook unavailable')
+    })
+
+    await load()
+
+    expect(harness.installServerSyncCoordinator).toHaveBeenCalledOnce()
+  })
+
   it('drops a stale projection when the current frame has no tiles', async () => {
     const main = await load()
     const first = document.createElement('canvas')
