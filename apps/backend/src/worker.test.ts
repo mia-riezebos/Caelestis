@@ -30,6 +30,8 @@ const env = () => {
   d1 = new SqliteD1Database()
   return {
     SHARD_STRATEGY: 'single',
+    USERSCRIPT_BUILD_ID: 'development',
+    FRONTEND_BUILD_ID: 'development',
     DB: d1,
     BLOBS: {},
     // `DurableObjectCounterStore` resolves its stub in the constructor, so the namespace has to

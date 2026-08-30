@@ -1,4 +1,4 @@
-import { PALETTE_SIZE } from '@caelestis/shared'
+import { PALETTE_SIZE, type SyncRequestMetadata } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
 import type { ServerTemplate } from './server-cache.js'
@@ -756,10 +756,15 @@ export const probeServer = async (
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
     const fetchManifest = (credential: string | null) =>
-      requestServerManifest(serverEndpoint(base, '/manifest'), {
-        headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
-        signal: probeController.signal,
-      })
+      requestServerManifest(
+        serverEndpoint(base, '/manifest'),
+        {
+          headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
+          signal: probeController.signal,
+        },
+        undefined,
+        { mode: 'recovery', reason: 'connect' },
+      )
     let effectiveToken = token
     let { response: authed, body: manifestBody } = await fetchManifest(effectiveToken)
     if (
@@ -1312,6 +1317,7 @@ export const forgetAdmittedServerContents = (serverUrl: string): void => {
 export const listServerContents = async (
   server: ConnectedServer,
   signal?: AbortSignal,
+  metadata?: SyncRequestMetadata,
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
   if (!isCurrentServerConnection(server)) return null
@@ -1330,6 +1336,7 @@ export const listServerContents = async (
         ...(signal === undefined ? {} : { signal }),
       },
       () => isCurrentServerConnection(server),
+      metadata,
     )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null

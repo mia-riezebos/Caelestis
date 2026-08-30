@@ -44,6 +44,12 @@ declare namespace Cloudflare {
 
     /** Runtime mount stripped before the portable app sees a request. */
     BASE_PATH?: string
+
+    /** Exact userscript build accepted as a bounded observability dimension. */
+    USERSCRIPT_BUILD_ID: string
+
+    /** Exact frontend build accepted as a bounded observability dimension. */
+    FRONTEND_BUILD_ID: string
   }
 }
 
@@ -52,4 +58,6 @@ interface Env {
   readonly SEASON?: string
   readonly OPEN_ACCESS?: string
   readonly BASE_PATH?: string
+  readonly USERSCRIPT_BUILD_ID: string
+  readonly FRONTEND_BUILD_ID: string
 }

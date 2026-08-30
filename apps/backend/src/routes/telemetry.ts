@@ -12,6 +12,7 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { requireRuntimeScope } from '../auth/middleware.js'
+import type { TileOfferBatchMetrics } from '../observability/sync-metrics.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -128,7 +129,10 @@ const readBoundedBody = async (request: Request, limit: number): Promise<Uint8Ar
 
 export const createTelemetryRoutes = (
   runtime: BackendRuntime,
-  options: { readonly currentSeason: number },
+  options: {
+    readonly currentSeason: number
+    readonly recordTileOffer?: (outcome: TileOfferBatchMetrics) => void
+  },
 ) => {
   const routes = new Hono()
 
@@ -387,7 +391,21 @@ export const createTelemetryRoutes = (
         },
       })
     }
-    return runBackendHttp(c, runtime, offerTiles(offers), (wanted) => c.json({ wanted }))
+    options.recordTileOffer?.({
+      requested: offers.length,
+      accepted: 0,
+      alreadyKnown: 0,
+      rejected: 0,
+    })
+    return runBackendHttp(c, runtime, offerTiles(offers), (outcome) => {
+      options.recordTileOffer?.({
+        requested: offers.length,
+        accepted: outcome.accepted,
+        alreadyKnown: outcome.alreadyKnown,
+        rejected: outcome.rejected,
+      })
+      return c.json({ wanted: outcome.wanted })
+    })
   })
 
   routes.put('/tiles/:x/:y/:hash', requireRuntimeScope(runtime, 'report'), async (c) => {

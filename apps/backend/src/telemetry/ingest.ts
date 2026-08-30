@@ -426,13 +426,27 @@ export const offerTile = (
 
 export const offerTiles = (
   offers: readonly { readonly key: string; readonly metadata: TileMetadata }[],
-): Effect.Effect<readonly string[], TelemetryStorageError, BlobStoreService | SqlStoreService> =>
+): Effect.Effect<
+  {
+    readonly wanted: readonly string[]
+    readonly accepted: number
+    readonly alreadyKnown: number
+    readonly rejected: number
+  },
+  TelemetryStorageError,
+  BlobStoreService | SqlStoreService
+> =>
   Effect.gen(function* () {
     const wanted: string[] = []
+    let alreadyKnown = 0
+    let rejected = 0
     for (const offer of offers) {
-      if ((yield* offerTile(offer.metadata)) === 'wanted') wanted.push(offer.key)
+      const decision = yield* offerTile(offer.metadata)
+      if (decision === 'wanted') wanted.push(offer.key)
+      else if (decision === 'recorded') alreadyKnown++
+      else rejected++
     }
-    return wanted
+    return { wanted, accepted: wanted.length, alreadyKnown, rejected }
   })
 
 /** Validate and persist one uploaded tile without leaking storage failures into a 400 response. */

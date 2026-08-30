@@ -10,6 +10,7 @@
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "dev": "pnpm db:migrate:local && node dev.mjs",
     "test": "vitest run",
+    "sync:summary": "node scripts/summarize-sync-metrics.mjs",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {

@@ -2,6 +2,7 @@ import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { type App, createApp } from './app.js'
+import { meterD1Database, SyncRequestMetrics } from './observability/sync-metrics.js'
 import {
   type BackendRuntime,
   createBackendRuntime,
@@ -50,7 +51,10 @@ export interface PreparedBackend {
 }
 
 /** Prepare binding-derived adapters and their Effect Context for the current Worker event. */
-export const prepareBackendForEvent = (env: Env): PreparedBackend => {
+export const prepareBackendForEvent = (
+  env: Env,
+  requestMetrics?: SyncRequestMetrics,
+): PreparedBackend => {
   if (env.SHARD_STRATEGY !== 'single') {
     throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
   }
@@ -58,7 +62,9 @@ export const prepareBackendForEvent = (env: Env): PreparedBackend => {
   const runtime = createBackendRuntime(
     makeBackendContext(
       new R2BlobStore(env.BLOBS),
-      new D1SqlStore(env.DB),
+      new D1SqlStore(
+        requestMetrics === undefined ? env.DB : meterD1Database(env.DB, requestMetrics),
+      ),
       new DurableObjectCounterStore(env.TELEMETRY),
       {
         bootstrapAdminToken: env.ADMIN_TOKEN,
@@ -72,6 +78,7 @@ export const prepareBackendForEvent = (env: Env): PreparedBackend => {
     serverDescription: env.SERVER_DESCRIPTION,
     currentSeason: season,
     openAccess: env.OPEN_ACCESS === 'true',
+    requestMetrics,
   })
   return {
     app,
@@ -84,7 +91,18 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
     if (mountedRequest === null) return new Response('Not Found', { status: 404 })
-    return prepareBackendForEvent(env).app.fetch(mountedRequest)
+    const metrics = new SyncRequestMetrics(mountedRequest, {
+      userscript: [env.USERSCRIPT_BUILD_ID],
+      frontend: [env.FRONTEND_BUILD_ID],
+    })
+    try {
+      const response = await prepareBackendForEvent(env, metrics).app.fetch(mountedRequest)
+      metrics.finish(response)
+      return response
+    } catch (error) {
+      metrics.finish(new Response(null, { status: 500 }))
+      throw error
+    }
   },
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.

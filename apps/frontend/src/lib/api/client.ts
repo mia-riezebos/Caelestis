@@ -6,8 +6,10 @@ import type {
   Manifest,
   ServerInfo,
   StatusResponse,
+  SyncRequestMetadata,
   TileHistoryResponse,
 } from '@caelestis/shared'
+import { syncRequestHeaders } from '@caelestis/shared'
 import { isServerUrlConfigured, resolveSelectedServerUrl, resolveServerUrl } from './server-url.js'
 
 /**
@@ -64,9 +66,18 @@ const fetchWithTransientRetry = async (url: string, init: RequestInit): Promise<
   return fetch(url, init)
 }
 
-const request = async (path: string, init?: RequestInit): Promise<Response> => {
+const request = async (
+  path: string,
+  init?: RequestInit,
+  metadata?: SyncRequestMetadata,
+): Promise<Response> => {
   const token = readToken()
   const headers = new Headers(init?.headers)
+  for (const [name, value] of Object.entries(
+    syncRequestHeaders('frontend', __CAELESTIS_FRONTEND_VERSION__, metadata),
+  )) {
+    headers.set(name, value)
+  }
   if (token !== null) headers.set('authorization', `Bearer ${token}`)
   const response = await fetchWithTransientRetry(`${readServerUrl()}${path}`, { ...init, headers })
   if (!response.ok) {
@@ -82,15 +93,22 @@ const request = async (path: string, init?: RequestInit): Promise<Response> => {
   return response
 }
 
-const json = async <T>(path: string): Promise<T> => (await request(path)).json() as Promise<T>
+const json = async <T>(path: string, metadata?: SyncRequestMetadata): Promise<T> =>
+  (await request(path, undefined, metadata)).json() as Promise<T>
 
 export const getServer = (): Promise<ServerInfo> => json('/server')
 
-export const getManifest = (season?: number): Promise<Manifest> =>
-  json(season === undefined ? '/manifest' : `/manifest?season=${season}`)
+export const getManifest = (
+  season?: number,
+  metadata: SyncRequestMetadata = { mode: 'recovery', reason: 'page-load' },
+): Promise<Manifest> =>
+  json(season === undefined ? '/manifest' : `/manifest?season=${season}`, metadata)
 
-export const getStatus = (season?: number): Promise<StatusResponse> =>
-  json(season === undefined ? '/telemetry/status' : `/telemetry/status?season=${season}`)
+export const getStatus = (
+  season?: number,
+  metadata: SyncRequestMetadata = { mode: 'response-applied', reason: 'manifest-applied' },
+): Promise<StatusResponse> =>
+  json(season === undefined ? '/telemetry/status' : `/telemetry/status?season=${season}`, metadata)
 
 /** `/server` deliberately exposes no caller scope, so admin admission is probed explicitly. */
 export const probeAdminScope = async (season: number): Promise<boolean> => {
