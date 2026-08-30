@@ -17,6 +17,7 @@
       "!.claude",
       "!**/migrations/meta",
       "!**/migrations/**/*.sql",
+      "!fixtures/berrycamp/wplace-templates",
       "!**/.svelte-kit",
       "!**/*.svelte",
       "!apps/frontend/src/app.css"
