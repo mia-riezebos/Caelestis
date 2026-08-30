@@ -1,3 +1,4 @@
+import type { ManifestProjectionInput, ManifestProjectionRead } from '../../manifest/read-model.js'
 import type {
   StatusProjectionChange,
   StatusProjectionMutation,
@@ -28,6 +29,10 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
 
   reconcileSnapshot(season: number, scope: StatusVisibilityScope): Promise<StatusSnapshotRead> {
     return this.shard(season).reconcileSnapshot(season, scope)
+  }
+
+  readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
+    return this.shard(input.season).readManifestProjection(input)
   }
 
   notifyManifestChange(season: number): Promise<void> {

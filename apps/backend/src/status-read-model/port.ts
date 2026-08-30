@@ -1,3 +1,11 @@
+import {
+  createSeasonManifestReadModel,
+  type ManifestProjectionInput,
+  type ManifestProjectionRead,
+  type PersistedManifestReadModel,
+  type SeasonManifestReadModel,
+} from '../manifest/read-model.js'
+import { assembleManifestProjection } from '../manifest/source.js'
 import type { SqlStore } from '../ports/index.js'
 import {
   createSeasonStatusReadModel,
@@ -20,6 +28,10 @@ export interface StatusReadModelPort {
   ) => Promise<StatusSnapshotRead>
   /** Optional on portable adapters; production uses it to wake hibernating manifest subscribers. */
   readonly notifyManifestChange?: (season: number) => Promise<void>
+  /** Optional for compatibility adapters; prepared production and direct adapters cache manifests. */
+  readonly readManifestProjection?: (
+    input: ManifestProjectionInput,
+  ) => Promise<ManifestProjectionRead>
   /** Optional on portable adapters; production closes live sessions for a revoked credential. */
   readonly closeCredential?: (season: number, tokenHash: string) => Promise<void>
 }
@@ -62,6 +74,7 @@ export const closeLiveCredential = async (
 /** Portable process-local adapter used by tests and non-Worker entry points. */
 export class DirectStatusReadModel implements StatusReadModelPort {
   private readonly seasons = new Map<number, SeasonStatusReadModel>()
+  private readonly manifests = new Map<number, SeasonManifestReadModel>()
 
   constructor(private readonly sql: SqlStore) {}
 
@@ -103,6 +116,24 @@ export class DirectStatusReadModel implements StatusReadModelPort {
     return created
   }
 
+  private manifestModel(season: number): SeasonManifestReadModel {
+    const held = this.manifests.get(season)
+    if (held !== undefined) return held
+    let persisted: PersistedManifestReadModel | null = null
+    const created = createSeasonManifestReadModel({
+      season,
+      source: (input) => assembleManifestProjection(this.sql, input),
+      persistence: {
+        load: async () => persisted,
+        save: async (next) => {
+          persisted = next
+        },
+      },
+    })
+    this.manifests.set(season, created)
+    return created
+  }
+
   async applyCommittedChange(
     season: number,
     mutation?: StatusProjectionMutation,
@@ -112,5 +143,13 @@ export class DirectStatusReadModel implements StatusReadModelPort {
 
   reconcileSnapshot(season: number, scope: StatusVisibilityScope): Promise<StatusSnapshotRead> {
     return this.model(season).reconcileSnapshot(scope)
+  }
+
+  readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
+    return this.manifestModel(input.season).read(input)
+  }
+
+  async notifyManifestChange(season: number): Promise<void> {
+    await this.manifestModel(season).invalidate()
   }
 }

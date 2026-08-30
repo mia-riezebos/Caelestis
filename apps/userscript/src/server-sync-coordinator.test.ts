@@ -392,11 +392,21 @@ describe('server sync coordinator', () => {
 
     socket.receive({ type: 'status-delta', delta: { baseRevision: 5, revision: 6 } })
     socket.receive({ type: 'status-reconcile', revision: 9 })
+    // Older servers omitted the revision; that event remains an unconditional manifest reconcile.
     socket.receive({ type: 'manifest-reconcile' })
+    socket.receive({ type: 'manifest-reconcile', revision: 4 })
     await vi.advanceTimersByTimeAsync(0)
     expect(applyLiveEvent).toHaveBeenCalledOnce()
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
+
+    status.mockClear()
+    manifest.mockClear()
+    socket.receive({ type: 'manifest-reconcile', revision: 4 })
+    socket.receive({ type: 'manifest-reconcile', revision: 3 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(status).not.toHaveBeenCalled()
+    expect(manifest).not.toHaveBeenCalled()
 
     status.mockClear()
     manifest.mockClear()
