@@ -64,12 +64,29 @@ export const alliancePanelTitle = (surface: TemplateSurface): string => {
   }
 }
 
-/** Accept the custom-element intent and a direct host click, without firing twice for shadow clicks. */
+/** Keep the artboard control below Wplace's fullscreen header and at its normal inset otherwise. */
+export const allianceRailTop = (stage: HTMLElement, normalTop: number, gap: number): number => {
+  const exit = stage
+    .closest('dialog[open]')
+    ?.querySelector<HTMLElement>('button[aria-label="Exit full screen"]')
+  const header = exit?.closest('header')
+  if (header === undefined || header === null) return normalTop
+  return Math.max(
+    normalTop,
+    Math.ceil(header.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + gap),
+  )
+}
+
+/** Accept both activation paths, optionally shielding a nested control from artboard pointer capture. */
 export const bindRailActivation = (
   element: HTMLElement,
   id: string,
   activate: () => void,
+  options: { readonly isolatePointerDown?: boolean } = {},
 ): void => {
+  if (options.isolatePointerDown) {
+    element.addEventListener('pointerdown', (event) => event.stopPropagation())
+  }
   element.addEventListener('caelestis-rail-intent', (event) => {
     const detail = (event as CustomEvent<{ readonly id?: string }>).detail
     if (detail?.id === id) activate()

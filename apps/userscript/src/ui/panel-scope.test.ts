@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   AllianceDrawerInset,
   alliancePanelTitle,
+  allianceRailTop,
   bindRailActivation,
   PanelSessions,
 } from './panel-scope.js'
@@ -70,6 +71,48 @@ describe('alliance drawer DOM contracts', () => {
     )
 
     expect(activate).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps an artboard parent from capturing the alliance control pointer', () => {
+    const stage = document.createElement('div')
+    const element = document.createElement('caelestis-rail-control')
+    const stagePointerDown = vi.fn()
+    const activate = vi.fn()
+    stage.addEventListener('pointerdown', stagePointerDown)
+    stage.append(element)
+
+    bindRailActivation(element, 'alliance-panel', activate, { isolatePointerDown: true })
+    element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }))
+    element.dispatchEvent(
+      new CustomEvent('caelestis-rail-intent', {
+        detail: { id: 'alliance-panel' },
+        bubbles: true,
+        composed: true,
+      }),
+    )
+
+    expect(stagePointerDown).not.toHaveBeenCalled()
+    expect(activate).toHaveBeenCalledOnce()
+  })
+
+  it('sits below Wplace chrome while the artboard is full screen', () => {
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    const header = document.createElement('header')
+    const exit = document.createElement('button')
+    exit.setAttribute('aria-label', 'Exit full screen')
+    header.append(exit)
+    const stage = document.createElement('div')
+    dialog.append(header, stage)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () => ({ top: 100 }) as DOMRect
+    header.getBoundingClientRect = () => ({ bottom: 180 }) as DOMRect
+
+    expect(allianceRailTop(stage, 12, 12)).toBe(92)
+
+    exit.setAttribute('aria-label', 'Open full screen')
+    expect(allianceRailTop(stage, 12, 12)).toBe(12)
+    dialog.remove()
   })
 
   it('takes drawer width from the stage and restores Wplace ownership on close', () => {

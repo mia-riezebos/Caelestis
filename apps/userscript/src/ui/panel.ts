@@ -104,6 +104,7 @@ import { panelWidthAfterMount } from './panel-geometry.js'
 import {
   AllianceDrawerInset,
   alliancePanelTitle,
+  allianceRailTop,
   bindRailActivation,
   type PanelScope,
   PanelSessions,
@@ -185,6 +186,7 @@ let panelSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE
 let panelHost: HTMLElement | null = null
 let allianceStage: HTMLElement | null = null
 const allianceDrawerInset = new AllianceDrawerInset()
+let allianceRailObserver: MutationObserver | null = null
 const panelOpenListeners = new Set<() => void>()
 const worldTreeVisibleListeners = new Set<() => void>()
 
@@ -234,14 +236,26 @@ const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl
   button.id = ALLIANCE_BUTTON_ID
   button.model = panelRailModel('alliance')
   applyWplaceTheme(button)
-  bindRailActivation(button, 'alliance-panel', () => {
-    selectAlliancePanelSurface(active)
-    togglePanelFor('alliance')
-  })
+  bindRailActivation(
+    button,
+    'alliance-panel',
+    () => {
+      selectAlliancePanelSurface(active)
+      togglePanelFor('alliance')
+    },
+    { isolatePointerDown: true },
+  )
   return button
 }
 
+const positionAllianceRail = (active: ActiveAllianceSurface): void => {
+  const wrapper = active.stage.querySelector<HTMLElement>(`#${ALLIANCE_BUTTON_WRAPPER_ID}`)
+  if (wrapper !== null) wrapper.style.top = `${allianceRailTop(active.stage, GAP, GAP)}px`
+}
+
 const mountAllianceRail = (active: ActiveAllianceSurface): void => {
+  allianceRailObserver?.disconnect()
+  allianceRailObserver = null
   document.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)?.remove()
   const wrapper = active.stage.ownerDocument.createElement('div')
   wrapper.id = ALLIANCE_BUTTON_WRAPPER_ID
@@ -250,11 +264,16 @@ const mountAllianceRail = (active: ActiveAllianceSurface): void => {
   Object.assign(wrapper.style, {
     position: 'absolute',
     right: '12px',
-    top: '12px',
+    top: `${allianceRailTop(active.stage, GAP, GAP)}px`,
     zIndex: '20',
   } satisfies Partial<CSSStyleDeclaration>)
   wrapper.appendChild(allianceRailButton(active))
   active.stage.appendChild(wrapper)
+  const realm = active.stage.ownerDocument.defaultView
+  if (realm !== null) {
+    allianceRailObserver = new realm.MutationObserver(() => positionAllianceRail(active))
+    allianceRailObserver.observe(active.stage, { attributes: true, attributeFilter: ['class'] })
+  }
 }
 
 /**
@@ -1054,6 +1073,8 @@ const unmountSelectedPanel = (): void => {
 }
 
 const selectAlliancePanelSurface = (active: ActiveAllianceSurface | null): void => {
+  allianceRailObserver?.disconnect()
+  allianceRailObserver = null
   document.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)?.remove()
   if (active === null) {
     if (panelSessions.scope() === 'alliance') unmountSelectedPanel()
@@ -1235,6 +1256,8 @@ export const installPanel = (): void => {
   })
   window.addEventListener('resize', () => {
     positionRail()
+    const active = activeAllianceSurface()
+    if (active !== null) positionAllianceRail(active)
     const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
     if (panel === null) return
     const width = panelWidthForViewport(getState().panelWidth)
