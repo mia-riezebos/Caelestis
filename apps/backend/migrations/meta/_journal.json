@@ -71,6 +71,13 @@
       "when": 1788134106241,
       "tag": "0009_careful_steel_serpent",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788218876577,
+      "tag": "0010_living_shadowcat",
+      "breakpoints": true
     }
   ]
 }

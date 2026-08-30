@@ -9,13 +9,14 @@ import {
   NodePathTooLongError,
   NodeSubtreeChangedError,
 } from '../ports/index.js'
-import { SqlStoreService } from '../runtime/backend-runtime.js'
+import { SqlStoreService, StatusReadModelService } from '../runtime/backend-runtime.js'
 import {
   BackendStorageError,
   RequestValidationError,
   ResourceConflictError,
   ResourceNotFoundError,
 } from '../runtime/errors.js'
+import { repairCommittedStatusProjection } from '../status-read-model/port.js'
 
 type NodeError =
   | RequestValidationError
@@ -181,11 +182,16 @@ export const deleteNodeCascade = (
 ): Effect.Effect<
   NodeDeletion,
   ResourceNotFoundError | ResourceConflictError | BackendStorageError,
-  SqlStoreService
+  SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
-    return yield* Effect.tryPromise({
+    const statusReadModel = yield* StatusReadModelService
+    const node = yield* storage('readNode', () => sql.readNode(nodeId))
+    if (node === null) {
+      return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
+    }
+    const deleted = yield* Effect.tryPromise({
       try: () => sql.deleteNodeCascade(nodeId, expected),
       catch: (cause): ResourceNotFoundError | ResourceConflictError | BackendStorageError => {
         if (cause instanceof NodeNotFoundError) {
@@ -197,6 +203,10 @@ export const deleteNodeCascade = (
         return new BackendStorageError({ operation: 'deleteNodeCascade', cause })
       },
     })
+    if (deleted.templates > 0) {
+      yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, node.season))
+    }
+    return deleted
   })
 
 export const deleteEmptyNode = (

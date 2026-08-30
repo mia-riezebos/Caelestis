@@ -11,6 +11,7 @@ import {
 } from '@caelestis/shared'
 import type { AlarmProbe, BlobStore, CounterStore, SqlStore } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
+import type { StatusReadModelPort } from '../status-read-model/port.js'
 import { MAX_CANVAS_TILE_BYTES, refreshAuthoritativeTile, uploadTile } from './ingest.js'
 
 /**
@@ -45,6 +46,7 @@ export interface FetcherStores {
   readonly blobs: BlobStore
   readonly sql: SqlStore
   readonly counters: CounterStore
+  readonly statusReadModel?: StatusReadModelPort
 }
 
 export const ALARM_SCAN_INTERVAL_SECONDS = 6 * 60 * 60
@@ -101,7 +103,9 @@ export const fetchCanvasTiles = async (
   const alarmIdFactory = options.alarmIdFactory ?? uuidV7
   const maxTiles = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
   const { season } = options
-  const runtime = createBackendRuntime(makeBackendContext(ports.blobs, ports.sql, ports.counters))
+  const runtime = createBackendRuntime(
+    makeBackendContext(ports.blobs, ports.sql, ports.counters, ports.statusReadModel),
+  )
 
   // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
   // admin's draft deserves the same timelapse the published version will show.
@@ -295,7 +299,9 @@ export const fetchAlarmFollowUps = async (
 ): Promise<AlarmFollowUpReport> => {
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
   const fetchImpl = options.fetchImpl ?? fetch
-  const runtime = createBackendRuntime(makeBackendContext(ports.blobs, ports.sql, ports.counters))
+  const runtime = createBackendRuntime(
+    makeBackendContext(ports.blobs, ports.sql, ports.counters, ports.statusReadModel),
+  )
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
   let evaluated = 0
   let failed = 0

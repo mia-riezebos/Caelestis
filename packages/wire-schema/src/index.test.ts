@@ -16,6 +16,7 @@ import {
   PaintPixels,
   PaintTile,
   ServerInfo,
+  StatusResponse,
   Template,
   TemplateStatus,
   TileHistoryResponse,
@@ -1378,6 +1379,15 @@ describe('cross-field and time-unit schemas', () => {
       observedAt: MILLIS,
     }
     expect(Schema.decodeUnknownSync(TemplateStatus)(status)).toEqual(status)
+  })
+
+  it('accepts a monotonic status revision while remaining compatible with older responses', () => {
+    expect(Schema.decodeUnknownSync(StatusResponse)({ revision: 3, templates: [] })).toEqual({
+      revision: 3,
+      templates: [],
+    })
+    expect(Schema.decodeUnknownSync(StatusResponse)({ templates: [] })).toEqual({ templates: [] })
+    expectRejected(StatusResponse, { revision: -1, templates: [] })
   })
 
   it('rejects per-colour status rows that do not partition the template total', () => {
