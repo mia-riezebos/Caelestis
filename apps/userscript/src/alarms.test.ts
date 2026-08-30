@@ -10,8 +10,8 @@ const harness = vi.hoisted(() => ({
     alarm: import('@caelestis/shared').Alarm
   }>,
   alarmListener: null as (() => void) | null,
-  panelListener: null as (() => void) | null,
-  panelOpen: false,
+  treeListener: null as (() => void) | null,
+  treeVisible: false,
   paintOpen: false,
   badge: vi.fn(),
   toast: vi.fn(),
@@ -26,9 +26,9 @@ vi.mock('./telemetry.js', () => ({
   },
 }))
 vi.mock('./ui/panel.js', () => ({
-  isPanelOpen: () => harness.panelOpen,
-  onPanelOpen: (listener: () => void) => {
-    harness.panelListener = listener
+  isTemplateTreeVisible: () => harness.treeVisible,
+  onTemplateTreeVisible: (listener: () => void) => {
+    harness.treeListener = listener
     return vi.fn()
   },
   setAlarmBadge: harness.badge,
@@ -55,8 +55,8 @@ beforeEach(() => {
   })
   harness.active = []
   harness.alarmListener = null
-  harness.panelListener = null
-  harness.panelOpen = false
+  harness.treeListener = null
+  harness.treeVisible = false
   harness.paintOpen = false
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
 })
@@ -74,10 +74,27 @@ describe('userscript alarm notifications', () => {
     expect(harness.badge).toHaveBeenLastCalledWith(1)
     expect(harness.toast).toHaveBeenCalledWith('Sky regressed · 12 px lost', 'warning')
 
-    harness.panelOpen = true
-    harness.panelListener?.()
+    harness.treeVisible = true
+    harness.treeListener?.()
     expect(harness.badge).toHaveBeenLastCalledWith(0)
     expect(JSON.parse(stored.get('caelestis.acknowledged-alarms.v1') ?? '[]')).toHaveLength(1)
+  })
+
+  it('does not acknowledge an alarm while a non-tree panel view is visible', async () => {
+    harness.active = [
+      { server: { url: 'https://templates.example' }, template: { name: 'Sky' }, alarm: alarm() },
+    ]
+    const { installAlarmNotifications } = await import('./alarms.js')
+    installAlarmNotifications()
+
+    harness.treeVisible = false
+    harness.alarmListener?.()
+    expect(harness.badge).toHaveBeenLastCalledWith(1)
+    expect(stored.get('caelestis.acknowledged-alarms.v1')).toBeUndefined()
+
+    harness.treeVisible = true
+    harness.treeListener?.()
+    expect(harness.badge).toHaveBeenLastCalledWith(0)
   })
 
   it('uses badge-only behavior while painting and desktop notification while hidden', async () => {

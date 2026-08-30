@@ -1204,6 +1204,7 @@ export class D1SqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
+    forceCurrent = false,
   ): Promise<void> {
     const history = this.database
       .insert(tileHistory)
@@ -1230,14 +1231,19 @@ export class D1SqlStore implements SqlStore {
       .onConflictDoUpdate({
         target: [canvasTiles.season, canvasTiles.tileX, canvasTiles.tileY],
         set: { sha256: observation.hash, observedAtMs: observation.observedAt },
-        setWhere: lte(canvasTiles.observedAtMs, observation.observedAt),
+        ...(forceCurrent
+          ? {}
+          : { setWhere: lte(canvasTiles.observedAtMs, observation.observedAt) }),
       })
     if (recordHistory) await this.database.batch([history, current])
     else await current
-    await this.writeTileStatuses(statuses)
+    await this.writeTileStatuses(statuses, forceCurrent)
   }
 
-  private async writeTileStatuses(statuses: readonly TemplateTileStatusRecord[]): Promise<void> {
+  private async writeTileStatuses(
+    statuses: readonly TemplateTileStatusRecord[],
+    forceCurrent = false,
+  ): Promise<void> {
     for (const group of chunkRows(statuses, 50)) {
       const statements = group.map((status) =>
         this.database
@@ -1267,7 +1273,9 @@ export class D1SqlStore implements SqlStore {
               coloursJson: JSON.stringify(status.colours ?? []),
               observedAtMs: status.observedAt,
             },
-            setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt),
+            ...(forceCurrent
+              ? {}
+              : { setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt) }),
           }),
       )
       if (statements.length > 0) {
@@ -1404,6 +1412,7 @@ export class D1SqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
+    forceCurrent = false,
   ): Promise<boolean> {
     const statements: D1PreparedStatement[] = [
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
@@ -1461,7 +1470,7 @@ export class D1SqlStore implements SqlStore {
            )
            ON CONFLICT(season, tile_x, tile_y) DO UPDATE SET
              sha256 = excluded.sha256, observed_at_ms = excluded.observed_at_ms
-           WHERE canvas_tiles.observed_at_ms <= excluded.observed_at_ms`,
+           WHERE ? = 1 OR canvas_tiles.observed_at_ms <= excluded.observed_at_ms`,
         )
         .bind(
           observation.season,
@@ -1471,12 +1480,13 @@ export class D1SqlStore implements SqlStore {
           observation.observedAt,
           reservationId,
           observation.hash,
+          forceCurrent ? 1 : 0,
         ),
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE id = ?').bind(reservationId),
     )
     const results = await this.client.batch(statements)
     if (Number(results[1]?.meta.changes) === 0) return false
-    await this.writeTileStatuses(statuses)
+    await this.writeTileStatuses(statuses, forceCurrent)
     return true
   }
 

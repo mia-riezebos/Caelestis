@@ -134,6 +134,7 @@ export const fetchCanvasTiles = async (
   const attemptedTemplateTiles = new Set<string>(
     budgeted.filter(({ ring }) => !ring).map(({ tile }) => tileKey(tile)),
   )
+  const serverRefreshedTemplateTiles = new Set<string>()
   for (const { tile, ring } of budgeted) {
     const latest = await ports.sql.readLatestTile(season, tile)
     if (
@@ -174,8 +175,9 @@ export const fetchCanvasTiles = async (
               includeUnpublished: true,
             },
             bytes,
-            { requireCoverage: false, recordHistory: false },
+            { requireCoverage: false, recordHistory: false, authoritative: true },
           )
+          serverRefreshedTemplateTiles.add(tileKey(tile))
         }
         continue
       }
@@ -192,8 +194,9 @@ export const fetchCanvasTiles = async (
           includeUnpublished: true,
         },
         bytes,
-        { requireCoverage: false },
+        { requireCoverage: false, authoritative: true },
       )
+      if (!ring) serverRefreshedTemplateTiles.add(tileKey(tile))
       fetched++
     } catch {
       // One unreachable tile must not starve the rest of the run.
@@ -231,7 +234,7 @@ export const fetchCanvasTiles = async (
         ({ key, observedAt }) =>
           observedAt !== null &&
           observedAt >= freshnessCutoff &&
-          (!attemptedTemplateTiles.has(key) || observedAt >= now * 1_000),
+          (!attemptedTemplateTiles.has(key) || serverRefreshedTemplateTiles.has(key)),
       ) ||
       status === undefined ||
       status.total !== template.totalPixels
@@ -342,7 +345,7 @@ export const fetchAlarmFollowUps = async (
               includeUnpublished: true,
             },
             bytes,
-            { requireCoverage: false, recordHistory: false },
+            { requireCoverage: false, recordHistory: false, authoritative: true },
           )
           continue
         }
@@ -359,7 +362,7 @@ export const fetchAlarmFollowUps = async (
             includeUnpublished: true,
           },
           bytes,
-          { requireCoverage: false },
+          { requireCoverage: false, authoritative: true },
         )
       } catch {
         complete = false

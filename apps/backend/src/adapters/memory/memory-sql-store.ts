@@ -687,6 +687,7 @@ export class MemorySqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
+    forceCurrent = false,
   ): Promise<void> {
     // The raw tile-history tier, mirroring D1's insert-or-ignore: resolution 0, bucketed at the
     // report time itself. Without this row the memory oracle had no timelapse at all, so a
@@ -706,13 +707,13 @@ export class MemorySqlStore implements SqlStore {
     }
     const key = `${observation.season}\u0000${tileKey(observation.tile)}`
     const held = this.canvasTiles.get(key)
-    if (held === undefined || held.observedAt <= observation.observedAt) {
+    if (forceCurrent || held === undefined || held.observedAt <= observation.observedAt) {
       this.canvasTiles.set(key, { ...observation, tile: { ...observation.tile } })
     }
     for (const status of statuses) {
       const statusKey = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
       const current = this.templateTileStatuses.get(statusKey)
-      if (current === undefined || current.observedAt <= status.observedAt) {
+      if (forceCurrent || current === undefined || current.observedAt <= status.observedAt) {
         this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
       }
     }
@@ -824,6 +825,7 @@ export class MemorySqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
+    forceCurrent = false,
   ): Promise<boolean> {
     this.expireTileBlobReservations(now)
     const reservation = this.tileBlobReservations.get(reservationId)
@@ -842,7 +844,7 @@ export class MemorySqlStore implements SqlStore {
       state: 'active',
       reclaimedAt: null,
     })
-    await this.recordTileObservation(observation, statuses, recordHistory)
+    await this.recordTileObservation(observation, statuses, recordHistory, forceCurrent)
     this.tileBlobReservations.delete(reservationId)
     return true
   }

@@ -176,6 +176,7 @@ let searchQuery = ''
 let panelSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE
 let panelHost: HTMLElement | null = null
 const panelOpenListeners = new Set<() => void>()
+const treeVisibleListeners = new Set<() => void>()
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -953,6 +954,9 @@ const showView = (view: View): void => {
   }
   panel.model = panelModel(currentPanelWidth(panel))
   syncProfileTimer()
+  if (open && view === 'tree') {
+    for (const listener of treeVisibleListeners) listener()
+  }
   log('install', `panel view: ${view}`)
 }
 
@@ -1007,9 +1011,16 @@ const selectAlliancePanelSurface = (active: ActiveAllianceSurface | null): void 
 
 export const isPanelOpen = (): boolean => open
 
+export const isTemplateTreeVisible = (): boolean => open && currentView === 'tree'
+
 export const onPanelOpen = (listener: () => void): (() => void) => {
   panelOpenListeners.add(listener)
   return () => panelOpenListeners.delete(listener)
+}
+
+export const onTemplateTreeVisible = (listener: () => void): (() => void) => {
+  treeVisibleListeners.add(listener)
+  return () => treeVisibleListeners.delete(listener)
 }
 
 const RAIL_ID = 'caelestis-rail'

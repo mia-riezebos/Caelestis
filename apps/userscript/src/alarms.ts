@@ -1,7 +1,7 @@
 import type { Alarm } from '@caelestis/shared'
 import { activeServerAlarms, onServerAlarmChange } from './telemetry.js'
 import { showAmbientToast } from './ui/notification-host.js'
-import { isPanelOpen, onPanelOpen, setAlarmBadge } from './ui/panel.js'
+import { isTemplateTreeVisible, onTemplateTreeVisible, setAlarmBadge } from './ui/panel.js'
 import { isPaintOpen } from './wplace-paint.js'
 
 const ACKNOWLEDGED_KEY = 'caelestis.acknowledged-alarms.v1'
@@ -75,7 +75,7 @@ const syncAlarms = (): void => {
   const fingerprints = new Set(
     current.map(({ server, alarm }) => alarmFingerprint(server.url, alarm)),
   )
-  if (isPanelOpen()) {
+  if (isTemplateTreeVisible()) {
     acknowledgeVisible()
   } else {
     setAlarmBadge([...fingerprints].filter((key) => !acknowledged.has(key)).length)
@@ -83,7 +83,7 @@ const syncAlarms = (): void => {
 
   for (const { server, template, alarm } of current) {
     const fingerprint = alarmFingerprint(server.url, alarm)
-    if (known.has(fingerprint) || acknowledged.has(fingerprint) || isPanelOpen()) continue
+    if (known.has(fingerprint) || acknowledged.has(fingerprint) || isTemplateTreeVisible()) continue
     const message = notice(template.name, alarm)
     if (isPaintOpen()) continue
     if (document.visibilityState === 'hidden') desktopNotice(message)
@@ -97,6 +97,6 @@ export const installAlarmNotifications = (): void => {
   installed = true
   acknowledged = readAcknowledged()
   onServerAlarmChange(syncAlarms)
-  onPanelOpen(acknowledgeVisible)
+  onTemplateTreeVisible(acknowledgeVisible)
   syncAlarms()
 }

@@ -940,6 +940,8 @@ export interface SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
+    /** Server fetches are authoritative even when a client clock put the current row in the future. */
+    forceCurrent?: boolean,
   ): Promise<void>
 
   /** The preferred readable physical object for a hash, if one is registered and unfenced. */
@@ -975,6 +977,7 @@ export interface SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
+    forceCurrent?: boolean,
   ): Promise<boolean>
 
   releaseTileBlobReservation(reservationId: string): Promise<void>

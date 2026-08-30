@@ -163,6 +163,76 @@ describe('the 6-hour tile fetcher', () => {
     expect(evaluate).not.toHaveBeenCalled()
   })
 
+  it('uses the authoritative fetch when a client observation is future-dated', async () => {
+    const { ports, sql } = harness()
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('clock-skewed', [{ x: 5, y: 5 }]),
+      bbox: {
+        minX: 5 * TILE_SIZE,
+        minY: 5 * TILE_SIZE,
+        maxX: 5 * TILE_SIZE + 1,
+        maxY: 5 * TILE_SIZE + 1,
+      },
+      chunks: [{ tileX: 5, tileY: 5, hash }],
+    })
+    await sql.recordTileObservation(
+      {
+        season: 0,
+        tile: { x: 5, y: 5 },
+        hash: 'f'.repeat(64),
+        observedAt: millis((NOW + 5 * 60) * 1_000),
+        reportedAt: seconds(NOW + 5 * 60),
+        reportedWithToken: TOKEN,
+        reportedByUserId: 1,
+      },
+      [
+        {
+          templateId: 'clock-skewed',
+          versionId: 'clock-skewed-version',
+          tile: { x: 5, y: 5 },
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis((NOW + 5 * 60) * 1_000),
+        },
+      ],
+    )
+    const canvas = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+    canvas[0] = 1
+    const bytes = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, canvas)
+    const evaluate = vi.spyOn(sql, 'evaluateTemplateAlarm')
+    const record = vi
+      .spyOn(sql, 'recordTileObservation')
+      .mockRejectedValueOnce(new Error('status write failed'))
+
+    await fetchCanvasTiles(ports, {
+      season: 0,
+      now: NOW,
+      fetchImpl: (async () => new Response(bytes.slice())) as typeof fetch,
+    })
+    expect(evaluate).not.toHaveBeenCalled()
+
+    record.mockRestore()
+    const serverNow = seconds(NOW + 1)
+    await fetchCanvasTiles(ports, {
+      season: 0,
+      now: serverNow,
+      fetchImpl: (async () => new Response(bytes.slice())) as typeof fetch,
+    })
+
+    expect(evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: 'clock-skewed', correct: 1 }),
+      { kind: 'scan' },
+      expect.any(String),
+    )
+    await expect(sql.readLatestTile(0, { x: 5, y: 5 })).resolves.toMatchObject({
+      observedAt: serverNow * 1_000,
+    })
+  })
+
   it('spends its budget on template tiles before any ring tile', async () => {
     const { ports, sql, requested, fetchImpl } = harness()
     // 250 distinct template tiles: over the 200-tile budget before the ring is even considered.
