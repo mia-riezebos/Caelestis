@@ -501,7 +501,12 @@ export const createTelemetryRoutes = (
         rejected: result.rejected,
       })
       const status = result.projection?.[caller.scope === 'admin' ? 'admin' : 'public']
-      return c.json({ wanted: result.wanted, ...(status === undefined ? {} : { status }) })
+      return c.json({
+        wanted: result.wanted,
+        acknowledged: result.acknowledged,
+        rejected: result.rejectedKeys,
+        ...(status === undefined ? {} : { status }),
+      })
     })
   })
 

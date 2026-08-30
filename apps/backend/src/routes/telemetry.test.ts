@@ -265,7 +265,11 @@ describe('telemetry routes', () => {
       body: JSON.stringify(offer),
     })
     expect(offered.status).toBe(200)
-    await expect(offered.json()).resolves.toEqual({ wanted: ['0/0'] })
+    await expect(offered.json()).resolves.toEqual({
+      wanted: ['0/0'],
+      acknowledged: [],
+      rejected: [],
+    })
 
     const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
       method: 'PUT',
@@ -334,7 +338,23 @@ describe('telemetry routes', () => {
     })
     await expect(repeated.json()).resolves.toEqual({
       wanted: [],
+      acknowledged: ['0/0'],
+      rejected: [],
       status: { baseRevision: 2, revision: 3, templates: [], removedTemplateIds: [] },
+    })
+
+    const rejected = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...offer,
+        offers: [{ ...offer.offers[0], tile: '9/9' }],
+      }),
+    })
+    await expect(rejected.json()).resolves.toEqual({
+      wanted: [],
+      acknowledged: [],
+      rejected: ['9/9'],
     })
 
     const duplicate = await app.request('/telemetry/tiles/offers', {
