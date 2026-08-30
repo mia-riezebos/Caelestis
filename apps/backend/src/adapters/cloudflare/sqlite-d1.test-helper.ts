@@ -80,6 +80,11 @@ class SqliteD1Statement {
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
     this.refusePatternsD1WouldRefuse()
+    // D1's `run` returns result rows for SELECT statements. Model that contract because the
+    // production metrics adapter deliberately uses it instead of metadata-dropping `raw`.
+    if (this.statement.columns().length > 0) {
+      return result(this.statement.all(...this.bindings) as T[])
+    }
     const changed = this.statement.run(...this.bindings)
     return result<T>([], Number(changed.changes))
   }

@@ -12,6 +12,7 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
+import { recordTileOfferBatch } from '../metrics/request-metrics.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -21,7 +22,7 @@ import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
 import {
   MAX_CANVAS_TILE_BYTES,
-  offerTiles,
+  offerTilesWithOutcome,
   readMismatchMask,
   recordPaint,
   uploadTile,
@@ -408,7 +409,15 @@ export const createTelemetryRoutes = (
         },
       })
     }
-    return runBackendHttp(c, runtime, offerTiles(offers), (wanted) => c.json({ wanted }))
+    return runBackendHttp(c, runtime, offerTilesWithOutcome(offers), (result) => {
+      recordTileOfferBatch({
+        requested: body.offers.length,
+        accepted: result.accepted,
+        alreadyKnown: result.alreadyKnown,
+        rejected: result.rejected,
+      })
+      return c.json({ wanted: result.wanted })
+    })
   })
 
   routes.put('/tiles/:x/:y/:hash', requireScopeEffect(runtime, auth, 'report'), async (c) => {

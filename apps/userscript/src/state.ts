@@ -1,10 +1,12 @@
 import {
   PALETTE_SIZE,
+  type ReconciliationReason,
   type TemplateSurface,
   templateSurface,
   templateSurfaceKey,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
+import { userscriptClientHeaders } from './client-metrics.js'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
 import type { ServerTemplate } from './server-cache.js'
@@ -1421,6 +1423,7 @@ export const forgetAdmittedServerContents = (serverUrl: string): void => {
 export const listServerContents = async (
   server: ConnectedServer,
   signal?: AbortSignal,
+  reason: ReconciliationReason = 'unknown',
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
   if (!isCurrentServerConnection(server)) return null
@@ -1434,8 +1437,11 @@ export const listServerContents = async (
       {
         headers:
           activeServerToken(server) === null
-            ? {}
-            : { authorization: `Bearer ${activeServerToken(server)}` },
+            ? userscriptClientHeaders({ transport: 'compatibility-poll', reason })
+            : {
+                ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+                authorization: `Bearer ${activeServerToken(server)}`,
+              },
         ...(signal === undefined ? {} : { signal }),
       },
       () => isCurrentServerConnection(server),

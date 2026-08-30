@@ -508,12 +508,30 @@ export const offerTile = (
 export const offerTiles = (
   offers: readonly { readonly key: string; readonly metadata: TileMetadata }[],
 ): Effect.Effect<readonly string[], TelemetryStorageError, BlobStoreService | SqlStoreService> =>
+  Effect.map(offerTilesWithOutcome(offers), (result) => result.wanted)
+
+export interface TileOfferResult {
+  readonly wanted: readonly string[]
+  readonly accepted: number
+  readonly alreadyKnown: number
+  readonly rejected: number
+}
+
+/** Preserve per-offer decisions for capacity metrics while keeping the wire response unchanged. */
+export const offerTilesWithOutcome = (
+  offers: readonly { readonly key: string; readonly metadata: TileMetadata }[],
+): Effect.Effect<TileOfferResult, TelemetryStorageError, BlobStoreService | SqlStoreService> =>
   Effect.gen(function* () {
     const wanted: string[] = []
+    let alreadyKnown = 0
+    let rejected = 0
     for (const offer of offers) {
-      if ((yield* offerTile(offer.metadata)) === 'wanted') wanted.push(offer.key)
+      const outcome = yield* offerTile(offer.metadata)
+      if (outcome === 'wanted') wanted.push(offer.key)
+      else if (outcome === 'recorded') alreadyKnown++
+      else rejected++
     }
-    return wanted
+    return { wanted, accepted: wanted.length, alreadyKnown, rejected }
   })
 
 /** Validate and persist one uploaded tile without leaking storage failures into a 400 response. */

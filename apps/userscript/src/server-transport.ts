@@ -1,3 +1,4 @@
+import { userscriptClientHeaders } from './client-metrics.js'
 import { discardResponseBody } from './response.js'
 
 const REMOTE_TIMEOUT_MS = 10_000
@@ -91,7 +92,9 @@ const request = async <Result>(
   else upstream?.addEventListener('abort', abortFromUpstream, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
   try {
-    return await read(await fetch(input, { ...init, signal: controller.signal }))
+    const headers = new Headers(init.headers)
+    if (!headers.has('accept')) headers.set('accept', userscriptClientHeaders().accept ?? '*/*')
+    return await read(await fetch(input, { ...init, headers, signal: controller.signal }))
   } finally {
     clearTimeout(timeout)
     upstream?.removeEventListener('abort', abortFromUpstream)
