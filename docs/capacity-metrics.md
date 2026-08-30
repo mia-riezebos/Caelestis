@@ -63,8 +63,9 @@ username, user agent, tile coordinate, hash, or pixel payload. Unknown paths col
 Client metadata uses a short vendor media type in the CORS-safelisted `Accept` header so anonymous
 cross-origin reads do not gain a preflight. The backend admits only explicitly known userscript
 releases and the frontend build ID shared through deployment CI; the deployed userscript version is
-read from its package after Changesets have applied release bumps. All caller-supplied alternatives
-collapse to `unknown`.
+read from its package after Changesets have applied release bumps, while prior metrics-capable
+releases are retained from the generated changelog. All caller-supplied alternatives collapse to
+`unknown`.
 
 ## Repeatable queries
 

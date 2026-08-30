@@ -36,6 +36,15 @@ interface RequestMetricState {
 type MetricDataset = Pick<AnalyticsEngineDataset, 'writeDataPoint'>
 
 const requestMetricStorage = new AsyncLocalStorage<RequestMetricState>()
+const deploymentVersion =
+  typeof __CAELESTIS_DEPLOYMENT_VERSION__ === 'string'
+    ? __CAELESTIS_DEPLOYMENT_VERSION__.slice(0, 12)
+    : 'development'
+const userscriptVersions = new Set(
+  typeof __CAELESTIS_USERSCRIPT_VERSIONS__ === 'object'
+    ? __CAELESTIS_USERSCRIPT_VERSIONS__
+    : ['0.5.4'],
+)
 
 const route = (method: string, pattern: string): string => `${method} ${pattern}`
 const metricMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
@@ -202,16 +211,8 @@ export const measureRequest = async (
 ): Promise<Response> => {
   const client = parseClientMetricsAccept(request.headers.get('accept'))
   const method = normalizeMetricMethod(request.method)
-  const deploymentVersion =
-    typeof __CAELESTIS_DEPLOYMENT_VERSION__ === 'string'
-      ? __CAELESTIS_DEPLOYMENT_VERSION__.slice(0, 12)
-      : 'development'
-  const userscriptVersion =
-    typeof __CAELESTIS_USERSCRIPT_VERSION__ === 'string'
-      ? __CAELESTIS_USERSCRIPT_VERSION__
-      : '0.5.4'
   const clientVersion =
-    (client.client === 'userscript' && client.version === userscriptVersion) ||
+    (client.client === 'userscript' && userscriptVersions.has(client.version)) ||
     (client.client === 'frontend' && client.version === deploymentVersion)
       ? client.version
       : 'unknown'
