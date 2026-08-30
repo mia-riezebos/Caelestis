@@ -90,12 +90,3 @@ export {
   type TileObservation,
   tooManyTemplateIds,
 } from './sql-store.js'
-export type {
-  CommittedStatusChange,
-  StatusReadModel,
-  StatusSnapshotIdentity,
-  StatusSnapshotQuery,
-  StatusSubscriberAttachment,
-  StatusSubscriberQuery,
-  StatusVisibilityScope,
-} from './status-read-model.js'

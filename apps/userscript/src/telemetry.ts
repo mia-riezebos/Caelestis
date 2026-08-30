@@ -511,15 +511,6 @@ export const refreshServerStatus = async (
   if (response === null || !response.ok || !isCurrentServerConnection(server)) return null
   const body = (await response.json().catch(() => null)) as Partial<StatusResponse> | null
   if (body === null || !Array.isArray(body.templates)) return null
-  const revisioned = body.season !== undefined || body.revision !== undefined
-  if (
-    revisioned &&
-    (!Number.isSafeInteger(body.season) ||
-      body.season !== server.season ||
-      !Number.isSafeInteger(body.revision) ||
-      Number(body.revision) < 0)
-  )
-    return null
   let changed = false
   const present = new Set<string>()
   const revision: Array<Omit<TemplateStatus, 'observedAt'>> = []
@@ -556,7 +547,7 @@ export const refreshServerStatus = async (
     }
   }
   revision.sort((left, right) => left.templateId.localeCompare(right.templateId))
-  return revisioned ? `season:${body.season}:revision:${body.revision}` : JSON.stringify(revision)
+  return JSON.stringify(revision)
 }
 
 const refreshAlarms = async (

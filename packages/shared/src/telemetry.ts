@@ -92,9 +92,6 @@ export interface TileOfferBatch extends PainterIdentity {
 
 /** Current server-derived progress for every template the caller may read. */
 export interface StatusResponse {
-  readonly season: number
-  /** Monotonic within one season and shared by read and admin visibility projections. */
-  readonly revision: number
   readonly templates: readonly TemplateStatus[]
 }
 

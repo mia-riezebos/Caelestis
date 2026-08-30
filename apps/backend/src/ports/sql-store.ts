@@ -1009,12 +1009,6 @@ export interface SqlStore {
     options?: { readonly serverOwnedOnly?: boolean },
   ): Promise<readonly TemplateStatus[]>
 
-  /** D1-owned high-water mark for reconstructing the season status projection after eviction. */
-  readStatusProjectionRevision(season: number): Promise<number>
-
-  /** Advance only after the corresponding authoritative status write has committed. */
-  advanceStatusProjectionRevision(season: number): Promise<number>
-
   /** Atomically evaluate and persist one complete template snapshot. */
   evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,

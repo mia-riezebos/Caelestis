@@ -232,8 +232,6 @@ describe('telemetry routes', () => {
     })
     expect(status.status).toBe(200)
     await expect(status.json()).resolves.toEqual({
-      season: 0,
-      revision: 2,
       templates: [
         {
           templateId,
@@ -282,43 +280,6 @@ describe('telemetry routes', () => {
     })
     expect(failed.status).toBe(500)
     expect(outcomes.at(-1)).toEqual({ requested: 1, accepted: 0, alreadyKnown: 0, rejected: 0 })
-  })
-
-  it('revises both visibility projections after a committed publication change', async () => {
-    const { app } = await harness()
-    const templateId = await createPublishedTemplate(app)
-    const reportToken = await mintToken(app, 'report')
-    const readToken = await mintToken(app, 'read')
-    await uploadCanvas(app, reportToken, await canvasTile(), Math.floor(Date.now() / 1_000))
-
-    const initial = await app.request('/telemetry/status?season=0', {
-      headers: bearer(readToken),
-    })
-    await expect(initial.json()).resolves.toMatchObject({
-      season: 0,
-      revision: 2,
-      templates: [{ templateId }],
-    })
-
-    const unpublished = await app.request(`/admin/templates/${templateId}`, {
-      method: 'PATCH',
-      headers: { ...bearer(BOOTSTRAP), 'content-type': 'application/json' },
-      body: JSON.stringify({ published: false }),
-    })
-    expect(unpublished.status).toBe(200)
-
-    const publicSnapshot = await app.request('/telemetry/status?season=0', {
-      headers: bearer(readToken),
-    })
-    const adminSnapshot = await app.request('/telemetry/status?season=0', {
-      headers: bearer(BOOTSTRAP),
-    })
-    await expect(publicSnapshot.json()).resolves.toEqual({ season: 0, revision: 3, templates: [] })
-    await expect(adminSnapshot.json()).resolves.toMatchObject({
-      season: 0,
-      revision: 3,
-      templates: [{ templateId }],
-    })
   })
 
   it('keeps upload validation separate from typed storage failures', async () => {

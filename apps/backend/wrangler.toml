@@ -28,10 +28,6 @@ class_name = "TelemetryShard"
 name = "ALARM_WATCHER"
 class_name = "AlarmWatcher"
 
-[[durable_objects.bindings]]
-name = "STATUS_READ_MODEL"
-class_name = "StatusReadModelObject"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TelemetryShard"]
@@ -39,10 +35,6 @@ new_sqlite_classes = ["TelemetryShard"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["AlarmWatcher"]
-
-[[migrations]]
-tag = "v3"
-new_sqlite_classes = ["StatusReadModelObject"]
 
 [vars]
 SHARD_STRATEGY = "single"

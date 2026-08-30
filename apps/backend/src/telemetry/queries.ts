@@ -16,8 +16,8 @@ import {
 } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { LADDER_RESOLUTIONS, TILE_HISTORY_RESOLUTIONS } from '../ports/index.js'
-import { SqlStoreService, StatusReadModelService } from '../runtime/backend-runtime.js'
-import { SqlStoreReadError, StatusReadModelError } from '../runtime/errors.js'
+import { SqlStoreService } from '../runtime/backend-runtime.js'
+import { SqlStoreReadError } from '../runtime/errors.js'
 
 interface HistoryTier {
   readonly resolution: number
@@ -185,17 +185,13 @@ const sqlRead = <A>(operation: string, read: () => Promise<A>) =>
 export const readStatus = (
   season: number,
   includeUnpublished: boolean,
-): Effect.Effect<StatusResponse, StatusReadModelError, StatusReadModelService> =>
+): Effect.Effect<StatusResponse, SqlStoreReadError, SqlStoreService> =>
   Effect.gen(function* () {
-    const readModel = yield* StatusReadModelService
-    return yield* Effect.tryPromise({
-      try: () =>
-        readModel.reconcileSnapshot({
-          season,
-          scope: includeUnpublished ? 'admin' : 'read',
-        }),
-      catch: (cause) => new StatusReadModelError({ operation: 'reconcileSnapshot', cause }),
-    })
+    const sql = yield* SqlStoreService
+    const templates = yield* sqlRead('readTemplateStatuses', () =>
+      sql.readTemplateStatuses(season, includeUnpublished),
+    )
+    return { templates }
   })
 
 export const readAlarms = (

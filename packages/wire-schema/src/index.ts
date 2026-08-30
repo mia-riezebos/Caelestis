@@ -690,8 +690,6 @@ export const NodeStatus = NodeStatusStruct.pipe(
 )
 
 export const StatusResponse = Schema.Struct({
-  season: NonNegativeInteger,
-  revision: NonNegativeInteger,
   templates: boundedArray(TemplateStatus, MAX_MANIFEST_TEMPLATES),
 })
 

@@ -1,17 +1,15 @@
 import { encodeIndexedPng, millis } from '@caelestis/shared'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import { createMemoryStatusReadModel } from '../adapters/memory/memory-status-read-model.js'
 import { createApp } from '../app.js'
-import type { SqlStore, StatusReadModel } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 
-const harness = async (statusReadModelFor?: (sql: SqlStore) => StatusReadModel) => {
+const harness = async () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
@@ -25,20 +23,12 @@ const harness = async (statusReadModelFor?: (sql: SqlStore) => StatusReadModel) 
     createdAt: millis(Date.now()),
   })
   const runtime = createBackendRuntime(
-    makeBackendContext(
-      blobs,
-      sql,
-      counters,
-      { bootstrapAdminToken: BOOTSTRAP },
-      statusReadModelFor?.(sql) ?? createMemoryStatusReadModel(sql),
-    ),
+    makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
   )
   return { blobs, sql, app: createApp(runtime) }
 }
 
-const bearer = (token: string) => ({
-  headers: { authorization: `Bearer ${token}` },
-})
+const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
 
 const templateForm = (png: Uint8Array): FormData => {
   const form = new FormData()
@@ -132,10 +122,7 @@ describe('template routes', () => {
     })
 
     expect(response.status).toBe(201)
-    const body = (await response.json()) as {
-      templateId: string
-      chunks: Array<{ tile: string }>
-    }
+    const body = (await response.json()) as { templateId: string; chunks: Array<{ tile: string }> }
     expect(body.chunks.map(({ tile }) => tile)).toEqual(['-1/-1', '0/-1'])
     expect((await sql.readTemplate(body.templateId))?.surface).toEqual({
       kind: 'alliance-headquarters',
@@ -227,18 +214,12 @@ describe('template routes', () => {
       body: templateForm(png),
       ...bearer(BOOTSTRAP),
     })
-    const template = (await created.json()) as {
-      templateId: string
-      published: boolean
-    }
+    const template = (await created.json()) as { templateId: string; published: boolean }
     expect(template.published).toBe(false)
 
     const published = await app.request(`/admin/templates/${template.templateId}`, {
       method: 'PATCH',
-      headers: {
-        ...bearer(BOOTSTRAP).headers,
-        'content-type': 'application/json',
-      },
+      headers: { ...bearer(BOOTSTRAP).headers, 'content-type': 'application/json' },
       body: JSON.stringify({ published: true }),
     })
     expect(published.status).toBe(200)
@@ -247,38 +228,6 @@ describe('template routes', () => {
       published: true,
       updatedAt: expect.any(Number),
     })
-  })
-
-  it('keeps a committed publication accepted when projection publication fails', async () => {
-    const failure = new Error('D1 revision unavailable')
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const { app, sql } = await harness()
-    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
-    const created = await app.request('/admin/templates', {
-      method: 'POST',
-      body: templateForm(png),
-      ...bearer(BOOTSTRAP),
-    })
-    const template = (await created.json()) as { templateId: string }
-    vi.spyOn(sql, 'advanceStatusProjectionRevision').mockRejectedValueOnce(failure)
-
-    const published = await app.request(`/admin/templates/${template.templateId}`, {
-      method: 'PATCH',
-      headers: {
-        ...bearer(BOOTSTRAP).headers,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ published: true }),
-    })
-
-    expect(published.status).toBe(200)
-    expect((await sql.readTemplate(template.templateId))?.published).toBe(true)
-    expect(await sql.readStatusProjectionRevision(1)).toBe(0)
-    expect(consoleError).toHaveBeenCalledWith(
-      'status projection publication failed after template commit',
-      failure,
-    )
-    consoleError.mockRestore()
   })
 })
 
@@ -300,10 +249,7 @@ describe('editing a template', () => {
   ) =>
     app.request(`/admin/templates/${id}`, {
       method: 'PATCH',
-      headers: {
-        ...bearer(BOOTSTRAP).headers,
-        'content-type': 'application/json',
-      },
+      headers: { ...bearer(BOOTSTRAP).headers, 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
 
@@ -351,18 +297,13 @@ describe('editing a template', () => {
     const template = await create(app)
     const created = await app.request('/admin/nodes', {
       method: 'POST',
-      headers: {
-        ...bearer(BOOTSTRAP).headers,
-        'content-type': 'application/json',
-      },
+      headers: { ...bearer(BOOTSTRAP).headers, 'content-type': 'application/json' },
       body: JSON.stringify({ season: 1, parentId: null, name: 'Elsewhere' }),
     })
     expect(created.status).toBe(201)
     const { id: destination } = (await created.json()) as { id: string }
 
-    const response = await patch(app, template.templateId, {
-      nodeId: destination,
-    })
+    const response = await patch(app, template.templateId, { nodeId: destination })
 
     expect(response.status).toBe(200)
     const after = await manifestFor(app)
@@ -409,9 +350,7 @@ describe('editing a template', () => {
     const { app, sql } = await harness()
     const template = await create(app)
 
-    const frozen = await patch(app, template.templateId, {
-      timelapseFrozen: true,
-    })
+    const frozen = await patch(app, template.templateId, { timelapseFrozen: true })
     expect(frozen.status).toBe(200)
     await expect(frozen.json()).resolves.toEqual({
       id: template.templateId,
@@ -420,9 +359,7 @@ describe('editing a template', () => {
     })
     expect((await sql.readTemplate(template.templateId))?.timelapseFrozen).toBe(true)
 
-    const thawed = await patch(app, template.templateId, {
-      timelapseFrozen: false,
-    })
+    const thawed = await patch(app, template.templateId, { timelapseFrozen: false })
     expect(thawed.status).toBe(200)
     expect((await sql.readTemplate(template.templateId))?.timelapseFrozen).toBe(false)
     expect((await patch(app, template.templateId, { timelapseFrozen: 'yes' })).status).toBe(400)
@@ -499,10 +436,7 @@ describe('editing a template', () => {
     })
 
     expect(response.status).toBe(201)
-    const body = (await response.json()) as {
-      templateId: string
-      versionId: string
-    }
+    const body = (await response.json()) as { templateId: string; versionId: string }
     expect(body.templateId).toBe(template.templateId)
     expect(body.versionId).not.toBe(template.versionId)
 
@@ -608,9 +542,7 @@ describe('editing a template', () => {
     })
 
     expect(staleDelete.status).toBe(409)
-    await expect(staleDelete.json()).resolves.toEqual({
-      error: 'template changed concurrently',
-    })
+    await expect(staleDelete.json()).resolves.toEqual({ error: 'template changed concurrently' })
     const after = await manifestFor(app)
     expect(after.templates).toHaveLength(1)
     expect(after.templates[0]?.version).toBe(newer.versionId)
@@ -651,10 +583,7 @@ describe('editing a template', () => {
 
     const renamed = await app.request(`/admin/templates/${template.templateId}`, {
       method: 'PATCH',
-      headers: {
-        authorization: `Bearer ${readToken}`,
-        'content-type': 'application/json',
-      },
+      headers: { authorization: `Bearer ${readToken}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Nope' }),
     })
     const deleted = await app.request(`/admin/templates/${template.templateId}`, {
@@ -679,9 +608,7 @@ describe('chunk delivery is reachable by ordinary members', () => {
       body: templateForm(png),
       ...bearer(BOOTSTRAP),
     })
-    const { chunks } = (await upload.json()) as {
-      chunks: Array<{ hash: string }>
-    }
+    const { chunks } = (await upload.json()) as { chunks: Array<{ hash: string }> }
     const hash = chunks[0]?.hash ?? ''
     const readToken = await mintToken(app, 'read')
 

@@ -10,12 +10,8 @@ import {
   WORLD_TILES,
 } from '@caelestis/shared'
 import { Effect } from 'effect'
-import type { AlarmProbe, BlobStore, SqlStore, StatusReadModel } from '../ports/index.js'
-import {
-  BlobStoreService,
-  SqlStoreService,
-  StatusReadModelService,
-} from '../runtime/backend-runtime.js'
+import type { AlarmProbe, BlobStore, SqlStore } from '../ports/index.js'
+import { BlobStoreService, SqlStoreService } from '../runtime/backend-runtime.js'
 import { BackendStorageError } from '../runtime/errors.js'
 import {
   MAX_CANVAS_TILE_BYTES,
@@ -89,11 +85,7 @@ const wplaceTileUrl = (season: number, tile: TileCoord): string =>
   `https://backend.wplace.live/files/s${season}/tiles/${tile.x}/${tile.y}.png`
 
 const fetchCanvasTilesPromise = async (
-  ports: {
-    readonly blobs: BlobStore
-    readonly sql: SqlStore
-    readonly statusReadModel?: StatusReadModel
-  },
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   options: {
     readonly season: number
     readonly now?: Seconds
@@ -286,11 +278,7 @@ const fetchCanvasTilesPromise = async (
 
 /** Refetch only the templates whose six-hour scan opened a regression episode. */
 const fetchAlarmFollowUpsPromise = async (
-  ports: {
-    readonly blobs: BlobStore
-    readonly sql: SqlStore
-    readonly statusReadModel?: StatusReadModel
-  },
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   probes: readonly AlarmProbe[],
   options: {
     readonly now?: Seconds
@@ -472,17 +460,12 @@ export interface FetchCanvasTilesOptions {
 /** Run the canvas mirror through event-scoped Effect services. */
 export const fetchCanvasTiles = (
   options: FetchCanvasTilesOptions,
-): Effect.Effect<
-  FetchReport,
-  BackendStorageError,
-  BlobStoreService | SqlStoreService | StatusReadModelService
-> =>
+): Effect.Effect<FetchReport, BackendStorageError, BlobStoreService | SqlStoreService> =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    const statusReadModel = yield* StatusReadModelService
     return yield* storage('fetchCanvasTiles', () =>
-      fetchCanvasTilesPromise({ blobs, sql, statusReadModel }, options),
+      fetchCanvasTilesPromise({ blobs, sql }, options),
     )
   })
 
@@ -499,16 +482,11 @@ export interface FetchAlarmFollowUpsOptions {
 export const fetchAlarmFollowUps = (
   probes: readonly AlarmProbe[],
   options: FetchAlarmFollowUpsOptions = {},
-): Effect.Effect<
-  AlarmFollowUpReport,
-  BackendStorageError,
-  BlobStoreService | SqlStoreService | StatusReadModelService
-> =>
+): Effect.Effect<AlarmFollowUpReport, BackendStorageError, BlobStoreService | SqlStoreService> =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const sql = yield* SqlStoreService
-    const statusReadModel = yield* StatusReadModelService
     return yield* storage('fetchAlarmFollowUps', () =>
-      fetchAlarmFollowUpsPromise({ blobs, sql, statusReadModel }, probes, options),
+      fetchAlarmFollowUpsPromise({ blobs, sql }, probes, options),
     )
   })
