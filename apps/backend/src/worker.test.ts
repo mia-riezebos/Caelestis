@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
-import worker, { prepareBackend } from './worker.js'
+import worker, { prepareBackendForEvent } from './worker.js'
 
 // `worker.ts` re-exports the Durable Object, whose module imports `cloudflare:workers` — absent
 // outside workerd. Same stub `telemetry-shard.test.ts` uses; nothing on these paths constructs one.
@@ -56,9 +56,9 @@ it('mints the first admin token with the configured ADMIN_TOKEN binding', async 
   await expect(response.json()).resolves.toMatchObject({ label: 'first-admin', scope: 'admin' })
 })
 
-it('prepares one runtime and route graph for a stable Worker environment', () => {
+it('derives binding-backed clients for every Worker event', () => {
   const configured = env()
-  expect(prepareBackend(configured)).toBe(prepareBackend(configured))
+  expect(prepareBackendForEvent(configured)).not.toBe(prepareBackendForEvent(configured))
 })
 
 it('refuses a credential that is not the configured ADMIN_TOKEN', async () => {

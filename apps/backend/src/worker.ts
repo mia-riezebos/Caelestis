@@ -46,39 +46,12 @@ export interface PreparedBackend {
   readonly season: number
 }
 
-interface PreparedBackendCache extends PreparedBackend {
-  readonly db: Env['DB']
-  readonly blobs: Env['BLOBS']
-  readonly telemetry: Env['TELEMETRY']
-  readonly configuration: string
-}
-
-let preparedBackend: PreparedBackendCache | undefined
-
-/** Prepare adapters, Context, and route graph once for a stable Worker environment. */
-export const prepareBackend = (env: Env): PreparedBackend => {
+/** Prepare binding-derived adapters and their Effect Context for the current Worker event. */
+export const prepareBackendForEvent = (env: Env): PreparedBackend => {
   if (env.SHARD_STRATEGY !== 'single') {
     throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
   }
   const season = parseSeason(env.SEASON) ?? 0
-  const configuration = JSON.stringify([
-    env.ADMIN_TOKEN,
-    env.SERVER_ID,
-    env.SERVER_NAME,
-    env.SERVER_DESCRIPTION,
-    season,
-    env.OPEN_ACCESS,
-  ])
-  if (
-    preparedBackend !== undefined &&
-    preparedBackend.db === env.DB &&
-    preparedBackend.blobs === env.BLOBS &&
-    preparedBackend.telemetry === env.TELEMETRY &&
-    preparedBackend.configuration === configuration
-  ) {
-    return preparedBackend
-  }
-
   const ports: Ports = {
     blobs: new R2BlobStore(env.BLOBS),
     sql: new D1SqlStore(env.DB),
@@ -96,28 +69,23 @@ export const prepareBackend = (env: Env): PreparedBackend => {
     currentSeason: season,
     openAccess: env.OPEN_ACCESS === 'true',
   })
-  preparedBackend = {
+  return {
     app,
     runtime,
     season,
-    db: env.DB,
-    blobs: env.BLOBS,
-    telemetry: env.TELEMETRY,
-    configuration,
   }
-  return preparedBackend
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
     if (mountedRequest === null) return new Response('Not Found', { status: 404 })
-    return prepareBackend(env).app.fetch(mountedRequest)
+    return prepareBackendForEvent(env).app.fetch(mountedRequest)
   },
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
   async scheduled(_controller, env, ctx): Promise<void> {
-    const prepared = prepareBackend(env)
+    const prepared = prepareBackendForEvent(env)
     ctx.waitUntil(prepared.runtime.run(fetchCanvasTiles({ season: prepared.season })))
   },
 } satisfies ExportedHandler<Env>
