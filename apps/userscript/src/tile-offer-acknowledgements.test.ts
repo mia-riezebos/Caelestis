@@ -24,13 +24,28 @@ describe('tile offer acknowledgements', () => {
     let now = 1_000
     const receipts = book(() => now)
     const owner = {}
-    receipts.attempted('https://one.example', owner, 1, '1/2\u0000attempted')
+    receipts.retryable('https://one.example', owner, 1, '1/2\u0000attempted')
     receipts.acknowledged('https://one.example', owner, 1, '1/2\u0000expired')
     now += 301
 
     expect(receipts.decision('https://one.example', owner, 1, '1/2\u0000attempted')).toBe('retry')
     expect(receipts.decision('https://one.example', owner, 1, '1/2\u0000expired')).toBe('retry')
     expect(receipts.decision('https://one.example', {}, 1, '1/2\u0000expired')).toBe('fresh')
+  })
+
+  it('holds an in-flight observation out of a second batch until its outcome is known', () => {
+    let now = 1_000
+    const receipts = book(() => now)
+    const owner = {}
+    receipts.started('https://one.example', owner, 1, '1/2\u0000hash')
+    expect(receipts.decision('https://one.example', owner, 1, '1/2\u0000hash')).toBe('pending')
+
+    receipts.retryable('https://one.example', owner, 1, '1/2\u0000hash')
+    expect(receipts.decision('https://one.example', owner, 1, '1/2\u0000hash')).toBe('retry')
+
+    receipts.started('https://one.example', owner, 1, '1/2\u0000hash')
+    now += 301
+    expect(receipts.decision('https://one.example', owner, 1, '1/2\u0000hash')).toBe('retry')
   })
 
   it('starts uncertain after a client restart', () => {
