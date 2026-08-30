@@ -40,8 +40,8 @@ therefore not redo.
 ## TODOs
 
 - [x] Snapshot the Berrycamp fixture corpus and record exact provenance.
-- [~] Add corpus integrity validation and representative real-template contract tests.
-- [ ] Run repository validation and record the completed fixture contract.
+- [x] Add corpus integrity validation and representative real-template contract tests.
+- [~] Run repository validation and record the completed fixture contract.
 
 ## Notes
 
@@ -51,3 +51,6 @@ therefore not redo.
 - The old off-palette rejection requirement no longer matches production. The backend accepts RGBA
   uploads and quantises them; these fixtures instead prove that Berrycamp's output already reports
   zero moved pixels.
+- `pnpm test:fixtures` verifies all 1,715 checksums. The shared contract test decodes and quantises
+  the transparent 2,544×368 Prologue side, matches its four BlueMarble tiles, then pins the four
+  canonical Caelestis chunk hashes.
