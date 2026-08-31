@@ -524,7 +524,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       wanted,
       coverageToken,
     )
-    if ((offeredStatus === null || missingStatus) && !serverLiveSyncHealthy(server))
+    if (missingStatus || (offeredStatus === null && !serverLiveSyncHealthy(server)))
       requestServerSync('post-offer', 'telemetry-status', server)
     for (const entry of httpEntries) {
       const key = offerKey(entry)

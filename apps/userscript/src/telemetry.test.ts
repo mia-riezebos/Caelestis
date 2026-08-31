@@ -661,6 +661,7 @@ describe('server telemetry client', () => {
   })
 
   it('reconciles when a successful wanted upload omits its committed status delta', async () => {
+    coordinator.liveHealthy = true
     let offered = false
     let statusReadsAfterOffer = 0
     vi.stubGlobal(
