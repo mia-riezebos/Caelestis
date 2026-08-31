@@ -91,7 +91,11 @@ interface ObservedPaint {
 interface UnsettledServerOffers {
   readonly season: number
   readonly entries: Map<string, OfferedTile>
-  bytes: number
+}
+
+interface RetainedTileBlob {
+  readonly bytes: Uint8Array
+  refs: number
 }
 
 const coverage = new Map<string, ServerCoverage>()
@@ -101,6 +105,7 @@ const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const delayedFlushes = new Set<string>()
 const activeOfferFlushes = new Set<string>()
 const unsettledOffers = new Map<string, UnsettledServerOffers>()
+const retainedTileBlobs = new Map<string, RetainedTileBlob>()
 const offerRetryDelays = new Map<string, number>()
 const statuses = new ClientStatusProjection<ConnectedServer>()
 const alarms = new Map<
@@ -134,33 +139,46 @@ const deleteUnsettledOffer = (serverUrl: string, deliveryId: string): void => {
   const entry = held?.entries.get(deliveryId)
   if (held === undefined || entry === undefined) return
   held.entries.delete(deliveryId)
-  held.bytes -= entry.bytes.byteLength
+  const blob = retainedTileBlobs.get(entry.sha256)
+  if (blob !== undefined) {
+    blob.refs--
+    if (blob.refs === 0) retainedTileBlobs.delete(entry.sha256)
+  }
   if (held.entries.size === 0) unsettledOffers.delete(serverUrl)
 }
 
-const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): void => {
-  if (server.season === null) return
+const clearUnsettledServer = (serverUrl: string): void => {
+  const held = unsettledOffers.get(serverUrl)
+  if (held === undefined) return
+  for (const deliveryId of [...held.entries.keys()]) deleteUnsettledOffer(serverUrl, deliveryId)
+}
+
+const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): OfferedTile => {
+  if (server.season === null) return entry
   const existing = unsettledOffers.get(server.url)
+  if (existing !== undefined && existing.season !== server.season) clearUnsettledServer(server.url)
   const held =
-    existing?.season === server.season
-      ? existing
-      : {
-          season: server.season,
-          entries: new Map<string, OfferedTile>(),
-          bytes: 0,
-        }
+    unsettledOffers.get(server.url) ??
+    ({
+      season: server.season,
+      entries: new Map<string, OfferedTile>(),
+    } satisfies UnsettledServerOffers)
   if (!held.entries.has(entry.deliveryId)) {
-    held.entries.set(entry.deliveryId, entry)
-    held.bytes += entry.bytes.byteLength
-  }
-  while (held.entries.size > MAX_DEDUPE_VALUES || held.bytes > MAX_RECENT_TILE_BYTES) {
-    const oldest = held.entries.entries().next().value
-    if (oldest === undefined) break
-    held.entries.delete(oldest[0])
-    held.bytes -= oldest[1].bytes.byteLength
-    queued.get(server.url)?.entries.delete(oldest[0])
+    const blob = retainedTileBlobs.get(entry.sha256)
+    if (blob === undefined) retainedTileBlobs.set(entry.sha256, { bytes: entry.bytes, refs: 1 })
+    else blob.refs++
+    held.entries.set(
+      entry.deliveryId,
+      blob === undefined
+        ? entry
+        : {
+            ...entry,
+            bytes: blob.bytes,
+          },
+    )
   }
   unsettledOffers.set(server.url, held)
+  return held.entries.get(entry.deliveryId) ?? entry
 }
 
 const rotateUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
@@ -174,7 +192,7 @@ const clearTileOfferDelivery = (): void => {
   flushTimers.clear()
   delayedFlushes.clear()
   queued.clear()
-  unsettledOffers.clear()
+  for (const serverUrl of [...unsettledOffers.keys()]) clearUnsettledServer(serverUrl)
   offerRetryDelays.clear()
 }
 
@@ -423,6 +441,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
             Number(rejected.has(entry.tile)) ===
           1,
       )
+    if (!getState().shareTiles) return
     const offeredStatus = statusDeltaFrom(responseBody.status)
     if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
     const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
@@ -523,13 +542,13 @@ const shareObservedTile = (entry: OfferedTile): void => {
     }
     if (decision === 'pending') continue
     if (decision === 'retry') tileOfferMetric('retried')
-    retainUnsettledOffer(server, entry)
+    const retained = retainUnsettledOffer(server, entry)
     const previousQueue = queued.get(server.url)
     const serverQueue =
       previousQueue !== undefined && isCurrentServerConnection(previousQueue.server)
         ? previousQueue
         : { server, entries: new Map<string, OfferedTile>() }
-    serverQueue.entries.set(entry.deliveryId, entry)
+    serverQueue.entries.set(retained.deliveryId, retained)
     queued.set(server.url, serverQueue)
     scheduleFlush(server.url)
   }
@@ -660,7 +679,7 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   coverage.set(server.url, { server, tiles: next, contents })
   const unsettled = unsettledOffers.get(server.url)
   if (unsettled !== undefined) {
-    if (unsettled.season !== server.season) unsettledOffers.delete(server.url)
+    if (unsettled.season !== server.season) clearUnsettledServer(server.url)
     else {
       for (const [deliveryId, entry] of unsettled.entries)
         if (!next.has(entry.tile)) deleteUnsettledOffer(server.url, deliveryId)
