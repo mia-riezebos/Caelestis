@@ -103,7 +103,7 @@ const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
 
 const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
-  return held?.healthy === true && held.server === server && isCurrentServerConnection(server)
+  return held?.healthy === true && isCurrentServerConnection(server)
 }
 
 const liveCapable = (server: ConnectedServer): boolean =>
