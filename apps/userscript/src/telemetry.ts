@@ -49,6 +49,8 @@ import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-trans
 import { accountIdentity, loadAccount } from './wplace-account.js'
 
 const OFFER_DELAY_MS = 250
+const OFFER_RETRY_MIN_MS = 60_000
+const OFFER_RETRY_MAX_MS = 60_000
 const REQUEST_TIMEOUT_MS = 15_000
 const RETRIES = 3
 const MAX_RECENT_TILES = 32
@@ -90,7 +92,10 @@ const coverage = new Map<string, ServerCoverage>()
 const queued = new Map<string, ServerQueue>()
 const reportedPaints = new Map<string, ServerDedupe>()
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const delayedFlushes = new Set<string>()
 const activeOfferFlushes = new Set<string>()
+const unsettledOffers = new Map<string, Map<string, OfferedTile>>()
+const offerRetryDelays = new Map<string, number>()
 const statuses = new ClientStatusProjection<ConnectedServer>()
 const alarms = new Map<
   string,
@@ -237,6 +242,7 @@ const uploadWanted = async (
 
 const flushOffers = async (serverUrl: string): Promise<void> => {
   flushTimers.delete(serverUrl)
+  delayedFlushes.delete(serverUrl)
   if (activeOfferFlushes.has(serverUrl)) return
   const pending = queued.get(serverUrl)
   queued.delete(serverUrl)
@@ -253,18 +259,14 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   activeOfferFlushes.add(serverUrl)
   const entries: OfferedTile[] = []
   const selectedTiles = new Set<string>()
-  const remaining = new Map<string, OfferedTile>()
-  for (const [deliveryId, entry] of pending.entries) {
+  for (const entry of pending.entries.values()) {
     if (entries.length < MAX_TILE_OFFERS && !selectedTiles.has(entry.tile)) {
       entries.push(entry)
       selectedTiles.add(entry.tile)
-    } else {
-      remaining.set(deliveryId, entry)
     }
   }
-  if (remaining.size > 0) {
-    queued.set(serverUrl, { server, entries: remaining })
-  }
+  let retryNeeded = false
+  let retryImmediately = false
   try {
     const owner = serverConnectionIdentity(server)
     for (const entry of entries)
@@ -272,6 +274,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     await loadAccount()
     const identity = accountIdentity()
     if (identity === null || !isCurrentServerConnection(server)) {
+      retryNeeded = true
       for (const entry of entries)
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
       return
@@ -287,6 +290,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       }),
     })
     if (response === null || !response.ok) {
+      retryNeeded = true
       for (const entry of entries)
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
       if (response !== null && response.status >= 400 && response.status < 500)
@@ -304,6 +308,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       body === null ||
       !Array.isArray((body as { wanted?: unknown }).wanted)
     ) {
+      retryNeeded = true
       for (const entry of entries)
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
       return
@@ -354,13 +359,18 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       const key = offerKey(entry)
       if ((completeDisposition && acknowledged.has(entry.tile)) || uploaded.has(key)) {
         tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+        unsettledOffers.get(server.url)?.delete(key)
         accepted++
       } else if (completeDisposition && rejected.has(entry.tile)) {
         // A refusal is definitive only for the current manifest coverage. Suppress hot-loop captures,
         // but invalidate this receipt when a later manifest changes the covered tile set.
-        if (!tileOfferAcknowledgements.rejected(server.url, owner, season, key))
+        if (!tileOfferAcknowledgements.rejected(server.url, owner, season, key)) {
+          retryNeeded = true
+          retryImmediately = true
           shareObservedTile(entry)
+        } else unsettledOffers.get(server.url)?.delete(key)
       } else {
+        retryNeeded = true
         tileOfferAcknowledgements.retryable(server.url, owner, season, key)
       }
     }
@@ -368,15 +378,52 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     if (completeDisposition) tileOfferMetric('rejected', rejected.size)
   } finally {
     activeOfferFlushes.delete(serverUrl)
-    if (queued.get(serverUrl)?.entries.size) scheduleFlush(serverUrl)
+    const retryServer = getState().servers.find(
+      (candidate) =>
+        candidate.url === serverUrl &&
+        candidate.status === 'connected' &&
+        candidate.season !== null,
+    )
+    const retryCoverage = retryServer === undefined ? null : coverageFor(retryServer)
+    if (retryServer !== undefined && retryCoverage !== null) {
+      const held = unsettledOffers.get(serverUrl)
+      if (held !== undefined) {
+        const previous = queued.get(serverUrl)
+        const next =
+          previous !== undefined && isCurrentServerConnection(previous.server)
+            ? previous
+            : { server: retryServer, entries: new Map<string, OfferedTile>() }
+        for (const [deliveryId, entry] of held)
+          if (retryCoverage.has(entry.tile)) next.entries.set(deliveryId, entry)
+        if (next.entries.size > 0) queued.set(serverUrl, next)
+      }
+    }
+    if (queued.get(serverUrl)?.entries.size) {
+      const delay =
+        retryNeeded && !retryImmediately
+          ? (offerRetryDelays.get(serverUrl) ?? OFFER_RETRY_MIN_MS)
+          : OFFER_DELAY_MS
+      if (retryNeeded && !retryImmediately)
+        offerRetryDelays.set(serverUrl, Math.min(delay * 2, OFFER_RETRY_MAX_MS))
+      else offerRetryDelays.delete(serverUrl)
+      scheduleFlush(serverUrl, delay)
+    }
   }
 }
 
-const scheduleFlush = (serverUrl: string): void => {
-  if (activeOfferFlushes.has(serverUrl) || flushTimers.has(serverUrl)) return
+const scheduleFlush = (serverUrl: string, delay = OFFER_DELAY_MS): void => {
+  if (activeOfferFlushes.has(serverUrl)) return
+  const pendingTimer = flushTimers.get(serverUrl)
+  if (pendingTimer !== undefined) {
+    if (delay !== OFFER_DELAY_MS || !delayedFlushes.has(serverUrl)) return
+    clearTimeout(pendingTimer)
+    flushTimers.delete(serverUrl)
+    delayedFlushes.delete(serverUrl)
+  }
+  if (delay > OFFER_DELAY_MS) delayedFlushes.add(serverUrl)
   flushTimers.set(
     serverUrl,
-    setTimeout(() => void flushOffers(serverUrl).catch(reportTelemetryError), OFFER_DELAY_MS),
+    setTimeout(() => void flushOffers(serverUrl).catch(reportTelemetryError), delay),
   )
 }
 
@@ -401,6 +448,9 @@ const shareObservedTile = (entry: OfferedTile): void => {
     }
     if (decision === 'pending') continue
     if (decision === 'retry') tileOfferMetric('retried')
+    const held = unsettledOffers.get(server.url) ?? new Map<string, OfferedTile>()
+    held.set(entry.deliveryId, entry)
+    unsettledOffers.set(server.url, held)
     const previousQueue = queued.get(server.url)
     const serverQueue =
       previousQueue !== undefined && isCurrentServerConnection(previousQueue.server)
@@ -512,6 +562,7 @@ const observePaint = (paint: AcceptedPaint): void => {
 const replayRecent = (server: ConnectedServer): void => {
   if (!isCurrentServerConnection(server)) return
   for (const tile of recentTiles.values()) shareObservedTile(tile)
+  for (const tile of unsettledOffers.get(server.url)?.values() ?? []) shareObservedTile(tile)
   for (const paint of recentPaints) void reportPaint(paint).catch(reportTelemetryError)
 }
 
@@ -527,6 +578,12 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
     previous.size !== next.size ||
     [...previous].some((tile) => !next.has(tile))
   coverage.set(server.url, { server, tiles: next, contents })
+  const unsettled = unsettledOffers.get(server.url)
+  if (unsettled !== undefined) {
+    for (const [deliveryId, entry] of unsettled)
+      if (!next.has(entry.tile)) unsettled.delete(deliveryId)
+    if (unsettled.size === 0) unsettledOffers.delete(server.url)
+  }
   if (coverageChanged && server.season !== null) {
     tileOfferAcknowledgements.invalidateRejections(
       server.url,
