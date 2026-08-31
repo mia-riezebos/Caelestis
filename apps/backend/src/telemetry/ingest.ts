@@ -347,6 +347,7 @@ const recordObservationPromise = async (
   options: {
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
+    readonly coverageToken?: string
     readonly artifactWriteBatch?: DerivedArtifactWriteBatch
     readonly onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>
   } = {},
@@ -357,7 +358,6 @@ const recordObservationPromise = async (
     metadata.tile,
     metadata.includeUnpublished,
   )
-  const coverageReadAt = millis(Date.now())
   const observedAtMs = metadata.observedAt * 1_000
   const classified = (
     await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)))
@@ -387,10 +387,10 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
-  if (committed.current !== null) {
+  if (committed.current !== null && options.coverageToken !== undefined) {
     await repairCommittedTileGeneration(ports.statusReadModel, metadata.season, {
       ...committed.current,
-      coverageReadAt,
+      coverageToken: options.coverageToken,
       visibleToPublic: targets.some((target) => target.published),
       visibleToAdmin: targets.length > 0,
     })
@@ -486,6 +486,7 @@ const offerTilePromise = async (
   ports: IngestStores,
   metadata: TileMetadata,
   options: {
+    readonly coverageToken?: string
     readonly artifactWriteBatch?: DerivedArtifactWriteBatch
     readonly onCommitted?: (mutation: StatusProjectionMutation | null) => void | Promise<void>
   } = {},
@@ -499,6 +500,7 @@ const offerTilePromise = async (
   const held = await reserveTileBlob(ports, metadata.hash)
   if (held === null) return 'wanted'
   await recordObservationPromise(ports, metadata, held.bytes, held.reservation.id, {
+    ...(options.coverageToken === undefined ? {} : { coverageToken: options.coverageToken }),
     ...(options.artifactWriteBatch === undefined
       ? {}
       : { artifactWriteBatch: options.artifactWriteBatch }),
@@ -515,6 +517,7 @@ const uploadTilePromise = async (
     readonly requireCoverage?: boolean
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
+    readonly coverageToken?: string
     readonly projectionBatch?: StatusProjectionBatch
     readonly artifactWriteBatch?: DerivedArtifactWriteBatch
   } = {},
@@ -537,6 +540,7 @@ const uploadTilePromise = async (
   try {
     await ports.blobs.put('tiles', reservation.blobKey, bytes)
     await recordObservationPromise(ports, metadata, bytes, reservation.id, {
+      ...(options.coverageToken === undefined ? {} : { coverageToken: options.coverageToken }),
       ...(options.recordHistory === undefined ? {} : { recordHistory: options.recordHistory }),
       ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
       ...(options.artifactWriteBatch === undefined
@@ -729,9 +733,10 @@ export interface TileOfferResult {
   readonly rejected: number
   readonly projection: StatusProjectionChange | null
   readonly cacheOutcome: 'hit' | 'miss' | 'stale'
+  readonly coverageTokens: ReadonlyMap<string, string>
 }
 
-/** Preserve per-offer decisions for capacity metrics while keeping the wire response unchanged. */
+/** Preserve per-offer decisions, cache authority tokens and capacity metrics for the route adapter. */
 export const offerTilesWithOutcome = (
   offers: readonly { readonly key: string; readonly metadata: TileMetadata }[],
 ): Effect.Effect<
@@ -751,6 +756,7 @@ export const offerTilesWithOutcome = (
     let alreadyKnown = 0
     let rejected = 0
     let cacheOutcome: 'hit' | 'miss' | 'stale' = 'hit'
+    const coverageTokens = new Map<string, string>()
     const artifactWriteBatch = createDerivedArtifactWriteBatch(blobs)
     yield* Effect.acquireUseRelease(
       Effect.void,
@@ -778,6 +784,12 @@ export const offerTilesWithOutcome = (
               ),
             )
             for (const key of read.acknowledgedDeliveryIds) cached.add(key)
+            if (read.coverageToken !== null) {
+              coverageTokens.set(
+                `${first.metadata.season}:${first.metadata.includeUnpublished ? 'admin' : 'public'}`,
+                read.coverageToken,
+              )
+            }
             if (read.cacheOutcome === 'stale') cacheOutcome = 'stale'
             else if (read.cacheOutcome === 'miss' && cacheOutcome === 'hit') cacheOutcome = 'miss'
           }
@@ -787,8 +799,12 @@ export const offerTilesWithOutcome = (
               alreadyKnown++
               continue
             }
+            const coverageToken = coverageTokens.get(
+              `${offer.metadata.season}:${offer.metadata.includeUnpublished ? 'admin' : 'public'}`,
+            )
             const outcome = yield* storage('offerTile', () =>
               offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata, {
+                ...(coverageToken === undefined ? {} : { coverageToken }),
                 artifactWriteBatch,
                 onCommitted: (mutation) => {
                   if (mutation === null) return
@@ -832,6 +848,7 @@ export const offerTilesWithOutcome = (
       rejected,
       projection,
       cacheOutcome,
+      coverageTokens,
     }
   })
 
@@ -843,6 +860,7 @@ export const uploadTile = (
     readonly requireCoverage?: boolean
     readonly recordHistory?: boolean
     readonly authoritative?: boolean
+    readonly coverageToken?: string
     readonly projectionBatch?: StatusProjectionBatch
     readonly artifactWriteBatch?: DerivedArtifactWriteBatch
   } = {},

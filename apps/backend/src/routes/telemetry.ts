@@ -53,6 +53,7 @@ const MAX_EPOCH_SECONDS = 4_102_444_800
 const MAX_TILE_FUTURE_SKEW_SECONDS = 5 * 60
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 /** Larger leaderboards stop being leaderboards; page by narrowing the window instead. */
 const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
@@ -508,10 +509,14 @@ export const createTelemetryRoutes = (
         rejected: result.rejected,
       })
       const status = result.projection?.[caller.scope === 'admin' ? 'admin' : 'public']
+      const coverageToken = result.coverageTokens.get(
+        `${body.season}:${caller.scope === 'admin' ? 'admin' : 'public'}`,
+      )
       return c.json({
         wanted: result.wanted,
         acknowledged: result.acknowledged,
         rejected: result.rejectedKeys,
+        ...(coverageToken === undefined ? {} : { coverageToken }),
         ...(status === undefined ? {} : { status }),
       })
     })
@@ -525,6 +530,9 @@ export const createTelemetryRoutes = (
     const observedAt = wholeNumber(c.req.header('x-caelestis-observed-at'))
     const wplaceUserId = wholeNumber(c.req.header('x-caelestis-wplace-user-id'))
     const displayName = decodedHeader(c.req.header('x-caelestis-display-name'))
+    const rawCoverageToken = c.req.header('x-caelestis-tile-coverage-token')
+    const coverageToken =
+      rawCoverageToken !== undefined && UUID.test(rawCoverageToken) ? rawCoverageToken : undefined
     if (
       x === null ||
       y === null ||
@@ -561,6 +569,7 @@ export const createTelemetryRoutes = (
           includeUnpublished: caller.scope === 'admin',
         },
         bytes,
+        coverageToken === undefined ? {} : { coverageToken },
       ),
       (projection) => {
         const status = projection?.[caller.scope === 'admin' ? 'admin' : 'public']

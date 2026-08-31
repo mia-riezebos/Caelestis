@@ -11,7 +11,7 @@ describe('tile generation cache', () => {
       hash: 'a'.repeat(64),
       observedAt: millis(1_000),
       commitOrder: 1,
-      coverageReadAt: millis(1_000),
+      coverageToken: cache.resolve('public', []).coverageToken ?? '',
       visibleToPublic: true,
       visibleToAdmin: true,
     })
@@ -41,7 +41,7 @@ describe('tile generation cache', () => {
       hash: 'b'.repeat(64),
       observedAt: millis(2_000),
       commitOrder: 2,
-      coverageReadAt: millis(10_000),
+      coverageToken: cache.resolve('public', []).coverageToken ?? '',
       visibleToPublic: false,
       visibleToAdmin: true,
     })
@@ -50,7 +50,7 @@ describe('tile generation cache', () => {
       hash: 'a'.repeat(64),
       observedAt: millis(1_000),
       commitOrder: 1,
-      coverageReadAt: millis(10_000),
+      coverageToken: cache.resolve('public', []).coverageToken ?? '',
       visibleToPublic: true,
       visibleToAdmin: true,
     })
@@ -69,7 +69,7 @@ describe('tile generation cache', () => {
       hash: 'a'.repeat(64),
       observedAt: millis(2_000),
       commitOrder: 1,
-      coverageReadAt: millis(10_000),
+      coverageToken: cache.resolve('public', []).coverageToken ?? '',
       visibleToPublic: true,
       visibleToAdmin: true,
     })
@@ -89,7 +89,7 @@ describe('tile generation cache', () => {
       hash: hash.repeat(64),
       observedAt: millis(observedAt),
       commitOrder,
-      coverageReadAt: millis(10_000),
+      coverageToken: cache.resolve('public', []).coverageToken ?? '',
       visibleToPublic: true,
       visibleToAdmin: true,
     })
@@ -110,26 +110,30 @@ describe('tile generation cache', () => {
     ).toEqual(['older-client'])
   })
 
-  it('rejects a repair whose coverage was read before manifest invalidation', () => {
-    let now = 2_000
-    const cache = createTileGenerationCache({ now: () => now })
-    const generation = (coverageReadAt: number) => ({
+  it('rejects a delayed repair that began before manifest invalidation', () => {
+    let token = 0
+    const cache = createTileGenerationCache({
+      now: () => 2_000,
+      createCoverageToken: () => `coverage-${token++}`,
+    })
+    const generation = (coverageToken: string) => ({
       tile: { x: 1, y: 2 },
       hash: 'a'.repeat(64),
       observedAt: millis(1_000),
       commitOrder: 1,
-      coverageReadAt: millis(coverageReadAt),
+      coverageToken,
       visibleToPublic: true,
       visibleToAdmin: true,
     })
     const offer = [{ deliveryId: 'one', tile: { x: 1, y: 2 }, hash: 'a'.repeat(64) }]
 
+    const beforeRead = cache.resolve('public', []).coverageToken ?? ''
     cache.invalidate()
-    cache.apply(generation(1_999))
+    cache.apply(generation(beforeRead))
     expect(cache.resolve('public', offer).cacheOutcome).toBe('miss')
 
-    now = 2_001
-    cache.apply(generation(2_001))
+    const afterRead = cache.resolve('public', []).coverageToken ?? ''
+    cache.apply(generation(afterRead))
     expect(cache.resolve('public', offer).acknowledgedDeliveryIds).toEqual(['one'])
   })
 })

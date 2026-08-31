@@ -63,6 +63,7 @@ export const resolveCurrentTileOffers = async (
     acknowledgedDeliveryIds: [],
     unresolvedDeliveryIds: offers.map((offer) => offer.deliveryId),
     cacheOutcome: 'miss',
+    coverageToken: null,
   })
   if (readModel.resolveCurrentTileOffers === undefined) return unresolved()
   try {

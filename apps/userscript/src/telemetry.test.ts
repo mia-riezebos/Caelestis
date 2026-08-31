@@ -532,7 +532,10 @@ describe('server telemetry client', () => {
           })
         }
         if (url.endsWith('/telemetry/tiles/offers')) {
-          return Response.json({ wanted: ['1/2'] })
+          return Response.json({
+            wanted: ['1/2'],
+            coverageToken: '01890f3e-7b2c-4abc-8def-000000000001',
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -560,6 +563,9 @@ describe('server telemetry client', () => {
     const upload = requests.find(({ url }) => url.includes('/telemetry/tiles/1/2/'))
     expect(new Headers(upload?.init?.headers).get('x-caelestis-display-name')).toBe(
       encodeURIComponent('Mía 🎨'),
+    )
+    expect(new Headers(upload?.init?.headers).get('x-caelestis-tile-coverage-token')).toBe(
+      '01890f3e-7b2c-4abc-8def-000000000001',
     )
     await vi.waitFor(() =>
       expect(serverProgressFor(server, template)).toEqual({

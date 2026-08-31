@@ -282,6 +282,7 @@ const uploadWanted = async (
   identity: NonNullable<ReturnType<typeof accountIdentity>>,
   entries: readonly OfferedTile[],
   wanted: ReadonlySet<string>,
+  coverageToken?: string,
 ): Promise<{
   readonly uploaded: ReadonlySet<string>
   readonly missingStatus: boolean
@@ -307,6 +308,9 @@ const uploadWanted = async (
               'x-caelestis-observed-at': String(entry.ts),
               'x-caelestis-wplace-user-id': String(identity.wplaceUserId),
               'x-caelestis-display-name': encodeURIComponent(identity.displayName),
+              ...(coverageToken === undefined
+                ? {}
+                : { 'x-caelestis-tile-coverage-token': coverageToken }),
             },
             body: entry.bytes.slice().buffer,
           },
@@ -476,6 +480,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       acknowledged?: unknown
       rejected?: unknown
       status?: unknown
+      coverageToken?: unknown
     }
     const offeredTiles = new Set<string>(httpEntries.map((entry) => entry.tile))
     const wanted = new Set(
@@ -510,7 +515,15 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     if (!getState().shareTiles || !isCurrentServerConnection(server)) return
     const offeredStatus = statusDeltaFrom(responseBody.status)
     if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
-    const { uploaded, missingStatus } = await uploadWanted(server, identity, httpEntries, wanted)
+    const coverageToken =
+      typeof responseBody.coverageToken === 'string' ? responseBody.coverageToken : undefined
+    const { uploaded, missingStatus } = await uploadWanted(
+      server,
+      identity,
+      httpEntries,
+      wanted,
+      coverageToken,
+    )
     if ((offeredStatus === null || missingStatus) && !serverLiveSyncHealthy(server))
       requestServerSync('post-offer', 'telemetry-status', server)
     for (const entry of httpEntries) {
