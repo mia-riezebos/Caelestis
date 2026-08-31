@@ -1598,6 +1598,27 @@ describe('server state boundaries', () => {
     await expect(listed).resolves.toEqual({ status: 'unreachable' })
   })
 
+  it('does not request alliance folders through an already replaced connection', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    const { listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    setState({ servers: [{ ...server, token: 'new-token' }] })
+
+    await expect(listServerNodes(server, undefined, surface)).resolves.toEqual({
+      status: 'unreachable',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('rejects an oversized body before parsing it', async () => {
     vi.stubGlobal(
       'fetch',

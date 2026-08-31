@@ -1488,7 +1488,7 @@ export const listServerNodes = async (
   signal?: AbortSignal,
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<ServerNodesResult> => {
-  if (server.season === null) return { status: 'unreachable' }
+  if (server.season === null || !isCurrentServerConnection(server)) return { status: 'unreachable' }
   if (surface.kind !== 'world') {
     const listed = await fetchNodes(
       server.url,
