@@ -88,13 +88,19 @@ interface ObservedPaint {
   readonly paint: AcceptedPaint
 }
 
+interface UnsettledServerOffers {
+  readonly season: number
+  readonly entries: Map<string, OfferedTile>
+  bytes: number
+}
+
 const coverage = new Map<string, ServerCoverage>()
 const queued = new Map<string, ServerQueue>()
 const reportedPaints = new Map<string, ServerDedupe>()
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const delayedFlushes = new Set<string>()
 const activeOfferFlushes = new Set<string>()
-const unsettledOffers = new Map<string, Map<string, OfferedTile>>()
+const unsettledOffers = new Map<string, UnsettledServerOffers>()
 const offerRetryDelays = new Map<string, number>()
 const statuses = new ClientStatusProjection<ConnectedServer>()
 const alarms = new Map<
@@ -122,6 +128,55 @@ const tileOfferMetric = (
 ): void => count(`telemetry:tile-offers-${outcome}`, by)
 
 const offerKey = (entry: OfferedTile): string => entry.deliveryId
+
+const deleteUnsettledOffer = (serverUrl: string, deliveryId: string): void => {
+  const held = unsettledOffers.get(serverUrl)
+  const entry = held?.entries.get(deliveryId)
+  if (held === undefined || entry === undefined) return
+  held.entries.delete(deliveryId)
+  held.bytes -= entry.bytes.byteLength
+  if (held.entries.size === 0) unsettledOffers.delete(serverUrl)
+}
+
+const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): void => {
+  if (server.season === null) return
+  const existing = unsettledOffers.get(server.url)
+  const held =
+    existing?.season === server.season
+      ? existing
+      : {
+          season: server.season,
+          entries: new Map<string, OfferedTile>(),
+          bytes: 0,
+        }
+  if (!held.entries.has(entry.deliveryId)) {
+    held.entries.set(entry.deliveryId, entry)
+    held.bytes += entry.bytes.byteLength
+  }
+  while (held.entries.size > MAX_DEDUPE_VALUES || held.bytes > MAX_RECENT_TILE_BYTES) {
+    const oldest = held.entries.entries().next().value
+    if (oldest === undefined) break
+    held.entries.delete(oldest[0])
+    held.bytes -= oldest[1].bytes.byteLength
+    queued.get(server.url)?.entries.delete(oldest[0])
+  }
+  unsettledOffers.set(server.url, held)
+}
+
+const rotateUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
+  const held = unsettledOffers.get(serverUrl)
+  if (held === undefined || !held.entries.delete(entry.deliveryId)) return
+  held.entries.set(entry.deliveryId, entry)
+}
+
+const clearTileOfferDelivery = (): void => {
+  for (const timer of flushTimers.values()) clearTimeout(timer)
+  flushTimers.clear()
+  delayedFlushes.clear()
+  queued.clear()
+  unsettledOffers.clear()
+  offerRetryDelays.clear()
+}
 
 /** Remember bounded recent delivery IDs; old values may safely be offered again after eviction. */
 const rememberDedupe = (values: Set<string>, value: string): void => {
@@ -192,7 +247,10 @@ const uploadWanted = async (
   identity: NonNullable<ReturnType<typeof accountIdentity>>,
   entries: readonly OfferedTile[],
   wanted: ReadonlySet<string>,
-): Promise<{ readonly uploaded: ReadonlySet<string>; readonly missingStatus: boolean }> => {
+): Promise<{
+  readonly uploaded: ReadonlySet<string>
+  readonly missingStatus: boolean
+}> => {
   const uploaded = new Set<string>()
   const deltas: StatusDelta[] = []
   let missingStatus = false
@@ -221,7 +279,9 @@ const uploadWanted = async (
         if (response?.ok) {
           uploaded.add(entry.deliveryId)
           invalidateServerMismatchTile(server.url, entry.coord)
-          const body = (await response.json().catch(() => null)) as { status?: unknown } | null
+          const body = (await response.json().catch(() => null)) as {
+            status?: unknown
+          } | null
           const delta = statusDeltaFrom(body?.status)
           if (delta === null) missingStatus = true
           else deltas.push(delta)
@@ -243,6 +303,10 @@ const uploadWanted = async (
 const flushOffers = async (serverUrl: string): Promise<void> => {
   flushTimers.delete(serverUrl)
   delayedFlushes.delete(serverUrl)
+  if (!getState().shareTiles) {
+    clearTileOfferDelivery()
+    return
+  }
   if (activeOfferFlushes.has(serverUrl)) return
   const pending = queued.get(serverUrl)
   queued.delete(serverUrl)
@@ -273,10 +337,16 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       tileOfferAcknowledgements.started(server.url, owner, season, offerKey(entry))
     await loadAccount()
     const identity = accountIdentity()
+    if (!getState().shareTiles) {
+      clearTileOfferDelivery()
+      return
+    }
     if (identity === null || !isCurrentServerConnection(server)) {
       retryNeeded = true
-      for (const entry of entries)
+      for (const entry of entries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+        rotateUnsettledOffer(server.url, entry)
+      }
       return
     }
     tileOfferMetric('requested', entries.length)
@@ -291,8 +361,10 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     })
     if (response === null || !response.ok) {
       retryNeeded = true
-      for (const entry of entries)
+      for (const entry of entries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+        rotateUnsettledOffer(server.url, entry)
+      }
       if (response !== null && response.status >= 400 && response.status < 500)
         tileOfferMetric('rejected', entries.length)
       if (response !== null)
@@ -309,8 +381,10 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       !Array.isArray((body as { wanted?: unknown }).wanted)
     ) {
       retryNeeded = true
-      for (const entry of entries)
+      for (const entry of entries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+        rotateUnsettledOffer(server.url, entry)
+      }
       return
     }
     const responseBody = body as {
@@ -359,7 +433,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       const key = offerKey(entry)
       if ((completeDisposition && acknowledged.has(entry.tile)) || uploaded.has(key)) {
         tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
-        unsettledOffers.get(server.url)?.delete(key)
+        deleteUnsettledOffer(server.url, key)
         accepted++
       } else if (completeDisposition && rejected.has(entry.tile)) {
         // A refusal is definitive only for the current manifest coverage. Suppress hot-loop captures,
@@ -368,10 +442,11 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
           retryNeeded = true
           retryImmediately = true
           shareObservedTile(entry)
-        } else unsettledOffers.get(server.url)?.delete(key)
+        } else deleteUnsettledOffer(server.url, key)
       } else {
         retryNeeded = true
         tileOfferAcknowledgements.retryable(server.url, owner, season, key)
+        rotateUnsettledOffer(server.url, entry)
       }
     }
     tileOfferMetric('accepted', accepted)
@@ -385,15 +460,15 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
         candidate.season !== null,
     )
     const retryCoverage = retryServer === undefined ? null : coverageFor(retryServer)
-    if (retryServer !== undefined && retryCoverage !== null) {
+    if (getState().shareTiles && retryServer !== undefined && retryCoverage !== null) {
       const held = unsettledOffers.get(serverUrl)
-      if (held !== undefined) {
+      if (held?.season === retryServer.season) {
         const previous = queued.get(serverUrl)
         const next =
           previous !== undefined && isCurrentServerConnection(previous.server)
             ? previous
             : { server: retryServer, entries: new Map<string, OfferedTile>() }
-        for (const [deliveryId, entry] of held)
+        for (const [deliveryId, entry] of held.entries)
           if (retryCoverage.has(entry.tile)) next.entries.set(deliveryId, entry)
         if (next.entries.size > 0) queued.set(serverUrl, next)
       }
@@ -448,9 +523,7 @@ const shareObservedTile = (entry: OfferedTile): void => {
     }
     if (decision === 'pending') continue
     if (decision === 'retry') tileOfferMetric('retried')
-    const held = unsettledOffers.get(server.url) ?? new Map<string, OfferedTile>()
-    held.set(entry.deliveryId, entry)
-    unsettledOffers.set(server.url, held)
+    retainUnsettledOffer(server, entry)
     const previousQueue = queued.get(server.url)
     const serverQueue =
       previousQueue !== undefined && isCurrentServerConnection(previousQueue.server)
@@ -537,7 +610,10 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
       }
       const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/paints'), {
         method: 'POST',
-        headers: { ...authHeaders(server), 'content-type': 'application/json' },
+        headers: {
+          ...authHeaders(server),
+          'content-type': 'application/json',
+        },
         body: JSON.stringify(event),
       })
       if (response?.ok) return
@@ -559,10 +635,13 @@ const observePaint = (paint: AcceptedPaint): void => {
   void reportPaint(observation).catch(reportTelemetryError)
 }
 
-const replayRecent = (server: ConnectedServer): void => {
+const replayRecent = (server: ConnectedServer, includeRecentTiles = true): void => {
   if (!isCurrentServerConnection(server)) return
-  for (const tile of recentTiles.values()) shareObservedTile(tile)
-  for (const tile of unsettledOffers.get(server.url)?.values() ?? []) shareObservedTile(tile)
+  const deliveries = includeRecentTiles ? new Map(recentTiles) : new Map<string, OfferedTile>()
+  const unsettled = unsettledOffers.get(server.url)
+  if (unsettled?.season === server.season)
+    for (const [deliveryId, tile] of unsettled.entries) deliveries.set(deliveryId, tile)
+  for (const tile of deliveries.values()) shareObservedTile(tile)
   for (const paint of recentPaints) void reportPaint(paint).catch(reportTelemetryError)
 }
 
@@ -571,6 +650,7 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   const held = coverage.get(server.url)
   const previous = coverageFor(server)
   const next = coverageFrom(contents)
+  const seasonChanged = held !== undefined && held.server.season !== server.season
   const coverageChanged =
     previous === null ||
     contents.revision === undefined ||
@@ -580,9 +660,21 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   coverage.set(server.url, { server, tiles: next, contents })
   const unsettled = unsettledOffers.get(server.url)
   if (unsettled !== undefined) {
-    for (const [deliveryId, entry] of unsettled)
-      if (!next.has(entry.tile)) unsettled.delete(deliveryId)
-    if (unsettled.size === 0) unsettledOffers.delete(server.url)
+    if (unsettled.season !== server.season) unsettledOffers.delete(server.url)
+    else {
+      for (const [deliveryId, entry] of unsettled.entries)
+        if (!next.has(entry.tile)) deleteUnsettledOffer(server.url, deliveryId)
+    }
+  }
+  const pending = queued.get(server.url)
+  if (pending !== undefined) {
+    if (!isCurrentServerConnection(pending.server) || pending.server.season !== server.season)
+      queued.delete(server.url)
+    else {
+      for (const [deliveryId, entry] of pending.entries)
+        if (!next.has(entry.tile)) pending.entries.delete(deliveryId)
+      if (pending.entries.size === 0) queued.delete(server.url)
+    }
   }
   if (coverageChanged && server.season !== null) {
     tileOfferAcknowledgements.invalidateRejections(
@@ -591,7 +683,7 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
       server.season,
     )
   }
-  replayRecent(server)
+  replayRecent(server, !seasonChanged)
   requestServerSync('manifest-applied', 'telemetry-status', server)
   requestServerSync('manifest-applied', 'telemetry-alarms', server)
 }
@@ -844,7 +936,11 @@ const refreshAlarms = async (
           held?.contents !== snapshot.contents ||
           JSON.stringify(held.value) !== JSON.stringify(alarm)
         ) {
-          alarms.set(key, { server, contents: snapshot.contents, value: alarm })
+          alarms.set(key, {
+            server,
+            contents: snapshot.contents,
+            value: alarm,
+          })
           changed = true
         }
       }
@@ -911,7 +1007,11 @@ export const activeServerAlarms = (): readonly {
   template: ServerTemplate
   alarm: Alarm
 }[] => {
-  const active: Array<{ server: ConnectedServer; template: ServerTemplate; alarm: Alarm }> = []
+  const active: Array<{
+    server: ConnectedServer
+    template: ServerTemplate
+    alarm: Alarm
+  }> = []
   for (const server of getState().servers) {
     const contents = coverage.get(server.url)?.contents
     if (server.status !== 'connected' || contents === undefined) continue
@@ -982,6 +1082,10 @@ export const installTelemetry = (): void => {
   })
   onStateChange(() => {
     notifyAlarmListeners()
+    if (!getState().shareTiles) {
+      clearTileOfferDelivery()
+      return
+    }
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
       replayRecent(server)
