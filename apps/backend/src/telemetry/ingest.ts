@@ -357,6 +357,7 @@ const recordObservationPromise = async (
     metadata.tile,
     metadata.includeUnpublished,
   )
+  const coverageReadAt = millis(Date.now())
   const observedAtMs = metadata.observedAt * 1_000
   const classified = (
     await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)))
@@ -389,6 +390,8 @@ const recordObservationPromise = async (
   if (committed.current !== null) {
     await repairCommittedTileGeneration(ports.statusReadModel, metadata.season, {
       ...committed.current,
+      authoritative: options.authoritative ?? false,
+      coverageReadAt,
       visibleToPublic: targets.some((target) => target.published),
       visibleToAdmin: targets.length > 0,
     })

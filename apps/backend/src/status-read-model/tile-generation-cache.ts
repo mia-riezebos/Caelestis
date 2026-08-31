@@ -19,6 +19,9 @@ export interface CommittedTileGeneration {
   readonly tile: TileCoord
   readonly hash: string
   readonly observedAt: Millis
+  readonly authoritative: boolean
+  /** Wall-clock instant after the coverage query that produced the visibility flags. */
+  readonly coverageReadAt: Millis
   readonly visibleToPublic: boolean
   readonly visibleToAdmin: boolean
 }
@@ -36,6 +39,7 @@ export const createTileGenerationCache = (
   const entries = new Map<string, CachedTileGeneration>()
   const now = options.now ?? Date.now
   const ttl = options.ttlMilliseconds ?? TILE_GENERATION_CACHE_TTL_MILLISECONDS
+  let coverageInvalidatedAt = Number.NEGATIVE_INFINITY
 
   return {
     resolve(
@@ -78,13 +82,20 @@ export const createTileGenerationCache = (
     },
 
     apply(generation: CommittedTileGeneration): void {
+      if (generation.coverageReadAt <= coverageInvalidatedAt) return
       const key = tileKey(generation.tile)
       const held = entries.get(key)
-      if (held !== undefined && held.observedAt > generation.observedAt) return
+      if (
+        held !== undefined &&
+        held.observedAt > generation.observedAt &&
+        !(generation.authoritative && !held.authoritative)
+      )
+        return
       entries.set(key, { ...generation, expiresAt: now() + ttl })
     },
 
-    invalidate(): void {
+    invalidate(invalidatedAt = now()): void {
+      coverageInvalidatedAt = Math.max(coverageInvalidatedAt, invalidatedAt)
       entries.clear()
     },
   }
