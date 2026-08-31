@@ -11,6 +11,7 @@ import {
   onActiveAllianceSurfaceChange,
 } from '../alliance-surface.js'
 import { warn } from '../debug.js'
+import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
 import { onStateChange } from '../state.js'
 import { isPlain } from '../templates/appearance.js'
 import { appearanceWithPreview } from '../templates/appearance-preview.js'
@@ -259,6 +260,7 @@ class ArtboardRenderer {
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
     gl.clearColor(0, 0, 0, 0)
     gl.clear(gl.COLOR_BUFFER_BIT)
+    if (isOverlayPeekActive()) return
     const templates = displayTemplatesForSurface(this.surface)
     const ids = new Set(templates.map(({ id }) => id))
     for (const id of this.gpu.keys()) if (!ids.has(id)) this.release(id)
@@ -374,6 +376,7 @@ export const installAllianceOverlayLayer = (): void => {
   onActiveAllianceSurfaceChange(reconcileRenderer)
   onLocalChange(repaintAllianceOverlayLayer)
   onLocalPreviewChange(repaintAllianceOverlayLayer)
+  onOverlayPeekChange(repaintAllianceOverlayLayer)
   onStateChange(repaintAllianceOverlayLayer)
   reconcileRenderer()
 }
