@@ -21,6 +21,7 @@ describe('status read-model port helpers', () => {
       commitOrder: 1,
       coverageToken: 'coverage',
       commitToken: 'commit',
+      commitExpiresAt: 2_000,
       visibleToPublic: true,
       visibleToAdmin: true,
     }
@@ -30,6 +31,7 @@ describe('status read-model port helpers', () => {
     expect(finishTileGenerationCommit).toHaveBeenCalledWith(8, generation.tile, {
       coverageToken: 'coverage',
       commitToken: 'commit',
+      commitExpiresAt: 2_000,
     })
     expect(consoleError).toHaveBeenCalledWith(repairError)
   })

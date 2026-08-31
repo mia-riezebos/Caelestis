@@ -324,7 +324,7 @@ describe('tile generation cache', () => {
     ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['stale'] })
   })
 
-  it('keeps an expired newer commit fence unresolved until its repair arrives', () => {
+  it('keeps expired repairs unresolved until a fresh repair revalidates D1', () => {
     let now = 1_000
     let token = 0
     const cache = createTileGenerationCache({
@@ -362,7 +362,21 @@ describe('tile generation cache', () => {
     })
     expect(
       cache.resolve('public', [{ deliveryId: 'newer', tile, hash: 'b'.repeat(64) }]),
-    ).toMatchObject({ acknowledgedDeliveryIds: ['newer'], unresolvedDeliveryIds: [] })
+    ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['newer'] })
+
+    const fresh = cache.prepare(tile)
+    cache.apply({
+      tile,
+      hash: 'b'.repeat(64),
+      observedAt: millis(1_001),
+      commitOrder: 2,
+      ...fresh,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    expect(
+      cache.resolve('public', [{ deliveryId: 'fresh', tile, hash: 'b'.repeat(64) }]),
+    ).toMatchObject({ acknowledgedDeliveryIds: ['fresh'], unresolvedDeliveryIds: [] })
   })
 
   it('keeps a settled candidate unresolved when another commit token expires', () => {

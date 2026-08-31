@@ -576,6 +576,7 @@ describe('telemetry routes', () => {
     const serverCommit = {
       coverageToken: '01890f3e-7b2c-7abc-8def-012345678900',
       commitToken: '01890f3e-7b2c-7abc-8def-012345678901',
+      commitExpiresAt: Date.now() + 5 * 60_000,
     }
     const applyCommittedTileGeneration = vi.fn(async () => undefined)
     const { app } = await harness({
@@ -617,6 +618,7 @@ describe('telemetry routes', () => {
     const serverCommit = {
       coverageToken: '01890f3e-7b2c-7abc-8def-012345678900',
       commitToken: '01890f3e-7b2c-7abc-8def-012345678901',
+      commitExpiresAt: Date.now() + 5 * 60_000,
     }
     const finishTileGenerationCommit = vi.fn(async () => undefined)
     const { app, sql } = await harness({

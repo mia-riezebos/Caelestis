@@ -99,11 +99,12 @@ export const repairCommittedTileGeneration = async (
   generation: CommittedTileGeneration,
 ): Promise<void> => {
   const finishPrepared = () =>
-    generation.commitToken === undefined
+    generation.commitToken === undefined || generation.commitExpiresAt === undefined
       ? Promise.resolve()
       : finishTileGenerationCommit(readModel, season, generation.tile, {
           coverageToken: generation.coverageToken,
           commitToken: generation.commitToken,
+          commitExpiresAt: generation.commitExpiresAt,
         })
   if (readModel.applyCommittedTileGeneration === undefined) {
     await finishPrepared()

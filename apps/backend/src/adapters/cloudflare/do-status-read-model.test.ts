@@ -25,6 +25,7 @@ describe('Durable Object status read-model adapter', () => {
       prepareTileGenerationCommit: vi.fn(async () => ({
         coverageToken: 'coverage-token',
         commitToken: 'commit-token',
+        commitExpiresAt: 1_000,
       })),
       finishTileGenerationCommit: vi.fn(async () => undefined),
       fetch: vi.fn(async (_request: Request) => new Response(null, { status: 204 })),
@@ -45,6 +46,7 @@ describe('Durable Object status read-model adapter', () => {
     await expect(model.prepareTileGenerationCommit(8, { x: 1, y: 2 })).resolves.toEqual({
       coverageToken: 'coverage-token',
       commitToken: 'commit-token',
+      commitExpiresAt: 1_000,
     })
     await model.finishTileGenerationCommit(
       8,
@@ -52,6 +54,7 @@ describe('Durable Object status read-model adapter', () => {
       {
         coverageToken: 'coverage-token',
         commitToken: 'commit-token',
+        commitExpiresAt: 1_000,
       },
     )
     await model.connectLive(
@@ -88,7 +91,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(stub.finishTileGenerationCommit).toHaveBeenCalledWith(
       8,
       { x: 1, y: 2 },
-      { coverageToken: 'coverage-token', commitToken: 'commit-token' },
+      { coverageToken: 'coverage-token', commitToken: 'commit-token', commitExpiresAt: 1_000 },
     )
     const forwarded = stub.fetch.mock.calls[0]?.[0]
     expect(forwarded?.headers.get('authorization')).toBeNull()

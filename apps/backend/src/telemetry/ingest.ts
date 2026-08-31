@@ -423,7 +423,12 @@ const recordObservationPromise = async (
     await repairCommittedTileGeneration(ports.statusReadModel, metadata.season, {
       ...committed.current,
       coverageToken: repairCoverageToken,
-      ...(preparedCoverageToken === null ? {} : { commitToken: preparedCoverageToken.commitToken }),
+      ...(preparedCoverageToken === null
+        ? {}
+        : {
+            commitToken: preparedCoverageToken.commitToken,
+            commitExpiresAt: preparedCoverageToken.commitExpiresAt,
+          }),
       visibleToPublic: targets.some((target) => target.published),
       visibleToAdmin: targets.length > 0,
     })

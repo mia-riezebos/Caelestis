@@ -26,6 +26,8 @@ export interface CommittedTileGeneration {
   readonly coverageToken: string
   /** Per-tile token that rejects repairs superseded by a newer commit attempt. */
   readonly commitToken?: string
+  /** Original fence expiry, so a delayed repair cannot warm the cache after authority was lost. */
+  readonly commitExpiresAt?: number
   readonly visibleToPublic: boolean
   readonly visibleToAdmin: boolean
 }
@@ -33,6 +35,7 @@ export interface CommittedTileGeneration {
 export interface PreparedTileGenerationCommit {
   readonly coverageToken: string
   readonly commitToken: string
+  readonly commitExpiresAt: number
 }
 
 interface CachedTileGeneration extends CommittedTileGeneration {
@@ -117,15 +120,16 @@ export const createTileGenerationCache = (
       const checkedAt = now()
       prunePendingCommits(checkedAt)
       const commitToken = createCoverageToken()
+      const commitExpiresAt = checkedAt + ttl
       const held = entries.get(key)
       const pending = pendingCommits.get(key) ?? {
         active: new Map<string, number>(),
         candidate: held !== undefined && held.expiresAt > checkedAt ? held : null,
       }
-      pending.active.set(commitToken, checkedAt + ttl)
+      pending.active.set(commitToken, commitExpiresAt)
       entries.delete(key)
       pendingCommits.set(key, pending)
-      return { coverageToken, commitToken }
+      return { coverageToken, commitToken, commitExpiresAt }
     },
 
     resolve(
@@ -172,6 +176,14 @@ export const createTileGenerationCache = (
     apply(generation: CommittedTileGeneration): void {
       if (generation.coverageToken !== coverageToken) return
       const key = tileKey(generation.tile)
+      if (
+        generation.commitToken !== undefined &&
+        generation.commitExpiresAt !== undefined &&
+        generation.commitExpiresAt <= now()
+      ) {
+        settle(key, generation.commitToken, null)
+        return
+      }
       if (generation.commitToken !== undefined && settle(key, generation.commitToken, generation))
         return
       const held = entries.get(key)
