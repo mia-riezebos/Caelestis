@@ -81,6 +81,7 @@ interface ServerQueue {
 interface ServerDedupe {
   readonly server: ConnectedServer
   readonly values: Set<string>
+  readonly pending: Set<string>
 }
 
 interface ObservedPaint {
@@ -620,8 +621,11 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
       const dedupe =
         previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
           ? previousDedupe
-          : { server, values: new Set<string>() }
-      if (dedupe.values.has(eventId)) return
+          : { server, values: new Set<string>(), pending: new Set<string>() }
+      if (dedupe.values.has(eventId)) {
+        dedupe.pending.add(eventId)
+        return
+      }
       rememberDedupe(dedupe.values, eventId)
       reportedPaints.set(server.url, dedupe)
       const scopedSubmitted = tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
@@ -646,8 +650,13 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
         },
         body: JSON.stringify(event),
       })
-      if (response?.ok) return
+      if (response?.ok) {
+        dedupe.pending.delete(eventId)
+        return
+      }
       dedupe.values.delete(eventId)
+      if (dedupe.pending.delete(eventId))
+        queueMicrotask(() => void reportPaint(observation).catch(reportTelemetryError))
       if (response !== null)
         warn('install', 'telemetry paint report was rejected', {
           server: server.url,

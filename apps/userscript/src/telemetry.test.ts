@@ -1278,6 +1278,7 @@ describe('server telemetry client', () => {
 
   it('replays failed paint reports when tile sharing is disabled', async () => {
     let attempts = 0
+    let settleFirstAttempt: ((response: Response) => void) | undefined
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -1285,6 +1286,10 @@ describe('server telemetry client', () => {
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/paints')) {
           attempts++
+          if (attempts === 1)
+            return new Promise<Response>((resolve) => {
+              settleFirstAttempt = resolve
+            })
           return new Response(null, { status: attempts <= 3 ? 503 : 204 })
         }
         return new Response(null, { status: 204 })
@@ -1299,12 +1304,15 @@ describe('server telemetry client', () => {
       painted: 1,
       tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
     })
-    await vi.waitFor(() => expect(attempts).toBe(3))
+    await vi.waitFor(() => expect(settleFirstAttempt).toBeDefined())
 
     harness.state = { ...harness.state, shareTiles: false }
     for (const listener of harness.stateListeners) listener()
+    settleFirstAttempt?.(new Response(null, { status: 503 }))
 
     await vi.waitFor(() => expect(attempts).toBe(4))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(attempts).toBe(4)
   })
 
   it('retries one immutable paint event without changing count, order, or attribution', async () => {
