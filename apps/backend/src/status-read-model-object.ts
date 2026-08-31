@@ -180,6 +180,10 @@ export const createChunkedManifestPersistence = (
     }
   }
   return {
+    loadRevision: async () => {
+      const stored = await loadIndex()
+      return stored?.season === season ? stored.revision : null
+    },
     load: async () => {
       const stored = await loadIndex()
       if (stored === null || stored.season !== season) return null

@@ -44,6 +44,8 @@ export interface PersistedManifestReadModel {
 
 export interface ManifestReadModelPersistence {
   readonly load: () => Promise<PersistedManifestReadModel | null>
+  /** Read only the durable revision when the persistence format can avoid loading projections. */
+  readonly loadRevision?: () => Promise<number | null>
   readonly save: (state: PersistedManifestReadModel) => Promise<void>
 }
 
@@ -176,6 +178,11 @@ export const createSeasonManifestReadModel = (options: {
         state = next
         return next.revision
       }),
-    revision: () => exclusive(async () => (await load()).revision),
+    revision: async () => {
+      if (options.persistence.loadRevision !== undefined) {
+        return (await options.persistence.loadRevision()) ?? 1
+      }
+      return exclusive(async () => (await load()).revision)
+    },
   }
 }

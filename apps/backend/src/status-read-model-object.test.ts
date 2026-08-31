@@ -396,6 +396,9 @@ describe('status read-model Durable Object', () => {
     })
     const chunks = [...held.keys()].filter((key) => key.startsWith('manifest-read-model:v1:chunk:'))
     expect(chunks.length).toBeGreaterThan(1)
+    await expect(createChunkedManifestPersistence(state.storage, 4).loadRevision?.()).resolves.toBe(
+      7,
+    )
     await expect(createChunkedManifestPersistence(state.storage, 4).load()).resolves.toMatchObject({
       season: 4,
       revision: 7,

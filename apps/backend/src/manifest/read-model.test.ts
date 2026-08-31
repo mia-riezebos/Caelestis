@@ -203,4 +203,31 @@ describe('manifest read model', () => {
     })
     expect(source).toHaveBeenCalledOnce()
   })
+
+  it('reads a lightweight durable revision without waiting for an active projection refresh', async () => {
+    let releaseSource!: (value: Manifest) => void
+    const source = vi.fn(
+      () =>
+        new Promise<Manifest>((resolve) => {
+          releaseSource = resolve
+        }),
+    )
+    const loadRevision = vi.fn(async () => 9)
+    const model = createSeasonManifestReadModel({
+      season: 7,
+      source,
+      persistence: {
+        load: async () => ({ season: 7, revision: 9, entries: [] }),
+        loadRevision,
+        save: async () => undefined,
+      },
+    })
+    const refreshing = model.read(input)
+    await vi.waitFor(() => expect(source).toHaveBeenCalledOnce())
+
+    await expect(model.revision()).resolves.toBe(9)
+    expect(loadRevision).toHaveBeenCalledOnce()
+    releaseSource(manifest('a'.repeat(64)))
+    await refreshing
+  })
 })
