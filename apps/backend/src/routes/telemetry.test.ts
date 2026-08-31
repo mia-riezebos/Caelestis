@@ -512,6 +512,66 @@ describe('telemetry routes', () => {
     expect(duplicate.status).toBe(400)
   })
 
+  it('omits an oversized response-applied delta without losing the tile disposition', async () => {
+    const templates = Array.from({ length: 100 }, (_, templateIndex) => ({
+      templateId: `template-${templateIndex}`,
+      correct: 1,
+      wrong: 1,
+      blank: 1,
+      total: 3,
+      observedAt: millis(1_800_000_000_000),
+      colours: Array.from({ length: 32 }, (_, index) => ({
+        index,
+        correct: 1,
+        wrong: 0,
+        blank: 0,
+        total: 1,
+      })),
+    }))
+    const delta = { baseRevision: 0, revision: 1, templates, removedTemplateIds: [] }
+    const { app } = await harness({
+      applyCommittedChange: vi.fn(async () => ({ public: delta, admin: delta })),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+    })
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const now = seconds(Math.floor(Date.now() / 1_000))
+
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(now),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+    await expect(uploaded.json()).resolves.toEqual({})
+
+    const offered = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 0,
+        offers: [{ tile: '0/0', sha256: hash, ts: now + 1 }],
+      }),
+    })
+    await expect(offered.json()).resolves.toEqual({
+      wanted: [],
+      acknowledged: ['0/0'],
+      rejected: [],
+    })
+  })
+
   it('repairs an upload with the server prepare token when the client coverage token is stale', async () => {
     const serverCommit = {
       coverageToken: '01890f3e-7b2c-7abc-8def-012345678900',

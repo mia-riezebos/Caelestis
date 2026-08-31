@@ -4,6 +4,7 @@ import {
   type PaintEvent as PaintEventValue,
   parseTileKey,
   type Seconds,
+  type StatusDelta,
   seconds,
   type TileOfferBatch as TileOfferBatchValue,
   WORLD_TILES,
@@ -61,6 +62,13 @@ const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
 const LIVE_PROTOCOL = 'caelestis.live.v1'
 const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
+const MAX_MUTATION_STATUS_BYTES = 32 * 1024
+
+const mutationStatus = (status: StatusDelta | undefined): StatusDelta | undefined =>
+  status !== undefined &&
+  new TextEncoder().encode(JSON.stringify(status)).byteLength <= MAX_MUTATION_STATUS_BYTES
+    ? status
+    : undefined
 
 const decodeLiveCredential = (encoded: string): string | null => {
   if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return null
@@ -538,7 +546,9 @@ export const createTelemetryRoutes = (
         alreadyKnown: result.alreadyKnown,
         rejected: result.rejected,
       })
-      const status = result.projection?.[caller.scope === 'admin' ? 'admin' : 'public']
+      const status = mutationStatus(
+        result.projection?.[caller.scope === 'admin' ? 'admin' : 'public'],
+      )
       const coverageToken = result.coverageTokens.get(
         `${body.season}:${caller.scope === 'admin' ? 'admin' : 'public'}`,
       )
@@ -603,7 +613,7 @@ export const createTelemetryRoutes = (
         coverageToken === undefined ? {} : { coverageToken },
       ),
       (projection) => {
-        const status = projection?.[caller.scope === 'admin' ? 'admin' : 'public']
+        const status = mutationStatus(projection?.[caller.scope === 'admin' ? 'admin' : 'public'])
         return c.json(status === undefined ? {} : { status })
       },
     )
