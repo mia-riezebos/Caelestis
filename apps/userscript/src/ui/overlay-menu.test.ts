@@ -65,11 +65,17 @@ const harness = vi.hoisted(() => ({
   appearanceOf: vi.fn((template: { appearance: Appearance }) => template.appearance),
   setAppearancePreview: vi.fn(),
   clearAppearancePreview: vi.fn(),
+  refreshAllianceManifest: vi.fn(async () => {}),
 }))
 
 beforeAll(() => registerCaelestisUi())
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
+vi.mock('../alliance-server-sync.js', () => ({
+  allianceManifestFor: (_server: unknown, surface: { kind: string }) =>
+    surface.kind === 'world' ? null : { templates: harness.serverTemplates },
+  refreshAllianceManifest: harness.refreshAllianceManifest,
+}))
 vi.mock('../main.js', () => ({
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
   screenProjection: () => ({
@@ -1575,6 +1581,60 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
 })
 
 describe('the menu is ours and has a keyboard exit', () => {
+  it('offers move and delete from an alliance server manifest', async () => {
+    connectServerTemplate(false)
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ serverUrl: 'https://example.test', surface }),
+    ])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    frame.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const draw = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        draw,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+    draw()
+    gear('a').click()
+    draw()
+
+    expect(await byKey('move')).not.toBeNull()
+    expect(await byKey('delete')).not.toBeNull()
+    expect(
+      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="move"]')
+        ?.parentElement,
+    ).toBe(dialog)
+    expect(
+      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="delete"]')
+        ?.parentElement,
+    ).toBe(dialog)
+
+    ;(await byKey('move')).click()
+    const persist = harness.beginServerMove.mock.calls[0]?.[2]
+    if (typeof persist !== 'function') throw new Error('server move did not receive persistence')
+    await persist(12, 34)
+    expect(harness.refreshAllianceManifest).toHaveBeenCalledWith(harness.servers[0], surface)
+    expect(harness.listServerContents).not.toHaveBeenCalled()
+  })
+
   it('offers move and delete for an unpublished server overlay an admin owns', async () => {
     connectServerTemplate(false)
     harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])

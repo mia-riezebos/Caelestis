@@ -15,6 +15,7 @@ import type {
   RailControlIntent,
   RailControlModel,
 } from '@caelestis/ui/elements'
+import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
@@ -470,9 +471,12 @@ const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | n
     (candidate) => candidate.url === template.serverUrl && candidate.isAdmin,
   )
   if (server === undefined) return null
-  const remote = admittedServerContentsFor(server)?.templates.find(
-    (candidate) => candidate.id === template.serverTemplateId,
-  )
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  const manifest =
+    surface.kind === 'world'
+      ? admittedServerContentsFor(server)
+      : allianceManifestFor(server, surface)
+  const remote = manifest?.templates.find((candidate) => candidate.id === template.serverTemplateId)
   return remote === undefined
     ? null
     : {
@@ -490,12 +494,14 @@ const serverLifecycleFor = (
 ): { readonly finished: boolean; readonly frozen: boolean } | null => {
   if (!isServerTemplate(template) || template.serverTemplateId === undefined) return null
   const server = getState().servers.find((candidate) => candidate.url === template.serverUrl)
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
   const remote =
     server === undefined
       ? undefined
-      : admittedServerContentsFor(server)?.templates.find(
-          (candidate) => candidate.id === template.serverTemplateId,
-        )
+      : (surface.kind === 'world'
+          ? admittedServerContentsFor(server)
+          : allianceManifestFor(server, surface)
+        )?.templates.find((candidate) => candidate.id === template.serverTemplateId)
   return remote === undefined
     ? null
     : { finished: remote.finished === true, frozen: remote.timelapseFrozen === true }
@@ -509,6 +515,12 @@ const currentServerActionTargetFor = (id: string): ServerActionTarget | null => 
 const serverDraftIsEditable = (id: string): boolean => {
   const target = currentServerActionTargetFor(id)
   return target !== null && !target.published
+}
+
+const refreshServerTemplateSurface = (server: ConnectedServer, template: PlacedTemplate): void => {
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  if (surface.kind === 'world') void listServerContents(server)
+  else void refreshAllianceManifest(server, surface)
 }
 
 /** The template's name as it is *now* — a name captured at build time goes stale on a rename. */
@@ -1022,7 +1034,7 @@ const moveServerDraft = async (id: string, originX: number, originY: number): Pr
   clearFailure(id, 'move')
   // The manifest coordinator updates both the tree and the rendered server copy. The placement
   // engine accepts its local preview immediately; this read supplies the new immutable version.
-  void listServerContents(currentTarget.server)
+  refreshServerTemplateSurface(currentTarget.server, current)
   return true
 }
 
@@ -1214,7 +1226,7 @@ const confirmDelete = (id: string, rerender: () => void): void => {
             return false
           }
           await forgetServerTemplate(id)
-          void listServerContents(serverTarget.server)
+          if (current !== undefined) refreshServerTemplateSurface(serverTarget.server, current)
           return true
         })
   void removal.then(
