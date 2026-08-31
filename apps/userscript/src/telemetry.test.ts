@@ -784,6 +784,41 @@ describe('server telemetry client', () => {
     expect(attempts).toBe(3)
   })
 
+  it('releases retained retries when their report server is removed', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          attempts++
+          return new Response(null, { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(attempts).toBe(3))
+    for (let index = 0; index < 33; index++)
+      harness.fetchedTile?.({ x: 100 + index, y: 9 }, new Uint8Array([index]), 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+
+    harness.state = { ...harness.state, servers: [] }
+    for (const listener of harness.stateListeners) listener()
+    const replacement = { ...server }
+    harness.retiredServers.add(server)
+    harness.state = { ...harness.state, servers: [replacement] }
+    for (const listener of harness.stateListeners) listener()
+    harness.serverContents?.(replacement, { nodes: [], templates: [template] })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(attempts).toBe(3)
+  })
+
   it('rotates ambiguous batches so later observations are offered', async () => {
     const batches: string[][] = []
     const chunks = Array.from({ length: MAX_TILE_OFFERS + 1 }, (_, index) => ({
@@ -1004,6 +1039,7 @@ describe('server telemetry client', () => {
     const replacement = { ...server }
     harness.retiredServers.add(server)
     harness.state = { ...harness.state, servers: [replacement] }
+    for (const listener of harness.stateListeners) listener()
     harness.serverContents?.(replacement, { nodes: [], templates: [template] })
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
     await new Promise((resolve) => setTimeout(resolve, 350))
