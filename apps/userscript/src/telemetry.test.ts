@@ -21,6 +21,7 @@ const harness = vi.hoisted(() => ({
 }))
 
 const coordinator = vi.hoisted(() => ({
+  liveHealthy: false,
   snapshots: [] as unknown[],
   requests: [] as Array<{ reason: string; resourceId?: string }>,
   resources: new Map<
@@ -82,6 +83,7 @@ vi.mock('./server-sync-coordinator.js', () => ({
     return 'applied'
   },
   serverSyncRevision: () => undefined,
+  serverLiveSyncHealthy: () => coordinator.liveHealthy,
   registerServerSyncResource: (resource: {
     id: string
     refresh: (
@@ -162,6 +164,7 @@ beforeEach(() => {
   harness.stateListeners = []
   harness.retiredServers = new WeakSet<object>()
   coordinator.resources.clear()
+  coordinator.liveHealthy = false
   coordinator.snapshots = []
   coordinator.requests = []
   harness.state = {
@@ -254,7 +257,7 @@ describe('server telemetry client', () => {
     expect(changed).toHaveBeenCalled()
   })
 
-  it('refreshes status and alarms after applying a manifest', async () => {
+  it('reads initial alarms once and refreshes both surfaces after a later manifest change', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => Response.json({ templates: [], alarms: [] })),
@@ -263,7 +266,14 @@ describe('server telemetry client', () => {
     installTelemetry()
     coordinator.requests = []
 
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.serverContents?.(server, { revision: '1', nodes: [], templates: [template] })
+
+    expect(coordinator.requests).toEqual([
+      { reason: 'manifest-applied', resourceId: 'telemetry-alarms' },
+    ])
+    coordinator.requests = []
+
+    harness.serverContents?.(server, { revision: '2', nodes: [], templates: [template] })
 
     expect(coordinator.requests).toEqual([
       { reason: 'manifest-applied', resourceId: 'telemetry-status' },
@@ -317,6 +327,50 @@ describe('server telemetry client', () => {
     expect(changed).not.toHaveBeenCalled()
   })
 
+  it('keeps an in-flight alarm response valid across an unchanged revisioned manifest', async () => {
+    let releaseBody: ((value: unknown) => void) | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (!String(input).includes('/telemetry/alarms')) return Response.json({ templates: [] })
+        return {
+          ok: true,
+          json: () =>
+            new Promise((resolve) => {
+              releaseBody = resolve
+            }),
+        } as Response
+      }),
+    )
+    const { installTelemetry, serverAlarmFor } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { revision: '1', nodes: [], templates: [template] })
+    const resource = coordinator.resources.get('telemetry-alarms')
+    const refreshing = resource?.refresh(server, 'connect', 'recovery')
+    await vi.waitFor(() => expect(releaseBody).toBeTypeOf('function'))
+
+    harness.serverContents?.(server, {
+      revision: '1',
+      nodes: [],
+      templates: [{ ...template }],
+    })
+    releaseBody?.({
+      alarms: [
+        {
+          id: '01890f3e-7b2c-7abc-8def-0123456789ac',
+          templateId: template.id,
+          kind: 'regression',
+          pixelsLost: 12,
+          firstSeen: 1_000,
+          lastSeen: 2_000,
+        },
+      ],
+    })
+
+    await expect(refreshing).resolves.toEqual({ status: 'changed' })
+    expect(serverAlarmFor(server, template)?.pixelsLost).toBe(12)
+  })
+
   it('reads tile bodies only while a connected server may want them', async () => {
     vi.stubGlobal(
       'fetch',
@@ -332,6 +386,38 @@ describe('server telemetry client', () => {
 
     harness.state = { ...harness.state, shareTiles: false }
     expect(harness.tileInterest?.({ x: 1, y: 2 })).toBe(false)
+  })
+
+  it('does not reread status after an unchanged offer while live sync is healthy', async () => {
+    coordinator.liveHealthy = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
+        }
+        return Response.json({ templates: [], alarms: [] })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { revision: '1', nodes: [], templates: [template] })
+    coordinator.requests = []
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+    await vi.waitFor(() =>
+      expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-accepted', 1),
+    )
+
+    expect(coordinator.requests).not.toContainEqual({
+      reason: 'post-offer',
+      resourceId: 'telemetry-status',
+    })
   })
 
   it('replays tiles and accepted paints observed before manifest coverage arrives', async () => {

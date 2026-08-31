@@ -19,6 +19,7 @@ const MAX_RECONNECT_MS = 30_000
 const LIVE_HEARTBEAT_MS = 15 * 60_000
 const LIVE_HEARTBEAT_TIMEOUT_MS = 10_000
 const LIVE_RECOVERY_POLL_MS = 60 * 60_000
+const LIVE_BOOTSTRAP_FALLBACK_MS = 1_000
 
 export type ParsedLiveEvent =
   | Exclude<LiveSyncServerEvent, { readonly type: 'manifest-reconcile' }>
@@ -53,6 +54,7 @@ interface Schedule {
   readonly resource: string
   readonly revision?: string
   readonly unchanged: number
+  readonly failed: boolean
   readonly dueAt: number
 }
 
@@ -65,6 +67,8 @@ interface LiveConnection {
   readonly server: ConnectedServer
   socket: WebSocket | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
+  bootstrapFallbackTimer: ReturnType<typeof setTimeout> | null
+  fallbackReadRequested: boolean
   heartbeatTimer: ReturnType<typeof setTimeout> | null
   heartbeatTimeout: ReturnType<typeof setTimeout> | null
   attempts: number
@@ -75,6 +79,7 @@ interface LiveConnection {
 const resources = new Map<string, ServerSyncResource>()
 const schedules = new Map<string, Schedule>()
 const running = new WeakMap<object, Map<string, Promise<void>>>()
+const pendingLiveRevisions = new WeakMap<object, Map<string, number>>()
 let installed = false
 let timer: ReturnType<typeof setTimeout> | null = null
 let sweepRun: Promise<void> | null = null
@@ -98,8 +103,11 @@ const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
 
 const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
-  return held?.healthy === true && held.server === server && isCurrentServerConnection(server)
+  return liveCapable(server) && held?.healthy === true && isCurrentServerConnection(server)
 }
+
+const liveCapable = (server: ConnectedServer): boolean =>
+  server.info?.liveSync === 1 && typeof WebSocket !== 'undefined'
 
 const liveCredentialProtocol = (token: string): string => {
   const bytes = new TextEncoder().encode(token)
@@ -162,8 +170,25 @@ const applyResult = (
         : { revision: previous.revision }
       : { revision: result.revision }),
     unchanged,
+    failed: result.status === 'failed',
     dueAt: Date.now() + delay,
   })
+}
+
+const deferHealthyLiveSchedules = (server: ConnectedServer): void => {
+  const now = Date.now()
+  for (const resource of resources.values()) {
+    if (resource.live !== true) continue
+    const scope = resource.scope(server)
+    if (scope === null) continue
+    const key = scheduleKey(server, scope, resource.id)
+    const schedule = schedules.get(key)
+    if (schedule === undefined || schedule.failed) continue
+    schedules.set(key, {
+      ...schedule,
+      dueAt: Math.max(schedule.dueAt, now + LIVE_RECOVERY_POLL_MS),
+    })
+  }
 }
 
 const runResource = async (
@@ -191,6 +216,7 @@ const runResource = async (
     .catch(() => applyResult(server, scope, resource.id, { status: 'failed' }))
     .finally(() => {
       if (owned?.get(key) === started) owned.delete(key)
+      finishPendingLiveRevision(server, scope, resource.id)
     })
   owned.set(key, started)
   return started
@@ -262,11 +288,34 @@ export const requestServerSync = (
   armTimer()
 }
 
+const requestLiveServerSync = (
+  reason: ReconciliationReason,
+  server: ConnectedServer,
+): void => {
+  for (const resource of resources.values()) {
+    if (resource.live === true) requestServerSync(reason, resource.id, server)
+  }
+}
+
+const requestAvailableServerSync = (
+  reason: ReconciliationReason,
+  onlyResource?: string,
+): void => {
+  for (const server of connected()) {
+    for (const resource of resources.values()) {
+      if (onlyResource !== undefined && resource.id !== onlyResource) continue
+      if (resource.live === true && liveCapable(server) && !liveHealthy(server)) continue
+      requestServerSync(reason, resource.id, server)
+    }
+  }
+  armTimer()
+}
+
 /** Register a consumer without giving it a timer of its own. */
 export const registerServerSyncResource = (resource: ServerSyncResource): void => {
   if (resources.has(resource.id)) throw new Error(`duplicate server sync resource: ${resource.id}`)
   resources.set(resource.id, resource)
-  if (installed) requestServerSync('connect', resource.id)
+  if (installed) requestAvailableServerSync('connect', resource.id)
 }
 
 /**
@@ -290,6 +339,55 @@ export const serverSyncRevision = (
   scope: string,
   resource: string,
 ): string | undefined => schedules.get(scheduleKey(server, scope, resource))?.revision
+
+const revisionNumber = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+): number | null => {
+  const revision = Number(serverSyncRevision(server, scope, resource))
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : null
+}
+
+const requestLiveRevision = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+  revision: number,
+): void => {
+  const current = revisionNumber(server, scope, resource)
+  if (current !== null && current >= revision) return
+  const owner = serverConnectionIdentity(server)
+  const key = scheduleKey(server, scope, resource)
+  if (running.get(owner)?.has(key) === true) {
+    let pending = pendingLiveRevisions.get(owner)
+    if (pending === undefined) {
+      pending = new Map()
+      pendingLiveRevisions.set(owner, pending)
+    }
+    pending.set(key, Math.max(revision, pending.get(key) ?? -1))
+    return
+  }
+  requestServerSync('revision-gap', resource, server)
+}
+
+const finishPendingLiveRevision = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+): void => {
+  const owner = serverConnectionIdentity(server)
+  const key = scheduleKey(server, scope, resource)
+  const pending = pendingLiveRevisions.get(owner)
+  const expected = pending?.get(key)
+  if (expected === undefined) return
+  pending?.delete(key)
+  if (pending?.size === 0) pendingLiveRevisions.delete(owner)
+  if (!isCurrentServerConnection(server)) return
+  const current = revisionNumber(server, scope, resource)
+  if (current === null || current < expected)
+    requestServerSync('revision-gap', resource, server)
+}
 
 /** Apply a full read only if no response-driven delta advanced the resource while it was in flight. */
 export const applyServerSyncSnapshot = (
@@ -411,17 +509,16 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     if (!applied) requestServerSync('revision-gap', 'telemetry-status', server)
     return
   }
-  const current = serverSyncRevision(server, 'world', 'telemetry-status')
-  if (current !== String(event.revision)) {
-    requestServerSync('revision-gap', 'telemetry-status', server)
-  }
+  requestLiveRevision(server, 'world', 'telemetry-status', event.revision)
 }
 
 const closeLiveConnection = (connection: LiveConnection): void => {
   if (connection.reconnectTimer !== null) clearTimeout(connection.reconnectTimer)
+  if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
   if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
   if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
   connection.reconnectTimer = null
+  connection.bootstrapFallbackTimer = null
   connection.heartbeatTimer = null
   connection.heartbeatTimeout = null
   connection.healthy = false
@@ -461,6 +558,21 @@ const scheduleLiveReconnect = (connection: LiveConnection): void => {
   }, delay)
 }
 
+const armLiveBootstrapFallback = (connection: LiveConnection): void => {
+  if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
+  connection.bootstrapFallbackTimer = setTimeout(() => {
+    connection.bootstrapFallbackTimer = null
+    if (
+      !isCurrentServerConnection(connection.server) ||
+      connection.healthy ||
+      connection.fallbackReadRequested
+    )
+      return
+    connection.fallbackReadRequested = true
+    requestLiveServerSync('reconnect', connection.server)
+  }, LIVE_BOOTSTRAP_FALLBACK_MS)
+}
+
 const openLiveConnection = (connection: LiveConnection): void => {
   const { server } = connection
   if (
@@ -487,16 +599,21 @@ const openLiveConnection = (connection: LiveConnection): void => {
     socket = new WebSocket(endpoint, protocols)
   } catch {
     scheduleLiveReconnect(connection)
+    armLiveBootstrapFallback(connection)
     return
   }
   connection.socket = socket
+  armLiveBootstrapFallback(connection)
   socket.addEventListener('open', () => {
     if (connection.socket !== socket || !isCurrentServerConnection(server)) return
     connection.healthy = true
+    if (connection.bootstrapFallbackTimer !== null)
+      clearTimeout(connection.bootstrapFallbackTimer)
+    connection.bootstrapFallbackTimer = null
+    deferHealthyLiveSchedules(server)
     armLiveHeartbeat(connection)
-    requestServerSync('connect', 'telemetry-status', server)
-    requestServerSync('connect', 'world-manifest', server)
-    requestServerSync('connect', 'telemetry-alarms', server)
+    requestLiveServerSync(connection.attempts === 0 ? 'connect' : 'reconnect', server)
+    connection.fallbackReadRequested = false
     armTimer()
   })
   socket.addEventListener('message', (message) => {
@@ -518,10 +635,8 @@ const openLiveConnection = (connection: LiveConnection): void => {
     connection.heartbeatTimer = null
     connection.heartbeatTimeout = null
     if (!isCurrentServerConnection(server)) return
-    requestServerSync('reconnect', 'telemetry-status', server)
-    requestServerSync('reconnect', 'world-manifest', server)
-    requestServerSync('reconnect', 'telemetry-alarms', server)
     scheduleLiveReconnect(connection)
+    armLiveBootstrapFallback(connection)
     armTimer()
   })
 }
@@ -538,6 +653,8 @@ const reconcileLiveConnections = (): void => {
         server,
         socket: null,
         reconnectTimer: null,
+        bootstrapFallbackTimer: null,
+        fallbackReadRequested: false,
         heartbeatTimer: null,
         heartbeatTimeout: null,
         attempts: 0,
@@ -558,7 +675,13 @@ const reconcileLiveConnections = (): void => {
 const recover = (reason: 'focus' | 'online'): void => {
   if (activeDocument()) {
     reconcileLiveConnections()
-    requestServerSync(reason)
+    for (const server of connected()) {
+      for (const resource of resources.values()) {
+        if (resource.live === true && liveHealthy(server)) continue
+        requestServerSync(reason, resource.id, server)
+      }
+    }
+    armTimer()
   } else clearTimer()
 }
 
@@ -571,16 +694,16 @@ export const installServerSyncCoordinator = (): void => {
     const next = connected()
     const changed =
       next.length !== previousConnections.length ||
-      next.some(
-        (server) =>
-          !previousConnections.some(
-            (held) => held.url === server.url && isCurrentServerConnection(held),
-          ),
-      )
+      next.some((server) => {
+        const previous = previousConnections.find(
+          (held) => held.url === server.url && isCurrentServerConnection(held),
+        )
+        return previous === undefined || liveCapable(previous) !== liveCapable(server)
+      })
     previousConnections = next
     if (changed) {
       reconcileLiveConnections()
-      requestServerSync('state-change')
+      requestAvailableServerSync('state-change')
     }
   })
   if (typeof document !== 'undefined')
@@ -594,7 +717,7 @@ export const installServerSyncCoordinator = (): void => {
     })
   }
   reconcileLiveConnections()
-  requestServerSync('connect')
+  requestAvailableServerSync('connect')
 }
 
 export const serverLiveSyncHealthy = (server: ConnectedServer): boolean => liveHealthy(server)
