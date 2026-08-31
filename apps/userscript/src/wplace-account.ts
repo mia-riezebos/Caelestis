@@ -91,6 +91,7 @@ const replaceIdentity = (next: PainterIdentity | null): void => {
 }
 
 const fetchAccount = async (): Promise<void> => {
+  identityUnavailable = false
   const controller = new AbortController()
   const timeout = setTimeout(
     () => controller.abort(new Error('request timed out')),
