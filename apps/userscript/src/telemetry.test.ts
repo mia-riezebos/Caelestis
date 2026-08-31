@@ -189,7 +189,10 @@ beforeEach(() => {
   }
 })
 
-afterEach(() => {
+afterEach(async () => {
+  harness.state = { ...harness.state, shareTiles: false }
+  for (const listener of harness.stateListeners) listener()
+  await new Promise((resolve) => setTimeout(resolve, 0))
   vi.clearAllTimers()
   vi.unstubAllGlobals()
 })
@@ -965,6 +968,53 @@ describe('server telemetry client', () => {
     expect(attempts).toBe(3)
   })
 
+  it('keeps failed tile retries inside the bounded recent replay window', async () => {
+    const chunks = Array.from({ length: 35 }, (_, index) => ({
+      tile: `${index}/9`,
+      hash: `hash-${index}`,
+    }))
+    const batches: string[][] = []
+    let available = false
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          const tiles = body.offers.map((offer) => offer.tile)
+          batches.push(tiles)
+          return available
+            ? Response.json({ wanted: [], acknowledged: tiles, rejected: [] })
+            : new Response(null, { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, {
+      nodes: [],
+      templates: [{ ...template, chunks }],
+    })
+
+    for (let index = 0; index < 34; index++)
+      harness.fetchedTile?.({ x: index, y: 9 }, new Uint8Array([index]), 1_800_000_000 + index)
+    await vi.waitFor(() => expect(batches).toHaveLength(3))
+    expect(new Set(batches[0])).toEqual(new Set(chunks.slice(0, 34).map((chunk) => chunk.tile)))
+
+    available = true
+    harness.fetchedTile?.({ x: 34, y: 9 }, new Uint8Array([34]), 1_800_000_034)
+    await vi.waitFor(() => expect(batches).toHaveLength(4))
+    const retried = new Set(batches[3])
+    expect(retried.size).toBe(33)
+    expect(retried.has('34/9')).toBe(true)
+    expect(batches[0]?.filter((tile) => retried.has(tile))).toHaveLength(32)
+    await vi.waitFor(() =>
+      expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-accepted', 33),
+    )
+  })
+
   it('rotates ambiguous batches so later observations are offered', async () => {
     const batches: string[][] = []
     const chunks = Array.from({ length: MAX_TILE_OFFERS + 1 }, (_, index) => ({
@@ -1001,9 +1051,15 @@ describe('server telemetry client', () => {
     )
     harness.serverContents?.(server, { nodes: [], templates: [wideTemplate] })
 
-    await vi.waitFor(() => expect(batches.length).toBeGreaterThanOrEqual(3))
+    await vi.waitFor(() => expect(batches.length).toBeGreaterThanOrEqual(2))
     expect(batches[1]).toContain(`${MAX_TILE_OFFERS}/1`)
     expect(new Set(batches.flat())).toEqual(new Set(chunks.map((chunk) => chunk.tile)))
+    await vi.waitFor(() =>
+      expect(debug.count).toHaveBeenCalledWith(
+        'telemetry:tile-offers-accepted',
+        batches[1]?.length,
+      ),
+    )
   })
 
   it('reports distinct tile fetches even when the server just acknowledged the same content', async () => {
@@ -1322,6 +1378,7 @@ describe('server telemetry client', () => {
     await vi.waitFor(() => expect(uploads).toBe(3))
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_003)
     await vi.waitFor(() => expect(offers).toBe(4))
+    await vi.waitFor(() => expect(uploads).toBe(6))
   })
 
   it('suppresses replay of the same rejected observation until coverage changes', async () => {

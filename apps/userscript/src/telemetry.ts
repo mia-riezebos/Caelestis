@@ -57,6 +57,8 @@ const REQUEST_TIMEOUT_MS = 15_000
 const RETRIES = 3
 const MAX_RECENT_TILES = 32
 const MAX_RECENT_TILE_BYTES = 32 * 1_024 * 1_024
+const MAX_UNSETTLED_OFFERS_PER_SERVER = MAX_RECENT_TILES + MAX_TILE_OFFERS
+const MAX_RETAINED_TILE_BYTES = MAX_RECENT_TILE_BYTES
 const MAX_RECENT_PAINTS = 64
 const MAX_DEDUPE_VALUES = 4_096
 const TILE_OFFER_ACKNOWLEDGEMENT_TTL_MS = 5 * 60_000
@@ -110,6 +112,7 @@ const delayedFlushes = new Set<string>()
 const activeOfferFlushes = new Set<string>()
 const unsettledOffers = new Map<string, UnsettledServerOffers>()
 const retainedTileBlobs = new Map<string, RetainedTileBlob>()
+const attemptedTileOffers = new Set<string>()
 const offerRetryDelays = new Map<string, number>()
 const statuses = new ClientStatusProjection<ConnectedServer>()
 const alarms = new Map<
@@ -125,6 +128,7 @@ const alarmListeners = new Set<() => void>()
 const recentTiles = new Map<string, OfferedTile>()
 const recentPaints: ObservedPaint[] = []
 let recentTileBytes = 0
+let retainedTileBytes = 0
 const tileOfferAcknowledgements = new TileOfferAcknowledgements({
   ttlMs: TILE_OFFER_ACKNOWLEDGEMENT_TTL_MS,
   maxServers: MAX_TILE_OFFER_SERVERS,
@@ -137,16 +141,25 @@ const tileOfferMetric = (
 ): void => count(`telemetry:tile-offers-${outcome}`, by)
 
 const offerKey = (entry: OfferedTile): string => entry.deliveryId
+const offerAttemptKey = (serverUrl: string, deliveryId: string): string =>
+  `${serverUrl}\u0000${deliveryId}`
 
 const deleteUnsettledOffer = (serverUrl: string, deliveryId: string): void => {
+  attemptedTileOffers.delete(offerAttemptKey(serverUrl, deliveryId))
   const held = unsettledOffers.get(serverUrl)
   const entry = held?.entries.get(deliveryId)
   if (held === undefined || entry === undefined) return
   held.entries.delete(deliveryId)
+  const pending = queued.get(serverUrl)
+  pending?.entries.delete(deliveryId)
+  if (pending?.entries.size === 0) queued.delete(serverUrl)
   const blob = retainedTileBlobs.get(entry.sha256)
   if (blob !== undefined) {
     blob.refs--
-    if (blob.refs === 0) retainedTileBlobs.delete(entry.sha256)
+    if (blob.refs === 0) {
+      retainedTileBlobs.delete(entry.sha256)
+      retainedTileBytes -= blob.bytes.byteLength
+    }
   }
   if (held.entries.size === 0) unsettledOffers.delete(serverUrl)
 }
@@ -167,6 +180,21 @@ const clearServerTileOfferDelivery = (serverUrl: string): void => {
   offerRetryDelays.delete(serverUrl)
 }
 
+const trimUnsettledOffers = (serverUrl: string): void => {
+  const held = unsettledOffers.get(serverUrl)
+  while (held !== undefined && held.entries.size > MAX_UNSETTLED_OFFERS_PER_SERVER) {
+    const oldest = held.entries.keys().next().value
+    if (oldest === undefined) break
+    deleteUnsettledOffer(serverUrl, oldest)
+  }
+  while (retainedTileBytes > MAX_RETAINED_TILE_BYTES) {
+    const oldestServer = unsettledOffers.entries().next().value
+    const oldest = oldestServer?.[1].entries.keys().next().value
+    if (oldestServer === undefined || oldest === undefined) break
+    deleteUnsettledOffer(oldestServer[0], oldest)
+  }
+}
+
 const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): OfferedTile => {
   if (server.season === null) return entry
   const existing = unsettledOffers.get(server.url)
@@ -179,8 +207,10 @@ const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): Offe
     } satisfies UnsettledServerOffers)
   if (!held.entries.has(entry.deliveryId)) {
     const blob = retainedTileBlobs.get(entry.sha256)
-    if (blob === undefined) retainedTileBlobs.set(entry.sha256, { bytes: entry.bytes, refs: 1 })
-    else blob.refs++
+    if (blob === undefined) {
+      retainedTileBlobs.set(entry.sha256, { bytes: entry.bytes, refs: 1 })
+      retainedTileBytes += entry.bytes.byteLength
+    } else blob.refs++
     held.entries.set(
       entry.deliveryId,
       blob === undefined
@@ -192,6 +222,7 @@ const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): Offe
     )
   }
   unsettledOffers.set(server.url, held)
+  trimUnsettledOffers(server.url)
   return held.entries.get(entry.deliveryId) ?? entry
 }
 
@@ -199,6 +230,12 @@ const rotateUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
   const held = unsettledOffers.get(serverUrl)
   if (held === undefined || !held.entries.delete(entry.deliveryId)) return
   held.entries.set(entry.deliveryId, entry)
+}
+
+/** Retry only observations still inside the bounded recent replay window. */
+const retryUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
+  if (recentTiles.has(entry.deliveryId)) rotateUnsettledOffer(serverUrl, entry)
+  else deleteUnsettledOffer(serverUrl, entry.deliveryId)
 }
 
 const clearTileOfferDelivery = (): void => {
@@ -368,8 +405,13 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       selectedTiles.add(entry.tile)
     }
   }
+  const selectedDeliveryIds = new Set(entries.map((entry) => entry.deliveryId))
   let retryNeeded = false
-  let retryImmediately = false
+  let retryImmediately = [...pending.entries.values()].some(
+    (entry) =>
+      !selectedDeliveryIds.has(entry.deliveryId) &&
+      !attemptedTileOffers.has(offerAttemptKey(server.url, entry.deliveryId)),
+  )
   try {
     const owner = serverConnectionIdentity(server)
     for (const entry of entries)
@@ -382,12 +424,15 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     }
     if (identity === null || !isCurrentServerConnection(server)) {
       retryNeeded = true
+      retryImmediately = false
       for (const entry of entries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
         rotateUnsettledOffer(server.url, entry)
       }
       return
     }
+    for (const entry of entries)
+      attemptedTileOffers.add(offerAttemptKey(server.url, entry.deliveryId))
     tileOfferMetric('requested', entries.length)
     let accepted = 0
     let httpEntries = entries
@@ -451,7 +496,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       retryNeeded = true
       for (const entry of httpEntries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
-        rotateUnsettledOffer(server.url, entry)
+        retryUnsettledOffer(server.url, entry)
       }
       if (response !== null && response.status >= 400 && response.status < 500)
         tileOfferMetric('rejected', httpEntries.length)
@@ -471,7 +516,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       retryNeeded = true
       for (const entry of httpEntries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
-        rotateUnsettledOffer(server.url, entry)
+        retryUnsettledOffer(server.url, entry)
       }
       return
     }
@@ -543,7 +588,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       } else {
         retryNeeded = true
         tileOfferAcknowledgements.retryable(server.url, owner, season, key)
-        rotateUnsettledOffer(server.url, entry)
+        retryUnsettledOffer(server.url, entry)
       }
     }
     tileOfferMetric('accepted', accepted)
