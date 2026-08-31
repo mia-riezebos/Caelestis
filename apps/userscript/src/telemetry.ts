@@ -602,6 +602,44 @@ const observeTile = async (
   shareObservedTile(entry)
 }
 
+const deliverPaint = async (
+  server: ConnectedServer,
+  dedupe: ServerDedupe,
+  eventId: string,
+  body: string,
+): Promise<void> => {
+  const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/paints'), {
+    method: 'POST',
+    headers: {
+      ...authHeaders(server),
+      'content-type': 'application/json',
+    },
+    body,
+  })
+  if (response?.ok) {
+    dedupe.active.delete(eventId)
+    dedupe.pending.delete(eventId)
+    return
+  }
+  dedupe.active.delete(eventId)
+  const replay =
+    dedupe.pending.delete(eventId) &&
+    dedupe.values.has(eventId) &&
+    getState().reportPaints &&
+    isCurrentServerConnection(server)
+  if (replay) {
+    dedupe.active.add(eventId)
+    queueMicrotask(
+      () => void deliverPaint(server, dedupe, eventId, body).catch(reportTelemetryError),
+    )
+  } else dedupe.values.delete(eventId)
+  if (response !== null)
+    warn('install', 'telemetry paint report was rejected', {
+      server: server.url,
+      status: response.status,
+    })
+}
+
 const reportPaint = async (observation: ObservedPaint): Promise<void> => {
   if (!getState().reportPaints) return
   await loadAccount()
@@ -651,28 +689,7 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
               ? scopedSubmitted
               : null,
       }
-      const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/paints'), {
-        method: 'POST',
-        headers: {
-          ...authHeaders(server),
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(event),
-      })
-      if (response?.ok) {
-        dedupe.active.delete(eventId)
-        dedupe.pending.delete(eventId)
-        return
-      }
-      dedupe.active.delete(eventId)
-      dedupe.values.delete(eventId)
-      if (dedupe.pending.delete(eventId))
-        queueMicrotask(() => void reportPaint(observation).catch(reportTelemetryError))
-      if (response !== null)
-        warn('install', 'telemetry paint report was rejected', {
-          server: server.url,
-          status: response.status,
-        })
+      await deliverPaint(server, dedupe, eventId, JSON.stringify(event))
     }),
   )
 }
