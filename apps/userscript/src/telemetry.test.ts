@@ -829,6 +829,45 @@ describe('server telemetry client', () => {
     expect(uploads).toBe(0)
   })
 
+  it('does not fall back to HTTP after sharing is disabled during a live request', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveTileOffers: 1 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.liveHealthy = true
+    let settleLive: ((response: LiveTileOfferCacheResponse | null) => void) | undefined
+    coordinator.liveTileOffer.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settleLive = resolve
+        }),
+    )
+    let httpOffers = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/tiles/offers')) httpOffers++
+        if (url.includes('/telemetry/status')) return Response.json({ revision: 1, templates: [] })
+        if (url.includes('/telemetry/alarms')) return Response.json({ alarms: [] })
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(settleLive).toBeDefined())
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+    settleLive?.(null)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(httpOffers).toBe(0)
+  })
+
   it('does not rebind a retained report across seasons', async () => {
     let attempts = 0
     vi.stubGlobal(
