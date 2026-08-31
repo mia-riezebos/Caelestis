@@ -397,6 +397,11 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
         ts,
       })),
     })
+    if (!getState().shareTiles) {
+      clearTileOfferDelivery()
+      return
+    }
+    if (!isCurrentServerConnection(server)) return
     if (live != null && live.error === undefined) {
       const offeredIds = new Set(entries.map((entry) => entry.deliveryId))
       const cached = new Set(

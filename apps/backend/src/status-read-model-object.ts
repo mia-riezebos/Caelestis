@@ -749,7 +749,14 @@ export class StatusReadModelObject extends DurableObject<Env> {
       acknowledged: response.acknowledgedDeliveryIds.length,
       durationMs: performance.now() - startedAt,
     })
-    this.send(socket, { type: 'tile-offer-cache-result', requestId: event.requestId, response })
+    this.send(socket, {
+      type: 'tile-offer-cache-result',
+      requestId: event.requestId,
+      response: {
+        acknowledgedDeliveryIds: response.acknowledgedDeliveryIds,
+        unresolvedDeliveryIds: response.unresolvedDeliveryIds,
+      },
+    })
   }
 
   override webSocketClose(
