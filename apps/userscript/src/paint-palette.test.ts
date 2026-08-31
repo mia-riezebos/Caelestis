@@ -18,6 +18,9 @@ const harness = vi.hoisted(() => ({
     }) => void
   >,
   paintSubmissionListeners: [] as Array<(submission: { identity: object }) => void>,
+  tilePixelListeners: [] as Array<
+    (tile: { x: number; y: number }, triples: readonly number[], source: 'server' | 'draft') => void
+  >,
   focused: null as {
     id: string
     serverUrl?: string
@@ -133,6 +136,16 @@ vi.mock('./tile-transform.js', () => ({
   },
   onPaintSubmission: (listener: (submission: { identity: object }) => void) => {
     harness.paintSubmissionListeners.push(listener)
+    return vi.fn()
+  },
+  onTilePixels: (
+    listener: (
+      tile: { x: number; y: number },
+      triples: readonly number[],
+      source: 'server' | 'draft',
+    ) => void,
+  ) => {
+    harness.tilePixelListeners.push(listener)
     return vi.fn()
   },
 }))
@@ -567,6 +580,39 @@ describe('Wplace paint palette progress', () => {
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('8')
+  })
+
+  it('forgets cleared coordinate rebases when their source tile refreshes', async () => {
+    harness.focused = {
+      id: 'remote-refreshed-source',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 7, known: 10, total: 10 },
+    ]
+    const { installPaintPaletteProgress, paintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.draftPixelDeltas = [
+      { key: '3/4/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
+    harness.draftPixelDeltas = []
+    harness.draftListeners.at(-1)?.()
+    harness.serverProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 7, known: 10, total: 10 },
+    ]
+    harness.statusListeners.at(-1)?.()
+    paintPaletteProgress()
+
+    harness.tilePixelListeners.at(-1)?.({ x: 3, y: 4 }, [0, 0, 0], 'server')
+    harness.draftPixelDeltas = [
+      { key: '3/4/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+
+    expect(paintPaletteProgress()[0]).toMatchObject({ completed: 4, mismatched: 0 })
   })
 
   it('drops a cleared rebase when a template version changes the desired colour', async () => {

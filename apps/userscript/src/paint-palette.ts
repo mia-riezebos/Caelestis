@@ -15,7 +15,12 @@ import {
 } from './templates/mismatch.js'
 import { navigateTo } from './templates/navigate.js'
 import { focusedTemplate } from './templates/nearest.js'
-import { onAcceptedPaint, onPaintSubmission, type PaintSubmission } from './tile-transform.js'
+import {
+  onAcceptedPaint,
+  onPaintSubmission,
+  onTilePixels,
+  type PaintSubmission,
+} from './tile-transform.js'
 import { applyColourProgressDelta } from './ui/progress.js'
 import {
   isPaintOpen,
@@ -57,6 +62,19 @@ interface SubmittedDraft {
 
 const draftProjections = new Map<string, DraftProjection>()
 const submittedDrafts = new WeakMap<object, SubmittedDraft>()
+
+const forgetRebasedTile = (tile: { readonly x: number; readonly y: number }): boolean => {
+  const prefix = `${tile.x}/${tile.y}/`
+  let changed = false
+  for (const state of draftProjections.values()) {
+    for (const key of state.rebasedFrom.keys()) {
+      if (!key.startsWith(prefix)) continue
+      state.rebasedFrom.delete(key)
+      changed = true
+    }
+  }
+  return changed
+}
 
 const projectionIdentity = (
   template: PlacedTemplate,
@@ -546,6 +564,9 @@ export const installPaintPaletteProgress = (): void => {
   pixelAccounting.onChange(queueRender)
   pixelAccounting.onDraftChange(queueRender)
   onPaintSubmission(snapshotSubmittedDraft)
+  onTilePixels((tile, triples, source) => {
+    if (source === 'server' && triples.length > 0 && forgetRebasedTile(tile)) queueRender()
+  })
   onAcceptedPaint((paint) => {
     const submitted = paint.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
     if (submitted > 0 && paint.painted === submitted) retainAcceptedDraft(paint.submission)
