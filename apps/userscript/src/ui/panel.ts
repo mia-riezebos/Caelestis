@@ -769,6 +769,7 @@ const appearanceModel = (): AppearanceEditorModel => {
     ),
     onlySelectedColour: panelSurface.kind === 'world' && state.onlySelectedColour,
     showOnlySelectedColour: panelSurface.kind === 'world',
+    showMarkers: panelSurface.kind === 'world',
     paintOpen: panelSurface.kind === 'world' && isPaintOpen(),
     ...(selectedColourName === undefined ? {} : { selectedColourName }),
     ...(panelSurface.kind === 'world'

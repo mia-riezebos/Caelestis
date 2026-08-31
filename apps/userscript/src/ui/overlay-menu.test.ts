@@ -1055,6 +1055,65 @@ describe('placement and geometry', () => {
     expect(menuPosition.y + 200).toBeLessThanOrEqual(viewport.bottom)
   })
 
+  it('hides alliance rails when the visible stage slice cannot fit them', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([template({ surface, originX: -100, originY: -125 })])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    let stageWidth = 600
+    stage.getBoundingClientRect = () =>
+      ({
+        left: 100,
+        top: 150,
+        right: 100 + stageWidth,
+        bottom: 230,
+        width: stageWidth,
+        height: 80,
+      }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 150, right: 700, bottom: 750, width: 600, height: 600 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const rerender = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        rerender,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+
+    rerender()
+    gear('a').click()
+    rerender()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
+
+    harness.isMoving.mockReturnValue(true)
+    harness.movingId.mockReturnValue('a')
+    harness.placementSeq.mockReturnValue(1)
+    rerender()
+    expect(document.querySelector('[data-caelestis-placement-action]')).toBeNull()
+
+    harness.isMoving.mockReturnValue(false)
+    harness.movingId.mockReturnValue(null)
+    harness.placementSeq.mockReturnValue(null)
+    stageWidth = 30
+    rerender()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+  })
+
   it('remeasures after a custom-element menu first connects at zero height', async () => {
     let menuMeasurements = 0
     Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {

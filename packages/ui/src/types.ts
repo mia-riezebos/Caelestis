@@ -484,6 +484,8 @@ export interface AppearanceEditorModel {
   readonly palette: readonly AppearancePaletteColourModel[]
   readonly onlySelectedColour: boolean
   readonly showOnlySelectedColour?: boolean
+  /** Marker accounting is unavailable on drawing surfaces that do not expose paint snapshots. */
+  readonly showMarkers?: boolean
   readonly paintOpen: boolean
   readonly selectedColourName?: string
   readonly markerBudget?: number

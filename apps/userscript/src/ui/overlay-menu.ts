@@ -850,6 +850,7 @@ const overlayAppearanceModel = (template: PlacedTemplate): AppearanceEditorModel
     ),
     onlySelectedColour: false,
     showOnlySelectedColour: false,
+    showMarkers: (template.surface ?? WORLD_TEMPLATE_SURFACE).kind === 'world',
     paintOpen: isPaintOpen(),
     groups: {
       pixels: { owned: ownsGroup(template, 'pixels') },
@@ -1733,7 +1734,10 @@ const allianceControlViewport = (stage: HTMLElement): ControlViewport | null => 
     right: Math.min(localControlsRightEdge(), box.right - 4),
     bottom: Math.min(window.innerHeight - VIEWPORT_EDGE, box.bottom - VIEWPORT_EDGE),
   }
-  return viewport.right > viewport.left && viewport.bottom > viewport.top ? viewport : null
+  return viewport.right - viewport.left >= MENU_BUTTON_SIZE &&
+    viewport.bottom - viewport.top >= MENU_BUTTON_SIZE
+    ? viewport
+    : null
 }
 
 /** Reuse the world template controls with the active artboard's screen projection. */
@@ -1916,6 +1920,10 @@ const renderControls = (
       }
       const rail = placementRailFor(template.id, host)
       const railHeight = MENU_BUTTON_SIZE * 2 + RAIL_GAP
+      if (viewport.bottom - viewport.top < railHeight) {
+        removePlacementRail(template.id)
+        continue
+      }
       const railTop = Math.min(
         Math.max(corner.y, viewport.top),
         Math.max(viewport.top, viewport.bottom - railHeight),
@@ -1954,6 +1962,26 @@ const renderControls = (
       // The same teardown the map disappearing gets: the overlay leaving the viewport is the
       // ordinary way to look at the map while its menu is open, so it must not cost a drag its
       // value — and a rebuild is still refused under a held slider.
+      if (openFor === template.id && menuNode !== null) {
+        if (rangeGestures.isHeldWithin(menuNode)) continue
+        endGestures()
+        menuNode.remove()
+        menuNode = null
+        menuOwner = null
+        removeRailActions()
+      }
+      button?.remove()
+      buttons.delete(template.id)
+      continue
+    }
+    const actionCount =
+      openFor === template.id
+        ? isServerTemplate(template) && serverActionTargetFor(template) === null
+          ? 1
+          : 3
+        : 0
+    const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
+    if (viewport.bottom - viewport.top < railHeight) {
       if (openFor === template.id && menuNode !== null) {
         if (rangeGestures.isHeldWithin(menuNode)) continue
         endGestures()
@@ -2014,13 +2042,6 @@ const renderControls = (
     }
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
-    const actionCount =
-      openFor === template.id
-        ? isServerTemplate(template) && serverActionTargetFor(template) === null
-          ? 1
-          : 3
-        : 0
-    const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
     const buttonTop = Math.min(
       Math.max(corner.y, viewport.top),
       Math.max(viewport.top, viewport.bottom - railHeight),
