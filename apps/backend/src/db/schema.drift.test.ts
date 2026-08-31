@@ -231,4 +231,37 @@ describe('the Drizzle schema and migration history agree', () => {
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     database.close()
   })
+
+  it('migrates existing nodes onto the world surface', () => {
+    const database = new DatabaseSync(':memory:')
+    const surfaceIndex = migrations.findIndex(
+      ({ name }) => name === '0009_careful_steel_serpent.sql',
+    )
+    expect(surfaceIndex).toBeGreaterThan(0)
+    database.exec(
+      migrations
+        .slice(0, surfaceIndex)
+        .map(({ sql }) => sql)
+        .join('\n')
+        .replaceAll('--> statement-breakpoint', ''),
+    )
+    database
+      .prepare(
+        `INSERT INTO nodes (
+          id, season, parent_id, path, name, description, delete_token, created_at_ms
+        ) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?)`,
+      )
+      .run('legacy-node', 1, '/legacy', 'Legacy', 1_000)
+
+    for (const migration of migrations.slice(surfaceIndex)) {
+      database.exec(`BEGIN;\n${migration.sql.replaceAll('--> statement-breakpoint', '')}\nCOMMIT;`)
+    }
+
+    expect(
+      database
+        .prepare('SELECT surface_kind, alliance_id FROM nodes WHERE id = ?')
+        .get('legacy-node'),
+    ).toEqual({ surface_kind: 'world', alliance_id: null })
+    database.close()
+  })
 })

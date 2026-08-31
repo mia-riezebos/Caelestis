@@ -28,7 +28,7 @@ export const assembleManifest = async (
 ): Promise<Manifest> => {
   const surface = options.surface ?? { kind: 'world', allianceId: null }
   const [nodeRecords, templateRecords, tileRecords] = await Promise.all([
-    ports.sql.listNodes(options.season),
+    ports.sql.listNodes(options.season, surface),
     ports.sql.listManifestTemplates(
       { season: options.season, surface },
       options.includeUnpublished,

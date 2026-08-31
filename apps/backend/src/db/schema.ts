@@ -40,6 +40,13 @@ export const nodes = sqliteTable(
   {
     id: text('id').primaryKey(),
     season: integer('season').notNull(),
+    surfaceKind: text('surface_kind', {
+      enum: ['world', 'alliance-headquarters', 'alliance-picture', 'alliance-banner'],
+    })
+      .$type<TemplateSurfaceKind>()
+      .notNull()
+      .default('world'),
+    allianceId: integer('alliance_id'),
     parentId: text('parent_id').references((): AnySQLiteColumn => nodes.id),
     path: text('path').notNull(),
     name: text('name').notNull(),
@@ -48,9 +55,9 @@ export const nodes = sqliteTable(
     deleteToken: text('delete_token'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
-  // Within a season, path is the prefix-rollup key and subtree-rewrite key. Two nodes sharing one
-  // path make a rollup attribute one group's templates to another, and make the documented
-  // prefix-matched subtree move rewrites both subtrees when either one is renamed.
+  // Within a season and drawing surface, path is the prefix-rollup key and subtree-rewrite key. Two
+  // nodes sharing one path make a rollup attribute one group's templates to another, and make the
+  // documented prefix-matched subtree move rewrite both subtrees when either one is renamed.
   // Lowercase, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
   // a subtree move matched on `<old>/` rewrites the other one's descendants too.
   //
@@ -59,7 +66,18 @@ export const nodes = sqliteTable(
   // with it leaves that row pointing at a prefix that no longer exists. The move has to rebuild the
   // path from its length: `<new> || substr(path, length(<old>) + 1)`.
   (table) => [
-    uniqueIndex('nodes_season_path_idx').on(table.season, sql`lower(${table.path})`),
+    uniqueIndex('nodes_world_path_idx')
+      .on(table.season, sql`lower(${table.path})`)
+      .where(sql`${table.surfaceKind} = 'world'`),
+    uniqueIndex('nodes_alliance_surface_path_idx')
+      .on(table.season, table.surfaceKind, table.allianceId, sql`lower(${table.path})`)
+      .where(sql`${table.surfaceKind} <> 'world'`),
+    check(
+      'nodes_surface_check',
+      sql`(${table.surfaceKind} = 'world' AND ${table.allianceId} IS NULL)
+        OR (${table.surfaceKind} IN ('alliance-headquarters', 'alliance-picture', 'alliance-banner')
+          AND typeof(${table.allianceId}) = 'integer' AND ${table.allianceId} > 0)`,
+    ),
     // The wire's NodePath states this shape, and that schema validates the manifest *response* —
     // nothing stood between a create-or-rename-group route and this column, and `nodes` was the one
     // table in this file carrying no CHECK at all.

@@ -19,6 +19,7 @@ const harness = async () => {
   }
   await sql.insertNode({
     id: NODE_ID,
+    surface: { kind: 'world', allianceId: null },
     season: 1,
     parentId: null,
     path: '/templates',
@@ -111,6 +112,8 @@ describe('template routes', () => {
     const { app, sql } = await harness()
     const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
     const form = templateForm(png)
+    form.delete('nodeId')
+    form.set('season', '1')
     form.set('surfaceKind', 'alliance-headquarters')
     form.set('allianceId', '535245')
     form.set('originX', '-1')

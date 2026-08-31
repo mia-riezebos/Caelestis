@@ -1,4 +1,4 @@
-import { millis, type ServerInfo } from '@caelestis/shared'
+import { millis, type ServerInfo, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { Manifest } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -26,6 +26,7 @@ const server: ServerInfo = {
 const createdAt = millis(1_750_000_000_000)
 const node: NodeRecord = {
   id: '01890f3a-6b7c-7def-8123-456789abcde0',
+  surface: WORLD_TEMPLATE_SURFACE,
   season: 1,
   parentId: null,
   path: '/group',

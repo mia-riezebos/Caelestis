@@ -50,6 +50,7 @@ const harness = async () => {
   const sql = new MemorySqlStore()
   await sql.insertNode({
     id: NODE_ID,
+    surface: { kind: 'world', allianceId: null },
     season: 1,
     parentId: null,
     path: '/test',
@@ -157,6 +158,7 @@ describe('storeTemplate', () => {
     const destination = '01890f3e-7b2c-7abc-8def-0123456789ac'
     await ports.sql.insertNode({
       id: destination,
+      surface: { kind: 'world', allianceId: null },
       season: 1,
       parentId: null,
       path: '/destination',

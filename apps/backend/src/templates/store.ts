@@ -8,6 +8,7 @@ import {
   type QuantiseReport,
   quantiseToPalette,
   type SurfaceChunkKey,
+  sameTemplateSurface,
   sha256Hex,
   sliceTemplateForSurface,
   type TemplateSurface,
@@ -107,7 +108,7 @@ export const storeTemplate = async (
   if (input.templateId === undefined && input.nodeId !== null) {
     const node = await ports.sql.readNode(input.nodeId)
     if (node === null) throw new NodeNotFoundError(`node does not exist: ${input.nodeId}`)
-    if (node.season !== input.season) {
+    if (node.season !== input.season || !sameTemplateSurface(node.surface, input.surface)) {
       throw new NodeNotFoundError(`node does not exist in season ${input.season}: ${input.nodeId}`)
     }
   }

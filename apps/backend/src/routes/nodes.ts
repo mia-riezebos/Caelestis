@@ -1,4 +1,11 @@
-import { millis, nodeSlug, uuidV7 } from '@caelestis/shared'
+import {
+  millis,
+  nodeSlug,
+  type TemplateSurface,
+  templateSurface,
+  uuidV7,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { NodeRecord, Ports } from '../ports/index.js'
@@ -16,12 +23,23 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const SEASON_NUMBER = /^(?:0|[1-9]\d*)$/
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4_096
+const POSITIVE_NUMBER = /^[1-9]\d*$/
 
 const parseSeason = (value: unknown): number | null => {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : null
   if (typeof value !== 'string' || !SEASON_NUMBER.test(value)) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+const parseSurface = (kind: unknown, allianceId: unknown): TemplateSurface | null => {
+  if (kind === undefined && allianceId === undefined) return WORLD_TEMPLATE_SURFACE
+  if (kind === 'world') return allianceId === undefined ? WORLD_TEMPLATE_SURFACE : null
+  if (typeof kind !== 'string') return null
+  const text = typeof allianceId === 'number' ? String(allianceId) : allianceId
+  if (typeof text !== 'string' || !POSITIVE_NUMBER.test(text)) return null
+  const parsedAllianceId = Number(text)
+  return Number.isSafeInteger(parsedAllianceId) ? templateSurface(kind, parsedAllianceId) : null
 }
 
 /**
@@ -42,7 +60,7 @@ const parseSeason = (value: unknown): number | null => {
  */
 const slug = nodeSlug
 
-const publicNode = ({ season: _season, description, ...node }: NodeRecord) =>
+const publicNode = ({ season: _season, surface: _surface, description, ...node }: NodeRecord) =>
   description === null ? node : { ...node, description }
 
 export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) => {
@@ -54,8 +72,10 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
   routes.post('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
     if (typeof body !== 'object' || body === null) return c.json({ error: 'invalid body' }, 400)
-    const { season, parentId, name, description } = body as {
+    const { season, surfaceKind, allianceId, parentId, name, description } = body as {
       season?: unknown
+      surfaceKind?: unknown
+      allianceId?: unknown
       parentId?: unknown
       name?: unknown
       description?: unknown
@@ -63,6 +83,13 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
     const parsedSeason = parseSeason(season)
     if (parsedSeason === null) {
       return c.json({ error: 'season must be a non-negative integer' }, 400)
+    }
+    const surface = parseSurface(surfaceKind, allianceId)
+    if (surface === null) {
+      return c.json(
+        { error: 'surfaceKind must be world or an alliance surface with a positive allianceId' },
+        400,
+      )
     }
     if (parentId !== null && (typeof parentId !== 'string' || !UUID_V7.test(parentId))) {
       return c.json({ error: 'parentId must be null or a canonical lowercase UUIDv7' }, 400)
@@ -88,6 +115,12 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
       if (parent.season !== parsedSeason) {
         return c.json({ error: 'parent node belongs to a different season' }, 400)
       }
+      if (
+        parent.surface.kind !== surface.kind ||
+        parent.surface.allianceId !== surface.allianceId
+      ) {
+        return c.json({ error: 'parent node belongs to a different surface' }, 400)
+      }
       parentPath = parent.path
     }
     // Not bounded here: the store composes the path it will actually store and bounds that, and a
@@ -96,6 +129,7 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
 
     const node: NodeRecord = {
       id: uuidV7(),
+      surface,
       season: parsedSeason,
       parentId,
       path,
@@ -124,7 +158,14 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'))
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
-    return c.json((await sql.listNodes(season)).map(publicNode))
+    const surface = parseSurface(c.req.query('surface'), c.req.query('allianceId'))
+    if (surface === null) {
+      return c.json(
+        { error: 'surface must be world or an alliance surface with a positive allianceId' },
+        400,
+      )
+    }
+    return c.json((await sql.listNodes(season, surface)).map(publicNode))
   })
 
   routes.patch('/:id', async (c) => {

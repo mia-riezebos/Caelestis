@@ -10,6 +10,7 @@ import type { Ports, TemplateVersionRecord } from '../ports/index.js'
 const BOOTSTRAP = 'bootstrap-operator-token'
 const MEMBER = 'member-token'
 const createdAt = millis(1_750_000_000_000)
+const ALLIANCE_NODE_ID = '01890f3a-6b7c-7def-8123-456789abcde7'
 const serverOptions = {
   bootstrapAdminToken: BOOTSTRAP,
   serverId: '01890f3a-6b7c-7def-8123-456789abcdef',
@@ -48,10 +49,21 @@ describe('server and manifest routes', () => {
     }
     await sql.insertNode({
       id: '01890f3a-6b7c-7def-8123-456789abcde0',
+      surface: { kind: 'world', allianceId: null },
       season: 7,
       parentId: null,
       path: '/group',
       name: 'Group',
+      description: null,
+      createdAt,
+    })
+    await sql.insertNode({
+      id: ALLIANCE_NODE_ID,
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      season: 7,
+      parentId: null,
+      path: '/group',
+      name: 'Alliance group',
       description: null,
       createdAt,
     })
@@ -72,6 +84,7 @@ describe('server and manifest routes', () => {
         0,
       ),
       surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      nodeId: ALLIANCE_NODE_ID,
       bbox: { minX: -1, minY: -1, maxX: 1, maxY: 0 },
       chunks: [
         { tileX: -1, tileY: -1, hash: 'c'.repeat(64) },
@@ -173,6 +186,7 @@ describe('server and manifest routes', () => {
     expect(response.status).toBe(200)
     const manifest = (await response.json()) as {
       surface?: { kind: string; allianceId: number }
+      nodes: Array<{ id: string }>
       templates: Array<{ id: string; chunks: Array<{ tile: string }> }>
       tiles: string[]
     }
@@ -180,6 +194,7 @@ describe('server and manifest routes', () => {
       kind: 'alliance-headquarters',
       allianceId: 535245,
     })
+    expect(manifest.nodes).toEqual([expect.objectContaining({ id: ALLIANCE_NODE_ID })])
     expect(manifest.templates.map(({ id }) => id)).toEqual(['01890f3a-6b7c-7def-8123-456789abcde5'])
     expect(manifest.tiles).toEqual(['-1/-1', '0/-1'])
 

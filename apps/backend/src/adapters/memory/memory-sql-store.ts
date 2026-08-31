@@ -6,6 +6,7 @@ import {
   sameTemplateSurface,
   seconds,
   type TemplateStatus,
+  type TemplateSurface,
   type TileCoord,
   type TileHistoryFrame,
   tileKey,
@@ -82,7 +83,7 @@ import {
 /**
  * Fold a path the way SQLite's `lower()` does, which is ASCII only.
  *
- * `nodes_season_path_idx` is a unique index on `lower(path)`, so D1 treats `/QUÉBEC` and `/québec`
+ * The node path indexes use `lower(path)`, so D1 treats `/QUÉBEC` and `/québec`
  * as different paths and stores both. JavaScript's `toLowerCase` folds all of Unicode and made the
  * oracle refuse a pair production accepts — the same asymmetry the wire schema already documents at
  * `foldPath`, reintroduced here. Stricter than production is the safer direction, but it is still a
@@ -171,6 +172,9 @@ export class MemorySqlStore implements SqlStore {
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
+      if (!sameTemplateSurface(parent.surface, node.surface)) {
+        throw new InvalidNodeParentError('parent node belongs to a different surface')
+      }
       path = `${parent.path}/${segment}`
     }
 
@@ -180,7 +184,9 @@ export class MemorySqlStore implements SqlStore {
     if (
       [...this.nodes.values()].some(
         (candidate) =>
-          candidate.season === node.season && foldPath(candidate.path) === foldPath(path),
+          candidate.season === node.season &&
+          sameTemplateSurface(candidate.surface, node.surface) &&
+          foldPath(candidate.path) === foldPath(path),
       )
     ) {
       throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
@@ -196,9 +202,12 @@ export class MemorySqlStore implements SqlStore {
     return node === undefined ? null : { ...node }
   }
 
-  async listNodes(season: number): Promise<readonly NodeRecord[]> {
+  async listNodes(
+    season: number,
+    surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  ): Promise<readonly NodeRecord[]> {
     return [...this.nodes.values()]
-      .filter((node) => node.season === season)
+      .filter((node) => node.season === season && sameTemplateSurface(node.surface, surface))
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((node) => ({ ...node }))
   }
@@ -225,7 +234,9 @@ export class MemorySqlStore implements SqlStore {
     const foldedPrefix = foldPath(oldPrefix)
     const descendants = [...this.nodes.values()].filter(
       (candidate) =>
-        candidate.season === node.season && foldPath(candidate.path).startsWith(foldedPrefix),
+        candidate.season === node.season &&
+        sameTemplateSurface(candidate.surface, node.surface) &&
+        foldPath(candidate.path).startsWith(foldedPrefix),
     )
 
     const rewritten = descendants.map((descendant) => ({
@@ -252,6 +263,7 @@ export class MemorySqlStore implements SqlStore {
       (candidate) =>
         candidate.id !== nodeId &&
         candidate.season === node.season &&
+        sameTemplateSurface(candidate.surface, node.surface) &&
         foldPath(candidate.path) === foldPath(path),
     )
     if (taken) {
@@ -280,6 +292,9 @@ export class MemorySqlStore implements SqlStore {
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
+      if (!sameTemplateSurface(parent.surface, node.surface)) {
+        throw new InvalidNodeParentError('parent node belongs to a different surface')
+      }
       // A parent inside this subtree would make the moved branch unreachable: its new path would
       // depend on a descendant whose own path is being rewritten from the branch's old prefix.
       if (parent.id === node.id || parent.path.startsWith(`${node.path}/`)) {
@@ -300,7 +315,9 @@ export class MemorySqlStore implements SqlStore {
     const foldedPrefix = foldPath(oldPrefix)
     const descendants = [...this.nodes.values()].filter(
       (candidate) =>
-        candidate.season === node.season && foldPath(candidate.path).startsWith(foldedPrefix),
+        candidate.season === node.season &&
+        sameTemplateSurface(candidate.surface, node.surface) &&
+        foldPath(candidate.path).startsWith(foldedPrefix),
     )
     const movedIds = new Set([node.id, ...descendants.map(({ id }) => id)])
     const rewritten = descendants.map((descendant) => ({
@@ -318,6 +335,7 @@ export class MemorySqlStore implements SqlStore {
     const taken = [...this.nodes.values()].some(
       (candidate) =>
         candidate.season === node.season &&
+        sameTemplateSurface(candidate.surface, node.surface) &&
         !movedIds.has(candidate.id) &&
         rewrittenPaths.has(foldPath(candidate.path)),
     )
@@ -349,6 +367,7 @@ export class MemorySqlStore implements SqlStore {
         .filter(
           (candidate) =>
             candidate.season === node.season &&
+            sameTemplateSurface(candidate.surface, node.surface) &&
             (candidate.id === nodeId || candidate.path.startsWith(prefix)),
         )
         .map((candidate) => candidate.id),
@@ -368,6 +387,7 @@ export class MemorySqlStore implements SqlStore {
         .filter(
           (candidate) =>
             candidate.season === node.season &&
+            sameTemplateSurface(candidate.surface, node.surface) &&
             (candidate.id === nodeId || candidate.path.startsWith(prefix)),
         )
         .map((candidate) => candidate.id),
@@ -411,6 +431,14 @@ export class MemorySqlStore implements SqlStore {
       destination?.season !== version.season
     ) {
       throw new InvalidNodeParentError('destination node belongs to a different season')
+    }
+    if (
+      options.requireExisting !== true &&
+      destination !== null &&
+      destination !== undefined &&
+      !sameTemplateSurface(destination.surface, version.surface)
+    ) {
+      throw new InvalidNodeParentError('destination node belongs to a different surface')
     }
     if (this.templateVersions.has(version.versionId)) {
       throw new Error(`template version already exists: ${version.versionId}`)
@@ -537,6 +565,12 @@ export class MemorySqlStore implements SqlStore {
       const destination = this.nodes.get(patch.nodeId)
       if (destination?.season !== template.season) {
         throw new InvalidNodeParentError('destination node belongs to a different season')
+      }
+      if (
+        destination !== undefined &&
+        !sameTemplateSurface(destination.surface, template.surface)
+      ) {
+        throw new InvalidNodeParentError('destination node belongs to a different surface')
       }
     }
     this.templates.set(templateId, {
