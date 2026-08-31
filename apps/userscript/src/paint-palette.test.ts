@@ -341,14 +341,20 @@ describe('Wplace paint palette progress', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('7')
 
+    // A second disjoint batch composes with the still-pending accepted paint.
+    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: 0, unpainted: -1 }]
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('6')
+
     // Newer same-colour server progress remains authoritative instead of being replaced by the
-    // older local snapshot or having this one draft added on top again.
+    // older local snapshot. It retires the accepted contribution while keeping the active one.
     harness.serverProgress = [
       { index: 0, completed: 5, mismatched: 0, unpainted: 5, known: 10, total: 10 },
     ]
     harness.statusListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(badge()).toBe('5')
+    expect(badge()).toBe('4')
   })
 
   it('cycles repeated F navigation past its previous focused-template target', async () => {
