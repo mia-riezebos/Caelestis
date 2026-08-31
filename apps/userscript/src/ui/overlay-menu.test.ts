@@ -146,6 +146,7 @@ type Overrides = {
   originX?: number
   originY?: number
   width?: number
+  height?: number
   serverUrl?: string
   serverTemplateId?: string
   serverVersion?: string
@@ -157,7 +158,7 @@ const template = (overrides: Overrides = {}) => ({
   name: overrides.name ?? 'alpha.png',
   visible: overrides.visible ?? true,
   width: overrides.width ?? 10,
-  height: 10,
+  height: overrides.height ?? 10,
   originX: overrides.originX ?? 0,
   originY: overrides.originY ?? 0,
   appearance: { ...DEFAULT_APPEARANCE, ...overrides.appearance },
@@ -333,6 +334,8 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     stage.append(frame)
     dialog.append(stage)
     document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 1_000, bottom: 700, width: 1_000, height: 700 }) as DOMRect
     let frameLeft = 200
     frame.getBoundingClientRect = () =>
       ({
@@ -455,6 +458,8 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     stage.append(frame)
     dialog.append(stage)
     document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
     frame.getBoundingClientRect = () =>
       ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
     const overlayMenu = await import('./overlay-menu.js')
@@ -985,6 +990,70 @@ describe('placement and geometry', () => {
       } as DOMRect
     }
   }
+
+  it('keeps alliance template controls inside the visible artboard while zoomed in', async () => {
+    menuMeasures(200, 240)
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ surface, originX: -100, originY: -100, width: 240, height: 320 }),
+    ])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 100, top: 150, right: 700, bottom: 650, width: 600, height: 500 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({
+        left: -900,
+        top: -800,
+        right: 3_100,
+        bottom: 3_200,
+        width: 4_000,
+        height: 4_000,
+      }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const rerender = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        rerender,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const viewport = { left: 104, top: 158, right: 696, bottom: 642 }
+    const controls = [
+      gear('a'),
+      ...document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]'),
+    ]
+    for (const control of controls) {
+      const position = floatingPosition(control)
+      expect(position.x).toBeGreaterThanOrEqual(viewport.left)
+      expect(position.x + RAIL_BUTTON).toBeLessThanOrEqual(viewport.right)
+      expect(position.y).toBeGreaterThanOrEqual(viewport.top)
+      expect(position.y + RAIL_BUTTON).toBeLessThanOrEqual(viewport.bottom)
+    }
+    const menuPosition = floatingPosition(menu())
+    expect(menuPosition.x).toBeGreaterThanOrEqual(viewport.left)
+    expect(menuPosition.x + 240).toBeLessThanOrEqual(viewport.right)
+    expect(menuPosition.y).toBeGreaterThanOrEqual(viewport.top)
+    expect(menuPosition.y + 200).toBeLessThanOrEqual(viewport.bottom)
+  })
 
   it('remeasures after a custom-element menu first connects at zero height', async () => {
     let menuMeasurements = 0
@@ -1596,6 +1665,8 @@ describe('the menu is ours and has a keyboard exit', () => {
     stage.append(frame)
     dialog.append(stage)
     document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
     frame.getBoundingClientRect = () =>
       ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
     const overlayMenu = await import('./overlay-menu.js')

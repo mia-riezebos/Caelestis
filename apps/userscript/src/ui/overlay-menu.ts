@@ -1634,6 +1634,7 @@ const expireMoveFailure = (id: string): void => {
 const cornerOnScreen = (
   template: PlacedTemplate,
   projection: ScreenProjection | null,
+  viewport: ControlViewport | null,
 ): { x: number; y: number } | null => {
   // Hidden templates are managed from the main menu. This must use effective visibility because a
   // template can keep its own switch on while a server or folder above it hides the whole branch.
@@ -1644,7 +1645,7 @@ const cornerOnScreen = (
   const preview = previewOriginFor(template.id)
   const originX = preview?.x ?? template.originX
   const originY = preview?.y ?? template.originY
-  if (projection === null) return null
+  if (projection === null || viewport === null) return null
   const topLeft = projection.pointFor(originX, originY)
   // One projection, then the size in CSS pixels. Projecting the far corner separately lets the two
   // calls resolve to different wrapped copies of the world for a template near the seam, which
@@ -1655,8 +1656,8 @@ const cornerOnScreen = (
   // Projection never fails for a coordinate that is merely off-screen, so without this every
   // template in the store — including ones on the far side of the world — would clamp a button
   // into the viewport and pile them all onto the same corner, where only the last is clickable.
-  if (right < 0 || topLeft.x > window.innerWidth) return null
-  if (bottom < 0 || topLeft.y > window.innerHeight) return null
+  if (right < viewport.clipLeft || topLeft.x > viewport.clipRight) return null
+  if (bottom < viewport.clipTop || topLeft.y > viewport.clipBottom) return null
   // Top-right of the overlay, just outside it, so template pixels are never covered.
   return { x: right, y: topLeft.y }
 }
@@ -1698,6 +1699,43 @@ interface AllianceControlGeometry {
   readonly height: number
 }
 
+interface ControlViewport {
+  readonly clipLeft: number
+  readonly clipTop: number
+  readonly clipRight: number
+  readonly clipBottom: number
+  readonly left: number
+  readonly top: number
+  readonly right: number
+  readonly bottom: number
+}
+
+const worldControlViewport = (): ControlViewport => ({
+  clipLeft: 0,
+  clipTop: 0,
+  clipRight: window.innerWidth,
+  clipBottom: window.innerHeight,
+  left: 4,
+  top: VIEWPORT_EDGE,
+  right: localControlsRightEdge(),
+  bottom: window.innerHeight - VIEWPORT_EDGE,
+})
+
+const allianceControlViewport = (stage: HTMLElement): ControlViewport | null => {
+  const box = stage.getBoundingClientRect()
+  const viewport = {
+    clipLeft: Math.max(0, box.left),
+    clipTop: Math.max(0, box.top),
+    clipRight: Math.min(window.innerWidth, box.right),
+    clipBottom: Math.min(window.innerHeight, box.bottom),
+    left: Math.max(4, box.left + 4),
+    top: Math.max(VIEWPORT_EDGE, box.top + VIEWPORT_EDGE),
+    right: Math.min(localControlsRightEdge(), box.right - 4),
+    bottom: Math.min(window.innerHeight - VIEWPORT_EDGE, box.bottom - VIEWPORT_EDGE),
+  }
+  return viewport.right > viewport.left && viewport.bottom > viewport.top ? viewport : null
+}
+
 /** Reuse the world template controls with the active artboard's screen projection. */
 export const renderAllianceOverlayControls = (
   rerender: () => void,
@@ -1734,6 +1772,7 @@ export const renderAllianceOverlayControls = (
       host,
       templateSurfaceKey(active.surface),
       new Set(catalog.map((template) => template.id)),
+      allianceControlViewport(active.stage),
     )
   })
 }
@@ -1746,6 +1785,7 @@ const renderControls = (
   host: HTMLElement,
   surface: string,
   catalogLive: ReadonlySet<string>,
+  viewport: ControlViewport | null = worldControlViewport(),
 ): void => {
   if (controlSurface !== surface) {
     detachControls()
@@ -1860,10 +1900,9 @@ const renderControls = (
   // Sample every frame-wide geometry input before writing any control positions. Interleaving the
   // panel rectangle read with each template's left/top writes forces one layout per visible
   // template while the main panel is open.
-  const controlsRightEdge = localControlsRightEdge()
   const placements = templates.map((template) => ({
     template,
-    corner: cornerOnScreen(template, projection),
+    corner: cornerOnScreen(template, projection, viewport),
   }))
 
   for (const { template, corner } of placements) {
@@ -1871,17 +1910,20 @@ const renderControls = (
     if (placing === template.id) {
       button?.remove()
       buttons.delete(template.id)
-      if (corner === null) {
+      if (corner === null || viewport === null) {
         removePlacementRail(template.id)
         continue
       }
       const rail = placementRailFor(template.id, host)
       const railHeight = MENU_BUTTON_SIZE * 2 + RAIL_GAP
       const railTop = Math.min(
-        Math.max(corner.y, VIEWPORT_EDGE),
-        Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
+        Math.max(corner.y, viewport.top),
+        Math.max(viewport.top, viewport.bottom - railHeight),
       )
-      const railLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
+      const railLeft = Math.min(
+        Math.max(corner.x + 6, viewport.left),
+        viewport.right - MENU_BUTTON_SIZE,
+      )
       const finishing = isFinishing()
       rail.apply.model = {
         id: 'placement-apply',
@@ -1908,7 +1950,7 @@ const renderControls = (
       button = undefined
     }
 
-    if (corner === null) {
+    if (corner === null || viewport === null) {
       // The same teardown the map disappearing gets: the overlay leaving the viewport is the
       // ordinary way to look at the map while its menu is open, so it must not cost a drag its
       // value — and a rebuild is still refused under a held slider.
@@ -1980,10 +2022,13 @@ const renderControls = (
         : 0
     const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
     const buttonTop = Math.min(
-      Math.max(corner.y, VIEWPORT_EDGE),
-      Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
+      Math.max(corner.y, viewport.top),
+      Math.max(viewport.top, viewport.bottom - railHeight),
     )
-    const buttonLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
+    const buttonLeft = Math.min(
+      Math.max(corner.x + 6, viewport.left),
+      viewport.right - MENU_BUTTON_SIZE,
+    )
     positionFloatingControl(button, buttonLeft, buttonTop)
 
     if (openFor !== template.id) continue
@@ -2097,8 +2142,9 @@ const renderControls = (
       menuBox = { width: box.width, height: box.height }
       measuredFor = { width: window.innerWidth, height: window.innerHeight }
     }
-    const rightSpace = controlsRightEdge - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
-    const leftSpace = buttonLeft - RAIL_GAP - VIEWPORT_EDGE
+    const menuLeftEdge = Math.max(VIEWPORT_EDGE, viewport.left)
+    const rightSpace = viewport.right - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
+    const leftSpace = buttonLeft - RAIL_GAP - menuLeftEdge
     const openRight = menuBox.width <= rightSpace || rightSpace >= leftSpace
     const sideRoom = Math.max(0, openRight ? rightSpace : leftSpace)
     const appliedWidth = Math.min(menuBox.width, sideRoom)
@@ -2106,11 +2152,11 @@ const renderControls = (
     menuNode.style.left = openRight
       ? `${buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP}px`
       : `${buttonLeft - RAIL_GAP - appliedWidth}px`
-    const appliedHeight = Math.min(menuBox.height, window.innerHeight - VIEWPORT_EDGE * 2)
+    const appliedHeight = Math.min(menuBox.height, viewport.bottom - viewport.top)
     menuNode.style.maxHeight = `${appliedHeight}px`
     menuNode.style.top = `${Math.min(
-      Math.max(buttonTop, VIEWPORT_EDGE),
-      window.innerHeight - appliedHeight - VIEWPORT_EDGE,
+      Math.max(buttonTop, viewport.top),
+      viewport.bottom - appliedHeight,
     )}px`
   }
 }
