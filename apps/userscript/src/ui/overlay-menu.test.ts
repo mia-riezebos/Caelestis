@@ -1068,14 +1068,15 @@ describe('placement and geometry', () => {
     dialog.append(stage)
     document.body.append(dialog)
     let stageWidth = 600
+    const stageHeight = 80
     stage.getBoundingClientRect = () =>
       ({
         left: 100,
         top: 150,
         right: 100 + stageWidth,
-        bottom: 230,
+        bottom: 150 + stageHeight,
         width: stageWidth,
-        height: 80,
+        height: stageHeight,
       }) as DOMRect
     frame.getBoundingClientRect = () =>
       ({ left: 100, top: 150, right: 700, bottom: 750, width: 600, height: 600 }) as DOMRect
@@ -1112,6 +1113,75 @@ describe('placement and geometry', () => {
     stageWidth = 30
     rerender()
     expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+  })
+
+  it('ends a held alliance slider when the visible stage becomes too short', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([template({ surface, originY: -120 })])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    let stageHeight = 250
+    stage.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 250,
+        bottom: stageHeight,
+        width: 250,
+        height: stageHeight,
+      }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const rerender = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        rerender,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+
+    rerender()
+    overlayMenu.toggleOverlayMenu('a', rerender)
+    rerender()
+    // Drain the custom element's connection and remeasurement turns before starting the gesture.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    rerender()
+    await settle()
+    expect(overlayMenu.isOverlayMenuOpen('a')).toBe(true)
+    const currentMenu = document.getElementById('caelestis-overlay-menu')
+    expect(currentMenu).not.toBeNull()
+    const opacity = currentMenu?.shadowRoot?.querySelector<HTMLInputElement>(
+      '[data-caelestis-control="opacity"]',
+    )
+    if (opacity === null || opacity === undefined) throw new Error('no opacity control')
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
+    opacity.value = '0.9'
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
+    stageHeight = 80
+    rerender()
+
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ opacity: 0.9 }),
+    )
   })
 
   it('remeasures after a custom-element menu first connects at zero height', async () => {

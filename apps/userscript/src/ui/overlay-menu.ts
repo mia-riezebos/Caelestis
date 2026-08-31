@@ -1965,7 +1965,8 @@ const renderControls = (
       if (openFor === template.id && menuNode !== null) {
         if (rangeGestures.isHeldWithin(menuNode)) continue
         endGestures()
-        menuNode.remove()
+        // Flushing a draft can synchronously rerender and perform this same teardown first.
+        menuNode?.remove()
         menuNode = null
         menuOwner = null
         removeRailActions()
@@ -1983,9 +1984,8 @@ const renderControls = (
     const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
     if (viewport.bottom - viewport.top < railHeight) {
       if (openFor === template.id && menuNode !== null) {
-        if (rangeGestures.isHeldWithin(menuNode)) continue
         endGestures()
-        menuNode.remove()
+        menuNode?.remove()
         menuNode = null
         menuOwner = null
         removeRailActions()
