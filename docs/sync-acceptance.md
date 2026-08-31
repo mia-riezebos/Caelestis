@@ -83,7 +83,7 @@ these required reports replace, rather than trigger, redundant status refreshes.
 - `effect` is exactly `4.0.0-beta.102` in the backend and wire-schema packages and resolves to that
   version in the lockfile.
 - Backend Worker dry-run bundle: 1647.93 KiB upload, 342.12 KiB gzip.
-- Userscript bundle: 570,768 bytes.
+- Userscript bundle: 571,973 bytes.
 - Validation commands: `pnpm lint`, `pnpm check`, `pnpm test`, `pnpm build`,
   `pnpm test:release`, and a backend `wrangler deploy --dry-run`.
 
