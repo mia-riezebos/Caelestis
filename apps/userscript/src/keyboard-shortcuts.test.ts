@@ -176,7 +176,7 @@ describe('keyboard shortcut actions', () => {
     expect(press('b').defaultPrevented).toBe(true)
     expect(press('Escape').defaultPrevented).toBe(true)
     expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
-    for (const key of ['a', 'd', 'f', 's', 'w', 'x']) {
+    for (const key of ['a', 'd', 'f', 'l', 's', 'w', 'x']) {
       expect(press(key).defaultPrevented).toBe(true)
     }
 
@@ -187,6 +187,7 @@ describe('keyboard shortcut actions', () => {
     expect(harness.navigateColour).not.toHaveBeenCalled()
     expect(harness.toggleAppearanceBoolean).not.toHaveBeenCalled()
     expect(harness.setState).not.toHaveBeenCalled()
+    expect(harness.toggleTheme).not.toHaveBeenCalled()
   })
 
   it('leaves placement confirm and cancel with the active placement', () => {

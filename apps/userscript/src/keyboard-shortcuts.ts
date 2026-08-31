@@ -140,7 +140,8 @@ export const installKeyboardShortcuts = (
         shortcut === 'toggle-selected-colour-markers' ||
         shortcut === 'fly-to-colour' ||
         shortcut === 'cycle-colour-previous' ||
-        shortcut === 'cycle-colour-next')
+        shortcut === 'cycle-colour-next' ||
+        shortcut === 'toggle-theme')
     ) {
       claimShortcut(event)
       return
