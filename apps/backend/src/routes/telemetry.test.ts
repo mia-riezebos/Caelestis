@@ -272,6 +272,23 @@ describe('telemetry routes', () => {
       metricClient: 'unknown',
       metricClientVersion: 'unknown',
     })
+
+    const downgradedResponse = await app.request('/telemetry/live?season=7&scope=public', {
+      headers: upgrade(BOOTSTRAP),
+    })
+    expect(downgradedResponse.status).toBe(204)
+    expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
+      season: 7,
+      scope: 'public',
+      credentialScope: 'admin',
+      tokenHash: await hashToken(BOOTSTRAP),
+      clientHash: await hashToken(BOOTSTRAP),
+      anonymous: false,
+      revocable: false,
+      lastRevision: null,
+      metricClient: 'unknown',
+      metricClientVersion: 'unknown',
+    })
   })
 
   it('uses a browser client id instead of the network address for anonymous live capacity', async () => {

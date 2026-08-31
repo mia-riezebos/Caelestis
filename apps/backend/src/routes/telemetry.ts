@@ -214,15 +214,18 @@ export const createTelemetryRoutes = (
       const requestedScope = c.req.query('scope')
       const lastRevisionRaw = c.req.query('revision')
       const lastRevision = lastRevisionRaw === undefined ? null : wholeNumber(lastRevisionRaw)
-      const scope = c.get('caller').scope === 'admin' ? 'admin' : 'public'
+      const caller = c.get('caller')
+      const scope =
+        requestedScope === 'public' || (requestedScope === 'admin' && caller.scope === 'admin')
+          ? requestedScope
+          : null
       if (season === null || season !== options.currentSeason) {
         return c.json({ error: 'season is not served by this live endpoint' }, 404)
       }
-      if (requestedScope !== scope) return c.json({ error: 'visibility scope mismatch' }, 403)
+      if (scope === null) return c.json({ error: 'visibility scope mismatch' }, 403)
       if (lastRevisionRaw !== undefined && lastRevision === null) {
         return c.json({ error: 'revision must be a non-negative integer' }, 400)
       }
-      const caller = c.get('caller')
       const anonymous = caller.token === null && caller.scope === 'read'
       let clientHash = caller.tokenHash
       if (anonymous) {
