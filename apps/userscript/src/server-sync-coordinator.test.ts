@@ -669,6 +669,28 @@ describe('server sync coordinator', () => {
 
     expect(serverLiveSyncHealthy(renamed)).toBe(true)
     expect(status).not.toHaveBeenCalled()
+
+    const capabilityWithdrawn = {
+      ...renamed,
+      info: {
+        id: renamed.info.id,
+        name: renamed.info.name,
+        auth: renamed.info.auth,
+      },
+    }
+    state.identities.set(capabilityWithdrawn, lifetime)
+    state.current = { servers: [capabilityWithdrawn] }
+    state.listener?.()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(serverLiveSyncHealthy(capabilityWithdrawn)).toBe(false)
+    expect(socket.readyState).toBe(3)
+    expect(status).toHaveBeenCalledOnce()
+    expect(status).toHaveBeenCalledWith(
+      capabilityWithdrawn,
+      'state-change',
+      'compatibility-poll',
+    )
   })
 
   it('falls back once when an advertised live socket never opens', async () => {
