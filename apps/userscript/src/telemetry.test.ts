@@ -1,4 +1,9 @@
-import { MAX_TILE_OFFERS, type SyncTransport } from '@caelestis/shared'
+import {
+  type LiveTileOfferBatch,
+  type LiveTileOfferCacheResponse,
+  MAX_TILE_OFFERS,
+  type SyncTransport,
+} from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ServerTemplate } from './server-cache.js'
 import type { ConnectedServer } from './state.js'
@@ -22,6 +27,12 @@ const harness = vi.hoisted(() => ({
 
 const coordinator = vi.hoisted(() => ({
   liveHealthy: false,
+  liveTileOffer: vi.fn<
+    (
+      server: ConnectedServer,
+      batch: LiveTileOfferBatch,
+    ) => Promise<LiveTileOfferCacheResponse | null>
+  >(async () => null),
   snapshots: [] as unknown[],
   requests: [] as Array<{ reason: string; resourceId?: string }>,
   resources: new Map<
@@ -84,6 +95,7 @@ vi.mock('./server-sync-coordinator.js', () => ({
   },
   serverSyncRevision: () => undefined,
   serverLiveSyncHealthy: () => coordinator.liveHealthy,
+  requestLiveTileOfferCache: coordinator.liveTileOffer,
   registerServerSyncResource: (resource: {
     id: string
     refresh: (
@@ -165,6 +177,8 @@ beforeEach(() => {
   harness.retiredServers = new WeakSet<object>()
   coordinator.resources.clear()
   coordinator.liveHealthy = false
+  coordinator.liveTileOffer.mockReset()
+  coordinator.liveTileOffer.mockResolvedValue(null)
   coordinator.snapshots = []
   coordinator.requests = []
   harness.state = {
@@ -518,7 +532,10 @@ describe('server telemetry client', () => {
           })
         }
         if (url.endsWith('/telemetry/tiles/offers')) {
-          return Response.json({ wanted: ['1/2'] })
+          return Response.json({
+            wanted: ['1/2'],
+            coverageToken: '01890f3e-7b2c-4abc-8def-000000000001',
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -546,6 +563,9 @@ describe('server telemetry client', () => {
     const upload = requests.find(({ url }) => url.includes('/telemetry/tiles/1/2/'))
     expect(new Headers(upload?.init?.headers).get('x-caelestis-display-name')).toBe(
       encodeURIComponent('Mía 🎨'),
+    )
+    expect(new Headers(upload?.init?.headers).get('x-caelestis-tile-coverage-token')).toBe(
+      '01890f3e-7b2c-4abc-8def-000000000001',
     )
     await vi.waitFor(() =>
       expect(serverProgressFor(server, template)).toEqual({
@@ -815,6 +835,45 @@ describe('server telemetry client', () => {
     expect(uploads).toBe(0)
   })
 
+  it('does not fall back to HTTP after sharing is disabled during a live request', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveTileOffers: 1 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.liveHealthy = true
+    let settleLive: ((response: LiveTileOfferCacheResponse | null) => void) | undefined
+    coordinator.liveTileOffer.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settleLive = resolve
+        }),
+    )
+    let httpOffers = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/tiles/offers')) httpOffers++
+        if (url.includes('/telemetry/status')) return Response.json({ revision: 1, templates: [] })
+        if (url.includes('/telemetry/alarms')) return Response.json({ alarms: [] })
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(settleLive).toBeDefined())
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+    settleLive?.(null)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(httpOffers).toBe(0)
+  })
+
   it('does not rebind a retained report across seasons', async () => {
     let attempts = 0
     vi.stubGlobal(
@@ -976,6 +1035,79 @@ describe('server telemetry client', () => {
 
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-requested', 1)
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-accepted', 1)
+  })
+
+  it('sends ten distinct same-hash observations over live cache without an HTTP offer', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveTileOffers: 1 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.liveHealthy = true
+    coordinator.liveTileOffer.mockImplementation(async (_server, batch) => ({
+      acknowledgedDeliveryIds: batch.offers.map(
+        (offer: { deliveryId: string }) => offer.deliveryId,
+      ),
+      unresolvedDeliveryIds: [],
+    }))
+    const httpOffers: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/tiles/offers')) httpOffers.push(url)
+        if (url.includes('/telemetry/status')) return Response.json({ revision: 1, templates: [] })
+        if (url.includes('/telemetry/alarms')) return Response.json({ alarms: [] })
+        return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    const bytes = new Uint8Array([1, 2, 3])
+
+    for (let index = 0; index < 10; index++) {
+      harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000 + index)
+      await vi.waitFor(() => expect(coordinator.liveTileOffer).toHaveBeenCalledTimes(index + 1))
+    }
+
+    expect(httpOffers).toEqual([])
+    const deliveryIds = coordinator.liveTileOffer.mock.calls.flatMap(([, batch]) =>
+      batch.offers.map((offer: { deliveryId: string }) => offer.deliveryId),
+    )
+    expect(new Set(deliveryIds).size).toBe(10)
+  })
+
+  it('falls back to the HTTP offer when the live request disconnects', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveTileOffers: 1 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.liveHealthy = true
+    coordinator.liveTileOffer.mockResolvedValue(null)
+    const httpOffers: unknown[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/tiles/offers')) {
+          httpOffers.push(JSON.parse(String(init?.body)))
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        if (url.includes('/telemetry/status')) return Response.json({ revision: 1, templates: [] })
+        if (url.includes('/telemetry/alarms')) return Response.json({ alarms: [] })
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+
+    await vi.waitFor(() => expect(httpOffers).toHaveLength(1))
+    expect(coordinator.liveTileOffer).toHaveBeenCalledOnce()
   })
 
   it('does not lose a distinct tile fetch while the previous offer is in flight', async () => {

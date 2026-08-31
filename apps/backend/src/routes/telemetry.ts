@@ -12,7 +12,11 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, authenticateRequest, requireScopeEffect } from '../auth/middleware.js'
-import { recordTileOfferBatch, recordTileOfferBatchRequested } from '../metrics/request-metrics.js'
+import {
+  recordCacheOutcome,
+  recordTileOfferBatch,
+  recordTileOfferBatchRequested,
+} from '../metrics/request-metrics.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -49,6 +53,7 @@ const MAX_EPOCH_SECONDS = 4_102_444_800
 const MAX_TILE_FUTURE_SKEW_SECONDS = 5 * 60
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 /** Larger leaderboards stop being leaderboards; page by narrowing the window instead. */
 const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
@@ -169,6 +174,7 @@ export const createTelemetryRoutes = (
       connection: {
         readonly season: number
         readonly scope: 'public' | 'admin'
+        readonly credentialScope: 'read' | 'report' | 'admin'
         readonly tokenHash: string
         readonly revocable: boolean
         readonly lastRevision: number | null
@@ -213,6 +219,7 @@ export const createTelemetryRoutes = (
       return options.connectStatusLive(c.req.raw, {
         season,
         scope,
+        credentialScope: c.get('caller').scope,
         tokenHash: c.get('caller').tokenHash,
         revocable: c.get('caller').token !== null,
         lastRevision,
@@ -494,6 +501,7 @@ export const createTelemetryRoutes = (
       })
     }
     return runBackendHttp(c, runtime, offerTilesWithOutcome(offers), (result) => {
+      recordCacheOutcome(result.cacheOutcome)
       recordTileOfferBatch({
         requested: body.offers.length,
         accepted: result.accepted,
@@ -501,10 +509,14 @@ export const createTelemetryRoutes = (
         rejected: result.rejected,
       })
       const status = result.projection?.[caller.scope === 'admin' ? 'admin' : 'public']
+      const coverageToken = result.coverageTokens.get(
+        `${body.season}:${caller.scope === 'admin' ? 'admin' : 'public'}`,
+      )
       return c.json({
         wanted: result.wanted,
         acknowledged: result.acknowledged,
         rejected: result.rejectedKeys,
+        ...(coverageToken === undefined ? {} : { coverageToken }),
         ...(status === undefined ? {} : { status }),
       })
     })
@@ -518,6 +530,9 @@ export const createTelemetryRoutes = (
     const observedAt = wholeNumber(c.req.header('x-caelestis-observed-at'))
     const wplaceUserId = wholeNumber(c.req.header('x-caelestis-wplace-user-id'))
     const displayName = decodedHeader(c.req.header('x-caelestis-display-name'))
+    const rawCoverageToken = c.req.header('x-caelestis-tile-coverage-token')
+    const coverageToken =
+      rawCoverageToken !== undefined && UUID.test(rawCoverageToken) ? rawCoverageToken : undefined
     if (
       x === null ||
       y === null ||
@@ -554,6 +569,7 @@ export const createTelemetryRoutes = (
           includeUnpublished: caller.scope === 'admin',
         },
         bytes,
+        coverageToken === undefined ? {} : { coverageToken },
       ),
       (projection) => {
         const status = projection?.[caller.scope === 'admin' ? 'admin' : 'public']

@@ -624,6 +624,8 @@ export const canvasTiles = sqliteTable(
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
     /** Distinguishes the backend mirror from client reports when resolving clock skew. */
     serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
+    /** Monotonic per-tile order for projecting concurrent accepted commits into derived caches. */
+    commitOrder: integer('commit_order').notNull().default(0),
   },
   (table) => [
     primaryKey({ columns: [table.season, table.tileX, table.tileY] }),

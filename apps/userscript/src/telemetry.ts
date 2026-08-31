@@ -26,9 +26,10 @@ import {
   applyServerSyncDelta,
   applyServerSyncSnapshot,
   registerServerSyncResource,
+  requestLiveTileOfferCache,
   requestServerSync,
-  serverLiveSyncHealthy,
   type ServerSyncResult,
+  serverLiveSyncHealthy,
   serverSyncRevision,
 } from './server-sync-coordinator.js'
 import { serverEndpoint } from './server-url.js'
@@ -281,6 +282,7 @@ const uploadWanted = async (
   identity: NonNullable<ReturnType<typeof accountIdentity>>,
   entries: readonly OfferedTile[],
   wanted: ReadonlySet<string>,
+  coverageToken?: string,
 ): Promise<{
   readonly uploaded: ReadonlySet<string>
   readonly missingStatus: boolean
@@ -306,6 +308,9 @@ const uploadWanted = async (
               'x-caelestis-observed-at': String(entry.ts),
               'x-caelestis-wplace-user-id': String(identity.wplaceUserId),
               'x-caelestis-display-name': encodeURIComponent(identity.displayName),
+              ...(coverageToken === undefined
+                ? {}
+                : { 'x-caelestis-tile-coverage-token': coverageToken }),
             },
             body: entry.bytes.slice().buffer,
           },
@@ -384,23 +389,72 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       return
     }
     tileOfferMetric('requested', entries.length)
+    let accepted = 0
+    let httpEntries = entries
+    const live = await requestLiveTileOfferCache(server, {
+      ...identity,
+      season,
+      offers: entries.map(({ deliveryId, tile, sha256, ts }) => ({
+        deliveryId,
+        tile,
+        sha256,
+        ts,
+      })),
+    })
+    if (!getState().shareTiles) {
+      clearTileOfferDelivery()
+      return
+    }
+    if (!isCurrentServerConnection(server)) return
+    if (live != null && live.error === undefined) {
+      const offeredIds = new Set(entries.map((entry) => entry.deliveryId))
+      const cached = new Set(
+        live.acknowledgedDeliveryIds.filter((deliveryId) => offeredIds.has(deliveryId)),
+      )
+      const unresolved = new Set(
+        live.unresolvedDeliveryIds.filter((deliveryId) => offeredIds.has(deliveryId)),
+      )
+      const complete = entries.every(
+        (entry) =>
+          Number(cached.has(entry.deliveryId)) + Number(unresolved.has(entry.deliveryId)) === 1,
+      )
+      if (complete) {
+        for (const entry of entries) {
+          if (!cached.has(entry.deliveryId)) continue
+          const key = offerKey(entry)
+          tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+          deleteUnsettledOffer(server.url, key)
+          accepted++
+        }
+        httpEntries = entries.filter((entry) => unresolved.has(entry.deliveryId))
+      }
+    }
+    if (httpEntries.length === 0) {
+      tileOfferMetric('accepted', accepted)
+      return
+    }
     const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
       method: 'POST',
       headers: { ...authHeaders(server), 'content-type': 'application/json' },
       body: JSON.stringify({
         ...identity,
         season,
-        offers: entries.map(({ tile, sha256, ts }) => ({ tile, sha256, ts })),
+        offers: httpEntries.map(({ deliveryId, tile, sha256, ts }) => ({
+          deliveryId,
+          tile,
+          sha256,
+          ts,
+        })),
       }),
     })
     if (response === null || !response.ok) {
       retryNeeded = true
-      for (const entry of entries) {
+      for (const entry of httpEntries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
         rotateUnsettledOffer(server.url, entry)
       }
       if (response !== null && response.status >= 400 && response.status < 500)
-        tileOfferMetric('rejected', entries.length)
+        tileOfferMetric('rejected', httpEntries.length)
       if (response !== null)
         warn('install', 'telemetry tile offer was rejected', {
           server: server.url,
@@ -415,7 +469,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       !Array.isArray((body as { wanted?: unknown }).wanted)
     ) {
       retryNeeded = true
-      for (const entry of entries) {
+      for (const entry of httpEntries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
         rotateUnsettledOffer(server.url, entry)
       }
@@ -426,8 +480,9 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       acknowledged?: unknown
       rejected?: unknown
       status?: unknown
+      coverageToken?: unknown
     }
-    const offeredTiles = new Set<string>(entries.map((entry) => entry.tile))
+    const offeredTiles = new Set<string>(httpEntries.map((entry) => entry.tile))
     const wanted = new Set(
       responseBody.wanted.filter(
         (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
@@ -450,7 +505,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     const completeDisposition =
       acknowledged !== null &&
       rejected !== null &&
-      entries.every(
+      httpEntries.every(
         (entry) =>
           Number(wanted.has(entry.tile)) +
             Number(acknowledged.has(entry.tile)) +
@@ -460,11 +515,18 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     if (!getState().shareTiles || !isCurrentServerConnection(server)) return
     const offeredStatus = statusDeltaFrom(responseBody.status)
     if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
-    const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
+    const coverageToken =
+      typeof responseBody.coverageToken === 'string' ? responseBody.coverageToken : undefined
+    const { uploaded, missingStatus } = await uploadWanted(
+      server,
+      identity,
+      httpEntries,
+      wanted,
+      coverageToken,
+    )
     if ((offeredStatus === null || missingStatus) && !serverLiveSyncHealthy(server))
       requestServerSync('post-offer', 'telemetry-status', server)
-    let accepted = 0
-    for (const entry of entries) {
+    for (const entry of httpEntries) {
       const key = offerKey(entry)
       if ((completeDisposition && acknowledged.has(entry.tile)) || uploaded.has(key)) {
         tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)

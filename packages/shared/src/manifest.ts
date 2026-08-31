@@ -32,6 +32,8 @@ export interface ServerInfo {
   readonly auth: 'none' | 'access_token'
   /** Present only when the server supports the hibernating status/manifest live protocol. */
   readonly liveSync?: 1
+  /** Present only when live sync accepts hash-cache tile offer commands. */
+  readonly liveTileOffers?: 1
 }
 
 /**

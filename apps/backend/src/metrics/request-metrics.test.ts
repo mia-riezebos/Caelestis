@@ -9,6 +9,7 @@ import {
   measureRequest,
   normalizeMetricRoute,
   recordCacheOutcome,
+  recordLiveTileOfferCacheMetric,
   recordTileOfferBatch,
   recordTileOfferBatchRequested,
 } from './request-metrics.js'
@@ -121,6 +122,39 @@ describe('request capacity metrics', () => {
       '200',
     ])
     expect(point?.doubles).toEqual([1, expect.any(Number), 17, 0, 1, 0, 4, 2, 1, 1])
+  })
+
+  it('records live tile cache operations separately without payload or D1 dimensions', () => {
+    const writeDataPoint = vi.fn()
+
+    recordLiveTileOfferCacheMetric(
+      { writeDataPoint },
+      {
+        client: 'userscript',
+        clientVersion: '0.5.4',
+        cacheOutcome: 'hit',
+        requested: 10,
+        acknowledged: 10,
+        durationMs: 2,
+      },
+    )
+
+    expect(writeDataPoint).toHaveBeenCalledWith({
+      indexes: ['WS /telemetry/live:tile-offer-cache'],
+      blobs: [
+        'v1',
+        'WS /telemetry/live:tile-offer-cache',
+        'WS',
+        'userscript',
+        '0.5.4',
+        'live',
+        'post-offer',
+        'hit',
+        'already-known',
+        '200',
+      ],
+      doubles: [1, 2, 0, 0, 0, 0, 10, 0, 10, 0],
+    })
   })
 
   it('keeps concurrent D1 counts in their originating request', async () => {
