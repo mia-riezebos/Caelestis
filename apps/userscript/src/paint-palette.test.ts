@@ -24,6 +24,7 @@ const harness = vi.hoisted(() => ({
   selectedColour: 0 as number | null,
   draftPixelDeltas: [] as Array<{
     key: string
+    basis: string
     index: number
     completed: number
     mismatched: number
@@ -226,7 +227,7 @@ describe('Wplace paint palette progress', () => {
       { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 3 },
     ]
     harness.draftPixelDeltas = [
-      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
     ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -318,7 +319,7 @@ describe('Wplace paint palette progress', () => {
     expect(badge()).toBe('8')
 
     harness.draftPixelDeltas = [
-      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
     ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -331,7 +332,7 @@ describe('Wplace paint palette progress', () => {
     expect(badge()).toBe('8')
 
     harness.draftPixelDeltas = [
-      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
     ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -345,7 +346,7 @@ describe('Wplace paint palette progress', () => {
 
     // A second disjoint batch composes with the still-pending accepted paint.
     harness.draftPixelDeltas = [
-      { key: '0/0/1', index: 0, completed: 1, mismatched: 0, unpainted: -1 },
+      { key: '0/0/1', basis: 'tile-1', index: 0, completed: 1, mismatched: 0, unpainted: -1 },
     ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -384,7 +385,7 @@ describe('Wplace paint palette progress', () => {
         'caelestis-palette-progress',
       )?.model?.value
     harness.draftPixelDeltas = [
-      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
     ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -399,7 +400,7 @@ describe('Wplace paint palette progress', () => {
     // The same coordinate is drafted back to its retained server category. Its explicit zero delta
     // replaces, then cancels, the pending correction instead of being mistaken for no active draft.
     harness.draftPixelDeltas = [
-      { key: '0/0/0', index: 0, completed: 0, mismatched: 0, unpainted: 0 },
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 0, mismatched: 0, unpainted: 0 },
     ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -416,6 +417,65 @@ describe('Wplace paint palette progress', () => {
 
     harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
     harness.draftPixelDeltas = []
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('8')
+  })
+
+  it('keeps a cleared accepted correction rebased until its source tile refreshes', async () => {
+    harness.focused = {
+      id: 'remote-cleared-draft',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 7, known: 10, total: 10 },
+    ]
+    const swatch = document.createElement('button')
+    swatch.id = 'color-1'
+    document.body.appendChild(swatch)
+    const { installPaintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.statusListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    const badge = (): string | undefined =>
+      swatch.querySelector<HTMLElement & { model?: { value: string } }>(
+        'caelestis-palette-progress',
+      )?.model?.value
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
+    harness.draftPixelDeltas = []
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('7')
+
+    harness.serverProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 7, known: 10, total: 10 },
+    ]
+    harness.statusListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('7')
+
+    // Wplace still compares the later repaint with its stale captured tile. The retained correction
+    // makes the zero raw delta an inverse paint against the newer status baseline.
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 0, mismatched: 0, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('8')
+
+    // Once the captured tile refreshes, its raw delta already includes the inverse paint. A changed
+    // basis retires the retained correction instead of subtracting it twice.
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', basis: 'tile-2', index: 0, completed: -1, mismatched: 1, unpainted: 0 },
+    ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('8')
