@@ -1280,6 +1280,53 @@ describe('server telemetry client', () => {
     expect(offers).toBe(2)
   })
 
+  it('preserves a bounded-queue burst until every observation gets its first offer', async () => {
+    let finishAccountLoad: (() => void) | undefined
+    const accountLoad = new Promise<void>((resolve) => {
+      finishAccountLoad = resolve
+    })
+    account.loadAccount.mockImplementation(() => accountLoad)
+    const offered = new Set<string>()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          for (const offer of body.offers) offered.add(offer.tile)
+          return Response.json({
+            wanted: [],
+            acknowledged: body.offers.map((offer) => offer.tile),
+            rejected: [],
+          })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    const observationCount = MAX_TILE_OFFERS + 34
+    const chunks = Array.from({ length: observationCount }, (_, index) => ({
+      tile: `${index}/7`,
+      hash: `hash-${index}`,
+    }))
+    harness.serverContents?.(server, {
+      nodes: [],
+      templates: [{ ...template, chunks }],
+    })
+
+    harness.fetchedTile?.({ x: 0, y: 7 }, new Uint8Array([0]), 1_800_000_000)
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+    for (let index = 1; index < observationCount; index++)
+      harness.fetchedTile?.({ x: index, y: 7 }, new Uint8Array([index]), 1_800_000_000 + index)
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offered.size).toBe(0)
+
+    finishAccountLoad?.()
+    await vi.waitFor(() => expect(offered.size).toBe(observationCount), { timeout: 2_000 })
+  })
+
   it('does not let a retired account-load completion clear its replacement fence', async () => {
     let offers = 0
     let finishAccountLoad: (() => void) | undefined

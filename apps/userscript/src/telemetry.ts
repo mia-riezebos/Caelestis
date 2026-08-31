@@ -180,18 +180,27 @@ const clearServerTileOfferDelivery = (serverUrl: string): void => {
   offerRetryDelays.delete(serverUrl)
 }
 
+const attemptedOfferForEviction = (
+  candidates: Iterable<readonly [string, UnsettledServerOffers]>,
+): readonly [string, string] | undefined => {
+  for (const [serverUrl, held] of candidates)
+    for (const deliveryId of held.entries.keys())
+      if (attemptedTileOffers.has(offerAttemptKey(serverUrl, deliveryId)))
+        return [serverUrl, deliveryId]
+  return undefined
+}
+
 const trimUnsettledOffers = (serverUrl: string): void => {
   const held = unsettledOffers.get(serverUrl)
   while (held !== undefined && held.entries.size > MAX_UNSETTLED_OFFERS_PER_SERVER) {
-    const oldest = held.entries.keys().next().value
-    if (oldest === undefined) break
-    deleteUnsettledOffer(serverUrl, oldest)
+    const eviction = attemptedOfferForEviction([[serverUrl, held]])
+    if (eviction === undefined) break
+    deleteUnsettledOffer(eviction[0], eviction[1])
   }
   while (retainedTileBytes > MAX_RETAINED_TILE_BYTES) {
-    const oldestServer = unsettledOffers.entries().next().value
-    const oldest = oldestServer?.[1].entries.keys().next().value
-    if (oldestServer === undefined || oldest === undefined) break
-    deleteUnsettledOffer(oldestServer[0], oldest)
+    const eviction = attemptedOfferForEviction(unsettledOffers)
+    if (eviction === undefined) break
+    deleteUnsettledOffer(eviction[0], eviction[1])
   }
 }
 
@@ -433,6 +442,8 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     }
     for (const entry of entries)
       attemptedTileOffers.add(offerAttemptKey(server.url, entry.deliveryId))
+    // Failed retries stay bounded, but a first delivery is never the eviction victim.
+    trimUnsettledOffers(server.url)
     tileOfferMetric('requested', entries.length)
     let accepted = 0
     let httpEntries = entries
