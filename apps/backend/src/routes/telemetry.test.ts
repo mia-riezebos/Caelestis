@@ -145,7 +145,15 @@ describe('telemetry routes', () => {
       'sec-websocket-protocol': `caelestis.live.v1, caelestis.auth.b64.${btoa(token).replace(/=+$/, '')}`,
     })
 
-    await expect((await app.request('/server')).json()).resolves.toMatchObject({ liveSync: 1 })
+    await expect((await app.request('/server')).json()).resolves.toMatchObject({
+      liveSync: 1,
+      liveTileOffers: 1,
+    })
+    await expect(
+      (await app.request('/manifest', { headers: bearer(readToken) })).json(),
+    ).resolves.toMatchObject({
+      server: { liveSync: 1, liveTileOffers: 1 },
+    })
     expect(
       (
         await app.request('/telemetry/live?season=99&scope=public', {

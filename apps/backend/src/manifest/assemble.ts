@@ -125,12 +125,24 @@ const assembleManifestWithSql = async (
   ].sort((left, right) => left.localeCompare(right))
   const normalizedServer: ServerInfo =
     options.server.description === undefined
-      ? { id: options.server.id, name: options.server.name, auth: options.server.auth }
+      ? {
+          id: options.server.id,
+          name: options.server.name,
+          auth: options.server.auth,
+          ...(options.server.liveSync === undefined ? {} : { liveSync: options.server.liveSync }),
+          ...(options.server.liveTileOffers === undefined
+            ? {}
+            : { liveTileOffers: options.server.liveTileOffers }),
+        }
       : {
           id: options.server.id,
           name: options.server.name,
           description: options.server.description,
           auth: options.server.auth,
+          ...(options.server.liveSync === undefined ? {} : { liveSync: options.server.liveSync }),
+          ...(options.server.liveTileOffers === undefined
+            ? {}
+            : { liveTileOffers: options.server.liveTileOffers }),
         }
   const unsigned: Manifest = {
     version: VERSION_PLACEHOLDER,

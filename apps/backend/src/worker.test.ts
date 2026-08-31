@@ -126,9 +126,13 @@ it('forwards the configured identity, season and open access to the app', async 
     description: 'Configured, not defaulted',
     auth: 'none',
     liveSync: 1,
+    liveTileOffers: 1,
   })
   expect(manifest.status).toBe(200)
-  await expect(manifest.json()).resolves.toMatchObject({ season: 0 })
+  await expect(manifest.json()).resolves.toMatchObject({
+    season: 0,
+    server: { liveSync: 1, liveTileOffers: 1 },
+  })
 })
 
 it('mounts the runtime app beneath its configured base path', async () => {

@@ -11,6 +11,7 @@ export const mergeServerInfo = (
     name: settings.name ?? base.name,
     auth: base.auth,
     ...(base.liveSync === undefined ? {} : { liveSync: base.liveSync }),
+    ...(base.liveTileOffers === undefined ? {} : { liveTileOffers: base.liveTileOffers }),
   }
   return description === undefined || description === null ? resolved : { ...resolved, description }
 }
