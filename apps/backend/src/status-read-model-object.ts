@@ -39,6 +39,7 @@ import {
 import {
   type CommittedTileGeneration,
   createTileGenerationCache,
+  type PreparedTileGenerationCommit,
   type TileGenerationCacheRead,
   type TileGenerationOffer,
 } from './status-read-model/tile-generation-cache.js'
@@ -579,7 +580,10 @@ export class StatusReadModelObject extends DurableObject<Env> {
     )
   }
 
-  prepareTileGenerationCommit(season: number, tile: TileCoord): Promise<string> {
+  prepareTileGenerationCommit(
+    season: number,
+    tile: TileCoord,
+  ): Promise<PreparedTileGenerationCommit> {
     this.bindSeason(season)
     return Promise.resolve(this.tileGenerations.prepare(tile))
   }

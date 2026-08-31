@@ -24,8 +24,15 @@ export interface CommittedTileGeneration {
   readonly commitOrder: number
   /** Token returned before the coverage query that produced the visibility flags. */
   readonly coverageToken: string
+  /** Per-tile token that rejects repairs superseded by a newer commit attempt. */
+  readonly commitToken?: string
   readonly visibleToPublic: boolean
   readonly visibleToAdmin: boolean
+}
+
+export interface PreparedTileGenerationCommit {
+  readonly coverageToken: string
+  readonly commitToken: string
 }
 
 interface CachedTileGeneration extends CommittedTileGeneration {
@@ -43,15 +50,19 @@ export const createTileGenerationCache = (
   } = {},
 ) => {
   const entries = new Map<string, CachedTileGeneration>()
+  const commitTokens = new Map<string, string>()
   const now = options.now ?? Date.now
   const ttl = options.ttlMilliseconds ?? TILE_GENERATION_CACHE_TTL_MILLISECONDS
   const createCoverageToken = options.createCoverageToken ?? (() => crypto.randomUUID())
   let coverageToken = createCoverageToken()
 
   return {
-    prepare(tile: TileCoord): string {
-      entries.delete(tileKey(tile))
-      return coverageToken
+    prepare(tile: TileCoord): PreparedTileGenerationCommit {
+      const key = tileKey(tile)
+      const commitToken = createCoverageToken()
+      entries.delete(key)
+      commitTokens.set(key, commitToken)
+      return { coverageToken, commitToken }
     },
 
     resolve(
@@ -97,6 +108,8 @@ export const createTileGenerationCache = (
     apply(generation: CommittedTileGeneration): void {
       if (generation.coverageToken !== coverageToken) return
       const key = tileKey(generation.tile)
+      const commitToken = commitTokens.get(key)
+      if (commitToken !== undefined && generation.commitToken !== commitToken) return
       const held = entries.get(key)
       if (held !== undefined && held.commitOrder >= generation.commitOrder) return
       entries.set(key, { ...generation, expiresAt: now() + ttl })
@@ -105,6 +118,7 @@ export const createTileGenerationCache = (
     invalidate(): void {
       coverageToken = createCoverageToken()
       entries.clear()
+      commitTokens.clear()
     },
   }
 }

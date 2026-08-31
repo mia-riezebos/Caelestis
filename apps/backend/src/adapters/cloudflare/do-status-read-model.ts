@@ -10,6 +10,7 @@ import type {
 import type { StatusReadModelPort } from '../../status-read-model/port.js'
 import type {
   CommittedTileGeneration,
+  PreparedTileGenerationCommit,
   TileGenerationCacheRead,
   TileGenerationOffer,
 } from '../../status-read-model/tile-generation-cache.js'
@@ -77,7 +78,10 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     )
   }
 
-  prepareTileGenerationCommit(season: number, tile: TileCoord): Promise<string> {
+  prepareTileGenerationCommit(
+    season: number,
+    tile: TileCoord,
+  ): Promise<PreparedTileGenerationCommit> {
     return this.shard(season).prepareTileGenerationCommit(season, tile)
   }
 

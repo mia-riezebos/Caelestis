@@ -20,6 +20,7 @@ import {
 import {
   type CommittedTileGeneration,
   createTileGenerationCache,
+  type PreparedTileGenerationCommit,
   type TileGenerationCacheRead,
   type TileGenerationOffer,
 } from './tile-generation-cache.js'
@@ -48,7 +49,10 @@ export interface StatusReadModelPort {
     scope: StatusVisibilityScope,
     offers: readonly TileGenerationOffer[],
   ) => Promise<TileGenerationCacheRead>
-  readonly prepareTileGenerationCommit?: (season: number, tile: TileCoord) => Promise<string>
+  readonly prepareTileGenerationCommit?: (
+    season: number,
+    tile: TileCoord,
+  ) => Promise<PreparedTileGenerationCommit>
   readonly applyCommittedTileGeneration?: (
     season: number,
     generation: CommittedTileGeneration,
@@ -59,7 +63,7 @@ export const prepareTileGenerationCommit = (
   readModel: StatusReadModelPort,
   season: number,
   tile: TileCoord,
-): Promise<string | null> =>
+): Promise<PreparedTileGenerationCommit | null> =>
   readModel.prepareTileGenerationCommit?.(season, tile) ?? Promise.resolve(null)
 
 export const resolveCurrentTileOffers = async (
@@ -237,7 +241,10 @@ export class DirectStatusReadModel implements StatusReadModelPort {
     return Promise.resolve(cache.resolve(scope, offers))
   }
 
-  prepareTileGenerationCommit(season: number, tile: TileCoord): Promise<string> {
+  prepareTileGenerationCommit(
+    season: number,
+    tile: TileCoord,
+  ): Promise<PreparedTileGenerationCommit> {
     const cache = this.tileGenerations.get(season) ?? createTileGenerationCache()
     this.tileGenerations.set(season, cache)
     return Promise.resolve(cache.prepare(tile))

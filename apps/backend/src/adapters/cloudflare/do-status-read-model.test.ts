@@ -22,7 +22,10 @@ describe('Durable Object status read-model adapter', () => {
       notifyManifestChange: vi.fn(async () => undefined),
       notifyAlarmChange: vi.fn(async () => undefined),
       closeCredential: vi.fn(async () => undefined),
-      prepareTileGenerationCommit: vi.fn(async () => 'coverage-token'),
+      prepareTileGenerationCommit: vi.fn(async () => ({
+        coverageToken: 'coverage-token',
+        commitToken: 'commit-token',
+      })),
       fetch: vi.fn(async (_request: Request) => new Response(null, { status: 204 })),
     }
     const namespace = {
@@ -38,9 +41,10 @@ describe('Durable Object status read-model adapter', () => {
     await model.notifyManifestChange(8)
     await model.notifyAlarmChange(8)
     await model.closeCredential(8, 'b'.repeat(64))
-    await expect(model.prepareTileGenerationCommit(8, { x: 1, y: 2 })).resolves.toBe(
-      'coverage-token',
-    )
+    await expect(model.prepareTileGenerationCommit(8, { x: 1, y: 2 })).resolves.toEqual({
+      coverageToken: 'coverage-token',
+      commitToken: 'commit-token',
+    })
     await model.connectLive(
       new Request('https://server.test/telemetry/live', {
         headers: {

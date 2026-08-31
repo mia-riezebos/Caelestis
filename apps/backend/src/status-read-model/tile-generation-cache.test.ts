@@ -164,11 +164,62 @@ describe('tile generation cache', () => {
       hash: 'b'.repeat(64),
       observedAt: millis(2_000),
       commitOrder: 2,
-      coverageToken: preparedToken,
+      coverageToken: preparedToken.coverageToken,
+      commitToken: preparedToken.commitToken,
       visibleToPublic: true,
       visibleToAdmin: true,
     })
     expect(cache.resolve('public', oldOffer).acknowledgedDeliveryIds).toEqual([])
     expect(cache.resolve('public', newOffer).acknowledgedDeliveryIds).toEqual(['new'])
+  })
+
+  it('rejects an older repair after a newer prepare for the same tile', () => {
+    const cache = createTileGenerationCache({ now: () => 2_000 })
+    const tile = { x: 1, y: 2 }
+    const other = { x: 3, y: 4 }
+    const coverageToken = cache.resolve('public', []).coverageToken ?? ''
+    cache.apply({
+      tile: other,
+      hash: 'c'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      coverageToken,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    const commitA = cache.prepare(tile)
+    const commitB = cache.prepare(tile)
+
+    cache.apply({
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      ...commitA,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    expect(
+      cache.resolve('public', [{ deliveryId: 'a', tile, hash: 'a'.repeat(64) }])
+        .unresolvedDeliveryIds,
+    ).toEqual(['a'])
+    expect(
+      cache.resolve('public', [{ deliveryId: 'other', tile: other, hash: 'c'.repeat(64) }])
+        .acknowledgedDeliveryIds,
+    ).toEqual(['other'])
+
+    cache.apply({
+      tile,
+      hash: 'b'.repeat(64),
+      observedAt: millis(2_000),
+      commitOrder: 2,
+      ...commitB,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    expect(
+      cache.resolve('public', [{ deliveryId: 'b', tile, hash: 'b'.repeat(64) }])
+        .acknowledgedDeliveryIds,
+    ).toEqual(['b'])
   })
 })
