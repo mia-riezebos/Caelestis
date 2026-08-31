@@ -51,6 +51,19 @@ export interface ArtboardViewport {
   readonly frameHeight: number
 }
 
+/** Keep fixed template controls in lockstep with whether the artboard has usable geometry. */
+export const reconcileAllianceControlsForViewport = (
+  viewport: ArtboardViewport | null,
+  render: () => void,
+): viewport is ArtboardViewport => {
+  if (viewport === null) {
+    detachOverlayControls()
+    return false
+  }
+  render()
+  return true
+}
+
 export const artboardGeometry = (active: ActiveAllianceSurface): ArtboardGeometry | null => {
   const bounds =
     active.surface.kind === 'alliance-headquarters'
@@ -510,13 +523,17 @@ class ArtboardRenderer {
 
   private draw(): void {
     const viewport = this.syncViewport()
-    if (viewport === null) return
-    renderAllianceOverlayControls(
-      () => this.requestRender(),
-      this.active,
-      this.geometry,
-      this.overlay.canvas,
+    if (
+      !reconcileAllianceControlsForViewport(viewport, () =>
+        renderAllianceOverlayControls(
+          () => this.requestRender(),
+          this.active,
+          this.geometry,
+          this.overlay.canvas,
+        ),
+      )
     )
+      return
     const all = displayTemplatesForSurface(this.surface)
     const ids = new Set(all.map(({ id }) => id))
     this.templateFades.prune(ids)

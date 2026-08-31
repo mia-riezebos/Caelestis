@@ -1,13 +1,25 @@
 // @vitest-environment happy-dom
 
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
+
+const controls = vi.hoisted(() => ({ detach: vi.fn(), render: vi.fn() }))
+
+vi.mock('../ui/overlay-menu.js', () => ({
+  detachOverlayControls: controls.detach,
+  renderAllianceOverlayControls: controls.render,
+}))
+
 import {
+  type ArtboardViewport,
   artboardDevicePlacement,
   artboardGeometry,
   artboardPlacement,
   insertAllianceArtboardCanvases,
+  reconcileAllianceControlsForViewport,
 } from './artboard-layer.js'
+
+beforeEach(() => vi.clearAllMocks())
 
 const active = (
   kind: ActiveAllianceSurface['surface']['kind'],
@@ -113,5 +125,29 @@ describe('alliance artboard stacking', () => {
     expect([...frame.children]).toEqual([outline, art, overlay, nativeOverlay])
     expect(outline.style.imageRendering).toBe('pixelated')
     expect(overlay.style.imageRendering).toBe('pixelated')
+  })
+})
+
+describe('alliance artboard control lifecycle', () => {
+  it('removes fixed controls when a visible artboard collapses to zero size', () => {
+    const control = document.createElement('button')
+    controls.detach.mockImplementation(() => control.remove())
+    const viewport: ArtboardViewport = {
+      bufferWidth: 250,
+      bufferHeight: 250,
+      frameLeft: 0,
+      frameTop: 0,
+      frameWidth: 250,
+      frameHeight: 250,
+    }
+
+    expect(
+      reconcileAllianceControlsForViewport(viewport, () => document.body.append(control)),
+    ).toBe(true)
+    expect(control.isConnected).toBe(true)
+
+    expect(reconcileAllianceControlsForViewport(null, vi.fn())).toBe(false)
+    expect(controls.detach).toHaveBeenCalledOnce()
+    expect(control.isConnected).toBe(false)
   })
 })
