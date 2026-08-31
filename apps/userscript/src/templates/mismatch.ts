@@ -100,6 +100,14 @@ export interface TemplateColourProgress extends TemplateProgress {
   readonly index: number
 }
 
+/** A native draft's category-only correction relative to the last captured Wplace tile. */
+export interface TemplateColourProgressDelta {
+  readonly index: number
+  readonly completed: number
+  readonly mismatched: number
+  readonly unpainted: number
+}
+
 export type ColourTargetKind = 'unpainted' | 'mismatched'
 
 export interface ColourNavigationTarget {
@@ -132,8 +140,8 @@ export interface TemplatePixelAccounting {
   readonly wanted: Uint8Array
   readonly progress: TemplateProgress
   readonly colours: readonly TemplateColourProgress[]
-  /** Desired palette entries currently affected by native Wplace draft pixels. */
-  readonly draftedColours: ReadonlySet<number>
+  /** Exact draft-only corrections over captured server pixels, independent of scan coverage. */
+  readonly draftColourDeltas: readonly TemplateColourProgressDelta[]
   /** Read or schedule one tile's canonical classification. */
   readonly tile: (tile: TileCoord) => TilePixelAccounting | null
   /** Read or schedule only the unpainted coordinates needed by the selected-colour guide. */
@@ -474,6 +482,7 @@ let changed = 0
 export const mismatchRevision = (): number => changed
 
 const changeListeners: Array<() => void> = []
+const draftChangeListeners: Array<() => void> = []
 
 /**
  * One notification per task, however many answers changed in it.
@@ -498,6 +507,17 @@ const notifyChanged = (): void => {
       }
     }
   })
+}
+
+/** Draft placement is observable even when no mismatch/progress cache exists for its tile yet. */
+const notifyDraftChanged = (): void => {
+  for (const listener of draftChangeListeners) {
+    try {
+      listener()
+    } catch {
+      count('mismatch:draft-listener-failed')
+    }
+  }
 }
 
 /**
@@ -1857,6 +1877,7 @@ onTilePixels((tile, triples, source) => {
   ) {
     scheduleIdleScan()
   }
+  if (source === 'draft') notifyDraftChanged()
   if (changed === before) return
   notifyChanged()
 })
@@ -1875,6 +1896,11 @@ onServerMismatchesChanged(() => {
   changed++
   notifyChanged()
 })
+
+/** Subscribe specifically to native draft placement, repaint, undo, and clear operations. */
+const onDraftsChanged = (listener: () => void): void => {
+  draftChangeListeners.push(listener)
+}
 
 onTilePixelsEvicted((tile) => {
   const suffix = `|${tile.x}/${tile.y}`
@@ -1941,22 +1967,67 @@ export const pixelAccounting = Object.freeze({
     get colours() {
       return colourProgressFor(template)
     },
-    get draftedColours() {
-      const colours = new Set<number>()
+    get draftColourDeltas() {
+      const deltas = new Map<number, TemplateColourProgressDelta>()
+      const move = (
+        index: number,
+        from: 'completed' | 'mismatched' | 'unpainted',
+        to: 'completed' | 'mismatched' | 'unpainted',
+      ): void => {
+        if (from === to) return
+        const held = deltas.get(index) ?? {
+          index,
+          completed: 0,
+          mismatched: 0,
+          unpainted: 0,
+        }
+        deltas.set(index, {
+          ...held,
+          [from]: held[from] - 1,
+          [to]: held[to] + 1,
+        })
+      }
       for (const key of templateTileKeys(template)) {
         const tile = parseTileKey(key)
         if (tile === null) continue
+        const server = tilePixels(tile)
+        const draft = draftPixels(tile)
+        const cacheKey = `${template.id}|${tile.x}/${tile.y}`
+        const serverMask = serverMismatchMaskFor(template, tile)
+        const currentMask =
+          serverMask !== null && supersededServerSource.get(cacheKey) !== template.serverUrl
+            ? serverMask
+            : null
+        if ((server === null && currentMask === null) || draft === null) continue
         for (const offset of draftedPixelOffsets(tile)) {
           const tileX = offset % TILE_SIZE
+          const tileY = (offset - tileX) / TILE_SIZE
           const localX = sourceXAt(template, tile.x * TILE_SIZE + tileX)
-          const localY = tile.y * TILE_SIZE + (offset - tileX) / TILE_SIZE - template.originY
+          const localY = tile.y * TILE_SIZE + tileY - template.originY
           if (localX === null || localY < 0 || localY >= template.height) continue
           const wanted = template.indices[localY * template.width + localX]
-          if (wanted !== undefined && wanted < PALETTE_SIZE && wanted !== TRANSPARENT_INDEX)
-            colours.add(wanted)
+          if (wanted === undefined || wanted >= PALETTE_SIZE || wanted === TRANSPARENT_INDEX)
+            continue
+          const category = (actual: number): 'completed' | 'mismatched' | 'unpainted' =>
+            actual === wanted ? 'completed' : actual === UNPAINTED ? 'unpainted' : 'mismatched'
+          const serverCategory =
+            server === null
+              ? (() => {
+                  const classification = mismatchClassAt(currentMask as MismatchMask, tileX, tileY)
+                  return classification === MATCH
+                    ? 'completed'
+                    : classification === BLANK
+                      ? 'unpainted'
+                      : classification === null
+                        ? null
+                        : 'mismatched'
+                })()
+              : category(server[offset] as number)
+          if (serverCategory !== null)
+            move(wanted, serverCategory, category(draft[offset] as number))
         }
       }
-      return colours
+      return [...deltas.values()].sort((left, right) => left.index - right.index)
     },
     tile: (tile) => tileAccountingFor(template, tile),
     unpainted: (tile) => mismatchAnswer(template, tile, 'unpainted'),
@@ -1974,6 +2045,7 @@ export const pixelAccounting = Object.freeze({
   },
   wantsTilePixels,
   onChange: onMismatchesChanged,
+  onDraftChange: onDraftsChanged,
   memoryBytes: mismatchMemoryBytes,
   revision: mismatchRevision,
 })
