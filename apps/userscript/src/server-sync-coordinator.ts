@@ -103,7 +103,7 @@ const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
 
 const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
-  return held?.healthy === true && isCurrentServerConnection(server)
+  return liveCapable(server) && held?.healthy === true && isCurrentServerConnection(server)
 }
 
 const liveCapable = (server: ConnectedServer): boolean =>
@@ -694,12 +694,12 @@ export const installServerSyncCoordinator = (): void => {
     const next = connected()
     const changed =
       next.length !== previousConnections.length ||
-      next.some(
-        (server) =>
-          !previousConnections.some(
-            (held) => held.url === server.url && isCurrentServerConnection(held),
-          ),
-      )
+      next.some((server) => {
+        const previous = previousConnections.find(
+          (held) => held.url === server.url && isCurrentServerConnection(held),
+        )
+        return previous === undefined || liveCapable(previous) !== liveCapable(server)
+      })
     previousConnections = next
     if (changed) {
       reconcileLiveConnections()
