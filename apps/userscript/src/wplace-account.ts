@@ -15,6 +15,7 @@ import { discardResponseBody } from './response.js'
 
 let owned: ReadonlySet<number> | null = null
 let identity: PainterIdentity | null = null
+let identityUnavailable = false
 let lastAttemptAt: number | null = null
 let loading: Promise<void> | null = null
 const ACCOUNT_TIMEOUT_MS = 10_000
@@ -76,6 +77,9 @@ export const ownedColours = (): ReadonlySet<number> | null => owned
 /** Public wplace identity used only for opted-in template-area telemetry. */
 export const accountIdentity = (): PainterIdentity | null => identity
 
+/** Whether Wplace definitively rejected or omitted the identity, rather than a request failing. */
+export const accountIdentityKnownUnavailable = (): boolean => identityUnavailable
+
 const replaceOwned = (next: ReadonlySet<number> | null): void => {
   if (owned === next || (owned === null && next === null)) return
   owned = next
@@ -83,6 +87,7 @@ const replaceOwned = (next: ReadonlySet<number> | null): void => {
 
 const replaceIdentity = (next: PainterIdentity | null): void => {
   identity = next
+  identityUnavailable = next === null
 }
 
 const fetchAccount = async (): Promise<void> => {

@@ -53,6 +53,7 @@ const account = vi.hoisted(() => ({
     wplaceUserId: number
     displayName: string
   } | null,
+  identityUnavailable: false,
   loadAccount: vi.fn<() => Promise<void>>(async () => undefined),
 }))
 
@@ -144,6 +145,7 @@ vi.mock('./tile-transform.js', () => ({
 }))
 vi.mock('./wplace-account.js', () => ({
   accountIdentity: () => account.identity,
+  accountIdentityKnownUnavailable: () => account.identityUnavailable,
   loadAccount: account.loadAccount,
 }))
 
@@ -173,6 +175,7 @@ beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   account.identity = { wplaceUserId: 42, displayName: 'Mía 🎨' }
+  account.identityUnavailable = false
   account.loadAccount.mockImplementation(async () => undefined)
   harness.serverContents = null
   harness.fetchedTile = null
@@ -1342,6 +1345,7 @@ describe('server telemetry client', () => {
 
   it('releases queued tile offers when no reporter identity is available', async () => {
     account.identity = null
+    account.identityUnavailable = true
     const offered: string[] = []
     vi.stubGlobal(
       'fetch',
@@ -1385,6 +1389,54 @@ describe('server telemetry client', () => {
       1_800_000_000 + observationCount,
     )
     await vi.waitFor(() => expect(offered).toEqual([`${observationCount}/8`]))
+  })
+
+  it('retries every queued observation after a transient account lookup failure', async () => {
+    account.identity = null
+    const offered = new Set<string>()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          for (const offer of body.offers) offered.add(offer.tile)
+          return Response.json({
+            wanted: [],
+            acknowledged: body.offers.map((offer) => offer.tile),
+            rejected: [],
+          })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    const observationCount = MAX_TILE_OFFERS + 34
+    const contents = {
+      nodes: [],
+      templates: [
+        {
+          ...template,
+          chunks: Array.from({ length: observationCount }, (_, index) => ({
+            tile: `${index}/10`,
+            hash: `hash-${index}`,
+          })),
+        },
+      ],
+    }
+    harness.serverContents?.(server, contents)
+
+    for (let index = 0; index < observationCount; index++)
+      harness.fetchedTile?.({ x: index, y: 10 }, new Uint8Array([index]), 1_800_000_000 + index)
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(offered.size).toBe(0)
+
+    account.identity = { wplaceUserId: 42, displayName: 'Mía 🎨' }
+    harness.serverContents?.(server, contents)
+    await vi.waitFor(() => expect(offered.size).toBe(observationCount), { timeout: 2_000 })
   })
 
   it('does not let a retired account-load completion clear its replacement fence', async () => {

@@ -49,7 +49,7 @@ import { ClientStatusProjection } from './status-client-projection.js'
 import type { TemplateColourProgress, TemplateProgress } from './templates/mismatch.js'
 import { TileOfferAcknowledgements } from './tile-offer-acknowledgements.js'
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
-import { accountIdentity, loadAccount } from './wplace-account.js'
+import { accountIdentity, accountIdentityKnownUnavailable, loadAccount } from './wplace-account.js'
 
 const OFFER_DELAY_MS = 250
 const OFFER_RETRY_MIN_MS = 60_000
@@ -437,7 +437,15 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       return
     }
     if (identity === null) {
-      clearServerTileOfferDelivery(server.url)
+      if (accountIdentityKnownUnavailable()) clearServerTileOfferDelivery(server.url)
+      else {
+        retryNeeded = true
+        retryImmediately = false
+        for (const entry of entries) {
+          tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+          rotateUnsettledOffer(server.url, entry)
+        }
+      }
       return
     }
     if (!isCurrentServerConnection(server)) {
