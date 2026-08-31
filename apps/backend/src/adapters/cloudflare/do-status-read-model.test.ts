@@ -123,7 +123,7 @@ describe('Durable Object status read-model adapter', () => {
     const model = new DurableObjectStatusReadModel(namespace)
     const writeDataPoint = vi.fn()
 
-    await measureRequest(
+    const response = await measureRequest(
       { writeDataPoint },
       new Request('https://server.test/telemetry/live'),
       '/telemetry/live',
@@ -146,6 +146,8 @@ describe('Durable Object status read-model adapter', () => {
     expect(point?.indexes).toEqual(['GET /telemetry/live'])
     expect(point?.blobs?.[7]).toBe('hit')
     expect(point?.doubles?.slice(2, 6)).toEqual([17, 2, 3, 4])
+    expect(response.headers.get('x-caelestis-live-d1-usage')).toBeNull()
+    expect(response.headers.get('x-caelestis-live-cache-outcome')).toBeNull()
   })
 
   it('merges projection D1 usage into the originating request metric', async () => {

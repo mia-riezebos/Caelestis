@@ -32,7 +32,7 @@ const measuredValue = <A>(measured: MeasuredD1Operation<A>): A => {
   return measured.value
 }
 
-const mergeLiveMeasurement = (response: Response): void => {
+const mergeLiveMeasurement = (response: Response): Response => {
   const usage = response.headers.get(LIVE_D1_USAGE_HEADER)?.split(',').map(Number)
   if (usage?.length === 4 && usage.every((value) => Number.isFinite(value) && value >= 0)) {
     mergeD1Usage({
@@ -46,6 +46,15 @@ const mergeLiveMeasurement = (response: Response): void => {
   if (cacheOutcome === 'hit' || cacheOutcome === 'miss' || cacheOutcome === 'stale') {
     recordCacheOutcome(cacheOutcome)
   }
+  const headers = new Headers(response.headers)
+  headers.delete(LIVE_D1_USAGE_HEADER)
+  headers.delete(LIVE_CACHE_OUTCOME_HEADER)
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+    webSocket: response.webSocket,
+  })
 }
 
 export class DurableObjectStatusReadModel implements StatusReadModelPort {
@@ -155,7 +164,6 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     if (connection.lastRevision === null) headers.delete('x-caelestis-revision')
     else headers.set('x-caelestis-revision', String(connection.lastRevision))
     const response = await this.shard(connection.season).fetch(new Request(request, { headers }))
-    mergeLiveMeasurement(response)
-    return response
+    return mergeLiveMeasurement(response)
   }
 }
