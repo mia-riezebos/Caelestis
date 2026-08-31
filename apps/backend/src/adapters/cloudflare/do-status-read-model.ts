@@ -129,6 +129,7 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
       readonly credentialScope: 'read' | 'report' | 'admin'
       readonly tokenHash: string
       readonly clientHash: string
+      readonly anonymous: boolean
       readonly revocable: boolean
       readonly lastRevision: number | null
       readonly metricClient: string
@@ -143,6 +144,7 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     headers.set('x-caelestis-credential-scope', connection.credentialScope)
     headers.set('x-caelestis-token-hash', connection.tokenHash)
     headers.set('x-caelestis-client-hash', connection.clientHash)
+    headers.set('x-caelestis-anonymous', connection.anonymous ? '1' : '0')
     headers.set('x-caelestis-revocable', connection.revocable ? '1' : '0')
     headers.set('x-caelestis-metric-client', connection.metricClient)
     headers.set('x-caelestis-metric-client-version', connection.metricClientVersion)

@@ -68,6 +68,7 @@ describe('Durable Object status read-model adapter', () => {
         credentialScope: 'admin',
         tokenHash: 'a'.repeat(64),
         clientHash: 'c'.repeat(64),
+        anonymous: false,
         revocable: true,
         lastRevision: 4,
         metricClient: 'userscript',
@@ -93,6 +94,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(forwarded?.headers.get('x-caelestis-scope')).toBe('admin')
     expect(forwarded?.headers.get('x-caelestis-token-hash')).toBe('a'.repeat(64))
     expect(forwarded?.headers.get('x-caelestis-client-hash')).toBe('c'.repeat(64))
+    expect(forwarded?.headers.get('x-caelestis-anonymous')).toBe('0')
     expect(forwarded?.headers.get('x-caelestis-revocable')).toBe('1')
     expect(forwarded?.headers.get('x-caelestis-revision')).toBe('4')
     expect(forwarded?.headers.get('x-caelestis-metric-client')).toBe('userscript')
@@ -130,6 +132,7 @@ describe('Durable Object status read-model adapter', () => {
           credentialScope: 'read',
           tokenHash: 'a'.repeat(64),
           clientHash: 'c'.repeat(64),
+          anonymous: true,
           revocable: false,
           lastRevision: null,
           metricClient: 'userscript',

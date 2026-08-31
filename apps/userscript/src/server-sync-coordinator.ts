@@ -24,11 +24,35 @@ const LIVE_PROTOCOL = 'caelestis.live.v1'
 const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_RECONNECT_MS = 30_000
+const MAX_FAST_RECONNECT_ATTEMPTS = 6
 const LIVE_HEARTBEAT_MS = 15 * 60_000
 const LIVE_HEARTBEAT_TIMEOUT_MS = 10_000
 const LIVE_RECOVERY_POLL_MS = 60 * 60_000
 const LIVE_BOOTSTRAP_FALLBACK_MS = 1_000
 const LIVE_COMMAND_TIMEOUT_MS = 5_000
+const LIVE_CLIENT_ID_KEY = 'caelestis.live-client-id.v1'
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+let cachedLiveClientId: string | null = null
+
+/** Stable, non-secret browser identity used only to bound live sockets across tabs. */
+const liveClientId = (): string => {
+  if (cachedLiveClientId !== null) return cachedLiveClientId
+  try {
+    const stored = localStorage.getItem(LIVE_CLIENT_ID_KEY)
+    if (stored !== null && UUID_V7.test(stored)) {
+      cachedLiveClientId = stored
+      return stored
+    }
+    const created = uuidV7()
+    localStorage.setItem(LIVE_CLIENT_ID_KEY, created)
+    cachedLiveClientId = created
+    return created
+  } catch {
+    cachedLiveClientId = uuidV7()
+    return cachedLiveClientId
+  }
+}
 
 export type ParsedLiveEvent =
   | Exclude<LiveSyncServerEvent, { readonly type: 'manifest-reconcile' }>
@@ -597,7 +621,12 @@ const confirmLiveConnection = (connection: LiveConnection): void => {
 
 const scheduleLiveReconnect = (connection: LiveConnection): void => {
   if (connection.reconnectTimer !== null) return
-  const delay = Math.min(1_000 * 2 ** connection.attempts++, MAX_RECONNECT_MS)
+  const attempt = connection.attempts
+  connection.attempts = Math.min(attempt + 1, MAX_FAST_RECONNECT_ATTEMPTS)
+  const delay =
+    attempt < MAX_FAST_RECONNECT_ATTEMPTS
+      ? Math.min(1_000 * 2 ** attempt, MAX_RECONNECT_MS)
+      : LIVE_RECOVERY_POLL_MS
   connection.reconnectTimer = setTimeout(() => {
     connection.reconnectTimer = null
     openLiveConnection(connection)
@@ -636,6 +665,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
   endpoint.searchParams.set('scope', liveScope(server))
   endpoint.searchParams.set('client', 'userscript')
   endpoint.searchParams.set('clientVersion', userscriptVersion)
+  endpoint.searchParams.set('clientId', liveClientId())
   const revision = serverSyncRevision(server, 'world', 'telemetry-status')
   if (revision !== undefined) endpoint.searchParams.set('revision', revision)
   const protocols = [LIVE_PROTOCOL]

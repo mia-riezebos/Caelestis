@@ -179,6 +179,7 @@ export const createTelemetryRoutes = (
         readonly credentialScope: 'read' | 'report' | 'admin'
         readonly tokenHash: string
         readonly clientHash: string
+        readonly anonymous: boolean
         readonly revocable: boolean
         readonly lastRevision: number | null
         readonly metricClient: string
@@ -222,19 +223,22 @@ export const createTelemetryRoutes = (
         return c.json({ error: 'revision must be a non-negative integer' }, 400)
       }
       const caller = c.get('caller')
+      const clientId = c.req.query('clientId')
+      if (clientId === undefined || !UUID_V7.test(clientId)) {
+        return c.json({ error: 'clientId must be a UUID' }, 400)
+      }
       const metricClient = normalizeMetricClientIdentity(
         c.req.query('client') ?? 'unknown',
         c.req.query('clientVersion') ?? 'unknown',
       )
-      const clientHash = await hashToken(
-        `${caller.tokenHash}\u0000${c.req.header('cf-connecting-ip') ?? 'unknown'}`,
-      )
+      const clientHash = await hashToken(`${caller.tokenHash}\u0000${clientId}`)
       return options.connectStatusLive(c.req.raw, {
         season,
         scope,
         credentialScope: caller.scope,
         tokenHash: caller.tokenHash,
         clientHash,
+        anonymous: caller.token === null && caller.scope === 'read',
         revocable: caller.token !== null,
         lastRevision,
         metricClient: metricClient.client,

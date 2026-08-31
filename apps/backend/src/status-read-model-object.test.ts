@@ -7,6 +7,7 @@ import {
   createChunkedManifestPersistence,
   createChunkedStatusPersistence,
   createLiveSessionFence,
+  MAX_LIVE_ANONYMOUS_SUBSCRIBERS,
   MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS,
   MAX_LIVE_SUBSCRIBERS,
   MAX_LIVE_SUBSCRIBERS_PER_CLIENT,
@@ -755,6 +756,7 @@ describe('status read-model Durable Object', () => {
           'x-caelestis-credential-scope': 'read',
           'x-caelestis-token-hash': 'a'.repeat(64),
           'x-caelestis-client-hash': 'b'.repeat(64),
+          'x-caelestis-anonymous': '1',
           'x-caelestis-revocable': '0',
         },
       }),
@@ -790,6 +792,7 @@ describe('status read-model Durable Object', () => {
           'x-caelestis-credential-scope': 'read',
           'x-caelestis-token-hash': 'a'.repeat(64),
           'x-caelestis-client-hash': clientHash,
+          'x-caelestis-anonymous': '1',
           'x-caelestis-revocable': '0',
         },
       }),
@@ -797,6 +800,39 @@ describe('status read-model Durable Object', () => {
 
     expect(response.status).toBe(503)
     await expect(response.text()).resolves.toBe('Live subscriber limit reached')
+  })
+
+  it('reserves live capacity beyond the bounded anonymous pool', async () => {
+    database = new SqliteD1Database()
+    const subscribers = Array.from(
+      { length: MAX_LIVE_ANONYMOUS_SUBSCRIBERS },
+      () =>
+        ({
+          deserializeAttachment: () => ({ anonymous: true, revoked: false }),
+        }) as unknown as WebSocket,
+    )
+    const object = new StatusReadModelObject(
+      objectState(new Map(), Number.POSITIVE_INFINITY, subscribers),
+      { DB: database } as unknown as Env,
+    )
+
+    const response = await object.fetch(
+      new Request('https://object.test/', {
+        headers: {
+          upgrade: 'websocket',
+          'x-caelestis-season': '8',
+          'x-caelestis-scope': 'public',
+          'x-caelestis-credential-scope': 'read',
+          'x-caelestis-token-hash': 'a'.repeat(64),
+          'x-caelestis-client-hash': 'c'.repeat(64),
+          'x-caelestis-anonymous': '1',
+          'x-caelestis-revocable': '0',
+        },
+      }),
+    )
+
+    expect(response.status).toBe(503)
+    expect(subscribers).toHaveLength(MAX_LIVE_ANONYMOUS_SUBSCRIBERS)
   })
 
   it('closes oversized live messages before parsing them', () => {

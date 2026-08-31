@@ -58,6 +58,7 @@ const MAX_CHUNK_JSON_BYTES = 512 * 1024
 const MAX_DELTA_MESSAGE_BYTES = 32 * 1024
 const LIVE_PROTOCOL = 'caelestis.live.v1'
 export const MAX_LIVE_SUBSCRIBERS = 256
+export const MAX_LIVE_ANONYMOUS_SUBSCRIBERS = 128
 export const MAX_LIVE_SUBSCRIBERS_PER_CLIENT = 16
 export const MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS = 64 * 1024
 const MANIFEST_CACHE_INDEX_KEY = 'manifest-read-model:v1:index'
@@ -70,6 +71,7 @@ interface LiveSubscriberAttachment {
   readonly credentialScope?: Scope
   readonly tokenHash: string
   readonly clientHash?: string
+  readonly anonymous?: boolean
   readonly revocable: boolean
   readonly lastRevision: number | null
   readonly revoked?: boolean
@@ -690,6 +692,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     const credentialScope = request.headers.get('x-caelestis-credential-scope')
     const tokenHash = request.headers.get('x-caelestis-token-hash')
     const clientHash = request.headers.get('x-caelestis-client-hash')
+    const anonymousHeader = request.headers.get('x-caelestis-anonymous')
     const revocableHeader = request.headers.get('x-caelestis-revocable')
     const revisionHeader = request.headers.get('x-caelestis-revision')
     const lastRevision = revisionHeader === null ? null : Number(revisionHeader)
@@ -702,6 +705,10 @@ export class StatusReadModelObject extends DurableObject<Env> {
     if (clientHash === null || !/^[0-9a-f]{64}$/.test(clientHash)) {
       return new Response('Invalid client identity', { status: 400 })
     }
+    if (anonymousHeader !== '0' && anonymousHeader !== '1') {
+      return new Response('Invalid client kind', { status: 400 })
+    }
+    const anonymous = anonymousHeader === '1'
     if (credentialScope !== 'read' && credentialScope !== 'report' && credentialScope !== 'admin')
       return new Response('Invalid credential scope', { status: 400 })
     if (revocableHeader !== '0' && revocableHeader !== '1') {
@@ -724,10 +731,18 @@ export class StatusReadModelObject extends DurableObject<Env> {
             capacityExceeded = true
             return false
           }
-          const clientConnections = sockets.filter((socket) => {
+          let anonymousConnections = 0
+          let clientConnections = 0
+          for (const socket of sockets) {
             const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
-            return attachment?.clientHash === clientHash && attachment.revoked !== true
-          }).length
+            if (attachment?.revoked === true) continue
+            if (attachment?.anonymous === true) anonymousConnections += 1
+            if (attachment?.clientHash === clientHash) clientConnections += 1
+          }
+          if (anonymous && anonymousConnections >= MAX_LIVE_ANONYMOUS_SUBSCRIBERS) {
+            capacityExceeded = true
+            return false
+          }
           if (clientConnections >= MAX_LIVE_SUBSCRIBERS_PER_CLIENT) {
             capacityExceeded = true
             return false
@@ -746,6 +761,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
             credentialScope,
             tokenHash,
             clientHash,
+            anonymous,
             revocable,
             lastRevision,
             revoked: false,

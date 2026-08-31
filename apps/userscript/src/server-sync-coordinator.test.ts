@@ -88,6 +88,11 @@ describe('server sync coordinator', () => {
     state.current = { servers: [server] }
     state.identities = new WeakMap()
     state.listener = null
+    const stored = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value),
+    })
     setVisibility('visible')
     setOnline(true)
     FakeWebSocket.instances.length = 0
@@ -354,6 +359,9 @@ describe('server sync coordinator', () => {
     expect(socket.url).toContain('scope=public')
     expect(socket.url).toContain('client=userscript')
     expect(socket.url).toContain('clientVersion=development')
+    expect(new URL(socket.url).searchParams.get('clientId')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
     expect(socket.url).not.toContain(liveServer.token)
     expect(socket.protocols).toEqual([
       'caelestis.live.v1',
@@ -641,6 +649,30 @@ describe('server sync coordinator', () => {
     expect(FakeWebSocket.instances).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('moves repeated handshake failures onto hourly recovery without changing browser identity', async () => {
+    const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator } = await import('./server-sync-coordinator.js')
+    installServerSyncCoordinator()
+    const clientId = new URL(FakeWebSocket.instances[0]?.url ?? '').searchParams.get('clientId')
+
+    for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]) {
+      FakeWebSocket.instances.at(-1)?.close()
+      await vi.advanceTimersByTimeAsync(delay)
+      expect(new URL(FakeWebSocket.instances.at(-1)?.url ?? '').searchParams.get('clientId')).toBe(
+        clientId,
+      )
+    }
+    expect(FakeWebSocket.instances).toHaveLength(7)
+
+    FakeWebSocket.instances.at(-1)?.close()
+    await vi.advanceTimersByTimeAsync(60 * 60_000 - 1)
+    expect(FakeWebSocket.instances).toHaveLength(7)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(FakeWebSocket.instances).toHaveLength(8)
   })
 
   it('keeps non-live focus recovery while a healthy socket protects live resources', async () => {

@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import { createApp } from '../app.js'
+import { type AppOptions, createApp } from '../app.js'
 import { hashToken } from '../auth/tokens.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
 import type { StatusReadModelPort } from '../status-read-model/port.js'
@@ -19,6 +19,8 @@ const BOOTSTRAP = 'bootstrap-operator-token'
 const TOKEN = 'a'.repeat(64)
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 const EVENT_ID = '01890f3e-7b2c-7abc-8def-0123456789ac'
+const CLIENT_ID = '01890f3e-7b2c-7abc-8def-0123456789ad'
+type LiveConnection = Parameters<NonNullable<AppOptions['connectStatusLive']>>[1]
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
@@ -195,7 +197,9 @@ describe('telemetry routes', () => {
     const blobs = new MemoryBlobStore()
     const sql = new MemorySqlStore()
     const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-    const connectStatusLive = vi.fn(async () => new Response(null, { status: 204 }))
+    const connectStatusLive = vi.fn(
+      async (_request: Request, _connection: LiveConnection) => new Response(null, { status: 204 }),
+    )
     const app = createApp(makeBackendContext(blobs, sql, counters), {
       bootstrapAdminToken: BOOTSTRAP,
       currentSeason: 7,
@@ -235,7 +239,7 @@ describe('telemetry routes', () => {
     expect(connectStatusLive).not.toHaveBeenCalled()
 
     const publicResponse = await app.request(
-      '/telemetry/live?season=7&scope=public&revision=4&client=userscript&clientVersion=0.5.4',
+      `/telemetry/live?season=7&scope=public&revision=4&client=userscript&clientVersion=0.5.4&clientId=${CLIENT_ID}`,
       { headers: upgrade(readToken) },
     )
     expect(publicResponse.status).toBe(204)
@@ -244,28 +248,68 @@ describe('telemetry routes', () => {
       scope: 'public',
       credentialScope: 'read',
       tokenHash: await hashToken(readToken),
-      clientHash: await hashToken(`${await hashToken(readToken)}\u0000unknown`),
+      clientHash: await hashToken(`${await hashToken(readToken)}\u0000${CLIENT_ID}`),
+      anonymous: false,
       revocable: true,
       lastRevision: 4,
       metricClient: 'userscript',
       metricClientVersion: '0.5.4',
     })
 
-    const adminResponse = await app.request('/telemetry/live?season=7&scope=admin', {
-      headers: upgrade(BOOTSTRAP),
-    })
+    const adminResponse = await app.request(
+      `/telemetry/live?season=7&scope=admin&clientId=${CLIENT_ID}`,
+      {
+        headers: upgrade(BOOTSTRAP),
+      },
+    )
     expect(adminResponse.status).toBe(204)
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'admin',
       credentialScope: 'admin',
       tokenHash: await hashToken(BOOTSTRAP),
-      clientHash: await hashToken(`${await hashToken(BOOTSTRAP)}\u0000unknown`),
+      clientHash: await hashToken(`${await hashToken(BOOTSTRAP)}\u0000${CLIENT_ID}`),
+      anonymous: false,
       revocable: false,
       lastRevision: null,
       metricClient: 'unknown',
       metricClientVersion: 'unknown',
     })
+  })
+
+  it('uses a browser client id instead of the network address for anonymous live capacity', async () => {
+    const blobs = new MemoryBlobStore()
+    const sql = new MemorySqlStore()
+    const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
+    const connectStatusLive = vi.fn(
+      async (_request: Request, _connection: LiveConnection) => new Response(null, { status: 204 }),
+    )
+    const app = createApp(makeBackendContext(blobs, sql, counters), {
+      currentSeason: 7,
+      openAccess: true,
+      connectStatusLive,
+    })
+    const headers = (ip: string) => ({
+      upgrade: 'websocket',
+      'sec-websocket-protocol': 'caelestis.live.v1',
+      'cf-connecting-ip': ip,
+    })
+    const otherClientId = '01890f3e-7b2c-7abc-8def-0123456789ae'
+
+    await app.request(`/telemetry/live?season=7&scope=public&clientId=${CLIENT_ID}`, {
+      headers: headers('203.0.113.1'),
+    })
+    await app.request(`/telemetry/live?season=7&scope=public&clientId=${CLIENT_ID}`, {
+      headers: headers('203.0.113.2'),
+    })
+    await app.request(`/telemetry/live?season=7&scope=public&clientId=${otherClientId}`, {
+      headers: headers('203.0.113.1'),
+    })
+
+    const connections = connectStatusLive.mock.calls.map(([, connection]) => connection)
+    expect(connections[0]?.clientHash).toBe(connections[1]?.clientHash)
+    expect(connections[2]?.clientHash).not.toBe(connections[0]?.clientHash)
+    expect(connections.every((connection) => connection.anonymous)).toBe(true)
   })
 
   it('serves active alarms with read scope and hides unpublished templates from readers', async () => {

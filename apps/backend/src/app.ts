@@ -39,6 +39,7 @@ export interface AppOptions {
           readonly credentialScope: 'read' | 'report' | 'admin'
           readonly tokenHash: string
           readonly clientHash: string
+          readonly anonymous: boolean
           readonly revocable: boolean
           readonly lastRevision: number | null
           readonly metricClient: string
