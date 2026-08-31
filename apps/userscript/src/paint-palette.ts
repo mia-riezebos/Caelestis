@@ -11,6 +11,7 @@ import {
   pixelAccounting,
   type TemplateColourProgress,
   type TemplateColourProgressDelta,
+  type TemplateDraftPixelDelta,
 } from './templates/mismatch.js'
 import { navigateTo } from './templates/navigate.js'
 import { focusedTemplate } from './templates/nearest.js'
@@ -33,14 +34,13 @@ import {
 const connectedServers = (): ReadonlyMap<string, ConnectedServer> =>
   new Map(getState().servers.map((server) => [server.url, server]))
 
-interface DraftColourProjection {
-  baseline: TemplateColourProgress
-  delta: TemplateColourProgressDelta
-  pending: TemplateColourProgressDelta
-  acceptedActive: TemplateColourProgressDelta | null
+interface DraftProjection {
+  readonly baselines: Map<number, TemplateColourProgress>
+  readonly pending: Map<string, TemplateDraftPixelDelta>
+  readonly acceptedActive: Map<string, TemplateDraftPixelDelta>
 }
 
-const draftProjections = new Map<string, Map<number, DraftColourProjection>>()
+const draftProjections = new Map<string, DraftProjection>()
 
 const serverCovers = (
   server: TemplateColourProgress,
@@ -72,18 +72,24 @@ const addDelta = (
   unpainted: left.unpainted + right.unpainted,
 })
 
-const subtractDelta = (
-  left: TemplateColourProgressDelta,
-  right: TemplateColourProgressDelta,
-): TemplateColourProgressDelta => ({
-  index: left.index,
-  completed: left.completed - right.completed,
-  mismatched: left.mismatched - right.mismatched,
-  unpainted: left.unpainted - right.unpainted,
-})
-
 const deltaIsEmpty = (delta: TemplateColourProgressDelta): boolean =>
   delta.completed === 0 && delta.mismatched === 0 && delta.unpainted === 0
+
+const samePixelDelta = (left: TemplateDraftPixelDelta, right: TemplateDraftPixelDelta): boolean =>
+  left.key === right.key &&
+  left.index === right.index &&
+  left.completed === right.completed &&
+  left.mismatched === right.mismatched &&
+  left.unpainted === right.unpainted
+
+const aggregateColour = (
+  index: number,
+  pixels: Iterable<TemplateDraftPixelDelta>,
+): TemplateColourProgressDelta => {
+  let total = zeroDelta(index)
+  for (const pixel of pixels) if (pixel.index === index) total = addDelta(total, pixel)
+  return total
+}
 
 /**
  * Reconcile a draft against the server snapshot that was visible when that colour was first edited.
@@ -93,56 +99,59 @@ const deltaIsEmpty = (delta: TemplateColourProgressDelta): boolean =>
 const progressWithDrafts = (
   templateId: string,
   server: readonly TemplateColourProgress[],
-  deltas: readonly TemplateColourProgressDelta[],
+  pixels: readonly TemplateDraftPixelDelta[],
 ): readonly TemplateColourProgress[] => {
-  let states = draftProjections.get(templateId)
-  if (states === undefined) {
-    if (deltas.length === 0) return server
-    states = new Map()
-    draftProjections.set(templateId, states)
+  let state = draftProjections.get(templateId)
+  if (state === undefined) {
+    if (pixels.length === 0) return server
+    state = { baselines: new Map(), pending: new Map(), acceptedActive: new Map() }
+    draftProjections.set(templateId, state)
   }
-  const deltaByIndex = new Map(deltas.map((delta) => [delta.index, delta]))
-  const result = server.map((entry) => {
-    const delta = deltaByIndex.get(entry.index)
-    let state = states.get(entry.index)
-    if (delta !== undefined) {
-      if (state === undefined || state.baseline.total !== entry.total) {
-        state = {
-          baseline: entry,
-          delta,
-          pending: zeroDelta(entry.index),
-          acceptedActive: null,
-        }
-        states.set(entry.index, state)
-      } else state.delta = delta
-    }
-    if (state === undefined) return entry
+  const active = new Map(pixels.map((pixel) => [pixel.key, pixel]))
+  for (const key of [...state.acceptedActive.keys()]) {
+    if (!active.has(key)) state.acceptedActive.delete(key)
+  }
+  const serverByIndex = new Map(server.map((entry) => [entry.index, entry]))
+  for (const pixel of [...state.pending.values(), ...active.values()]) {
+    const entry = serverByIndex.get(pixel.index)
+    const baseline = state.baselines.get(pixel.index)
+    if (entry !== undefined && (baseline === undefined || baseline.total !== entry.total))
+      state.baselines.set(pixel.index, entry)
+  }
 
-    if (delta === undefined) state.acceptedActive = null
-    if (!deltaIsEmpty(state.pending)) {
-      const pendingTarget = applyColourProgressDelta(state.baseline, state.pending)
-      if (serverCovers(entry, pendingTarget, state.baseline)) {
-        state.baseline = entry
-        state.pending = zeroDelta(entry.index)
-      }
+  for (const [index, baseline] of [...state.baselines]) {
+    const entry = serverByIndex.get(index)
+    if (entry === undefined) {
+      state.baselines.delete(index)
+      for (const [key, pixel] of state.pending) if (pixel.index === index) state.pending.delete(key)
+      continue
     }
-    const active =
-      delta === undefined
-        ? zeroDelta(entry.index)
-        : subtractDelta(delta, state.acceptedActive ?? zeroDelta(entry.index))
-    const combined = addDelta(state.pending, active)
-    if (deltaIsEmpty(combined)) {
-      if (delta === undefined) states.delete(entry.index)
-      return entry
+    const pending = aggregateColour(index, state.pending.values())
+    if (deltaIsEmpty(pending)) continue
+    if (serverCovers(entry, applyColourProgressDelta(baseline, pending), baseline)) {
+      for (const [key, pixel] of state.pending) if (pixel.index === index) state.pending.delete(key)
+      state.baselines.set(index, entry)
     }
-    const target = applyColourProgressDelta(state.baseline, combined)
-    if (serverCovers(entry, target, state.baseline)) return entry
-    return target
-  })
-  for (const index of [...states.keys()]) {
-    if (!server.some((entry) => entry.index === index)) states.delete(index)
   }
-  if (states.size === 0) draftProjections.delete(templateId)
+
+  // A current native draft replaces pending work at the same pixel. Once the server has covered an
+  // accepted pixel, the still-mounted copy of that same draft is suppressed until Wplace clears it.
+  const effective = new Map(state.pending)
+  for (const [key, pixel] of active) {
+    const accepted = state.acceptedActive.get(key)
+    if (!state.pending.has(key) && accepted !== undefined && samePixelDelta(pixel, accepted))
+      continue
+    effective.set(key, pixel)
+  }
+
+  const result = server.map((entry) => {
+    const delta = aggregateColour(entry.index, effective.values())
+    if (deltaIsEmpty(delta)) return entry
+    const baseline = state.baselines.get(entry.index) ?? entry
+    const target = applyColourProgressDelta(baseline, delta)
+    return serverCovers(entry, target, baseline) ? entry : target
+  })
+  if (active.size === 0 && state.pending.size === 0) draftProjections.delete(templateId)
   return result
 }
 
@@ -165,7 +174,7 @@ const progressForTemplate = (
   })
   return progress === null
     ? []
-    : progressWithDrafts(template.id, progress, accounting.draftColourDeltas)
+    : progressWithDrafts(template.id, progress, accounting.draftPixelDeltas)
 }
 
 /** Keep an accepted draft visible while its authoritative status response is still in flight. */
@@ -174,15 +183,12 @@ const retainAcceptedDraft = (): void => {
   if (template === null || template.serverUrl === undefined) return
   // Populate the projection from the latest synchronous draft before Wplace clears its canvas.
   progressForTemplate(template)
-  const states = draftProjections.get(template.id)
-  if (states === undefined) return
-  for (const state of states.values()) {
-    const contribution = subtractDelta(
-      state.delta,
-      state.acceptedActive ?? zeroDelta(state.delta.index),
-    )
-    state.pending = addDelta(state.pending, contribution)
-    state.acceptedActive = state.delta
+  const state = draftProjections.get(template.id)
+  if (state === undefined) return
+  for (const pixel of pixelAccounting.read(template).draftPixelDeltas) {
+    if (deltaIsEmpty(pixel)) state.pending.delete(pixel.key)
+    else state.pending.set(pixel.key, pixel)
+    state.acceptedActive.set(pixel.key, pixel)
   }
 }
 

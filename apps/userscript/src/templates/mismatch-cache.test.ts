@@ -761,8 +761,8 @@ describe('visible mismatch answer retention', () => {
     expect(pixelAccounting.read(selected).colours).toEqual([
       { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
     ])
-    expect(pixelAccounting.read(selected).draftColourDeltas).toEqual([
-      { index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    expect(pixelAccounting.read(selected).draftPixelDeltas).toEqual([
+      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
     ])
 
     harness.draft[0] = 2
@@ -770,14 +770,16 @@ describe('visible mismatch answer retention', () => {
     expect(pixelAccounting.read(selected).colours).toEqual([
       { index: 0, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
     ])
-    expect(pixelAccounting.read(selected).draftColourDeltas).toEqual([])
+    expect(pixelAccounting.read(selected).draftPixelDeltas).toEqual([
+      { key: '0/0/0', index: 0, completed: 0, mismatched: 0, unpainted: 0 },
+    ])
 
     harness.draft[0] = 255
     changed?.({ x: 0, y: 0 }, [0, 0, 255], 'draft')
     expect(pixelAccounting.read(selected).colours).toEqual([
       { index: 0, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
     ])
-    expect(pixelAccounting.read(selected).draftColourDeltas).toEqual([])
+    expect(pixelAccounting.read(selected).draftPixelDeltas).toEqual([])
     expect(draftChanged).toHaveBeenCalledTimes(3)
   })
 
