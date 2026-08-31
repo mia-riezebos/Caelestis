@@ -18,6 +18,7 @@ import {
 } from '@caelestis/shared'
 import { userscriptClientHeaders } from './client-metrics.js'
 import { count, warn } from './debug.js'
+import { readBoundedJsonResponse } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
 import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
 import { invalidateServerMismatchTile } from './server-mismatch.js'
@@ -54,6 +55,7 @@ const OFFER_DELAY_MS = 250
 const OFFER_RETRY_MIN_MS = 60_000
 const OFFER_RETRY_MAX_MS = 60_000
 const REQUEST_TIMEOUT_MS = 15_000
+const TELEMETRY_MUTATION_JSON_BYTES = 64 * 1024
 const RETRIES = 3
 const MAX_RECENT_TILES = 32
 const MAX_RECENT_TILE_BYTES = 32 * 1_024 * 1_024
@@ -364,7 +366,10 @@ const uploadWanted = async (
         if (response?.ok) {
           uploaded.add(entry.deliveryId)
           invalidateServerMismatchTile(server.url, entry.coord)
-          const body = (await response.json().catch(() => null)) as {
+          const body = (await readBoundedJsonResponse(
+            response,
+            TELEMETRY_MUTATION_JSON_BYTES,
+          ).catch(() => null)) as {
             status?: unknown
           } | null
           const delta = statusDeltaFrom(body?.status)
@@ -522,7 +527,10 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
         })
       return
     }
-    const body: unknown = await response.json().catch(() => null)
+    const body: unknown = await readBoundedJsonResponse(
+      response,
+      TELEMETRY_MUTATION_JSON_BYTES,
+    ).catch(() => null)
     if (
       typeof body !== 'object' ||
       body === null ||

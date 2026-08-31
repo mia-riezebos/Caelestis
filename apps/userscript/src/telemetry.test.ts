@@ -668,10 +668,11 @@ describe('server telemetry client', () => {
     })
   })
 
-  it('reconciles when a successful wanted upload omits its committed status delta', async () => {
+  it('bounds a successful wanted upload response before reconciling its missing delta', async () => {
     coordinator.liveHealthy = true
     let offered = false
     let statusReadsAfterOffer = 0
+    const parseUpload = vi.fn(async () => ({}))
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -693,7 +694,13 @@ describe('server telemetry client', () => {
             },
           })
         }
-        if (url.includes('/telemetry/tiles/1/2/')) return Response.json({})
+        if (url.includes('/telemetry/tiles/1/2/')) {
+          const response = new Response('{}', {
+            headers: { 'content-length': String(64 * 1024 + 1) },
+          })
+          Object.defineProperty(response, 'json', { value: parseUpload })
+          return response
+        }
         return new Response(null, { status: 204 })
       }),
     )
@@ -704,6 +711,7 @@ describe('server telemetry client', () => {
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
 
     await vi.waitFor(() => expect(statusReadsAfterOffer).toBe(1))
+    expect(parseUpload).not.toHaveBeenCalled()
   })
 
   it('does not reoffer an observation after its requested upload succeeds', async () => {
