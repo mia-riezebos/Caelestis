@@ -405,6 +405,15 @@ describe('Wplace paint palette progress', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('8')
 
+    // Status now includes the first accepted correction. The active inverse repaint remains a
+    // one-pixel decrement relative to that newer baseline.
+    harness.serverProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 7, known: 10, total: 10 },
+    ]
+    harness.statusListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('8')
+
     harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
     harness.draftPixelDeltas = []
     harness.draftListeners.at(-1)?.()

@@ -38,6 +38,7 @@ interface DraftProjection {
   readonly baselines: Map<number, TemplateColourProgress>
   readonly pending: Map<string, TemplateDraftPixelDelta>
   readonly acceptedActive: Map<string, TemplateDraftPixelDelta>
+  readonly rebasedFrom: Map<string, TemplateDraftPixelDelta>
 }
 
 const draftProjections = new Map<string, DraftProjection>()
@@ -72,6 +73,21 @@ const addDelta = (
   unpainted: left.unpainted + right.unpainted,
 })
 
+const addPixelDelta = (
+  left: TemplateDraftPixelDelta,
+  right: TemplateDraftPixelDelta,
+): TemplateDraftPixelDelta => ({ ...left, ...addDelta(left, right) })
+
+const subtractPixelDelta = (
+  left: TemplateDraftPixelDelta,
+  right: TemplateDraftPixelDelta,
+): TemplateDraftPixelDelta => ({
+  ...left,
+  completed: left.completed - right.completed,
+  mismatched: left.mismatched - right.mismatched,
+  unpainted: left.unpainted - right.unpainted,
+})
+
 const deltaIsEmpty = (delta: TemplateColourProgressDelta): boolean =>
   delta.completed === 0 && delta.mismatched === 0 && delta.unpainted === 0
 
@@ -104,15 +120,23 @@ const progressWithDrafts = (
   let state = draftProjections.get(templateId)
   if (state === undefined) {
     if (pixels.length === 0) return server
-    state = { baselines: new Map(), pending: new Map(), acceptedActive: new Map() }
+    state = {
+      baselines: new Map(),
+      pending: new Map(),
+      acceptedActive: new Map(),
+      rebasedFrom: new Map(),
+    }
     draftProjections.set(templateId, state)
   }
-  const active = new Map(pixels.map((pixel) => [pixel.key, pixel]))
+  const rawActive = new Map(pixels.map((pixel) => [pixel.key, pixel]))
   for (const key of [...state.acceptedActive.keys()]) {
-    if (!active.has(key)) state.acceptedActive.delete(key)
+    if (!rawActive.has(key)) state.acceptedActive.delete(key)
+  }
+  for (const key of [...state.rebasedFrom.keys()]) {
+    if (!rawActive.has(key)) state.rebasedFrom.delete(key)
   }
   const serverByIndex = new Map(server.map((entry) => [entry.index, entry]))
-  for (const pixel of [...state.pending.values(), ...active.values()]) {
+  for (const pixel of [...state.pending.values(), ...rawActive.values()]) {
     const entry = serverByIndex.get(pixel.index)
     const baseline = state.baselines.get(pixel.index)
     if (entry !== undefined && (baseline === undefined || baseline.total !== entry.total))
@@ -129,10 +153,25 @@ const progressWithDrafts = (
     const pending = aggregateColour(index, state.pending.values())
     if (deltaIsEmpty(pending)) continue
     if (serverCovers(entry, applyColourProgressDelta(baseline, pending), baseline)) {
-      for (const [key, pixel] of state.pending) if (pixel.index === index) state.pending.delete(key)
+      for (const [key, pixel] of state.pending) {
+        if (pixel.index !== index) continue
+        const current = rawActive.get(key)
+        if (current !== undefined) {
+          const held = state.rebasedFrom.get(key)
+          state.rebasedFrom.set(key, held === undefined ? pixel : addPixelDelta(held, pixel))
+        }
+        state.pending.delete(key)
+      }
       state.baselines.set(index, entry)
     }
   }
+
+  const active = new Map(
+    [...rawActive].map(([key, pixel]) => {
+      const rebase = state.rebasedFrom.get(key)
+      return [key, rebase === undefined ? pixel : subtractPixelDelta(pixel, rebase)]
+    }),
+  )
 
   // A current native draft replaces pending work at the same pixel. Once the server has covered an
   // accepted pixel, the still-mounted copy of that same draft is suppressed until Wplace clears it.
@@ -185,7 +224,9 @@ const retainAcceptedDraft = (): void => {
   progressForTemplate(template)
   const state = draftProjections.get(template.id)
   if (state === undefined) return
-  for (const pixel of pixelAccounting.read(template).draftPixelDeltas) {
+  for (const raw of pixelAccounting.read(template).draftPixelDeltas) {
+    const rebase = state.rebasedFrom.get(raw.key)
+    const pixel = rebase === undefined ? raw : subtractPixelDelta(raw, rebase)
     if (deltaIsEmpty(pixel)) state.pending.delete(pixel.key)
     else state.pending.set(pixel.key, pixel)
     state.acceptedActive.set(pixel.key, pixel)
