@@ -2,11 +2,14 @@ import { type Manifest, millis } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import { createSeasonManifestReadModel } from './manifest/read-model.js'
+import { LIVE_D1_USAGE_HEADER } from './status-read-model/live-measurement.js'
 import {
   createChunkedManifestPersistence,
   createChunkedStatusPersistence,
   createLiveSessionFence,
+  MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS,
   MAX_LIVE_SUBSCRIBERS,
+  MAX_LIVE_SUBSCRIBERS_PER_CLIENT,
   StatusReadModelObject,
 } from './status-read-model-object.js'
 
@@ -748,6 +751,7 @@ describe('status read-model Durable Object', () => {
           'x-caelestis-scope': 'public',
           'x-caelestis-credential-scope': 'read',
           'x-caelestis-token-hash': 'a'.repeat(64),
+          'x-caelestis-client-hash': 'b'.repeat(64),
           'x-caelestis-revocable': '0',
         },
       }),
@@ -755,7 +759,58 @@ describe('status read-model Durable Object', () => {
 
     expect(response.status).toBe(503)
     expect(response.headers.get('retry-after')).toBe('30')
+    expect(response.headers.get(LIVE_D1_USAGE_HEADER)).toBe('0,0,0,0')
     await expect(response.text()).resolves.toBe('Live subscriber limit reached')
+  })
+
+  it('rejects live upgrades when one client reaches its subscriber limit', async () => {
+    database = new SqliteD1Database()
+    const clientHash = 'b'.repeat(64)
+    const subscribers = Array.from(
+      { length: MAX_LIVE_SUBSCRIBERS_PER_CLIENT },
+      () =>
+        ({
+          deserializeAttachment: () => ({ clientHash, revoked: false }),
+        }) as unknown as WebSocket,
+    )
+    const object = new StatusReadModelObject(
+      objectState(new Map(), Number.POSITIVE_INFINITY, subscribers),
+      { DB: database } as unknown as Env,
+    )
+
+    const response = await object.fetch(
+      new Request('https://object.test/', {
+        headers: {
+          upgrade: 'websocket',
+          'x-caelestis-season': '8',
+          'x-caelestis-scope': 'public',
+          'x-caelestis-credential-scope': 'read',
+          'x-caelestis-token-hash': 'a'.repeat(64),
+          'x-caelestis-client-hash': clientHash,
+          'x-caelestis-revocable': '0',
+        },
+      }),
+    )
+
+    expect(response.status).toBe(503)
+    await expect(response.text()).resolves.toBe('Live subscriber limit reached')
+  })
+
+  it('closes oversized live messages before parsing them', () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const socket = {
+      deserializeAttachment: () => ({ revoked: false }),
+      send: vi.fn(),
+      close: vi.fn(),
+    } as unknown as WebSocket
+
+    object.webSocketMessage(socket, 'x'.repeat(MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS + 1))
+
+    expect(socket.close).toHaveBeenCalledWith(1009, 'live message too large')
+    expect(socket.send).not.toHaveBeenCalled()
   })
 
   it('serializes an in-flight attachment ahead of revocation cleanup', async () => {

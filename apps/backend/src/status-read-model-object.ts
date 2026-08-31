@@ -20,12 +20,18 @@ import {
 } from './manifest/read-model.js'
 import { assembleManifestProjection } from './manifest/source.js'
 import {
+  type CacheOutcome,
+  type D1Usage,
   instrumentD1,
   type MeasuredD1Operation,
   measureD1Usage,
-  metricClientIdentity,
+  normalizeMetricClientIdentity,
   recordLiveTileOfferCacheMetric,
 } from './metrics/request-metrics.js'
+import {
+  LIVE_CACHE_OUTCOME_HEADER,
+  LIVE_D1_USAGE_HEADER,
+} from './status-read-model/live-measurement.js'
 import {
   createSeasonStatusReadModel,
   type PersistedStatusReadModel,
@@ -52,6 +58,8 @@ const MAX_CHUNK_JSON_BYTES = 512 * 1024
 const MAX_DELTA_MESSAGE_BYTES = 32 * 1024
 const LIVE_PROTOCOL = 'caelestis.live.v1'
 export const MAX_LIVE_SUBSCRIBERS = 256
+export const MAX_LIVE_SUBSCRIBERS_PER_CLIENT = 16
+export const MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS = 64 * 1024
 const MANIFEST_CACHE_INDEX_KEY = 'manifest-read-model:v1:index'
 // 128 Ki UTF-16 code units are at most 384 KiB in UTF-8, below the intended 512 KiB ceiling.
 const MANIFEST_CACHE_CHUNK_CODE_UNITS = 128 * 1024
@@ -61,6 +69,7 @@ interface LiveSubscriberAttachment {
   readonly scope: StatusVisibilityScope
   readonly credentialScope?: Scope
   readonly tokenHash: string
+  readonly clientHash?: string
   readonly revocable: boolean
   readonly lastRevision: number | null
   readonly revoked?: boolean
@@ -124,6 +133,22 @@ interface StoredManifestCacheIndex {
 
 const manifestChunkKey = (generation: string, index: number): string =>
   `manifest-read-model:v1:chunk:${generation}:${index}`
+
+const liveMeasurementHeaders = (
+  usage: D1Usage,
+  cacheOutcome?: Exclude<CacheOutcome, 'none'>,
+): Headers => {
+  const headers = new Headers({
+    [LIVE_D1_USAGE_HEADER]: [
+      usage.rowsRead,
+      usage.rowsWritten,
+      usage.measuredQueries,
+      usage.unmeasuredQueries,
+    ].join(','),
+  })
+  if (cacheOutcome !== undefined) headers.set(LIVE_CACHE_OUTCOME_HEADER, cacheOutcome)
+  return headers
+}
 
 const chunkJsonText = (value: string): readonly string[] => {
   const chunks: string[] = []
@@ -639,6 +664,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     const scope = request.headers.get('x-caelestis-scope')
     const credentialScope = request.headers.get('x-caelestis-credential-scope')
     const tokenHash = request.headers.get('x-caelestis-token-hash')
+    const clientHash = request.headers.get('x-caelestis-client-hash')
     const revocableHeader = request.headers.get('x-caelestis-revocable')
     const revisionHeader = request.headers.get('x-caelestis-revision')
     const lastRevision = revisionHeader === null ? null : Number(revisionHeader)
@@ -648,69 +674,97 @@ export class StatusReadModelObject extends DurableObject<Env> {
     if (tokenHash === null || !/^[0-9a-f]{64}$/.test(tokenHash)) {
       return new Response('Invalid credential identity', { status: 400 })
     }
+    if (clientHash === null || !/^[0-9a-f]{64}$/.test(clientHash)) {
+      return new Response('Invalid client identity', { status: 400 })
+    }
     if (credentialScope !== 'read' && credentialScope !== 'report' && credentialScope !== 'admin')
       return new Response('Invalid credential scope', { status: 400 })
     if (revocableHeader !== '0' && revocableHeader !== '1') {
       return new Response('Invalid credential kind', { status: 400 })
     }
     const revocable = revocableHeader === '1'
-    const metricClient = metricClientIdentity(request.headers.get('accept'))
+    const metricClient = normalizeMetricClientIdentity(
+      request.headers.get('x-caelestis-metric-client') ?? 'unknown',
+      request.headers.get('x-caelestis-metric-client-version') ?? 'unknown',
+    )
     if (lastRevision !== null && (!Number.isSafeInteger(lastRevision) || lastRevision < 0)) {
       return new Response('Invalid revision', { status: 400 })
     }
-    let capacityExceeded = false
-    const response = await this.liveSessions.attach(
-      async () => {
-        if (this.objectState.getWebSockets('status').length >= MAX_LIVE_SUBSCRIBERS) {
-          capacityExceeded = true
-          return false
-        }
-        if (!revocable) return true
-        const token = await this.sql.readAccessToken(tokenHash)
-        return token !== null && (scope === 'public' || token.scope === 'admin')
-      },
-      () => {
-        const pair = new WebSocketPair()
-        const client = pair[0]
-        const server = pair[1]
-        server.serializeAttachment({
-          season,
-          scope,
-          credentialScope,
-          tokenHash,
-          revocable,
-          lastRevision,
-          revoked: false,
-          metricClient: metricClient.client,
-          metricClientVersion: metricClient.clientVersion,
-        } satisfies LiveSubscriberAttachment)
-        this.objectState.acceptWebSocket(server, ['status'])
-        return { client, server }
-      },
-    )
-    if (capacityExceeded) {
-      return new Response('Live subscriber limit reached', {
-        status: 503,
-        headers: { 'Retry-After': '30' },
+    const measured = await measureD1Usage(async () => {
+      let capacityExceeded = false
+      const response = await this.liveSessions.attach(
+        async () => {
+          const sockets = this.objectState.getWebSockets('status')
+          if (sockets.length >= MAX_LIVE_SUBSCRIBERS) {
+            capacityExceeded = true
+            return false
+          }
+          const clientConnections = sockets.filter((socket) => {
+            const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
+            return attachment?.clientHash === clientHash && attachment.revoked !== true
+          }).length
+          if (clientConnections >= MAX_LIVE_SUBSCRIBERS_PER_CLIENT) {
+            capacityExceeded = true
+            return false
+          }
+          if (!revocable) return true
+          const token = await this.sql.readAccessToken(tokenHash)
+          return token !== null && (scope === 'public' || token.scope === 'admin')
+        },
+        () => {
+          const pair = new WebSocketPair()
+          const client = pair[0]
+          const server = pair[1]
+          server.serializeAttachment({
+            season,
+            scope,
+            credentialScope,
+            tokenHash,
+            clientHash,
+            revocable,
+            lastRevision,
+            revoked: false,
+            metricClient: metricClient.client,
+            metricClientVersion: metricClient.clientVersion,
+          } satisfies LiveSubscriberAttachment)
+          this.objectState.acceptWebSocket(server, ['status'])
+          return { client, server }
+        },
+      )
+      if (capacityExceeded) return { kind: 'capacity' as const }
+      if (response === null) return { kind: 'revoked' as const }
+      try {
+        const read = await this.model(season).reconcileSnapshot(scope)
+        this.send(
+          response.server,
+          lastRevision === read.snapshot.revision
+            ? { type: 'ready', revision: read.snapshot.revision }
+            : { type: 'status-reconcile', revision: read.snapshot.revision },
+        )
+        return { kind: 'connected' as const, ...response, cacheOutcome: read.cacheOutcome }
+      } catch (error) {
+        response.server.close(1011, 'status reconciliation failed')
+        throw error
+      }
+    })
+    if (!measured.success) throw measured.error
+    if (measured.value.kind === 'capacity') {
+      const headers = liveMeasurementHeaders(measured.usage)
+      headers.set('Retry-After', '30')
+      return new Response('Live subscriber limit reached', { status: 503, headers })
+    }
+    if (measured.value.kind === 'revoked') {
+      return new Response('Credential revoked', {
+        status: 401,
+        headers: liveMeasurementHeaders(measured.usage),
       })
     }
-    if (response === null) return new Response('Credential revoked', { status: 401 })
-    try {
-      const { snapshot } = await this.model(season).reconcileSnapshot(scope)
-      this.send(
-        response.server,
-        lastRevision === snapshot.revision
-          ? { type: 'ready', revision: snapshot.revision }
-          : { type: 'status-reconcile', revision: snapshot.revision },
-      )
-    } catch (error) {
-      response.server.close(1011, 'status reconciliation failed')
-      throw error
-    }
+    const headers = liveMeasurementHeaders(measured.usage, measured.value.cacheOutcome)
+    headers.set('sec-websocket-protocol', LIVE_PROTOCOL)
     return new Response(null, {
       status: 101,
-      headers: { 'sec-websocket-protocol': LIVE_PROTOCOL },
-      webSocket: response.client,
+      headers,
+      webSocket: measured.value.client,
     })
   }
 
@@ -726,6 +780,10 @@ export class StatusReadModelObject extends DurableObject<Env> {
       return
     }
     if (typeof message !== 'string') return
+    if (message.length > MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS) {
+      socket.close(1009, 'live message too large')
+      return
+    }
     const event: LiveSyncClientEvent | null = (() => {
       try {
         return Schema.decodeUnknownSync(LiveSyncClientEventSchema)(JSON.parse(message))

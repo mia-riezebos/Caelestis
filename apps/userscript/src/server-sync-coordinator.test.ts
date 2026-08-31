@@ -352,6 +352,8 @@ describe('server sync coordinator', () => {
     expect(socket.url).toContain('wss://example.test/backend/telemetry/live?')
     expect(socket.url).toContain('season=0')
     expect(socket.url).toContain('scope=public')
+    expect(socket.url).toContain('client=userscript')
+    expect(socket.url).toContain('clientVersion=development')
     expect(socket.url).not.toContain(liveServer.token)
     expect(socket.protocols).toEqual([
       'caelestis.live.v1',

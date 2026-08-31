@@ -7,6 +7,7 @@ import {
   instrumentD1,
   measureD1Usage,
   measureRequest,
+  normalizeMetricClientIdentity,
   normalizeMetricRoute,
   recordCacheOutcome,
   recordLiveTileOfferCacheMetric,
@@ -66,16 +67,33 @@ describe('request capacity metrics', () => {
     expect(
       [
         ['GET', '/telemetry/status'],
+        ['GET', '/telemetry/live'],
         ['GET', '/manifest'],
         ['POST', '/telemetry/tiles/offers'],
         ['POST', '/telemetry/paints'],
       ].map(([method, path]) => normalizeMetricRoute(method ?? '', path ?? '')),
     ).toEqual([
       'GET /telemetry/status',
+      'GET /telemetry/live',
       'GET /manifest',
       'POST /telemetry/tiles/offers',
       'POST /telemetry/paints',
     ])
+  })
+
+  it('bounds caller-controlled live client dimensions', () => {
+    expect(normalizeMetricClientIdentity('userscript', '0.5.4')).toEqual({
+      client: 'userscript',
+      clientVersion: '0.5.4',
+    })
+    expect(normalizeMetricClientIdentity('forged', 'anything')).toEqual({
+      client: 'unknown',
+      clientVersion: 'unknown',
+    })
+    expect(normalizeMetricClientIdentity('userscript', 'future')).toEqual({
+      client: 'userscript',
+      clientVersion: 'unknown',
+    })
   })
 
   it('records route, client, sync, cache, D1 and tile-offer outcomes in fixed columns', async () => {

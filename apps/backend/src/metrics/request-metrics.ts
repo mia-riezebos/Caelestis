@@ -77,16 +77,27 @@ const userscriptVersions = new Set(
 )
 
 /** Collapse caller-controlled client labels before they become metric dimensions. */
-export const metricClientIdentity = (accept: string | null): MetricClientIdentity => {
-  const client = parseClientMetricsAccept(accept)
+export const normalizeMetricClientIdentity = (
+  client: string,
+  version: string,
+): MetricClientIdentity => {
+  const normalizedClient =
+    client === 'userscript' || client === 'frontend' || client === 'third-party'
+      ? client
+      : 'unknown'
   return {
-    client: client.client,
+    client: normalizedClient,
     clientVersion:
-      (client.client === 'userscript' && userscriptVersions.has(client.version)) ||
-      (client.client === 'frontend' && client.version === deploymentVersion)
-        ? client.version
+      (normalizedClient === 'userscript' && userscriptVersions.has(version)) ||
+      (normalizedClient === 'frontend' && version === deploymentVersion)
+        ? version
         : 'unknown',
   }
+}
+
+export const metricClientIdentity = (accept: string | null): MetricClientIdentity => {
+  const client = parseClientMetricsAccept(accept)
+  return normalizeMetricClientIdentity(client.client, client.version)
 }
 
 const route = (method: string, pattern: string): string => `${method} ${pattern}`
@@ -109,6 +120,7 @@ const exactRoutes = new Set([
   '/telemetry/contributions',
   '/telemetry/leaderboard',
   '/telemetry/canvas',
+  '/telemetry/live',
   '/telemetry/tiles/offers',
   '/telemetry/paints',
 ])

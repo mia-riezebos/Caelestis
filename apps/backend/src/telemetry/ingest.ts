@@ -360,40 +360,62 @@ const recordObservationPromise = async (
     metadata.season,
     metadata.tile,
   )
-  const targets = await ports.sql.listTelemetryTargets(
-    metadata.season,
-    metadata.tile,
-    metadata.includeUnpublished,
-  )
-  const observedAtMs = metadata.observedAt * 1_000
-  const classified = (
-    await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)))
-  ).filter((result): result is ClassifiedTarget => result !== null)
-  const statuses = classified.map((result) => result.status)
-  const observation: TileObservation = {
-    season: metadata.season,
-    tile: metadata.tile,
-    hash: metadata.hash,
-    observedAt: millis(observedAtMs),
-    reportedAt: metadata.observedAt,
-    reportedWithToken: metadata.tokenHash,
-    reportedByUserId: metadata.wplaceUserId,
-  }
-  await ports.sql.rememberPainter(metadata.wplaceUserId, metadata.displayName, millis(observedAtMs))
-  const recordHistory =
-    options.recordHistory ?? (targets.length === 0 || targets.some((target) => !target.finished))
-  const committed = await ports.sql.commitTileBlobReservation(
-    reservationId,
-    millis(Date.now()),
-    observation,
-    statuses,
-    recordHistory,
-    options.authoritative ?? false,
-    metadata.includeUnpublished,
-  )
-  if (!committed) {
-    throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
-  }
+  const { targets, classified, committed } = await (async () => {
+    try {
+      const targets = await ports.sql.listTelemetryTargets(
+        metadata.season,
+        metadata.tile,
+        metadata.includeUnpublished,
+      )
+      const observedAtMs = metadata.observedAt * 1_000
+      const classified = (
+        await Promise.all(
+          targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)),
+        )
+      ).filter((result): result is ClassifiedTarget => result !== null)
+      const statuses = classified.map((result) => result.status)
+      const observation: TileObservation = {
+        season: metadata.season,
+        tile: metadata.tile,
+        hash: metadata.hash,
+        observedAt: millis(observedAtMs),
+        reportedAt: metadata.observedAt,
+        reportedWithToken: metadata.tokenHash,
+        reportedByUserId: metadata.wplaceUserId,
+      }
+      await ports.sql.rememberPainter(
+        metadata.wplaceUserId,
+        metadata.displayName,
+        millis(observedAtMs),
+      )
+      const recordHistory =
+        options.recordHistory ??
+        (targets.length === 0 || targets.some((target) => !target.finished))
+      const committed = await ports.sql.commitTileBlobReservation(
+        reservationId,
+        millis(Date.now()),
+        observation,
+        statuses,
+        recordHistory,
+        options.authoritative ?? false,
+        metadata.includeUnpublished,
+      )
+      if (!committed) {
+        throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
+      }
+      return { targets, classified, committed }
+    } catch (error) {
+      if (preparedCoverageToken !== null) {
+        await finishTileGenerationCommit(
+          ports.statusReadModel,
+          metadata.season,
+          metadata.tile,
+          preparedCoverageToken,
+        )
+      }
+      throw error
+    }
+  })()
   // The server recomputed coverage after prepare. A client token only supports adapters that do not
   // implement prepare; it cannot invalidate the fresher server-owned result.
   const repairCoverageToken = preparedCoverageToken?.coverageToken ?? options.coverageToken

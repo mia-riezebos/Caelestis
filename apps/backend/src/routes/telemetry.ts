@@ -12,7 +12,9 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, authenticateRequest, requireScopeEffect } from '../auth/middleware.js'
+import { hashToken } from '../auth/tokens.js'
 import {
+  normalizeMetricClientIdentity,
   recordCacheOutcome,
   recordTileOfferBatch,
   recordTileOfferBatchRequested,
@@ -176,8 +178,11 @@ export const createTelemetryRoutes = (
         readonly scope: 'public' | 'admin'
         readonly credentialScope: 'read' | 'report' | 'admin'
         readonly tokenHash: string
+        readonly clientHash: string
         readonly revocable: boolean
         readonly lastRevision: number | null
+        readonly metricClient: string
+        readonly metricClientVersion: string
       },
     ) => Promise<Response>
   },
@@ -216,13 +221,24 @@ export const createTelemetryRoutes = (
       if (lastRevisionRaw !== undefined && lastRevision === null) {
         return c.json({ error: 'revision must be a non-negative integer' }, 400)
       }
+      const caller = c.get('caller')
+      const metricClient = normalizeMetricClientIdentity(
+        c.req.query('client') ?? 'unknown',
+        c.req.query('clientVersion') ?? 'unknown',
+      )
+      const clientHash = await hashToken(
+        `${caller.tokenHash}\u0000${c.req.header('cf-connecting-ip') ?? 'unknown'}`,
+      )
       return options.connectStatusLive(c.req.raw, {
         season,
         scope,
-        credentialScope: c.get('caller').scope,
-        tokenHash: c.get('caller').tokenHash,
-        revocable: c.get('caller').token !== null,
+        credentialScope: caller.scope,
+        tokenHash: caller.tokenHash,
+        clientHash,
+        revocable: caller.token !== null,
         lastRevision,
+        metricClient: metricClient.client,
+        metricClientVersion: metricClient.clientVersion,
       })
     },
   )

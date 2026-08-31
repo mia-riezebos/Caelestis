@@ -234,17 +234,21 @@ describe('telemetry routes', () => {
     ).toBe(403)
     expect(connectStatusLive).not.toHaveBeenCalled()
 
-    const publicResponse = await app.request('/telemetry/live?season=7&scope=public&revision=4', {
-      headers: upgrade(readToken),
-    })
+    const publicResponse = await app.request(
+      '/telemetry/live?season=7&scope=public&revision=4&client=userscript&clientVersion=0.5.4',
+      { headers: upgrade(readToken) },
+    )
     expect(publicResponse.status).toBe(204)
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'public',
       credentialScope: 'read',
       tokenHash: await hashToken(readToken),
+      clientHash: await hashToken(`${await hashToken(readToken)}\u0000unknown`),
       revocable: true,
       lastRevision: 4,
+      metricClient: 'userscript',
+      metricClientVersion: '0.5.4',
     })
 
     const adminResponse = await app.request('/telemetry/live?season=7&scope=admin', {
@@ -256,8 +260,11 @@ describe('telemetry routes', () => {
       scope: 'admin',
       credentialScope: 'admin',
       tokenHash: await hashToken(BOOTSTRAP),
+      clientHash: await hashToken(`${await hashToken(BOOTSTRAP)}\u0000unknown`),
       revocable: false,
       lastRevision: null,
+      metricClient: 'unknown',
+      metricClientVersion: 'unknown',
     })
   })
 
@@ -486,6 +493,46 @@ describe('telemetry routes', () => {
       0,
       expect.objectContaining(serverCommit),
     )
+  })
+
+  it('releases a prepared tile generation when upload accounting fails before commit', async () => {
+    const serverCommit = {
+      coverageToken: '01890f3e-7b2c-7abc-8def-012345678900',
+      commitToken: '01890f3e-7b2c-7abc-8def-012345678901',
+    }
+    const finishTileGenerationCommit = vi.fn(async () => undefined)
+    const { app, sql } = await harness({
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      prepareTileGenerationCommit: vi.fn(async () => serverCommit),
+      finishTileGenerationCommit,
+    })
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const accountingError = new Error('painter accounting unavailable')
+    vi.spyOn(sql, 'rememberPainter').mockRejectedValue(accountingError)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const response = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(Math.floor(Date.now() / 1_000)),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+
+    expect(response.status).toBe(500)
+    expect(finishTileGenerationCommit).toHaveBeenCalledWith(0, { x: 0, y: 0 }, serverCommit)
+    expect(consoleError).toHaveBeenCalledWith(accountingError)
   })
 
   it('keeps upload validation separate from typed storage failures', async () => {

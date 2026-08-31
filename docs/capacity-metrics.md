@@ -70,6 +70,10 @@ read from its package after Changesets have applied release bumps, while prior m
 releases are retained from the generated changelog. All caller-supplied alternatives collapse to
 `unknown`.
 
+WebSocket upgrades use `GET /telemetry/live`. Their Durable Object bootstrap reads and cache outcome
+return to the originating Worker metric, and the userscript identifies its exact allowlisted version
+through bounded query parameters because browser WebSocket handshakes cannot set `Accept`.
+
 Live tile-cache commands use the bounded route `WS /telemetry/live:tile-offer-cache`. One point is
 written per command with zero D1 columns, the cache outcome, and requested/already-known counts. A
 miss or stale result remains visible as the difference between requested and already-known before

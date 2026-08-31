@@ -38,8 +38,11 @@ export interface AppOptions {
           readonly scope: 'public' | 'admin'
           readonly credentialScope: 'read' | 'report' | 'admin'
           readonly tokenHash: string
+          readonly clientHash: string
           readonly revocable: boolean
           readonly lastRevision: number | null
+          readonly metricClient: string
+          readonly metricClientVersion: string
         },
       ) => Promise<Response>)
     | undefined

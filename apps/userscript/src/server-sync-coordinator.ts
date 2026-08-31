@@ -6,6 +6,7 @@ import {
   type SyncTransport,
   uuidV7,
 } from '@caelestis/shared'
+import { userscriptVersion } from './client-metrics.js'
 import { serverEndpoint } from './server-url.js'
 import {
   type ConnectedServer,
@@ -633,6 +634,8 @@ const openLiveConnection = (connection: LiveConnection): void => {
   endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
   endpoint.searchParams.set('season', String(server.season))
   endpoint.searchParams.set('scope', liveScope(server))
+  endpoint.searchParams.set('client', 'userscript')
+  endpoint.searchParams.set('clientVersion', userscriptVersion)
   const revision = serverSyncRevision(server, 'world', 'telemetry-status')
   if (revision !== undefined) endpoint.searchParams.set('revision', revision)
   const protocols = [LIVE_PROTOCOL]

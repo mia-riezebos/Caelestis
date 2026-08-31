@@ -1,6 +1,14 @@
 import type { TileCoord } from '@caelestis/shared'
 import type { ManifestProjectionInput, ManifestProjectionRead } from '../../manifest/read-model.js'
-import { type MeasuredD1Operation, mergeD1Usage } from '../../metrics/request-metrics.js'
+import {
+  type MeasuredD1Operation,
+  mergeD1Usage,
+  recordCacheOutcome,
+} from '../../metrics/request-metrics.js'
+import {
+  LIVE_CACHE_OUTCOME_HEADER,
+  LIVE_D1_USAGE_HEADER,
+} from '../../status-read-model/live-measurement.js'
 import type {
   StatusProjectionChange,
   StatusProjectionMutation,
@@ -22,6 +30,22 @@ const measuredValue = <A>(measured: MeasuredD1Operation<A>): A => {
   mergeD1Usage(measured.usage)
   if (!measured.success) throw measured.error
   return measured.value
+}
+
+const mergeLiveMeasurement = (response: Response): void => {
+  const usage = response.headers.get(LIVE_D1_USAGE_HEADER)?.split(',').map(Number)
+  if (usage?.length === 4 && usage.every((value) => Number.isFinite(value) && value >= 0)) {
+    mergeD1Usage({
+      rowsRead: usage[0] ?? 0,
+      rowsWritten: usage[1] ?? 0,
+      measuredQueries: usage[2] ?? 0,
+      unmeasuredQueries: usage[3] ?? 0,
+    })
+  }
+  const cacheOutcome = response.headers.get(LIVE_CACHE_OUTCOME_HEADER)
+  if (cacheOutcome === 'hit' || cacheOutcome === 'miss' || cacheOutcome === 'stale') {
+    recordCacheOutcome(cacheOutcome)
+  }
 }
 
 export class DurableObjectStatusReadModel implements StatusReadModelPort {
@@ -97,15 +121,18 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return this.shard(season).finishTileGenerationCommit(season, tile, commit)
   }
 
-  connectLive(
+  async connectLive(
     request: Request,
     connection: {
       readonly season: number
       readonly scope: StatusVisibilityScope
       readonly credentialScope: 'read' | 'report' | 'admin'
       readonly tokenHash: string
+      readonly clientHash: string
       readonly revocable: boolean
       readonly lastRevision: number | null
+      readonly metricClient: string
+      readonly metricClientVersion: string
     },
   ): Promise<Response> {
     const headers = new Headers(request.headers)
@@ -115,9 +142,14 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     headers.set('x-caelestis-scope', connection.scope)
     headers.set('x-caelestis-credential-scope', connection.credentialScope)
     headers.set('x-caelestis-token-hash', connection.tokenHash)
+    headers.set('x-caelestis-client-hash', connection.clientHash)
     headers.set('x-caelestis-revocable', connection.revocable ? '1' : '0')
+    headers.set('x-caelestis-metric-client', connection.metricClient)
+    headers.set('x-caelestis-metric-client-version', connection.metricClientVersion)
     if (connection.lastRevision === null) headers.delete('x-caelestis-revision')
     else headers.set('x-caelestis-revision', String(connection.lastRevision))
-    return this.shard(connection.season).fetch(new Request(request, { headers }))
+    const response = await this.shard(connection.season).fetch(new Request(request, { headers }))
+    mergeLiveMeasurement(response)
+    return response
   }
 }

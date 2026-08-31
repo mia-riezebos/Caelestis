@@ -179,6 +179,56 @@ describe('D1SqlStore', () => {
     await expect(store.readStatusProjectionRevision(1)).resolves.toBe(1)
   })
 
+  it('keeps an exact status replay out of the projection revision and delta', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    const observedAt = millis(2_000)
+    const status = {
+      templateId: 'template-1',
+      versionId: 'version-1',
+      tile: { x: 0, y: 0 },
+      correct: 1,
+      wrong: 0,
+      blank: 0,
+      observedAt,
+    }
+    const commit = async (hash: string, reservationId: string) => {
+      await store.reserveTileBlobUpload(hash, hash, reservationId, millis(1_000), millis(5_000))
+      return store.commitTileBlobReservation(
+        reservationId,
+        millis(2_500),
+        {
+          season: 1,
+          tile: { x: 0, y: 0 },
+          hash,
+          observedAt,
+          reportedAt: seconds(2),
+          reportedWithToken: 'c'.repeat(64),
+          reportedByUserId: 42,
+        },
+        [status],
+        false,
+        false,
+        true,
+      )
+    }
+
+    await expect(commit('d'.repeat(64), 'first')).resolves.toMatchObject({ revision: 1 })
+    await expect(commit('e'.repeat(64), 'replay')).resolves.toMatchObject({
+      revision: null,
+      statusChanges: [],
+    })
+    await expect(store.readStatusProjectionRevision(1)).resolves.toBe(1)
+  })
+
   it('returns a monotonic tile commit order for equal observation timestamps', async () => {
     const observedAt = millis(2_000)
     const commit = async (hash: string, reservationId: string) => {

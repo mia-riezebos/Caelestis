@@ -1660,6 +1660,68 @@ export class D1SqlStore implements SqlStore {
             )
             return index
           })()
+    const revisionResult =
+      statuses.length === 0
+        ? null
+        : (() => {
+            const index = statements.length
+            statements.push(
+              this.client
+                .prepare(
+                  `INSERT INTO status_read_model_revisions (
+                     season, revision, public_fingerprint, admin_fingerprint, fingerprints_dirty
+                   )
+                   SELECT ?, 1, ?, ?, 1
+                   WHERE EXISTS (
+                     SELECT 1 FROM tile_blob_reservations AS reservation
+                     INNER JOIN tile_blob_objects AS object
+                       ON object.blob_key = reservation.blob_key
+                     WHERE reservation.id = ? AND reservation.sha256 = ?
+                       AND object.state = 'active'
+                   ) AND EXISTS (
+                     WITH incoming AS (${incomingStatuses})
+                     SELECT 1 FROM incoming
+                     INNER JOIN templates AS template
+                       ON template.id = incoming.template_id
+                      AND template.current_version_id = incoming.version_id
+                     LEFT JOIN template_tile_statuses AS status
+                       ON status.template_id = incoming.template_id
+                      AND status.version_id = incoming.version_id
+                      AND status.tile_x = incoming.tile_x
+                      AND status.tile_y = incoming.tile_y
+                     WHERE (? = 1 OR template.published_at IS NOT NULL)
+                       AND (
+                         status.template_id IS NULL OR (
+                           ((? = 1 AND status.server_owned = 0)
+                             OR status.observed_at_ms <= incoming.observed_at_ms)
+                           AND (
+                             status.correct <> incoming.correct
+                             OR status.wrong <> incoming.wrong
+                             OR status.blank <> incoming.blank
+                             OR status.colours_json <> incoming.colours_json
+                             OR status.observed_at_ms <> incoming.observed_at_ms
+                           )
+                         )
+                       )
+                   )
+                   ON CONFLICT(season) DO UPDATE SET
+                     revision = status_read_model_revisions.revision + 1,
+                     fingerprints_dirty = 1
+                   RETURNING revision`,
+                )
+                .bind(
+                  observation.season,
+                  '0'.repeat(64),
+                  '0'.repeat(64),
+                  reservationId,
+                  observation.hash,
+                  statusesJson,
+                  includeUnpublished ? 1 : 0,
+                  forceCurrent ? 1 : 0,
+                ),
+            )
+            return index
+          })()
     if (statuses.length > 0) {
       statements.push(
         this.client
@@ -1689,8 +1751,16 @@ export class D1SqlStore implements SqlStore {
                colours_json = excluded.colours_json,
                observed_at_ms = excluded.observed_at_ms,
                server_owned = excluded.server_owned
-             WHERE ${forceCurrent ? 'template_tile_statuses.server_owned = 0 OR ' : ''}
-               template_tile_statuses.observed_at_ms <= excluded.observed_at_ms`,
+             WHERE (${forceCurrent ? 'template_tile_statuses.server_owned = 0 OR ' : ''}
+               template_tile_statuses.observed_at_ms <= excluded.observed_at_ms)
+             AND (
+               template_tile_statuses.correct <> excluded.correct
+               OR template_tile_statuses.wrong <> excluded.wrong
+               OR template_tile_statuses.blank <> excluded.blank
+               OR template_tile_statuses.colours_json <> excluded.colours_json
+               OR template_tile_statuses.observed_at_ms <> excluded.observed_at_ms
+               OR template_tile_statuses.server_owned <> excluded.server_owned
+             )`,
           )
           .bind(
             statusesJson,
@@ -1734,54 +1804,6 @@ export class D1SqlStore implements SqlStore {
         )
       }
     }
-    const revisionResult =
-      statuses.length === 0
-        ? null
-        : (() => {
-            const index = statements.length
-            statements.push(
-              this.client
-                .prepare(
-                  `INSERT INTO status_read_model_revisions (
-                     season, revision, public_fingerprint, admin_fingerprint, fingerprints_dirty
-                   )
-                   SELECT ?, 1, ?, ?, 1
-                   WHERE EXISTS (
-                     SELECT 1 FROM tile_blob_reservations AS reservation
-                     INNER JOIN tile_blob_objects AS object
-                       ON object.blob_key = reservation.blob_key
-                     WHERE reservation.id = ? AND reservation.sha256 = ?
-                       AND object.state = 'active'
-                   ) AND EXISTS (
-                     SELECT 1 FROM json_each(?) AS raw
-                     INNER JOIN templates AS template
-                       ON template.id = json_extract(raw.value, '$.templateId')
-                      AND template.current_version_id = json_extract(raw.value, '$.versionId')
-                     INNER JOIN template_tile_statuses AS status
-                       ON status.template_id = json_extract(raw.value, '$.templateId')
-                      AND status.version_id = json_extract(raw.value, '$.versionId')
-                      AND status.tile_x = json_extract(raw.value, '$.tileX')
-                      AND status.tile_y = json_extract(raw.value, '$.tileY')
-                      AND status.observed_at_ms = json_extract(raw.value, '$.observedAt')
-                     WHERE ? = 1 OR template.published_at IS NOT NULL
-                   )
-                   ON CONFLICT(season) DO UPDATE SET
-                     revision = status_read_model_revisions.revision + 1,
-                     fingerprints_dirty = 1
-                   RETURNING revision`,
-                )
-                .bind(
-                  observation.season,
-                  '0'.repeat(64),
-                  '0'.repeat(64),
-                  reservationId,
-                  observation.hash,
-                  statusesJson,
-                  includeUnpublished ? 1 : 0,
-                ),
-            )
-            return index
-          })()
     statements.push(
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE id = ?').bind(reservationId),
     )
@@ -1824,6 +1846,17 @@ export class D1SqlStore implements SqlStore {
       ) {
         return []
       }
+      const previousColours = parseColourStatuses(row.previous_colours_json ?? '[]')
+      if (
+        row.previous_observed_at_ms !== null &&
+        Number(row.previous_correct) === current.correct &&
+        Number(row.previous_wrong) === current.wrong &&
+        Number(row.previous_blank) === current.blank &&
+        row.previous_observed_at_ms === current.observedAt &&
+        JSON.stringify(previousColours) === JSON.stringify(current.colours ?? [])
+      ) {
+        return []
+      }
       const colourTotals = parseColourTotals(row.colour_totals_json)
       return [
         {
@@ -1838,7 +1871,7 @@ export class D1SqlStore implements SqlStore {
                   correct: Number(row.previous_correct),
                   wrong: Number(row.previous_wrong),
                   blank: Number(row.previous_blank),
-                  colours: parseColourStatuses(row.previous_colours_json ?? '[]'),
+                  colours: previousColours,
                   observedAt: Number(row.previous_observed_at_ms) as Millis,
                 },
           current,

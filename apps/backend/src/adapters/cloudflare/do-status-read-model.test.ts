@@ -67,8 +67,11 @@ describe('Durable Object status read-model adapter', () => {
         scope: 'admin',
         credentialScope: 'admin',
         tokenHash: 'a'.repeat(64),
+        clientHash: 'c'.repeat(64),
         revocable: true,
         lastRevision: 4,
+        metricClient: 'userscript',
+        metricClientVersion: '0.5.4',
       },
     )
 
@@ -89,9 +92,55 @@ describe('Durable Object status read-model adapter', () => {
     expect(forwarded?.headers.get('x-caelestis-season')).toBe('8')
     expect(forwarded?.headers.get('x-caelestis-scope')).toBe('admin')
     expect(forwarded?.headers.get('x-caelestis-token-hash')).toBe('a'.repeat(64))
+    expect(forwarded?.headers.get('x-caelestis-client-hash')).toBe('c'.repeat(64))
     expect(forwarded?.headers.get('x-caelestis-revocable')).toBe('1')
     expect(forwarded?.headers.get('x-caelestis-revision')).toBe('4')
+    expect(forwarded?.headers.get('x-caelestis-metric-client')).toBe('userscript')
+    expect(forwarded?.headers.get('x-caelestis-metric-client-version')).toBe('0.5.4')
     expect(forwarded?.headers.get('sec-websocket-protocol')).toBe('caelestis.live.v1')
+  })
+
+  it('merges live bootstrap D1 usage and cache outcome into the request metric', async () => {
+    const stub = {
+      fetch: vi.fn(
+        async () =>
+          new Response(null, {
+            status: 204,
+            headers: {
+              'x-caelestis-live-d1-usage': '17,2,3,4',
+              'x-caelestis-live-cache-outcome': 'hit',
+            },
+          }),
+      ),
+    }
+    const namespace = {
+      getByName: vi.fn(() => stub),
+    } as unknown as DurableObjectNamespace<StatusReadModelObject>
+    const model = new DurableObjectStatusReadModel(namespace)
+    const writeDataPoint = vi.fn()
+
+    await measureRequest(
+      { writeDataPoint },
+      new Request('https://server.test/telemetry/live'),
+      '/telemetry/live',
+      () =>
+        model.connectLive(new Request('https://server.test/telemetry/live'), {
+          season: 8,
+          scope: 'public',
+          credentialScope: 'read',
+          tokenHash: 'a'.repeat(64),
+          clientHash: 'c'.repeat(64),
+          revocable: false,
+          lastRevision: null,
+          metricClient: 'userscript',
+          metricClientVersion: '0.5.4',
+        }),
+    )
+
+    const point = writeDataPoint.mock.calls[0]?.[0]
+    expect(point?.indexes).toEqual(['GET /telemetry/live'])
+    expect(point?.blobs?.[7]).toBe('hit')
+    expect(point?.doubles?.slice(2, 6)).toEqual([17, 2, 3, 4])
   })
 
   it('merges projection D1 usage into the originating request metric', async () => {
