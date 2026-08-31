@@ -70,11 +70,13 @@ read from its package after Changesets have applied release bumps, while prior m
 releases are retained from the generated changelog. All caller-supplied alternatives collapse to
 `unknown`.
 
-The userscript's bounded debug counters expose the client side of offer suppression through
+The userscript's bounded debug counters expose the client side of exact-observation replay handling through
 `telemetry:tile-offers-avoided`, `-retried`, `-requested`, `-accepted`, and `-rejected`. These count
 observations rather than HTTP batches and are available from `__caelestis.counters()`. Server-side
 requested, accepted-for-upload, already-known, and rejected outcomes remain authoritative in the
-Analytics Engine columns above.
+Analytics Engine columns above. A new Wplace fetch is always a new observation, even when its tile,
+content hash, and timestamp match an earlier fetch; only retry or replay of that same observation ID
+can be suppressed.
 
 ## Repeatable queries
 
@@ -125,21 +127,22 @@ ORDER BY batches DESC
 ```
 
 Query the same UTC window in Workers Analytics for `caelestis-frontend` and record its request total
-alongside these backend results. Paint reports (`POST /telemetry/paints`) and tile writes
-(`PUT /telemetry/tiles/:x/:y/:hash`) must remain separate from avoidable sync reads when calculating
-the PRD's 90 percent reduction target.
+alongside these backend results. Tile offers (`POST /telemetry/tiles/offers`), paint reports
+(`POST /telemetry/paints`), and requested tile writes (`PUT /telemetry/tiles/:x/:y/:hash`) are
+required report traffic. Keep them separate from avoidable sync reads when calculating the PRD's 90
+percent reduction target.
 
 ## Five-client acceptance budget
 
 `pnpm capacity:report` reproduces the conservative 24-hour healthy-live projection used by issue
 #167. It counts five socket upgrades, three bootstrap reads per client, and 24 hourly recovery
-cohorts for status, manifest, and alarms. Because the captured values are rounded to two-decimal `k` values, the
-gate uses the lowest possible baseline of 14,645 requests rather than treating 14,660 as exact. The
-result includes four scheduled alarm invalidations and is 400 avoidable Worker requests, a 97.27
-percent reduction. That steady-state result leaves a budget of 1,064 tile-offer batches while
-retaining a reduction of at least 90 percent.
+cohorts for status, manifest, and alarms. Because the captured values are rounded to two-decimal `k`
+values, the gate uses the lowest possible avoidable baseline of 12,570 status and manifest requests
+rather than treating 12,580 as exact. The result includes four scheduled alarm invalidations and is
+400 avoidable Worker requests, a 96.8178 percent reduction.
 
 Pass a measured post-rollout offer count back into the same gate with
 `pnpm capacity:report -- --tile-offer-batches <count> --extra-alarm-reads <count>`. Required paint
-reports and requested tile writes remain excluded in both modes. The complete recovery matrix and
+reports, tile-offer batches, and requested tile writes remain excluded from the avoidable reduction
+in both modes, while the report records their measured volume. The complete recovery matrix and
 rollout measurement gate are in [sync-acceptance.md](./sync-acceptance.md).
