@@ -5,7 +5,7 @@ import type {
   Manifest,
   StatusDelta,
 } from '@caelestis/shared'
-import { parseTileKey } from '@caelestis/shared'
+import { parseTileKey, type TileCoord } from '@caelestis/shared'
 import { LiveSyncClientEvent as LiveSyncClientEventSchema } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
@@ -577,6 +577,11 @@ export class StatusReadModelObject extends DurableObject<Env> {
     return measureD1Usage(() =>
       Promise.resolve(this.resolveCurrentTileOffers(season, scope, offers)),
     )
+  }
+
+  prepareTileGenerationCommit(season: number, tile: TileCoord): Promise<string> {
+    this.bindSeason(season)
+    return Promise.resolve(this.tileGenerations.prepare(tile))
   }
 
   async applyCommittedTileGeneration(

@@ -40,6 +40,7 @@ import type {
   StatusProjectionMutation,
 } from '../status-read-model/model.js'
 import {
+  prepareTileGenerationCommit,
   repairCommittedStatusProjection,
   repairCommittedTileGeneration,
   resolveCurrentTileOffers,
@@ -353,6 +354,11 @@ const recordObservationPromise = async (
   } = {},
 ): Promise<void> => {
   const canvas = await decodeCanvasInput(metadata.hash, bytes)
+  const preparedCoverageToken = await prepareTileGenerationCommit(
+    ports.statusReadModel,
+    metadata.season,
+    metadata.tile,
+  )
   const targets = await ports.sql.listTelemetryTargets(
     metadata.season,
     metadata.tile,
@@ -387,10 +393,16 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
-  if (committed.current !== null && options.coverageToken !== undefined) {
+  const repairCoverageToken =
+    preparedCoverageToken === null
+      ? options.coverageToken
+      : options.coverageToken === undefined || options.coverageToken === preparedCoverageToken
+        ? preparedCoverageToken
+        : undefined
+  if (committed.current !== null && repairCoverageToken !== undefined) {
     await repairCommittedTileGeneration(ports.statusReadModel, metadata.season, {
       ...committed.current,
-      coverageToken: options.coverageToken,
+      coverageToken: repairCoverageToken,
       visibleToPublic: targets.some((target) => target.published),
       visibleToAdmin: targets.length > 0,
     })

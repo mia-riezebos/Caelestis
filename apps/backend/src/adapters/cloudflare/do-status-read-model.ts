@@ -1,3 +1,4 @@
+import type { TileCoord } from '@caelestis/shared'
 import type { ManifestProjectionInput, ManifestProjectionRead } from '../../manifest/read-model.js'
 import { type MeasuredD1Operation, mergeD1Usage } from '../../metrics/request-metrics.js'
 import type {
@@ -74,6 +75,10 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return measuredValue(
       await this.shard(season).resolveCurrentTileOffersMeasured(season, scope, offers),
     )
+  }
+
+  prepareTileGenerationCommit(season: number, tile: TileCoord): Promise<string> {
+    return this.shard(season).prepareTileGenerationCommit(season, tile)
   }
 
   applyCommittedTileGeneration(season: number, generation: CommittedTileGeneration): Promise<void> {

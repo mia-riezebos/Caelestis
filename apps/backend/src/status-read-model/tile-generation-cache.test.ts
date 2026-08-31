@@ -136,4 +136,39 @@ describe('tile generation cache', () => {
     cache.apply(generation(afterRead))
     expect(cache.resolve('public', offer).acknowledgedDeliveryIds).toEqual(['one'])
   })
+
+  it('removes the old tile generation before a replacement commit begins', () => {
+    const cache = createTileGenerationCache({ now: () => 2_000 })
+    const tile = { x: 1, y: 2 }
+    const oldOffer = [{ deliveryId: 'old', tile, hash: 'a'.repeat(64) }]
+    const newOffer = [{ deliveryId: 'new', tile, hash: 'b'.repeat(64) }]
+    const initialToken = cache.resolve('public', []).coverageToken ?? ''
+    cache.apply({
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      coverageToken: initialToken,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+
+    const preparedToken = cache.prepare(tile)
+    expect(cache.resolve('public', oldOffer)).toMatchObject({
+      acknowledgedDeliveryIds: [],
+      unresolvedDeliveryIds: ['old'],
+    })
+
+    cache.apply({
+      tile,
+      hash: 'b'.repeat(64),
+      observedAt: millis(2_000),
+      commitOrder: 2,
+      coverageToken: preparedToken,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    expect(cache.resolve('public', oldOffer).acknowledgedDeliveryIds).toEqual([])
+    expect(cache.resolve('public', newOffer).acknowledgedDeliveryIds).toEqual(['new'])
+  })
 })

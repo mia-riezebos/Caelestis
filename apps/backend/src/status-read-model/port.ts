@@ -1,3 +1,4 @@
+import type { TileCoord } from '@caelestis/shared'
 import {
   createSeasonManifestReadModel,
   type ManifestProjectionInput,
@@ -47,11 +48,19 @@ export interface StatusReadModelPort {
     scope: StatusVisibilityScope,
     offers: readonly TileGenerationOffer[],
   ) => Promise<TileGenerationCacheRead>
+  readonly prepareTileGenerationCommit?: (season: number, tile: TileCoord) => Promise<string>
   readonly applyCommittedTileGeneration?: (
     season: number,
     generation: CommittedTileGeneration,
   ) => Promise<void>
 }
+
+export const prepareTileGenerationCommit = (
+  readModel: StatusReadModelPort,
+  season: number,
+  tile: TileCoord,
+): Promise<string | null> =>
+  readModel.prepareTileGenerationCommit?.(season, tile) ?? Promise.resolve(null)
 
 export const resolveCurrentTileOffers = async (
   readModel: StatusReadModelPort,
@@ -226,6 +235,12 @@ export class DirectStatusReadModel implements StatusReadModelPort {
     const cache = this.tileGenerations.get(season) ?? createTileGenerationCache()
     this.tileGenerations.set(season, cache)
     return Promise.resolve(cache.resolve(scope, offers))
+  }
+
+  prepareTileGenerationCommit(season: number, tile: TileCoord): Promise<string> {
+    const cache = this.tileGenerations.get(season) ?? createTileGenerationCache()
+    this.tileGenerations.set(season, cache)
+    return Promise.resolve(cache.prepare(tile))
   }
 
   applyCommittedTileGeneration(season: number, generation: CommittedTileGeneration): Promise<void> {

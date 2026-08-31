@@ -49,6 +49,11 @@ export const createTileGenerationCache = (
   let coverageToken = createCoverageToken()
 
   return {
+    prepare(tile: TileCoord): string {
+      entries.delete(tileKey(tile))
+      return coverageToken
+    },
+
     resolve(
       scope: StatusVisibilityScope,
       offers: readonly TileGenerationOffer[],

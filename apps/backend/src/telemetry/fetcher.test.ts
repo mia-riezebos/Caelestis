@@ -69,6 +69,11 @@ const harness = () => {
     readManifestProjection: (input) => direct.readManifestProjection(input),
     notifyManifestChange: (season) => direct.notifyManifestChange(season),
     notifyAlarmChange,
+    resolveCurrentTileOffers: (season, scope, offers) =>
+      direct.resolveCurrentTileOffers(season, scope, offers),
+    prepareTileGenerationCommit: (season, tile) => direct.prepareTileGenerationCommit(season, tile),
+    applyCommittedTileGeneration: (season, generation) =>
+      direct.applyCommittedTileGeneration(season, generation),
   }
   const ports = { blobs, sql, counters, statusReadModel }
   const requested: string[] = []
@@ -136,6 +141,58 @@ describe('the 6-hour tile fetcher', () => {
       fetchImpl,
     })
     expect(third).toMatchObject({ fetched: 0, unchanged: 9, fresh: 0 })
+  })
+
+  it('removes the cached generation before an authoritative replacement finishes', async () => {
+    const { ports, sql } = harness()
+    const tile = { x: 5, y: 5 }
+    await sql.insertTemplateVersion(version('lone', [tile]))
+    const oldBytes = await tileBytes(1)
+    const newBytes = await tileBytes(2)
+    const oldHash = await sha256Hex(oldBytes)
+    const newHash = await sha256Hex(newBytes)
+    const offer = (deliveryId: string, hash: string) => [{ deliveryId, tile, hash }]
+    const fetchOld = (async () => new Response(oldBytes.slice())) as typeof fetch
+
+    await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl: fetchOld, maxTiles: 1 })
+    await expect(
+      ports.statusReadModel.resolveCurrentTileOffers?.(0, 'admin', offer('old', oldHash)),
+    ).resolves.toMatchObject({ acknowledgedDeliveryIds: ['old'] })
+
+    let releaseRepair: () => void = () => {}
+    const repairGate = new Promise<void>((resolve) => {
+      releaseRepair = () => resolve()
+    })
+    let repairStarted: () => void = () => {}
+    const repairStart = new Promise<void>((resolve) => {
+      repairStarted = () => resolve()
+    })
+    const apply = ports.statusReadModel?.applyCommittedTileGeneration
+    if (apply === undefined) throw new Error('tile generation repair is not configured')
+    vi.spyOn(ports.statusReadModel, 'applyCommittedTileGeneration').mockImplementation(
+      async (season, generation) => {
+        repairStarted()
+        await repairGate
+        await apply(season, generation)
+      },
+    )
+
+    const replacing = fetchCanvasTiles(ports, {
+      season: 0,
+      now: seconds(NOW + 1),
+      fetchImpl: (async () => new Response(newBytes.slice())) as typeof fetch,
+      maxTiles: 1,
+    })
+    await repairStart
+
+    await expect(
+      ports.statusReadModel.resolveCurrentTileOffers?.(0, 'admin', offer('old', oldHash)),
+    ).resolves.toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['old'] })
+    releaseRepair()
+    await replacing
+    await expect(
+      ports.statusReadModel.resolveCurrentTileOffers?.(0, 'admin', offer('new', newHash)),
+    ).resolves.toMatchObject({ acknowledgedDeliveryIds: ['new'] })
   })
 
   it('applies all status changes from one fetch job in one projection call', async () => {

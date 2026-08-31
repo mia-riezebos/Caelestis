@@ -22,6 +22,7 @@ describe('Durable Object status read-model adapter', () => {
       notifyManifestChange: vi.fn(async () => undefined),
       notifyAlarmChange: vi.fn(async () => undefined),
       closeCredential: vi.fn(async () => undefined),
+      prepareTileGenerationCommit: vi.fn(async () => 'coverage-token'),
       fetch: vi.fn(async (_request: Request) => new Response(null, { status: 204 })),
     }
     const namespace = {
@@ -37,6 +38,9 @@ describe('Durable Object status read-model adapter', () => {
     await model.notifyManifestChange(8)
     await model.notifyAlarmChange(8)
     await model.closeCredential(8, 'b'.repeat(64))
+    await expect(model.prepareTileGenerationCommit(8, { x: 1, y: 2 })).resolves.toBe(
+      'coverage-token',
+    )
     await model.connectLive(
       new Request('https://server.test/telemetry/live', {
         headers: {
@@ -61,6 +65,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(stub.notifyManifestChange).toHaveBeenCalledWith(8)
     expect(stub.notifyAlarmChange).toHaveBeenCalledWith(8)
     expect(stub.closeCredential).toHaveBeenCalledWith(8, 'b'.repeat(64))
+    expect(stub.prepareTileGenerationCommit).toHaveBeenCalledWith(8, { x: 1, y: 2 })
     const forwarded = stub.fetch.mock.calls[0]?.[0]
     expect(forwarded?.headers.get('authorization')).toBeNull()
     expect(forwarded?.headers.get('x-caelestis-season')).toBe('8')

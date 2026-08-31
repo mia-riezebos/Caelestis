@@ -213,6 +213,32 @@ describe('status read-model Durable Object', () => {
     }
   })
 
+  it('stops acknowledging a tile generation before its replacement commit', async () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const tile = { x: 1, y: 2 }
+    await object.applyCommittedTileGeneration(8, {
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      coverageToken: object.resolveCurrentTileOffers(8, 'public', []).coverageToken ?? '',
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+
+    const coverageToken = await object.prepareTileGenerationCommit(8, tile)
+
+    expect(
+      object.resolveCurrentTileOffers(8, 'public', [
+        { deliveryId: 'old', tile, hash: 'a'.repeat(64) },
+      ]).acknowledgedDeliveryIds,
+    ).toEqual([])
+    expect(coverageToken).toBeTruthy()
+  })
+
   it('refuses tile offers from a read-only live session', () => {
     database = new SqliteD1Database()
     const object = new StatusReadModelObject(objectState(new Map()), {
