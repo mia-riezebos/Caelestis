@@ -965,7 +965,12 @@ export class MemorySqlStore implements SqlStore {
         fingerprintsDirty: true,
       })
     }
-    return { revision, statusChanges }
+    const current = this.canvasTiles.get(`${observation.season}\u0000${tileKey(observation.tile)}`)
+    return {
+      revision,
+      statusChanges,
+      current: current === undefined ? null : { ...current, tile: { ...current.tile } },
+    }
   }
 
   async releaseTileBlobReservation(reservationId: string): Promise<void> {

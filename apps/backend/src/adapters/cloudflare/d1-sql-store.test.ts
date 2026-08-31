@@ -237,7 +237,7 @@ describe('D1SqlStore', () => {
         false,
         true,
       ),
-    ).resolves.toEqual({ revision: null, statusChanges: [] })
+    ).resolves.toMatchObject({ revision: null, statusChanges: [] })
   })
 
   it('uses hash indexes for tile blob reference checks', () => {

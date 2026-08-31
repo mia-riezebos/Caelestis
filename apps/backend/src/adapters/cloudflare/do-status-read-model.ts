@@ -7,6 +7,11 @@ import type {
   StatusVisibilityScope,
 } from '../../status-read-model/model.js'
 import type { StatusReadModelPort } from '../../status-read-model/port.js'
+import type {
+  CommittedTileGeneration,
+  TileGenerationCacheRead,
+  TileGenerationOffer,
+} from '../../status-read-model/tile-generation-cache.js'
 import type { StatusReadModelObject } from '../../status-read-model-object.js'
 
 const seasonName = (season: number): string => `season:${season}`
@@ -61,11 +66,26 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return this.shard(season).closeCredential(season, tokenHash)
   }
 
+  async resolveCurrentTileOffers(
+    season: number,
+    scope: StatusVisibilityScope,
+    offers: readonly TileGenerationOffer[],
+  ): Promise<TileGenerationCacheRead> {
+    return measuredValue(
+      await this.shard(season).resolveCurrentTileOffersMeasured(season, scope, offers),
+    )
+  }
+
+  applyCommittedTileGeneration(season: number, generation: CommittedTileGeneration): Promise<void> {
+    return this.shard(season).applyCommittedTileGeneration(season, generation)
+  }
+
   connectLive(
     request: Request,
     connection: {
       readonly season: number
       readonly scope: StatusVisibilityScope
+      readonly credentialScope: 'read' | 'report' | 'admin'
       readonly tokenHash: string
       readonly revocable: boolean
       readonly lastRevision: number | null
@@ -76,6 +96,7 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     headers.set('sec-websocket-protocol', 'caelestis.live.v1')
     headers.set('x-caelestis-season', String(connection.season))
     headers.set('x-caelestis-scope', connection.scope)
+    headers.set('x-caelestis-credential-scope', connection.credentialScope)
     headers.set('x-caelestis-token-hash', connection.tokenHash)
     headers.set('x-caelestis-revocable', connection.revocable ? '1' : '0')
     if (connection.lastRevision === null) headers.delete('x-caelestis-revision')
