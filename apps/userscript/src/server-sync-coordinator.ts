@@ -7,7 +7,7 @@ import {
   uuidV7,
 } from '@caelestis/shared'
 import { userscriptVersion } from './client-metrics.js'
-import { serverEndpoint } from './server-url.js'
+import { canonicalServerUrl, serverEndpoint } from './server-url.js'
 import {
   type ConnectedServer,
   getState,
@@ -33,24 +33,28 @@ const LIVE_COMMAND_TIMEOUT_MS = 5_000
 const LIVE_CLIENT_ID_KEY = 'caelestis.live-client-id.v1'
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
-let cachedLiveClientId: string | null = null
+const cachedLiveClientIds = new Map<string, string>()
 
-/** Stable, non-secret browser identity used only to bound live sockets across tabs. */
-const liveClientId = (): string => {
-  if (cachedLiveClientId !== null) return cachedLiveClientId
+/** Stable, non-secret browser identity scoped to one anonymous server. */
+const liveClientId = (serverUrl: string): string => {
+  const serverKey = canonicalServerUrl(serverUrl)
+  const cached = cachedLiveClientIds.get(serverKey)
+  if (cached !== undefined) return cached
+  const storageKey = `${LIVE_CLIENT_ID_KEY}:${serverKey}`
   try {
-    const stored = localStorage.getItem(LIVE_CLIENT_ID_KEY)
+    const stored = localStorage.getItem(storageKey)
     if (stored !== null && UUID_V7.test(stored)) {
-      cachedLiveClientId = stored
+      cachedLiveClientIds.set(serverKey, stored)
       return stored
     }
     const created = uuidV7()
-    localStorage.setItem(LIVE_CLIENT_ID_KEY, created)
-    cachedLiveClientId = created
+    localStorage.setItem(storageKey, created)
+    cachedLiveClientIds.set(serverKey, created)
     return created
   } catch {
-    cachedLiveClientId = uuidV7()
-    return cachedLiveClientId
+    const created = uuidV7()
+    cachedLiveClientIds.set(serverKey, created)
+    return created
   }
 }
 
@@ -665,11 +669,12 @@ const openLiveConnection = (connection: LiveConnection): void => {
   endpoint.searchParams.set('scope', liveScope(server))
   endpoint.searchParams.set('client', 'userscript')
   endpoint.searchParams.set('clientVersion', userscriptVersion)
-  endpoint.searchParams.set('clientId', liveClientId())
+  const authenticated = server.token !== null && server.tokenUsable !== false
+  if (!authenticated) endpoint.searchParams.set('clientId', liveClientId(server.url))
   const revision = serverSyncRevision(server, 'world', 'telemetry-status')
   if (revision !== undefined) endpoint.searchParams.set('revision', revision)
   const protocols = [LIVE_PROTOCOL]
-  if (server.token !== null && server.tokenUsable !== false) {
+  if (authenticated) {
     protocols.push(liveCredentialProtocol(server.token))
   }
   let socket: WebSocket

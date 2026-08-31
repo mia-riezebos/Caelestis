@@ -239,7 +239,7 @@ describe('telemetry routes', () => {
     expect(connectStatusLive).not.toHaveBeenCalled()
 
     const publicResponse = await app.request(
-      `/telemetry/live?season=7&scope=public&revision=4&client=userscript&clientVersion=0.5.4&clientId=${CLIENT_ID}`,
+      '/telemetry/live?season=7&scope=public&revision=4&client=userscript&clientVersion=0.5.4',
       { headers: upgrade(readToken) },
     )
     expect(publicResponse.status).toBe(204)
@@ -256,12 +256,9 @@ describe('telemetry routes', () => {
       metricClientVersion: '0.5.4',
     })
 
-    const adminResponse = await app.request(
-      `/telemetry/live?season=7&scope=admin&clientId=${CLIENT_ID}`,
-      {
-        headers: upgrade(BOOTSTRAP),
-      },
-    )
+    const adminResponse = await app.request('/telemetry/live?season=7&scope=admin', {
+      headers: upgrade(BOOTSTRAP),
+    })
     expect(adminResponse.status).toBe(204)
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,

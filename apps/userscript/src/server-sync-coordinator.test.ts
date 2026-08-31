@@ -3,6 +3,8 @@
 import { seconds } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
 const state = vi.hoisted(() => ({
   current: { servers: [] as object[] },
   identities: new WeakMap<object, object>(),
@@ -359,9 +361,7 @@ describe('server sync coordinator', () => {
     expect(socket.url).toContain('scope=public')
     expect(socket.url).toContain('client=userscript')
     expect(socket.url).toContain('clientVersion=development')
-    expect(new URL(socket.url).searchParams.get('clientId')).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    )
+    expect(new URL(socket.url).searchParams.has('clientId')).toBe(false)
     expect(socket.url).not.toContain(liveServer.token)
     expect(socket.protocols).toEqual([
       'caelestis.live.v1',
@@ -649,6 +649,26 @@ describe('server sync coordinator', () => {
     expect(FakeWebSocket.instances).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('scopes anonymous live identities to each canonical server', async () => {
+    const first = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    const second = {
+      ...first,
+      url: 'https://other.example/path/',
+      info: { ...first.info, id: 'other-server', name: 'Other' },
+    }
+    state.current = { servers: [first, second] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator } = await import('./server-sync-coordinator.js')
+    installServerSyncCoordinator()
+
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    const ids = FakeWebSocket.instances.map((socket) =>
+      new URL(socket.url).searchParams.get('clientId'),
+    )
+    expect(ids.every((id) => id !== null && UUID_V7.test(id))).toBe(true)
+    expect(ids[0]).not.toBe(ids[1])
   })
 
   it('moves repeated handshake failures onto hourly recovery without changing browser identity', async () => {
