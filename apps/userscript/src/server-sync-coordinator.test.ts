@@ -350,21 +350,21 @@ describe('server sync coordinator', () => {
     ])
 
     await vi.advanceTimersByTimeAsync(0)
-    expect(status).toHaveBeenCalledOnce()
-    expect(manifest).toHaveBeenCalledOnce()
-    expect(alarms).toHaveBeenCalledOnce()
-    expect(status).toHaveBeenLastCalledWith(liveServer, 'connect', 'compatibility-poll')
-    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'connect', 'compatibility-poll')
-    status.mockClear()
-    manifest.mockClear()
-    alarms.mockClear()
+    expect(status).not.toHaveBeenCalled()
+    expect(manifest).not.toHaveBeenCalled()
+    expect(alarms).not.toHaveBeenCalled()
 
     socket.open()
     socket.receive({ type: 'ready', revision: 7 })
     await vi.advanceTimersByTimeAsync(0)
-    expect(status).not.toHaveBeenCalled()
-    expect(manifest).not.toHaveBeenCalled()
-    expect(alarms).not.toHaveBeenCalled()
+    expect(status).toHaveBeenCalledOnce()
+    expect(manifest).toHaveBeenCalledOnce()
+    expect(alarms).toHaveBeenCalledOnce()
+    expect(status).toHaveBeenLastCalledWith(liveServer, 'revision-gap', 'recovery')
+    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
+    status.mockClear()
+    manifest.mockClear()
+    alarms.mockClear()
 
     document.dispatchEvent(new Event('visibilitychange'))
     window.dispatchEvent(new Event('focus'))
@@ -479,12 +479,20 @@ describe('server sync coordinator', () => {
     alarms.mockClear()
     socket.close()
     await vi.advanceTimersByTimeAsync(0)
+    expect(status).not.toHaveBeenCalled()
+    expect(manifest).not.toHaveBeenCalled()
+    expect(allianceManifest).not.toHaveBeenCalled()
+    expect(alarms).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    const replacement = FakeWebSocket.instances[1]
+    if (replacement === undefined) throw new Error('replacement live socket was not created')
+    replacement.open()
+    await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
     expect(allianceManifest).not.toHaveBeenCalled()
     expect(alarms).toHaveBeenCalledOnce()
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(FakeWebSocket.instances).toHaveLength(2)
   })
 
   it('lets an in-flight bootstrap satisfy the socket ready revision', async () => {
@@ -508,12 +516,11 @@ describe('server sync coordinator', () => {
       live: true,
     })
     installServerSyncCoordinator()
-    vi.advanceTimersByTime(0)
-    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
-
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
     socket.open()
+    vi.advanceTimersByTime(0)
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
     socket.receive({ type: 'status-reconcile', revision: 7 })
     finishBootstrap()
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
@@ -576,6 +583,71 @@ describe('server sync coordinator', () => {
     expect(FakeWebSocket.instances).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('keeps non-live focus recovery while a healthy socket protects live resources', async () => {
+    const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource } = await import(
+      './server-sync-coordinator.js'
+    )
+    const status = vi.fn(async () => ({ status: 'unchanged' as const, revision: '1' }))
+    const compatibility = vi.fn(async () => ({ status: 'unchanged' as const }))
+    registerServerSyncResource({
+      id: 'telemetry-status',
+      scope: () => 'world',
+      refresh: status,
+      live: true,
+    })
+    registerServerSyncResource({
+      id: 'alliance-manifest',
+      scope: () => 'alliance:1',
+      refresh: compatibility,
+    })
+    installServerSyncCoordinator()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(compatibility).toHaveBeenCalledOnce()
+    expect(status).not.toHaveBeenCalled()
+
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    await vi.advanceTimersByTimeAsync(0)
+    status.mockClear()
+    compatibility.mockClear()
+
+    window.dispatchEvent(new Event('focus'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(status).not.toHaveBeenCalled()
+    expect(compatibility).toHaveBeenCalledOnce()
+    expect(compatibility).toHaveBeenCalledWith(liveServer, 'focus', 'compatibility-poll')
+  })
+
+  it('falls back once when an advertised live socket never opens', async () => {
+    const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource } = await import(
+      './server-sync-coordinator.js'
+    )
+    const refresh = vi.fn(async () => ({ status: 'unchanged' as const, revision: '1' }))
+    registerServerSyncResource({
+      id: 'telemetry-status',
+      scope: () => 'world',
+      refresh,
+      live: true,
+    })
+    installServerSyncCoordinator()
+
+    await vi.advanceTimersByTimeAsync(999)
+    expect(refresh).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(refresh).toHaveBeenCalledWith(liveServer, 'reconnect', 'compatibility-poll')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(refresh).toHaveBeenCalledOnce()
   })
 
   it('keeps compatibility polling and opens no socket when capability is absent', async () => {

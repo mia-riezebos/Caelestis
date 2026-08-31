@@ -327,6 +327,50 @@ describe('server telemetry client', () => {
     expect(changed).not.toHaveBeenCalled()
   })
 
+  it('keeps an in-flight alarm response valid across an unchanged revisioned manifest', async () => {
+    let releaseBody: ((value: unknown) => void) | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (!String(input).includes('/telemetry/alarms')) return Response.json({ templates: [] })
+        return {
+          ok: true,
+          json: () =>
+            new Promise((resolve) => {
+              releaseBody = resolve
+            }),
+        } as Response
+      }),
+    )
+    const { installTelemetry, serverAlarmFor } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { revision: '1', nodes: [], templates: [template] })
+    const resource = coordinator.resources.get('telemetry-alarms')
+    const refreshing = resource?.refresh(server, 'connect', 'recovery')
+    await vi.waitFor(() => expect(releaseBody).toBeTypeOf('function'))
+
+    harness.serverContents?.(server, {
+      revision: '1',
+      nodes: [],
+      templates: [{ ...template }],
+    })
+    releaseBody?.({
+      alarms: [
+        {
+          id: '01890f3e-7b2c-7abc-8def-0123456789ac',
+          templateId: template.id,
+          kind: 'regression',
+          pixelsLost: 12,
+          firstSeen: 1_000,
+          lastSeen: 2_000,
+        },
+      ],
+    })
+
+    await expect(refreshing).resolves.toEqual({ status: 'changed' })
+    expect(serverAlarmFor(server, template)?.pixelsLost).toBe(12)
+  })
+
   it('reads tile bodies only while a connected server may want them', async () => {
     vi.stubGlobal(
       'fetch',

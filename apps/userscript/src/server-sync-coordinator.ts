@@ -19,6 +19,7 @@ const MAX_RECONNECT_MS = 30_000
 const LIVE_HEARTBEAT_MS = 15 * 60_000
 const LIVE_HEARTBEAT_TIMEOUT_MS = 10_000
 const LIVE_RECOVERY_POLL_MS = 60 * 60_000
+const LIVE_BOOTSTRAP_FALLBACK_MS = 1_000
 
 export type ParsedLiveEvent =
   | Exclude<LiveSyncServerEvent, { readonly type: 'manifest-reconcile' }>
@@ -66,6 +67,8 @@ interface LiveConnection {
   readonly server: ConnectedServer
   socket: WebSocket | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
+  bootstrapFallbackTimer: ReturnType<typeof setTimeout> | null
+  fallbackReadRequested: boolean
   heartbeatTimer: ReturnType<typeof setTimeout> | null
   heartbeatTimeout: ReturnType<typeof setTimeout> | null
   attempts: number
@@ -102,6 +105,9 @@ const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
   return held?.healthy === true && held.server === server && isCurrentServerConnection(server)
 }
+
+const liveCapable = (server: ConnectedServer): boolean =>
+  server.info?.liveSync === 1 && typeof WebSocket !== 'undefined'
 
 const liveCredentialProtocol = (token: string): string => {
   const bytes = new TextEncoder().encode(token)
@@ -282,11 +288,34 @@ export const requestServerSync = (
   armTimer()
 }
 
+const requestLiveServerSync = (
+  reason: ReconciliationReason,
+  server: ConnectedServer,
+): void => {
+  for (const resource of resources.values()) {
+    if (resource.live === true) requestServerSync(reason, resource.id, server)
+  }
+}
+
+const requestAvailableServerSync = (
+  reason: ReconciliationReason,
+  onlyResource?: string,
+): void => {
+  for (const server of connected()) {
+    for (const resource of resources.values()) {
+      if (onlyResource !== undefined && resource.id !== onlyResource) continue
+      if (resource.live === true && liveCapable(server) && !liveHealthy(server)) continue
+      requestServerSync(reason, resource.id, server)
+    }
+  }
+  armTimer()
+}
+
 /** Register a consumer without giving it a timer of its own. */
 export const registerServerSyncResource = (resource: ServerSyncResource): void => {
   if (resources.has(resource.id)) throw new Error(`duplicate server sync resource: ${resource.id}`)
   resources.set(resource.id, resource)
-  if (installed) requestServerSync('connect', resource.id)
+  if (installed) requestAvailableServerSync('connect', resource.id)
 }
 
 /**
@@ -485,9 +514,11 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
 
 const closeLiveConnection = (connection: LiveConnection): void => {
   if (connection.reconnectTimer !== null) clearTimeout(connection.reconnectTimer)
+  if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
   if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
   if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
   connection.reconnectTimer = null
+  connection.bootstrapFallbackTimer = null
   connection.heartbeatTimer = null
   connection.heartbeatTimeout = null
   connection.healthy = false
@@ -527,6 +558,21 @@ const scheduleLiveReconnect = (connection: LiveConnection): void => {
   }, delay)
 }
 
+const armLiveBootstrapFallback = (connection: LiveConnection): void => {
+  if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
+  connection.bootstrapFallbackTimer = setTimeout(() => {
+    connection.bootstrapFallbackTimer = null
+    if (
+      !isCurrentServerConnection(connection.server) ||
+      connection.healthy ||
+      connection.fallbackReadRequested
+    )
+      return
+    connection.fallbackReadRequested = true
+    requestLiveServerSync('reconnect', connection.server)
+  }, LIVE_BOOTSTRAP_FALLBACK_MS)
+}
+
 const openLiveConnection = (connection: LiveConnection): void => {
   const { server } = connection
   if (
@@ -553,14 +599,21 @@ const openLiveConnection = (connection: LiveConnection): void => {
     socket = new WebSocket(endpoint, protocols)
   } catch {
     scheduleLiveReconnect(connection)
+    armLiveBootstrapFallback(connection)
     return
   }
   connection.socket = socket
+  armLiveBootstrapFallback(connection)
   socket.addEventListener('open', () => {
     if (connection.socket !== socket || !isCurrentServerConnection(server)) return
     connection.healthy = true
+    if (connection.bootstrapFallbackTimer !== null)
+      clearTimeout(connection.bootstrapFallbackTimer)
+    connection.bootstrapFallbackTimer = null
     deferHealthyLiveSchedules(server)
     armLiveHeartbeat(connection)
+    requestLiveServerSync(connection.attempts === 0 ? 'connect' : 'reconnect', server)
+    connection.fallbackReadRequested = false
     armTimer()
   })
   socket.addEventListener('message', (message) => {
@@ -582,10 +635,8 @@ const openLiveConnection = (connection: LiveConnection): void => {
     connection.heartbeatTimer = null
     connection.heartbeatTimeout = null
     if (!isCurrentServerConnection(server)) return
-    requestServerSync('reconnect', 'telemetry-status', server)
-    requestServerSync('reconnect', 'world-manifest', server)
-    requestServerSync('reconnect', 'telemetry-alarms', server)
     scheduleLiveReconnect(connection)
+    armLiveBootstrapFallback(connection)
     armTimer()
   })
 }
@@ -602,6 +653,8 @@ const reconcileLiveConnections = (): void => {
         server,
         socket: null,
         reconnectTimer: null,
+        bootstrapFallbackTimer: null,
+        fallbackReadRequested: false,
         heartbeatTimer: null,
         heartbeatTimeout: null,
         attempts: 0,
@@ -623,9 +676,9 @@ const recover = (reason: 'focus' | 'online'): void => {
   if (activeDocument()) {
     reconcileLiveConnections()
     for (const server of connected()) {
-      if (server.info?.liveSync !== 1 || liveHealthy(server)) continue
       for (const resource of resources.values()) {
-        if (resource.live === true) requestServerSync(reason, resource.id, server)
+        if (resource.live === true && liveHealthy(server)) continue
+        requestServerSync(reason, resource.id, server)
       }
     }
     armTimer()
@@ -650,7 +703,7 @@ export const installServerSyncCoordinator = (): void => {
     previousConnections = next
     if (changed) {
       reconcileLiveConnections()
-      requestServerSync('state-change')
+      requestAvailableServerSync('state-change')
     }
   })
   if (typeof document !== 'undefined')
@@ -664,7 +717,7 @@ export const installServerSyncCoordinator = (): void => {
     })
   }
   reconcileLiveConnections()
-  requestServerSync('connect')
+  requestAvailableServerSync('connect')
 }
 
 export const serverLiveSyncHealthy = (server: ConnectedServer): boolean => liveHealthy(server)

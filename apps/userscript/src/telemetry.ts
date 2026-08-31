@@ -725,7 +725,11 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
     held?.contents.revision !== contents.revision ||
     previous.size !== next.size ||
     [...previous].some((tile) => !next.has(tile))
-  coverage.set(server.url, { server, tiles: next, contents })
+  // Preserve the snapshot token when a revisioned manifest is unchanged. Alarm reads use that
+  // identity to reject genuinely superseded coverage; replacing it with an equivalent object
+  // would turn an unchanged manifest into a false race and force a repair read.
+  if (coverageChanged || held === undefined)
+    coverage.set(server.url, { server, tiles: next, contents })
   const unsettled = unsettledOffers.get(server.url)
   if (unsettled !== undefined) {
     if (unsettled.season !== server.season) clearUnsettledServer(server.url)
