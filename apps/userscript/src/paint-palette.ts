@@ -2,9 +2,9 @@ import { latLngToCanvasPixel, PALETTE_SIZE, WORLD_TEMPLATE_SURFACE } from '@cael
 import type { CaelestisPaletteProgress } from '@caelestis/ui/elements'
 import { count, warn } from './debug.js'
 import { getMap } from './map-handle.js'
-import { type ConnectedServer, getState, onStateChange } from './state.js'
+import { type ConnectedServer, getState, onStateChange, serverConnectionIdentity } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
-import { onLocalChange, type PlacedTemplate } from './templates/local-store.js'
+import { onLocalChange, type PlacedTemplate, templateById } from './templates/local-store.js'
 import {
   type ColourNavigationTarget,
   type ColourTargetKind,
@@ -15,7 +15,7 @@ import {
 } from './templates/mismatch.js'
 import { navigateTo } from './templates/navigate.js'
 import { focusedTemplate } from './templates/nearest.js'
-import { onAcceptedPaint } from './tile-transform.js'
+import { onAcceptedPaint, onPaintSubmission, type PaintSubmission } from './tile-transform.js'
 import { applyColourProgressDelta } from './ui/progress.js'
 import {
   isPaintOpen,
@@ -35,13 +35,47 @@ const connectedServers = (): ReadonlyMap<string, ConnectedServer> =>
   new Map(getState().servers.map((server) => [server.url, server]))
 
 interface DraftProjection {
+  readonly identity: DraftProjectionIdentity
   readonly baselines: Map<number, TemplateColourProgress>
   readonly pending: Map<string, TemplateDraftPixelDelta>
   readonly acceptedActive: Map<string, TemplateDraftPixelDelta>
   readonly rebasedFrom: Map<string, TemplateDraftPixelDelta>
 }
 
+interface DraftProjectionIdentity {
+  readonly connection: object
+  readonly season: number | null
+  readonly serverTemplateId: string
+  readonly serverVersion: string | undefined
+}
+
+interface SubmittedDraft {
+  readonly templateId: string
+  readonly identity: DraftProjectionIdentity
+  readonly pixels: readonly TemplateDraftPixelDelta[]
+}
+
 const draftProjections = new Map<string, DraftProjection>()
+const submittedDrafts = new WeakMap<object, SubmittedDraft>()
+
+const projectionIdentity = (
+  template: PlacedTemplate,
+  server: ConnectedServer,
+): DraftProjectionIdentity => ({
+  connection: serverConnectionIdentity(server),
+  season: server.season,
+  serverTemplateId: template.serverTemplateId ?? '',
+  serverVersion: template.serverVersion,
+})
+
+const sameProjectionIdentity = (
+  left: DraftProjectionIdentity,
+  right: DraftProjectionIdentity,
+): boolean =>
+  left.connection === right.connection &&
+  left.season === right.season &&
+  left.serverTemplateId === right.serverTemplateId &&
+  left.serverVersion === right.serverVersion
 
 const serverCovers = (
   server: TemplateColourProgress,
@@ -117,13 +151,19 @@ const aggregateColour = (
  */
 const progressWithDrafts = (
   templateId: string,
+  identity: DraftProjectionIdentity,
   server: readonly TemplateColourProgress[],
   pixels: readonly TemplateDraftPixelDelta[],
 ): readonly TemplateColourProgress[] => {
   let state = draftProjections.get(templateId)
+  if (state !== undefined && !sameProjectionIdentity(state.identity, identity)) {
+    draftProjections.delete(templateId)
+    state = undefined
+  }
   if (state === undefined) {
     if (pixels.length === 0) return server
     state = {
+      identity,
       baselines: new Map(),
       pending: new Map(),
       acceptedActive: new Map(),
@@ -217,18 +257,19 @@ const progressForTemplate = (
   })
   return progress === null
     ? []
-    : progressWithDrafts(template.id, progress, accounting.draftPixelDeltas)
+    : progressWithDrafts(
+        template.id,
+        projectionIdentity(template, server),
+        progress,
+        accounting.draftPixelDeltas,
+      )
 }
 
-/** Keep an accepted draft visible while its authoritative status response is still in flight. */
-const retainAcceptedDraft = (): void => {
-  const template = focusedTemplate()
-  if (template === null || template.serverUrl === undefined) return
-  // Populate the projection from the latest synchronous draft before Wplace clears its canvas.
-  progressForTemplate(template)
-  const state = draftProjections.get(template.id)
-  if (state === undefined) return
-  for (const raw of pixelAccounting.read(template).draftPixelDeltas) {
+const retainAcceptedPixels = (
+  state: DraftProjection,
+  pixels: readonly TemplateDraftPixelDelta[],
+): void => {
+  for (const raw of pixels) {
     const rebase = state.rebasedFrom.get(raw.key)
     const pixel =
       rebase !== undefined && samePixelBasis(rebase, raw) ? subtractPixelDelta(raw, rebase) : raw
@@ -236,6 +277,46 @@ const retainAcceptedDraft = (): void => {
     else state.pending.set(pixel.key, pixel)
     state.acceptedActive.set(pixel.key, pixel)
   }
+}
+
+/** Keep an accepted draft visible while its authoritative status response is still in flight. */
+const retainAcceptedDraft = (submission?: PaintSubmission): void => {
+  const submitted = submission === undefined ? undefined : submittedDrafts.get(submission.identity)
+  const template = submitted === undefined ? focusedTemplate() : templateById(submitted.templateId)
+  if (template === null || template === undefined || template.serverUrl === undefined) return
+  const servers = connectedServers()
+  const server = servers.get(template.serverUrl)
+  if (server === undefined) return
+  const identity = projectionIdentity(template, server)
+  if (submitted !== undefined && !sameProjectionIdentity(submitted.identity, identity)) return
+  const pixels = submitted?.pixels ?? pixelAccounting.read(template).draftPixelDeltas
+  const progress = serverColourProgressFor(server, {
+    id: template.serverTemplateId ?? '',
+    totalPixels: template.opaque,
+  })
+  if (progress === null) return
+  // Populate or fence the projection from the captured submission, even after Wplace cleared it.
+  progressWithDrafts(template.id, identity, progress, pixels)
+  const state = draftProjections.get(template.id)
+  if (state === undefined || !sameProjectionIdentity(state.identity, identity)) return
+  retainAcceptedPixels(state, pixels)
+}
+
+const snapshotSubmittedDraft = (submission: PaintSubmission): void => {
+  const template = focusedTemplate()
+  if (template === null || template.serverUrl === undefined) return
+  const servers = connectedServers()
+  const server = servers.get(template.serverUrl)
+  if (server === undefined) return
+  const pixels = pixelAccounting.read(template).draftPixelDeltas
+  if (pixels.length === 0) return
+  const identity = projectionIdentity(template, server)
+  progressForTemplate(template, servers)
+  submittedDrafts.set(submission.identity, {
+    templateId: template.id,
+    identity,
+    pixels: pixels.map((pixel) => ({ ...pixel })),
+  })
 }
 
 /** The colour counts decorating Wplace's palette belong only to what the viewport is focused on. */
@@ -464,9 +545,10 @@ export const installPaintPaletteProgress = (): void => {
   onServerStatusChange(queueRender)
   pixelAccounting.onChange(queueRender)
   pixelAccounting.onDraftChange(queueRender)
+  onPaintSubmission(snapshotSubmittedDraft)
   onAcceptedPaint((paint) => {
     const submitted = paint.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
-    if (submitted > 0 && paint.painted === submitted) retainAcceptedDraft()
+    if (submitted > 0 && paint.painted === submitted) retainAcceptedDraft(paint.submission)
     queueRender()
   })
   onStateChange(queueRender)

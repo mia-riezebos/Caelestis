@@ -11,12 +11,18 @@ const harness = vi.hoisted(() => ({
   statusListeners: [] as Array<() => void>,
   paintListeners: [] as Array<() => void>,
   acceptedPaintListeners: [] as Array<
-    (paint: { painted: number; tiles: Array<{ pixels: { x: number[] } }> }) => void
+    (paint: {
+      submission?: { identity: object }
+      painted: number
+      tiles: Array<{ pixels: { x: number[] } }>
+    }) => void
   >,
+  paintSubmissionListeners: [] as Array<(submission: { identity: object }) => void>,
   focused: null as {
     id: string
     serverUrl?: string
     serverTemplateId?: string
+    serverVersion?: string
     opaque?: number
     surface?:
       | { kind: 'world' }
@@ -24,6 +30,7 @@ const harness = vi.hoisted(() => ({
       | { kind: 'alliance-picture'; allianceId: number }
       | { kind: 'alliance-banner'; allianceId: number }
   } | null,
+  serverIdentity: {} as object,
   colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
   paintOpen: true,
   selectedColour: 0 as number | null,
@@ -82,6 +89,7 @@ vi.mock('./state.js', () => ({
     colourNavigationOrder: harness.colourNavigationOrder,
   }),
   onStateChange: (listener: () => void) => harness.stateListeners.push(listener),
+  serverConnectionIdentity: () => harness.serverIdentity,
 }))
 vi.mock('./telemetry.js', () => ({
   onServerStatusChange: (listener: () => void) => {
@@ -94,6 +102,7 @@ vi.mock('./templates/local-store.js', () => ({
   displayTemplates: () => [local, remote],
   isTemplateVisible: () => true,
   onLocalChange: (listener: () => void) => harness.localListeners.push(listener),
+  templateById: (id: string) => (harness.focused?.id === id ? harness.focused : undefined),
 }))
 vi.mock('./templates/mismatch.js', () => ({
   pixelAccounting: {
@@ -113,9 +122,17 @@ vi.mock('./templates/mismatch.js', () => ({
 }))
 vi.mock('./tile-transform.js', () => ({
   onAcceptedPaint: (
-    listener: (paint: { painted: number; tiles: Array<{ pixels: { x: number[] } }> }) => void,
+    listener: (paint: {
+      submission?: { identity: object }
+      painted: number
+      tiles: Array<{ pixels: { x: number[] } }>
+    }) => void,
   ) => {
     harness.acceptedPaintListeners.push(listener)
+    return vi.fn()
+  },
+  onPaintSubmission: (listener: (submission: { identity: object }) => void) => {
+    harness.paintSubmissionListeners.push(listener)
     return vi.fn()
   },
 }))
@@ -142,6 +159,7 @@ beforeEach(() => {
   harness.paintOpen = true
   harness.selectedColour = 0
   harness.draftPixelDeltas = []
+  harness.serverIdentity = {}
   harness.navigationTargets.unpainted = {
     templateId: 'local',
     x: 12,
@@ -425,6 +443,71 @@ describe('Wplace paint palette progress', () => {
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('8')
+  })
+
+  it('retains the submitted correction when Wplace clears the draft before acceptance arrives', async () => {
+    harness.focused = {
+      id: 'remote-delayed-acceptance',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      serverVersion: 'version-1',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 7, known: 10, total: 10 },
+    ]
+    const { installPaintPaletteProgress, paintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    const submission = { identity: {} }
+    harness.paintSubmissionListeners.at(-1)?.(submission)
+
+    harness.draftPixelDeltas = []
+    harness.draftListeners.at(-1)?.()
+    harness.acceptedPaintListeners.at(-1)?.({
+      submission,
+      painted: 1,
+      tiles: [{ pixels: { x: [0] } }],
+    })
+
+    expect(paintPaletteProgress()).toEqual([
+      { index: 0, completed: 3, mismatched: 0, unpainted: 7, known: 10, total: 10 },
+    ])
+  })
+
+  it('drops pending corrections when the same placed template receives a new version', async () => {
+    harness.focused = {
+      id: 'remote-same-id-replacement',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      serverVersion: 'version-1',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 7, known: 10, total: 10 },
+    ]
+    const { installPaintPaletteProgress, paintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    const submission = { identity: {} }
+    harness.paintSubmissionListeners.at(-1)?.(submission)
+    harness.acceptedPaintListeners.at(-1)?.({
+      submission,
+      painted: 1,
+      tiles: [{ pixels: { x: [0] } }],
+    })
+    harness.draftPixelDeltas = []
+    expect(paintPaletteProgress()[0]?.completed).toBe(3)
+
+    harness.focused = { ...harness.focused, serverVersion: 'version-2' }
+
+    expect(paintPaletteProgress()).toEqual(harness.serverProgress)
   })
 
   it('keeps a cleared accepted correction rebased until its source tile refreshes', async () => {

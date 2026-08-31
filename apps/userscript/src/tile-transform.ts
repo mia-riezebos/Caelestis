@@ -566,9 +566,11 @@ export const resetTileFrameListeners = (): void => {
   listeners.length = 0
   fetchedTileListeners.clear()
   acceptedPaintListeners.clear()
+  paintSubmissionListeners.clear()
 }
 
 export interface AcceptedPaint {
+  readonly submission: PaintSubmission
   readonly season: number
   readonly tiles: readonly {
     readonly x: number
@@ -583,11 +585,18 @@ export interface AcceptedPaint {
   readonly observedAt: number
 }
 
+/** Opaque identity shared only between the synchronous submit tap and its accepted response. */
+export interface PaintSubmission {
+  readonly identity: object
+}
+
 type FetchedTileListener = (tile: TileCoord, bytes: Uint8Array, observedAt: number) => void
 type FetchedTileInterest = (tile: TileCoord) => boolean
 type AcceptedPaintListener = (paint: AcceptedPaint) => void
+type PaintSubmissionListener = (submission: PaintSubmission) => void
 const fetchedTileListeners = new Map<FetchedTileListener, FetchedTileInterest | null>()
 const acceptedPaintListeners = new Set<AcceptedPaintListener>()
+const paintSubmissionListeners = new Set<PaintSubmissionListener>()
 
 /** Observe exact PNG bytes only after wplace itself consumes a canvas tile response. */
 export const onFetchedTile = (
@@ -602,6 +611,12 @@ export const onFetchedTile = (
 export const onAcceptedPaint = (listener: AcceptedPaintListener): (() => void) => {
   acceptedPaintListeners.add(listener)
   return () => acceptedPaintListeners.delete(listener)
+}
+
+/** Snapshot browser-owned state before Wplace can clear its submitted draft. */
+export const onPaintSubmission = (listener: PaintSubmissionListener): (() => void) => {
+  paintSubmissionListeners.add(listener)
+  return () => paintSubmissionListeners.delete(listener)
 }
 
 const interestedTileListeners = (tile: TileCoord): readonly FetchedTileListener[] => {
@@ -633,7 +648,11 @@ const notifyFetchedTile = (tile: TileCoord, bytes: Uint8Array): void => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-const observedPaintFrom = (body: unknown, response: unknown): AcceptedPaint | null => {
+const observedPaintFrom = (
+  body: unknown,
+  response: unknown,
+  submission: PaintSubmission,
+): AcceptedPaint | null => {
   if (!isRecord(body) || !isRecord(response)) return null
   if (!Number.isSafeInteger(body.season) || !Array.isArray(body.tiles)) return null
   if (!Number.isSafeInteger(response.painted) || Number(response.painted) < 0) return null
@@ -663,10 +682,21 @@ const observedPaintFrom = (body: unknown, response: unknown): AcceptedPaint | nu
     })
   }
   return {
+    submission,
     season: Number(body.season),
     tiles,
     painted: Number(response.painted),
     observedAt: Math.floor(Date.now() / 1_000),
+  }
+}
+
+const notifyPaintSubmission = (submission: PaintSubmission): void => {
+  for (const listener of paintSubmissionListeners) {
+    try {
+      listener(submission)
+    } catch {
+      count('paint:submission-listener-failed')
+    }
   }
 }
 
@@ -692,6 +722,7 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
       let tile: TileCoord | null = null
       let shouldNormalizeMissing = false
       let paintBody: Promise<unknown> | null = null
+      let paintSubmission: PaintSubmission | null = null
       try {
         const url = urlForFetchInput(input, realm, urlGetters)
         if (url !== null) {
@@ -710,6 +741,8 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
               ? (input as Request).clone()
               : new realm.Request(input, args[1])
             if (request.method.toUpperCase() === 'POST') {
+              paintSubmission = { identity: {} }
+              notifyPaintSubmission(paintSubmission)
               paintBody = request.json().catch(() => null)
             }
           }
@@ -720,14 +753,15 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
       const pendingResponse = nativeFetch.apply(this as never, args)
       if (tile === null && paintBody === null) return pendingResponse
       return pendingResponse.then((response) => {
-        if (paintBody !== null && response.ok) {
+        if (paintBody !== null && paintSubmission !== null && response.ok) {
+          const submission = paintSubmission
           try {
             const responseBody = response
               .clone()
               .json()
               .catch(() => null)
             void Promise.all([paintBody, responseBody]).then(([body, answer]) => {
-              const paint = observedPaintFrom(body, answer)
+              const paint = observedPaintFrom(body, answer, submission)
               if (paint !== null) notifyAcceptedPaint(paint)
             })
           } catch {
