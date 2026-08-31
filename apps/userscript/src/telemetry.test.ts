@@ -1278,14 +1278,16 @@ describe('server telemetry client', () => {
 
   it('replays failed paint reports when tile sharing is disabled', async () => {
     let attempts = 0
+    const bodies: string[] = []
     let settleFirstAttempt: ((response: Response) => void) | undefined
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/paints')) {
           attempts++
+          bodies.push(String(init?.body))
           if (attempts === 1)
             return new Promise<Response>((resolve) => {
               settleFirstAttempt = resolve
@@ -1297,22 +1299,42 @@ describe('server telemetry client', () => {
     )
     const { installTelemetry } = await import('./telemetry.js')
     installTelemetry()
-    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.serverContents?.(server, {
+      nodes: [],
+      templates: [
+        {
+          ...template,
+          chunks: [...template.chunks, { tile: '2/2', hash: 'other' }],
+        },
+      ],
+    })
     harness.acceptedPaint?.({
       season: 0,
       observedAt: 1_800_000_000,
-      painted: 1,
-      tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+      painted: 2,
+      tiles: [
+        { x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } },
+        { x: 2, y: 2, pixels: { x: [6], y: [7], colors: [8] } },
+      ],
     })
     await vi.waitFor(() => expect(settleFirstAttempt).toBeDefined())
 
     harness.state = { ...harness.state, shareTiles: false }
     for (const listener of harness.stateListeners) listener()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
     settleFirstAttempt?.(new Response(null, { status: 503 }))
 
     await vi.waitFor(() => expect(attempts).toBe(4))
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(attempts).toBe(4)
+    expect(new Set(bodies).size).toBe(1)
+    expect(JSON.parse(bodies[0] ?? '{}')).toMatchObject({
+      painted: 2,
+      tiles: [
+        { x: 1, y: 2 },
+        { x: 2, y: 2 },
+      ],
+    })
   })
 
   it('retries one immutable paint event without changing count, order, or attribution', async () => {
