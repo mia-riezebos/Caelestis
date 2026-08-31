@@ -40,10 +40,15 @@ const harness = vi.hoisted(() => ({
   toggleShortcutHelp: vi.fn(),
   moving: false,
   allianceActive: false,
+  allianceEditorActive: false,
   allianceStage: null as HTMLElement | null,
 }))
 
 vi.mock('./alliance-surface.js', () => ({
+  activeAllianceEditorStage: () =>
+    harness.allianceActive || harness.allianceEditorActive
+      ? (harness.allianceStage ?? document.body)
+      : null,
   activeAllianceSurface: () =>
     harness.allianceActive
       ? {
@@ -103,6 +108,7 @@ beforeEach(async () => {
   harness.peek = false
   harness.moving = false
   harness.allianceActive = false
+  harness.allianceEditorActive = false
   harness.allianceStage = null
   harness.appearance = { opacity: 0.85, markMismatch: false, markSelectedColour: false }
   harness.surfaceAppearance = { opacity: 0.85, contrastOutline: false }
@@ -187,6 +193,30 @@ describe('keyboard shortcut actions', () => {
     expect(harness.navigateColour).not.toHaveBeenCalled()
     expect(harness.toggleAppearanceBoolean).not.toHaveBeenCalled()
     expect(harness.setState).not.toHaveBeenCalled()
+    expect(harness.toggleTheme).not.toHaveBeenCalled()
+  })
+
+  it('isolates every surface action while alliance asset metadata is unresolved', () => {
+    harness.allianceEditorActive = true
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    const stage = document.createElement('div')
+    dialog.append(stage)
+    document.body.append(dialog)
+    harness.allianceStage = stage
+
+    expect(press('b').defaultPrevented).toBe(true)
+    for (const key of ['1', 'a', 'c', 'd', 'f', 'g', 'l', 'r', 's', 't', 'v', 'w', 'x']) {
+      expect(press(key).defaultPrevented).toBe(true)
+    }
+
+    expect(harness.paintAction).toHaveBeenCalledWith(dialog)
+    expect(harness.togglePanel).not.toHaveBeenCalled()
+    expect(harness.toggleMenu).not.toHaveBeenCalled()
+    expect(harness.setLocalVisible).not.toHaveBeenCalled()
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+    expect(harness.setSurfaceAppearance).not.toHaveBeenCalled()
+    expect(harness.setPeek).not.toHaveBeenCalled()
     expect(harness.toggleTheme).not.toHaveBeenCalled()
   })
 

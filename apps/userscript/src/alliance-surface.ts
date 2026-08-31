@@ -436,6 +436,10 @@ export const installAllianceSurfaceObserver = (): void => {
 
 export const activeAllianceSurface = (): ActiveAllianceSurface | null => active
 
+/** The open alliance editor stage, even while its exact asset surface is still being validated. */
+export const activeAllianceEditorStage = (): HTMLElement | null =>
+  pageWindow().document.querySelector<HTMLElement>(`${HQ_STAGE}, ${ASSET_STAGE}`)
+
 export const onActiveAllianceSurfaceChange = (listener: Listener): (() => void) => {
   listeners.add(listener)
   return () => listeners.delete(listener)

@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  activeAllianceEditorStage,
   activeAllianceSurface,
   installAllianceSurfaceObserver,
   onActiveAllianceSurfaceChange,
@@ -150,6 +151,7 @@ describe('active alliance surface observation', () => {
     dialog.removeAttribute('open')
     await settle()
     expect(activeAllianceSurface()).toBeNull()
+    expect(activeAllianceEditorStage()).toBeNull()
 
     dialog.setAttribute('open', '')
     const application = dialog.querySelector('[role="application"]')
@@ -160,6 +162,7 @@ describe('active alliance surface observation', () => {
     await settle()
 
     expect(activeAllianceSurface()?.frame).toBe(replacement)
+    expect(activeAllianceEditorStage()).toBe(application)
     expect(activeAllianceSurface()?.frame).not.toBe(firstFrame)
   })
 
@@ -350,6 +353,7 @@ describe('active alliance surface observation', () => {
       await window.fetch('https://backend.wplace.live/alliance/assets/drafts/129/canvas')
       await settle()
       expect(activeAllianceSurface()).toBeNull()
+      expect(activeAllianceEditorStage()).toBe(dialog.querySelector('[role="application"]'))
 
       canvas.width = 64
       canvas.height = 64

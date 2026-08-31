@@ -1,4 +1,4 @@
-import { activeAllianceSurface } from './alliance-surface.js'
+import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
@@ -32,7 +32,7 @@ const triggerMapRepaint = (): void => {
 /** Claim a handled shortcut inside an alliance editor so it cannot reach the world behind it. */
 const claimShortcut = (event: KeyboardEvent): void => {
   event.preventDefault()
-  if (activeAllianceSurface() !== null) event.stopImmediatePropagation()
+  if (activeAllianceEditorStage() !== null) event.stopImmediatePropagation()
 }
 
 const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void => {
@@ -128,13 +128,30 @@ export const installKeyboardShortcuts = (
     const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
     const alliance = activeAllianceSurface()
+    const allianceEditorStage = activeAllianceEditorStage()
     const allianceSurface = alliance?.surface ?? null
-    const nativeRoot = alliance?.stage.closest('dialog[open]') ?? document
+    const nativeRoot = allianceEditorStage?.closest('dialog[open]') ?? document
+
+    // An asset editor intentionally has no resolved surface while Wplace's draft metadata is
+    // pending or invalid. Native paint controls remain safely scoped to its dialog; every action
+    // that needs template or appearance state must wait rather than falling through to the world.
+    if (
+      allianceEditorStage !== null &&
+      alliance === null &&
+      shortcut !== 'show-shortcut-help' &&
+      shortcut !== 'undo-paint' &&
+      shortcut !== 'redo-paint' &&
+      shortcut !== 'paint-action' &&
+      shortcut !== 'cancel-paint'
+    ) {
+      claimShortcut(event)
+      return
+    }
 
     // These depend on world paint accounting or world-only appearance state. Claim them while an
     // alliance editor is active, but never let them mutate the world behind it.
     if (
-      alliance !== null &&
+      allianceEditorStage !== null &&
       (shortcut === 'toggle-colour' ||
         shortcut === 'toggle-markers' ||
         shortcut === 'toggle-selected-colour-markers' ||
@@ -166,7 +183,7 @@ export const installKeyboardShortcuts = (
     if (shortcut === 'toggle-template-menu') {
       const focused = focusedTemplate()
       if (focused === null) {
-        if (alliance !== null) claimShortcut(event)
+        if (allianceEditorStage !== null) claimShortcut(event)
         return
       }
       claimShortcut(event)
@@ -232,7 +249,7 @@ export const installKeyboardShortcuts = (
     if (opacity === null) return
     const focused = focusedTemplate()
     if (focused === null) {
-      if (alliance !== null) claimShortcut(event)
+      if (allianceEditorStage !== null) claimShortcut(event)
       return
     }
     claimShortcut(event)
