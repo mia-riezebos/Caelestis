@@ -994,12 +994,6 @@ describe('server telemetry client', () => {
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
     await vi.waitFor(() => expect(settleRemovedOffer).toBeDefined())
 
-    harness.retiredServers.add(server)
-    harness.state = { ...harness.state, servers: [mirror] }
-    for (const listener of harness.stateListeners) listener()
-    settleRemovedOffer?.(new Response(null, { status: 503 }))
-    await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(3))
-
     for (let index = 0; index < mirrorChunks.length; index++)
       harness.fetchedTile?.(
         { x: 100 + index, y: 9 },
@@ -1011,6 +1005,7 @@ describe('server telemetry client', () => {
     )
 
     const replacement = { ...server }
+    harness.retiredServers.add(server)
     harness.state = { ...harness.state, servers: [mirror, replacement] }
     for (const listener of harness.stateListeners) listener()
     harness.serverContents?.(replacement, {
@@ -1026,6 +1021,7 @@ describe('server telemetry client', () => {
       ],
     })
     harness.fetchedTile?.({ x: 2, y: 2 }, new Uint8Array([2]), 1_800_000_100)
+    settleRemovedOffer?.(new Response(null, { status: 503 }))
     await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(4))
     await new Promise((resolve) => setTimeout(resolve, 350))
 

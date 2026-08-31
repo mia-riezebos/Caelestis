@@ -97,6 +97,7 @@ interface ObservedPaint {
 }
 
 interface UnsettledServerOffers {
+  readonly owner: object
   readonly season: number
   readonly entries: Map<string, OfferedTile>
 }
@@ -212,11 +213,14 @@ const retainUnsettledOffer = (
   trim = true,
 ): OfferedTile => {
   if (server.season === null) return entry
+  const owner = serverConnectionIdentity(server)
   const existing = unsettledOffers.get(server.url)
-  if (existing !== undefined && existing.season !== server.season) clearUnsettledServer(server.url)
+  if (existing !== undefined && (existing.owner !== owner || existing.season !== server.season))
+    clearUnsettledServer(server.url)
   const held =
     unsettledOffers.get(server.url) ??
     ({
+      owner,
       season: server.season,
       entries: new Map<string, OfferedTile>(),
     } satisfies UnsettledServerOffers)
@@ -648,7 +652,10 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     const retryCoverage = retryServer === undefined ? null : coverageFor(retryServer)
     if (getState().shareTiles && retryServer !== undefined && retryCoverage !== null) {
       const held = unsettledOffers.get(serverUrl)
-      if (held?.season === retryServer.season) {
+      if (
+        held?.owner === serverConnectionIdentity(retryServer) &&
+        held.season === retryServer.season
+      ) {
         const previous = queued.get(serverUrl)
         const next =
           previous !== undefined && isCurrentServerConnection(previous.server)
@@ -862,7 +869,7 @@ const replayRecent = (server: ConnectedServer, includeRecentTiles = true): void 
   if (!isCurrentServerConnection(server)) return
   const deliveries = includeRecentTiles ? new Map(recentTiles) : new Map<string, OfferedTile>()
   const unsettled = unsettledOffers.get(server.url)
-  if (unsettled?.season === server.season)
+  if (unsettled?.owner === serverConnectionIdentity(server) && unsettled.season === server.season)
     for (const [deliveryId, tile] of unsettled.entries) deliveries.set(deliveryId, tile)
   for (const tile of deliveries.values()) shareObservedTile(tile)
   for (const paint of recentPaints) void reportPaint(paint).catch(reportTelemetryError)
@@ -887,7 +894,8 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
     coverage.set(server.url, { server, tiles: next, contents })
   const unsettled = unsettledOffers.get(server.url)
   if (unsettled !== undefined) {
-    if (unsettled.season !== server.season) clearUnsettledServer(server.url)
+    if (unsettled.owner !== serverConnectionIdentity(server) || unsettled.season !== server.season)
+      clearUnsettledServer(server.url)
     else {
       for (const [deliveryId, entry] of unsettled.entries)
         if (!next.has(entry.tile)) deleteUnsettledOffer(server.url, deliveryId)
