@@ -323,4 +323,37 @@ describe('tile generation cache', () => {
       cache.resolve('public', [{ deliveryId: 'stale', tile, hash: 'a'.repeat(64) }]),
     ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['stale'] })
   })
+
+  it('expires abandoned tokens without discarding a later settled candidate', () => {
+    let now = 1_000
+    let token = 0
+    const cache = createTileGenerationCache({
+      now: () => now,
+      ttlMilliseconds: 100,
+      createCoverageToken: () => `token-${token++}`,
+    })
+    const tile = { x: 1, y: 2 }
+    const coverageToken = cache.resolve('public', []).coverageToken ?? ''
+    cache.prepare(tile)
+    now = 1_050
+    const committed = cache.prepare(tile)
+    cache.apply({
+      tile,
+      hash: 'b'.repeat(64),
+      observedAt: millis(1_050),
+      commitOrder: 2,
+      ...committed,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+
+    now = 1_101
+    const next = cache.prepare(tile)
+    cache.finish(tile, next)
+
+    expect(
+      cache.resolve('public', [{ deliveryId: 'settled', tile, hash: 'b'.repeat(64) }]),
+    ).toMatchObject({ acknowledgedDeliveryIds: ['settled'], unresolvedDeliveryIds: [] })
+    expect(cache.resolve('public', []).coverageToken).toBe(coverageToken)
+  })
 })

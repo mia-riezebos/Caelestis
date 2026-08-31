@@ -40,9 +40,8 @@ interface CachedTileGeneration extends CommittedTileGeneration {
 }
 
 interface PendingTileGenerationCommits {
-  readonly active: Set<string>
+  readonly active: Map<string, number>
   candidate: CachedTileGeneration | null
-  expiresAt: number
 }
 
 const tileKey = (tile: TileCoord): string => `${tile.x}/${tile.y}`
@@ -62,10 +61,26 @@ export const createTileGenerationCache = (
   const createCoverageToken = options.createCoverageToken ?? (() => crypto.randomUUID())
   let coverageToken = createCoverageToken()
 
-  const prunePendingCommits = (checkedAt: number): void => {
-    for (const [key, pending] of pendingCommits) {
-      if (pending.expiresAt <= checkedAt) pendingCommits.delete(key)
+  const releaseSettledCandidate = (
+    key: string,
+    pending: PendingTileGenerationCommits,
+    checkedAt: number,
+  ): void => {
+    for (const [commitToken, expiresAt] of pending.active)
+      if (expiresAt <= checkedAt) pending.active.delete(commitToken)
+    if (pending.active.size > 0) return
+    pendingCommits.delete(key)
+    if (
+      pending.candidate !== null &&
+      pending.candidate.coverageToken === coverageToken &&
+      pending.candidate.expiresAt > checkedAt
+    ) {
+      entries.set(key, pending.candidate)
     }
+  }
+
+  const prunePendingCommits = (checkedAt: number): void => {
+    for (const [key, pending] of pendingCommits) releaseSettledCandidate(key, pending, checkedAt)
   }
 
   const settle = (
@@ -86,11 +101,7 @@ export const createTileGenerationCache = (
       pending.candidate = { ...generation, expiresAt: checkedAt + ttl }
     }
     if (!knownCommit) return true
-    if (pending.active.size > 0) return true
-    pendingCommits.delete(key)
-    if (pending.candidate !== null && pending.candidate.coverageToken === coverageToken) {
-      entries.set(key, pending.candidate)
-    }
+    releaseSettledCandidate(key, pending, checkedAt)
     return true
   }
 
@@ -102,12 +113,10 @@ export const createTileGenerationCache = (
       const commitToken = createCoverageToken()
       const held = entries.get(key)
       const pending = pendingCommits.get(key) ?? {
-        active: new Set<string>(),
+        active: new Map<string, number>(),
         candidate: held !== undefined && held.expiresAt > checkedAt ? held : null,
-        expiresAt: checkedAt + ttl,
       }
-      pending.active.add(commitToken)
-      pending.expiresAt = checkedAt + ttl
+      pending.active.set(commitToken, checkedAt + ttl)
       entries.delete(key)
       pendingCommits.set(key, pending)
       return { coverageToken, commitToken }
