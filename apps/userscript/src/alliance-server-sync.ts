@@ -13,6 +13,7 @@ import {
   type State,
   sameServerConnection,
 } from './state.js'
+import { rememberNodes } from './templates/server-nodes.js'
 import { syncServerTemplates } from './templates/server-sync.js'
 
 const MANIFEST_TIMEOUT_MS = 15_000
@@ -126,6 +127,7 @@ const readServer = async (
     }
     count('alliance-sync:manifest admitted')
     manifests.set(key, manifest)
+    rememberNodes(server.url, manifest.nodes, surface)
     notifyManifestChange()
     await syncServerTemplates(server, manifest.templates, requestCurrent, surface)
   } catch {

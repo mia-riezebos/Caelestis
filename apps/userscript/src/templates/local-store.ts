@@ -475,7 +475,11 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
   // read: the box moved, and nothing else did.
   if (template.serverUrl !== undefined) {
     if (!isScopeVisible(`server:${template.serverUrl}`)) return false
-    return nodeChainVisible(template.serverUrl, template.serverNodeId ?? null)
+    return nodeChainVisible(
+      template.serverUrl,
+      template.serverNodeId ?? null,
+      template.surface ?? WORLD_TEMPLATE_SURFACE,
+    )
   }
   return localFolderChainVisible(template.folderId)
 }

@@ -30,6 +30,9 @@ const templates = vi.hoisted(() => ({
     ): Promise<void> => undefined,
   ),
 }))
+const nodes = vi.hoisted(() => ({
+  rememberNodes: vi.fn(),
+}))
 
 vi.mock('./alliance-surface.js', () => ({
   activeAllianceSurface: () => alliance.active,
@@ -56,6 +59,7 @@ vi.mock('./state.js', () => ({
 }))
 
 vi.mock('./templates/server-sync.js', () => templates)
+vi.mock('./templates/server-nodes.js', () => nodes)
 vi.mock('./debug.js', () => ({ count: vi.fn() }))
 vi.mock('./server-manifest.js', () => ({
   parseServerManifest: (raw: unknown) => raw,
@@ -181,6 +185,23 @@ describe('alliance server sync', () => {
 
     expect(allianceManifestFor(connected.url, hq())).toBeNull()
     expect(templates.syncServerTemplates).not.toHaveBeenCalled()
+  })
+
+  it('records exact-surface folder parents before syncing templates', async () => {
+    const manifestNodes = [{ id: 'alliance-folder', parentId: null }]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ ...manifest(hq()), nodes: manifestNodes }))),
+    )
+    const { installAllianceServerSync } = await import('./alliance-server-sync.js')
+
+    installAllianceServerSync()
+    await flush()
+
+    expect(nodes.rememberNodes).toHaveBeenCalledWith(connected.url, manifestNodes, hq())
+    expect(nodes.rememberNodes.mock.invocationCallOrder[0]).toBeLessThan(
+      templates.syncServerTemplates.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    )
   })
 
   it('does not poll for cosmetic state changes', async () => {
