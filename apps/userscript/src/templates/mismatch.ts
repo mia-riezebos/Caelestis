@@ -111,6 +111,8 @@ export interface TemplateColourProgressDelta {
 /** One native draft pixel's correction, keyed so later batches can replace the same coordinate. */
 export interface TemplateDraftPixelDelta extends TemplateColourProgressDelta {
   readonly key: string
+  /** Identity plus per-pixel revision of the server source this correction was measured against. */
+  readonly basis: string
 }
 
 export type ColourTargetKind = 'unpainted' | 'mismatched'
@@ -1835,7 +1837,31 @@ export const onMismatchesChanged = (listener: () => void): void => {
 
 const MAX_PATCHED_PIXELS = 32
 
+const draftSourceIds = new WeakMap<Uint8Array, number>()
+const serverPixelRevisions = new Map<string, number>()
+let nextDraftSourceId = 1
+let nextServerPixelRevision = 1
+
+const draftSourceBasis = (source: Uint8Array, key: string): string => {
+  let sourceId = draftSourceIds.get(source)
+  if (sourceId === undefined) {
+    sourceId = nextDraftSourceId++
+    draftSourceIds.set(source, sourceId)
+  }
+  return `${sourceId}:${serverPixelRevisions.get(key) ?? 0}`
+}
+
 onTilePixels((tile, triples, source) => {
+  if (source === 'server') {
+    for (let i = 0; i < triples.length; i += 3) {
+      const x = triples[i] as number
+      const y = triples[i + 1] as number
+      serverPixelRevisions.set(
+        `${tile.x}/${tile.y}/${y * TILE_SIZE + x}`,
+        nextServerPixelRevision++,
+      )
+    }
+  }
   const before = changed
   if (triples.length / 3 > MAX_PATCHED_PIXELS) {
     const suffix = `|${tile.x}/${tile.y}`
@@ -1912,6 +1938,10 @@ onTilePixelsEvicted((tile) => {
   for (const cacheKey of supersededServerSource.keys()) {
     if (cacheKey.endsWith(suffix)) supersededServerSource.delete(cacheKey)
   }
+  const prefix = `${tile.x}/${tile.y}/`
+  for (const key of serverPixelRevisions.keys()) {
+    if (key.startsWith(prefix)) serverPixelRevisions.delete(key)
+  }
 })
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
@@ -1976,12 +2006,14 @@ export const pixelAccounting = Object.freeze({
       const deltas: TemplateDraftPixelDelta[] = []
       const correction = (
         key: string,
+        basis: string,
         index: number,
         from: 'completed' | 'mismatched' | 'unpainted',
         to: 'completed' | 'mismatched' | 'unpainted',
       ): TemplateDraftPixelDelta => {
         const delta: TemplateDraftPixelDelta = {
           key,
+          basis,
           index,
           completed: 0,
           mismatched: 0,
@@ -2002,6 +2034,7 @@ export const pixelAccounting = Object.freeze({
             ? serverMask
             : null
         if ((server === null && currentMask === null) || draft === null) continue
+        const source = server ?? (currentMask as MismatchMask).packed
         for (const offset of draftedPixelOffsets(tile)) {
           const tileX = offset % TILE_SIZE
           const tileY = (offset - tileX) / TILE_SIZE
@@ -2030,6 +2063,7 @@ export const pixelAccounting = Object.freeze({
             deltas.push(
               correction(
                 `${tile.x}/${tile.y}/${offset}`,
+                draftSourceBasis(source, `${tile.x}/${tile.y}/${offset}`),
                 wanted,
                 serverCategory,
                 category(draft[offset] as number),

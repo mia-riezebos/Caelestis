@@ -93,6 +93,7 @@ const deltaIsEmpty = (delta: TemplateColourProgressDelta): boolean =>
 
 const samePixelDelta = (left: TemplateDraftPixelDelta, right: TemplateDraftPixelDelta): boolean =>
   left.key === right.key &&
+  left.basis === right.basis &&
   left.index === right.index &&
   left.completed === right.completed &&
   left.mismatched === right.mismatched &&
@@ -132,9 +133,6 @@ const progressWithDrafts = (
   for (const key of [...state.acceptedActive.keys()]) {
     if (!rawActive.has(key)) state.acceptedActive.delete(key)
   }
-  for (const key of [...state.rebasedFrom.keys()]) {
-    if (!rawActive.has(key)) state.rebasedFrom.delete(key)
-  }
   const serverByIndex = new Map(server.map((entry) => [entry.index, entry]))
   for (const pixel of [...state.pending.values(), ...rawActive.values()]) {
     const entry = serverByIndex.get(pixel.index)
@@ -155,11 +153,10 @@ const progressWithDrafts = (
     if (serverCovers(entry, applyColourProgressDelta(baseline, pending), baseline)) {
       for (const [key, pixel] of state.pending) {
         if (pixel.index !== index) continue
-        const current = rawActive.get(key)
-        if (current !== undefined) {
-          const held = state.rebasedFrom.get(key)
-          state.rebasedFrom.set(key, held === undefined ? pixel : addPixelDelta(held, pixel))
-        }
+        const held = state.rebasedFrom.get(key)
+        const rebased = held?.basis === pixel.basis ? addPixelDelta(held, pixel) : pixel
+        if (deltaIsEmpty(rebased)) state.rebasedFrom.delete(key)
+        else state.rebasedFrom.set(key, rebased)
         state.pending.delete(key)
       }
       state.baselines.set(index, entry)
@@ -169,7 +166,10 @@ const progressWithDrafts = (
   const active = new Map(
     [...rawActive].map(([key, pixel]) => {
       const rebase = state.rebasedFrom.get(key)
-      return [key, rebase === undefined ? pixel : subtractPixelDelta(pixel, rebase)]
+      if (rebase === undefined) return [key, pixel]
+      if (rebase.basis === pixel.basis) return [key, subtractPixelDelta(pixel, rebase)]
+      state.rebasedFrom.delete(key)
+      return [key, pixel]
     }),
   )
 
@@ -190,7 +190,8 @@ const progressWithDrafts = (
     const target = applyColourProgressDelta(baseline, delta)
     return serverCovers(entry, target, baseline) ? entry : target
   })
-  if (active.size === 0 && state.pending.size === 0) draftProjections.delete(templateId)
+  if (active.size === 0 && state.pending.size === 0 && state.rebasedFrom.size === 0)
+    draftProjections.delete(templateId)
   return result
 }
 
@@ -226,7 +227,7 @@ const retainAcceptedDraft = (): void => {
   if (state === undefined) return
   for (const raw of pixelAccounting.read(template).draftPixelDeltas) {
     const rebase = state.rebasedFrom.get(raw.key)
-    const pixel = rebase === undefined ? raw : subtractPixelDelta(raw, rebase)
+    const pixel = rebase?.basis === raw.basis ? subtractPixelDelta(raw, rebase) : raw
     if (deltaIsEmpty(pixel)) state.pending.delete(pixel.key)
     else state.pending.set(pixel.key, pixel)
     state.acceptedActive.set(pixel.key, pixel)

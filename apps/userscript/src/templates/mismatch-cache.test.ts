@@ -762,7 +762,14 @@ describe('visible mismatch answer retention', () => {
       { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
     ])
     expect(pixelAccounting.read(selected).draftPixelDeltas).toEqual([
-      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+      {
+        key: '0/0/0',
+        basis: expect.any(String),
+        index: 0,
+        completed: 1,
+        mismatched: -1,
+        unpainted: 0,
+      },
     ])
 
     harness.draft[0] = 2
@@ -771,7 +778,14 @@ describe('visible mismatch answer retention', () => {
       { index: 0, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
     ])
     expect(pixelAccounting.read(selected).draftPixelDeltas).toEqual([
-      { key: '0/0/0', index: 0, completed: 0, mismatched: 0, unpainted: 0 },
+      {
+        key: '0/0/0',
+        basis: expect.any(String),
+        index: 0,
+        completed: 0,
+        mismatched: 0,
+        unpainted: 0,
+      },
     ])
 
     harness.draft[0] = 255
@@ -781,6 +795,31 @@ describe('visible mismatch answer retention', () => {
     ])
     expect(pixelAccounting.read(selected).draftPixelDeltas).toEqual([])
     expect(draftChanged).toHaveBeenCalledTimes(3)
+  })
+
+  it('changes a draft correction basis when its captured server pixel changes', async () => {
+    const selected = {
+      ...template(210),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.draft[0] = 0
+    const { pixelAccounting } = await import('./mismatch.js')
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[], source: 'server') => void)
+      | undefined
+
+    const before = pixelAccounting.read(selected).draftPixelDeltas[0]
+    expect(before).toMatchObject({ completed: 1, mismatched: -1 })
+
+    harness.pixels[0] = 0
+    changed?.({ x: 0, y: 0 }, [0, 0, 0], 'server')
+    const after = pixelAccounting.read(selected).draftPixelDeltas[0]
+    expect(after).toMatchObject({ completed: 0, mismatched: 0 })
+    expect(after?.basis).not.toBe(before?.basis)
   })
 
   it('removes a disagreement when the matching draft lands on a non-symmetric row', async () => {
