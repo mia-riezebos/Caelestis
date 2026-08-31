@@ -712,6 +712,22 @@ describe('visible mismatch answer retention', () => {
     endMismatchFrame()
   })
 
+  it('notifies draft subscribers before any local accounting record exists', async () => {
+    harness.templates = [template(207)]
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    const { pixelAccounting } = await import('./mismatch.js')
+    const draftChanged = vi.fn()
+    pixelAccounting.onDraftChange(draftChanged)
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[], source: 'draft') => void)
+      | undefined
+
+    harness.draft[0] = 0
+    changed?.({ x: 0, y: 0 }, [0, 0, 0], 'draft')
+
+    expect(draftChanged).toHaveBeenCalledOnce()
+  })
+
   it('removes a selected-colour disagreement as soon as the correct draft pixel is captured', async () => {
     const selected = {
       ...template(208),
@@ -726,8 +742,10 @@ describe('visible mismatch answer retention', () => {
       encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
     )
     const { pixelAccounting } = await import('./mismatch.js')
+    const draftChanged = vi.fn()
+    pixelAccounting.onDraftChange(draftChanged)
     const changed = harness.onTilePixels.mock.calls[0]?.[0] as
-      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | ((tile: { x: number; y: number }, triples: readonly number[], source: 'draft') => void)
       | undefined
 
     const initial = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
@@ -735,27 +753,32 @@ describe('visible mismatch answer retention', () => {
     expect(initial?.markers).toBe(initial?.mismatched)
 
     harness.draft[0] = 0
-    changed?.({ x: 0, y: 0 }, [0, 0, 0])
+    changed?.({ x: 0, y: 0 }, [0, 0, 0], 'draft')
+    expect(draftChanged).toHaveBeenCalledOnce()
     const fixed = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
     expect(fixed?.disagreements).toHaveLength(0)
     expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
     expect(pixelAccounting.read(selected).colours).toEqual([
       { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
     ])
-    expect(pixelAccounting.read(selected).draftedColours).toEqual(new Set([0]))
+    expect(pixelAccounting.read(selected).draftColourDeltas).toEqual([
+      { index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ])
 
     harness.draft[0] = 2
-    changed?.({ x: 0, y: 0 }, [0, 0, 2])
+    changed?.({ x: 0, y: 0 }, [0, 0, 2], 'draft')
     expect(pixelAccounting.read(selected).colours).toEqual([
       { index: 0, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
     ])
+    expect(pixelAccounting.read(selected).draftColourDeltas).toEqual([])
 
     harness.draft[0] = 255
-    changed?.({ x: 0, y: 0 }, [0, 0, 255])
+    changed?.({ x: 0, y: 0 }, [0, 0, 255], 'draft')
     expect(pixelAccounting.read(selected).colours).toEqual([
       { index: 0, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
     ])
-    expect(pixelAccounting.read(selected).draftedColours).toEqual(new Set())
+    expect(pixelAccounting.read(selected).draftColourDeltas).toEqual([])
+    expect(draftChanged).toHaveBeenCalledTimes(3)
   })
 
   it('removes a disagreement when the matching draft lands on a non-symmetric row', async () => {

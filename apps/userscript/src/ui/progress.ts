@@ -1,4 +1,8 @@
-import type { TemplateColourProgress, TemplateProgress } from '../templates/mismatch.js'
+import type {
+  TemplateColourProgress,
+  TemplateColourProgressDelta,
+  TemplateProgress,
+} from '../templates/mismatch.js'
 
 export const emptyProgress = (total: number): TemplateProgress => ({
   completed: 0,
@@ -53,18 +57,21 @@ export const freshestProgress = (
 
 export const freshestColourProgress = (
   server: readonly TemplateColourProgress[],
-  local: readonly TemplateColourProgress[],
-  draftedColours?: ReadonlySet<number>,
-): readonly TemplateColourProgress[] => {
-  if (draftedColours === undefined || draftedColours.size === 0) return server
-  const localByIndex = new Map(local.map((entry) => [entry.index, entry]))
-  return server.map((entry) => {
-    const current = localByIndex.get(entry.index)
-    return draftedColours.has(entry.index) &&
-      current !== undefined &&
-      current.total === entry.total &&
-      current.known === current.total
-      ? current
-      : entry
-  })
+  _local: readonly TemplateColourProgress[],
+): readonly TemplateColourProgress[] => server
+
+/** Apply one exact category transfer while preserving a complete colour-progress invariant. */
+export const applyColourProgressDelta = (
+  baseline: TemplateColourProgress,
+  delta: TemplateColourProgressDelta,
+): TemplateColourProgress => {
+  const completed = Math.max(0, Math.min(baseline.known, baseline.completed + delta.completed))
+  const remaining = baseline.known - completed
+  const mismatched = Math.max(0, Math.min(remaining, baseline.mismatched + delta.mismatched))
+  return {
+    ...baseline,
+    completed,
+    mismatched,
+    unpainted: remaining - mismatched,
+  }
 }

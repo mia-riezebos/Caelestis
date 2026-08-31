@@ -7,8 +7,12 @@ const harness = vi.hoisted(() => ({
   stateListeners: [] as Array<() => void>,
   localListeners: [] as Array<() => void>,
   mismatchListeners: [] as Array<() => void>,
+  draftListeners: [] as Array<() => void>,
   statusListeners: [] as Array<() => void>,
   paintListeners: [] as Array<() => void>,
+  acceptedPaintListeners: [] as Array<
+    (paint: { painted: number; tiles: Array<{ pixels: { x: number[] } }> }) => void
+  >,
   focused: null as {
     id: string
     serverUrl?: string
@@ -18,7 +22,12 @@ const harness = vi.hoisted(() => ({
   colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
   paintOpen: true,
   selectedColour: 0 as number | null,
-  draftedColours: new Set<number>(),
+  draftColourDeltas: [] as Array<{
+    index: number
+    completed: number
+    mismatched: number
+    unpainted: number
+  }>,
   selectPaintColour: vi.fn(() => true),
   navigationTargets: {
     unpainted: {
@@ -83,7 +92,7 @@ vi.mock('./templates/mismatch.js', () => ({
   pixelAccounting: {
     read: (template: { id: string }) => ({
       colours: harness.localProgress,
-      draftedColours: harness.draftedColours,
+      draftColourDeltas: harness.draftColourDeltas,
       nearest: (
         index: number,
         kind: 'unpainted' | 'mismatched',
@@ -92,6 +101,15 @@ vi.mock('./templates/mismatch.js', () => ({
       ) => harness.nearestColourTarget(index, kind, reference, template.id, exclude),
     }),
     onChange: (listener: () => void) => harness.mismatchListeners.push(listener),
+    onDraftChange: (listener: () => void) => harness.draftListeners.push(listener),
+  },
+}))
+vi.mock('./tile-transform.js', () => ({
+  onAcceptedPaint: (
+    listener: (paint: { painted: number; tiles: Array<{ pixels: { x: number[] } }> }) => void,
+  ) => {
+    harness.acceptedPaintListeners.push(listener)
+    return vi.fn()
   },
 }))
 vi.mock('./templates/navigate.js', () => ({ navigateTo: harness.navigateTo }))
@@ -116,7 +134,7 @@ beforeEach(() => {
   harness.colourNavigationOrder = 'unpainted-first'
   harness.paintOpen = true
   harness.selectedColour = 0
-  harness.draftedColours = new Set()
+  harness.draftColourDeltas = []
   harness.navigationTargets.unpainted = {
     templateId: 'local',
     x: 12,
@@ -202,16 +220,17 @@ describe('Wplace paint palette progress', () => {
       )?.model?.value,
     ).toBe('1')
 
-    harness.draftedColours = new Set([0])
+    // A native draft correction updates immediately even if local accounting is still partial.
     harness.localProgress = [
-      { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
+      { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 3 },
     ]
-    harness.mismatchListeners.at(-1)?.()
+    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: -1, unpainted: 0 }]
+    harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
 
-    // The response baseline may catch up before Wplace clears its native draft. Selecting the
-    // effective local result rather than adding it keeps that paint from counting twice.
+    // An unrelated same-colour server advance wins over the projected baseline, and a response that
+    // includes this paint therefore cannot count it twice.
     harness.serverProgress = [
       { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
     ]
@@ -219,11 +238,11 @@ describe('Wplace paint palette progress', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
 
-    harness.draftedColours = new Set()
+    harness.draftColourDeltas = []
     harness.localProgress = [
       { index: 0, completed: 2, mismatched: 1, unpainted: 0, known: 3, total: 3 },
     ]
-    harness.mismatchListeners.at(-1)?.()
+    harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
@@ -269,6 +288,62 @@ describe('Wplace paint palette progress', () => {
     expect(harness.selectPaintColour).toHaveBeenLastCalledWith(2)
     expect(cycleFocusedColour(-1)).toBe(true)
     expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+  })
+
+  it('keeps an accepted draft correction until stale server status catches up', async () => {
+    harness.focused = {
+      id: 'remote-pending-draft',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 7, known: 10, total: 10 },
+    ]
+    const swatch = document.createElement('button')
+    swatch.id = 'color-1'
+    document.body.appendChild(swatch)
+    const { installPaintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.statusListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    const badge = (): string | undefined =>
+      swatch.querySelector<HTMLElement & { model?: { value: string } }>(
+        'caelestis-palette-progress',
+      )?.model?.value
+    expect(badge()).toBe('8')
+
+    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: -1, unpainted: 0 }]
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('7')
+
+    // Undo/cancel has no accepted-paint event and therefore returns to the server baseline.
+    harness.draftColourDeltas = []
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('8')
+
+    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: -1, unpainted: 0 }]
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('7')
+
+    harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
+    harness.draftColourDeltas = []
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('7')
+
+    // Newer same-colour server progress remains authoritative instead of being replaced by the
+    // older local snapshot or having this one draft added on top again.
+    harness.serverProgress = [
+      { index: 0, completed: 5, mismatched: 0, unpainted: 5, known: 10, total: 10 },
+    ]
+    harness.statusListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('5')
   })
 
   it('cycles repeated F navigation past its previous focused-template target', async () => {
