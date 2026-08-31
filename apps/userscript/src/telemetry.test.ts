@@ -1,4 +1,4 @@
-import type { SyncTransport } from '@caelestis/shared'
+import { MAX_TILE_OFFERS, type SyncTransport } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ServerTemplate } from './server-cache.js'
 import type { ConnectedServer } from './state.js'
@@ -97,7 +97,10 @@ vi.mock('./server-sync-coordinator.js', () => ({
     })
   },
   requestServerSync: (reason: 'connect' | 'manifest-applied', resourceId?: string) => {
-    coordinator.requests.push({ reason, ...(resourceId === undefined ? {} : { resourceId }) })
+    coordinator.requests.push({
+      reason,
+      ...(resourceId === undefined ? {} : { resourceId }),
+    })
     queueMicrotask(() => {
       for (const [id, resource] of coordinator.resources) {
         if (resourceId !== undefined && resourceId !== id) continue
@@ -148,6 +151,7 @@ const template: ServerTemplate = {
 }
 
 beforeEach(() => {
+  vi.clearAllTimers()
   vi.resetModules()
   vi.clearAllMocks()
   account.loadAccount.mockImplementation(async () => undefined)
@@ -160,10 +164,16 @@ beforeEach(() => {
   coordinator.resources.clear()
   coordinator.snapshots = []
   coordinator.requests = []
-  harness.state = { shareTiles: true, reportPaints: true, servers: [server], hiddenScopes: [] }
+  harness.state = {
+    shareTiles: true,
+    reportPaints: true,
+    servers: [server],
+    hiddenScopes: [],
+  }
 })
 
 afterEach(() => {
+  vi.clearAllTimers()
   vi.unstubAllGlobals()
 })
 
@@ -224,7 +234,10 @@ describe('server telemetry client', () => {
       }),
     )
 
-    harness.serverContents?.(server, { nodes: [], templates: [{ ...template }] })
+    harness.serverContents?.(server, {
+      nodes: [],
+      templates: [{ ...template }],
+    })
     expect(serverAlarmFor(server, template)).toBeNull()
     await vi.waitFor(() => expect(serverAlarmFor(server, template)?.id).toBeDefined())
 
@@ -282,7 +295,10 @@ describe('server telemetry client', () => {
     const refreshing = resource?.refresh(server, 'connect', 'recovery')
     await vi.waitFor(() => expect(releaseBody).toBeTypeOf('function'))
 
-    harness.serverContents?.(server, { nodes: [], templates: [{ ...template }] })
+    harness.serverContents?.(server, {
+      nodes: [],
+      templates: [{ ...template }],
+    })
     releaseBody?.({
       alarms: [
         {
@@ -362,9 +378,15 @@ describe('server telemetry client', () => {
         const url = String(input)
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/tiles/offers')) {
-          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          const body = JSON.parse(String(init?.body)) as {
+            offers: Array<{ tile: string }>
+          }
           offeredTiles.push(...body.offers.map((offer) => offer.tile))
-          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -449,9 +471,30 @@ describe('server telemetry client', () => {
       }),
     )
     expect(serverColourProgressFor(server, template)).toEqual([
-      { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
-      { index: 1, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
-      { index: 2, completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+      {
+        index: 0,
+        completed: 1,
+        mismatched: 0,
+        unpainted: 0,
+        known: 1,
+        total: 1,
+      },
+      {
+        index: 1,
+        completed: 0,
+        mismatched: 1,
+        unpainted: 0,
+        known: 1,
+        total: 1,
+      },
+      {
+        index: 2,
+        completed: 0,
+        mismatched: 0,
+        unpainted: 1,
+        known: 1,
+        total: 1,
+      },
     ])
   })
 
@@ -589,6 +632,234 @@ describe('server telemetry client', () => {
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-avoided', 1)
   })
 
+  it('retains a failed observation after the recent replay cache evicts it', async () => {
+    const offeredTiles: string[] = []
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          attempts++
+          const body = JSON.parse(String(init?.body)) as {
+            offers: Array<{ tile: string }>
+          }
+          offeredTiles.push(...body.offers.map((offer) => offer.tile))
+          if (attempts <= 3) return new Response(null, { status: 503 })
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(attempts).toBe(3))
+    for (let index = 0; index < 33; index++)
+      harness.fetchedTile?.({ x: 100 + index, y: 9 }, new Uint8Array([index]), 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    await vi.waitFor(() => expect(attempts).toBe(4), { timeout: 2_000 })
+    expect(offeredTiles).toEqual(['1/2', '1/2', '1/2', '1/2'])
+  })
+
+  it('drops retained retries when tile sharing is disabled', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          attempts++
+          return new Response(null, { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(attempts).toBe(3))
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(attempts).toBe(3)
+  })
+
+  it('does not start a requested upload after tile sharing is disabled', async () => {
+    let settleOffer: ((response: Response) => void) | undefined
+    let uploads = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers'))
+          return new Promise<Response>((resolve) => {
+            settleOffer = resolve
+          })
+        if (url.includes('/telemetry/tiles/1/2/')) uploads++
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(settleOffer).toBeDefined())
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+    settleOffer?.(Response.json({ wanted: ['1/2'] }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(uploads).toBe(0)
+  })
+
+  it('does not rebind a retained report across seasons', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          attempts++
+          return new Response(null, { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(attempts).toBe(3))
+
+    const nextSeason = { ...server, season: 1 }
+    harness.retiredServers.add(server)
+    harness.state = { ...harness.state, servers: [nextSeason] }
+    harness.serverContents?.(nextSeason, { nodes: [], templates: [template] })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(attempts).toBe(3)
+  })
+
+  it('drops retained retries when manifest coverage removes the tile', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          attempts++
+          return new Response(null, { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(attempts).toBe(3))
+
+    harness.serverContents?.(server, { nodes: [], templates: [] })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(attempts).toBe(3)
+  })
+
+  it('releases retained retries when their report server is removed', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          attempts++
+          return new Response(null, { status: 503 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(attempts).toBe(3))
+    for (let index = 0; index < 33; index++)
+      harness.fetchedTile?.({ x: 100 + index, y: 9 }, new Uint8Array([index]), 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+
+    harness.state = { ...harness.state, servers: [] }
+    for (const listener of harness.stateListeners) listener()
+    const replacement = { ...server }
+    harness.retiredServers.add(server)
+    harness.state = { ...harness.state, servers: [replacement] }
+    for (const listener of harness.stateListeners) listener()
+    harness.serverContents?.(replacement, { nodes: [], templates: [template] })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(attempts).toBe(3)
+  })
+
+  it('rotates ambiguous batches so later observations are offered', async () => {
+    const batches: string[][] = []
+    const chunks = Array.from({ length: MAX_TILE_OFFERS + 1 }, (_, index) => ({
+      tile: `${index}/1`,
+      hash: `hash-${index}`,
+    }))
+    const wideTemplate = { ...template, chunks }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          const body = JSON.parse(String(init?.body)) as {
+            offers: Array<{ tile: string }>
+          }
+          const tiles = body.offers.map((offer) => offer.tile)
+          batches.push(tiles)
+          return batches.length === 1
+            ? Response.json({ wanted: [] })
+            : Response.json({ wanted: [], acknowledged: tiles, rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [wideTemplate] })
+    for (let index = 0; index <= MAX_TILE_OFFERS; index++)
+      harness.fetchedTile?.({ x: index, y: 1 }, new Uint8Array([index]), 1_800_000_000)
+    await vi.waitFor(() => expect(batches).toHaveLength(1))
+    await vi.waitFor(() =>
+      expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-accepted', 0),
+    )
+    harness.serverContents?.(server, { nodes: [], templates: [wideTemplate] })
+
+    await vi.waitFor(() => expect(batches.length).toBeGreaterThanOrEqual(3))
+    expect(batches[1]).toContain(`${MAX_TILE_OFFERS}/1`)
+    expect(new Set(batches.flat())).toEqual(new Set(chunks.map((chunk) => chunk.tile)))
+  })
+
   it('reports distinct tile fetches even when the server just acknowledged the same content', async () => {
     const offers: unknown[] = []
     vi.stubGlobal(
@@ -598,7 +869,11 @@ describe('server telemetry client', () => {
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/tiles/offers')) {
           offers.push(JSON.parse(String(init?.body)))
-          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -629,7 +904,13 @@ describe('server telemetry client', () => {
           offers++
           return new Promise<Response>((resolve) => {
             acknowledge = () =>
-              resolve(Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] }))
+              resolve(
+                Response.json({
+                  wanted: [],
+                  acknowledged: ['1/2'],
+                  rejected: [],
+                }),
+              )
           })
         }
         return new Response(null, { status: 204 })
@@ -659,7 +940,11 @@ describe('server telemetry client', () => {
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/tiles/offers')) {
           batches.push(JSON.parse(String(init?.body)))
-          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -694,7 +979,11 @@ describe('server telemetry client', () => {
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/tiles/offers')) {
           offers++
-          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -730,7 +1019,11 @@ describe('server telemetry client', () => {
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/tiles/offers')) {
           offers++
-          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -746,6 +1039,7 @@ describe('server telemetry client', () => {
     const replacement = { ...server }
     harness.retiredServers.add(server)
     harness.state = { ...harness.state, servers: [replacement] }
+    for (const listener of harness.stateListeners) listener()
     harness.serverContents?.(replacement, { nodes: [], templates: [template] })
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_001)
     await new Promise((resolve) => setTimeout(resolve, 350))
@@ -753,8 +1047,10 @@ describe('server telemetry client', () => {
     expect(offers).toBe(0)
 
     finishAccountLoad?.()
-    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(offers).toBe(2))
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    harness.serverContents?.(replacement, { nodes: [], templates: [template] })
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2), { timeout: 2_000 })
+    await vi.waitFor(() => expect(offers).toBe(2), { timeout: 2_000 })
     await new Promise((resolve) => setTimeout(resolve, 350))
     expect(offers).toBe(2)
   })
@@ -772,7 +1068,11 @@ describe('server telemetry client', () => {
           offers++
           return mode === 'old'
             ? Response.json({ wanted: [] })
-            : Response.json({ wanted: ['1/2'], acknowledged: [], rejected: [] })
+            : Response.json({
+                wanted: ['1/2'],
+                acknowledged: [],
+                rejected: [],
+              })
         }
         if (url.includes('/telemetry/tiles/1/2/')) {
           uploads++
@@ -788,9 +1088,15 @@ describe('server telemetry client', () => {
     const bytes = new Uint8Array([1, 2, 3])
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
     await vi.waitFor(() => expect(offers).toBe(1))
+    await vi.waitFor(() =>
+      expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-accepted', 0),
+    )
     harness.serverContents?.(server, { nodes: [], templates: [template] })
-    await vi.waitFor(() => expect(offers).toBe(2))
+    await vi.waitFor(() => expect(offers).toBe(2), { timeout: 2_000 })
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-retried', 1)
+    expect(
+      debug.count.mock.calls.filter(([metric]) => metric === 'telemetry:tile-offers-retried'),
+    ).toHaveLength(1)
 
     mode = 'requested'
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_002)
@@ -808,7 +1114,11 @@ describe('server telemetry client', () => {
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/tiles/offers')) {
           offers++
-          return Response.json({ wanted: [], acknowledged: [], rejected: ['1/2'] })
+          return Response.json({
+            wanted: [],
+            acknowledged: [],
+            rejected: ['1/2'],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -838,7 +1148,12 @@ describe('server telemetry client', () => {
     harness.serverContents?.(server, {
       revision: 'manifest-2',
       nodes: [],
-      templates: [{ ...template, chunks: [...template.chunks, { tile: '2/2', hash: 'other' }] }],
+      templates: [
+        {
+          ...template,
+          chunks: [...template.chunks, { tile: '2/2', hash: 'other' }],
+        },
+      ],
     })
     await vi.waitFor(() => expect(offers).toBe(2))
   })
@@ -856,9 +1171,19 @@ describe('server telemetry client', () => {
           if (offers === 1)
             return new Promise<Response>((resolve) => {
               rejectFirst = () =>
-                resolve(Response.json({ wanted: [], acknowledged: [], rejected: ['1/2'] }))
+                resolve(
+                  Response.json({
+                    wanted: [],
+                    acknowledged: [],
+                    rejected: ['1/2'],
+                  }),
+                )
             })
-          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+          return Response.json({
+            wanted: [],
+            acknowledged: ['1/2'],
+            rejected: [],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -877,7 +1202,12 @@ describe('server telemetry client', () => {
     harness.serverContents?.(server, {
       revision: 'manifest-2',
       nodes: [],
-      templates: [{ ...template, chunks: [...template.chunks, { tile: '2/2', hash: 'other' }] }],
+      templates: [
+        {
+          ...template,
+          chunks: [...template.chunks, { tile: '2/2', hash: 'other' }],
+        },
+      ],
     })
     rejectFirst?.()
 
@@ -955,7 +1285,9 @@ describe('server telemetry client', () => {
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/paints')) {
           paintAttempts.push(String(init?.body))
-          return new Response(null, { status: paintAttempts.length < 3 ? 503 : 204 })
+          return new Response(null, {
+            status: paintAttempts.length < 3 ? 503 : 204,
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -964,7 +1296,12 @@ describe('server telemetry client', () => {
     installTelemetry()
     harness.serverContents?.(server, {
       nodes: [],
-      templates: [{ ...template, chunks: [...template.chunks, { tile: '2/2', hash: 'other' }] }],
+      templates: [
+        {
+          ...template,
+          chunks: [...template.chunks, { tile: '2/2', hash: 'other' }],
+        },
+      ],
     })
     harness.acceptedPaint?.({
       season: 0,
