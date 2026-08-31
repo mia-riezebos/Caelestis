@@ -33,6 +33,7 @@ vi.mock('../tile-transform.js', () => ({
   ensureTilePixels: vi.fn(),
   draftedPixelOffsets: function* () {
     if (harness.draft?.[0] !== 255) yield 0
+    if (harness.draft?.[1] !== 255) yield 1
   },
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
@@ -797,9 +798,12 @@ describe('visible mismatch answer retention', () => {
     expect(draftChanged).toHaveBeenCalledTimes(3)
   })
 
-  it('changes a draft correction basis when its captured server pixel changes', async () => {
+  it('shares one revision basis across draft corrections in the same server tile', async () => {
     const selected = {
       ...template(210),
+      width: 2,
+      indices: new Uint8Array([0, 0]),
+      opaque: 2,
       serverUrl: 'https://templates.example',
       serverTemplateId: 'remote-template',
       serverVersion: 'remote-version',
@@ -807,19 +811,25 @@ describe('visible mismatch answer retention', () => {
     harness.templates = [selected]
     harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
     harness.draft[0] = 0
+    harness.draft[1] = 0
     const { pixelAccounting } = await import('./mismatch.js')
     const changed = harness.onTilePixels.mock.calls[0]?.[0] as
       | ((tile: { x: number; y: number }, triples: readonly number[], source: 'server') => void)
       | undefined
 
-    const before = pixelAccounting.read(selected).draftPixelDeltas[0]
-    expect(before).toMatchObject({ completed: 1, mismatched: -1 })
+    const before = pixelAccounting.read(selected).draftPixelDeltas
+    expect(before).toHaveLength(2)
+    expect(before[0]).toMatchObject({ completed: 1, mismatched: -1 })
+    expect(before[1]?.basis).toBe(before[0]?.basis)
 
     harness.pixels[0] = 0
     changed?.({ x: 0, y: 0 }, [0, 0, 0], 'server')
-    const after = pixelAccounting.read(selected).draftPixelDeltas[0]
-    expect(after).toMatchObject({ completed: 0, mismatched: 0 })
-    expect(after?.basis).not.toBe(before?.basis)
+    const after = pixelAccounting.read(selected).draftPixelDeltas
+    expect(after).toHaveLength(2)
+    expect(after[0]).toMatchObject({ key: '0/0/0', completed: 0, mismatched: 0 })
+    expect(after[1]).toMatchObject({ key: '0/0/1', completed: 1, mismatched: -1 })
+    expect(after[1]?.basis).toBe(after[0]?.basis)
+    expect(after[0]?.basis).not.toBe(before[0]?.basis)
   })
 
   it('removes a disagreement when the matching draft lands on a non-symmetric row', async () => {

@@ -1838,29 +1838,22 @@ export const onMismatchesChanged = (listener: () => void): void => {
 const MAX_PATCHED_PIXELS = 32
 
 const draftSourceIds = new WeakMap<Uint8Array, number>()
-const serverPixelRevisions = new Map<string, number>()
+const serverTileRevisions = new Map<string, number>()
 let nextDraftSourceId = 1
-let nextServerPixelRevision = 1
+let nextServerTileRevision = 1
 
-const draftSourceBasis = (source: Uint8Array, key: string): string => {
+const draftSourceBasis = (source: Uint8Array, tile: string): string => {
   let sourceId = draftSourceIds.get(source)
   if (sourceId === undefined) {
     sourceId = nextDraftSourceId++
     draftSourceIds.set(source, sourceId)
   }
-  return `${sourceId}:${serverPixelRevisions.get(key) ?? 0}`
+  return `${sourceId}:${serverTileRevisions.get(tile) ?? 0}`
 }
 
 onTilePixels((tile, triples, source) => {
-  if (source === 'server') {
-    for (let i = 0; i < triples.length; i += 3) {
-      const x = triples[i] as number
-      const y = triples[i + 1] as number
-      serverPixelRevisions.set(
-        `${tile.x}/${tile.y}/${y * TILE_SIZE + x}`,
-        nextServerPixelRevision++,
-      )
-    }
+  if (source === 'server' && triples.length > 0) {
+    serverTileRevisions.set(`${tile.x}/${tile.y}`, nextServerTileRevision++)
   }
   const before = changed
   if (triples.length / 3 > MAX_PATCHED_PIXELS) {
@@ -1938,10 +1931,7 @@ onTilePixelsEvicted((tile) => {
   for (const cacheKey of supersededServerSource.keys()) {
     if (cacheKey.endsWith(suffix)) supersededServerSource.delete(cacheKey)
   }
-  const prefix = `${tile.x}/${tile.y}/`
-  for (const key of serverPixelRevisions.keys()) {
-    if (key.startsWith(prefix)) serverPixelRevisions.delete(key)
-  }
+  serverTileRevisions.delete(`${tile.x}/${tile.y}`)
 })
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
@@ -2063,7 +2053,7 @@ export const pixelAccounting = Object.freeze({
             deltas.push(
               correction(
                 `${tile.x}/${tile.y}/${offset}`,
-                draftSourceBasis(source, `${tile.x}/${tile.y}/${offset}`),
+                draftSourceBasis(source, `${tile.x}/${tile.y}`),
                 wanted,
                 serverCategory,
                 category(draft[offset] as number),
