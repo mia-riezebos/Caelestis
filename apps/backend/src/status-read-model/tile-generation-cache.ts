@@ -66,8 +66,14 @@ export const createTileGenerationCache = (
     pending: PendingTileGenerationCommits,
     checkedAt: number,
   ): void => {
-    for (const [commitToken, expiresAt] of pending.active)
-      if (expiresAt <= checkedAt) pending.active.delete(commitToken)
+    let expired = false
+    for (const [commitToken, expiresAt] of pending.active) {
+      if (expiresAt > checkedAt) continue
+      pending.active.delete(commitToken)
+      expired = true
+    }
+    // An expired attempt may have committed to D1 before its cache repair arrives.
+    if (expired) pending.candidate = null
     if (pending.active.size > 0) return
     pendingCommits.delete(key)
     if (

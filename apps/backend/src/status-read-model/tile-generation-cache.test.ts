@@ -324,7 +324,48 @@ describe('tile generation cache', () => {
     ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['stale'] })
   })
 
-  it('expires abandoned tokens without discarding a later settled candidate', () => {
+  it('keeps an expired newer commit fence unresolved until its repair arrives', () => {
+    let now = 1_000
+    let token = 0
+    const cache = createTileGenerationCache({
+      now: () => now,
+      ttlMilliseconds: 100,
+      createCoverageToken: () => `token-${token++}`,
+    })
+    const tile = { x: 1, y: 2 }
+    const older = cache.prepare(tile)
+    const newer = cache.prepare(tile)
+    now = 1_050
+    cache.apply({
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      ...older,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+
+    now = 1_101
+    expect(
+      cache.resolve('public', [{ deliveryId: 'older', tile, hash: 'a'.repeat(64) }]),
+    ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['older'] })
+
+    cache.apply({
+      tile,
+      hash: 'b'.repeat(64),
+      observedAt: millis(1_001),
+      commitOrder: 2,
+      ...newer,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    expect(
+      cache.resolve('public', [{ deliveryId: 'newer', tile, hash: 'b'.repeat(64) }]),
+    ).toMatchObject({ acknowledgedDeliveryIds: ['newer'], unresolvedDeliveryIds: [] })
+  })
+
+  it('keeps a settled candidate unresolved when another commit token expires', () => {
     let now = 1_000
     let token = 0
     const cache = createTileGenerationCache({
@@ -353,7 +394,7 @@ describe('tile generation cache', () => {
 
     expect(
       cache.resolve('public', [{ deliveryId: 'settled', tile, hash: 'b'.repeat(64) }]),
-    ).toMatchObject({ acknowledgedDeliveryIds: ['settled'], unresolvedDeliveryIds: [] })
+    ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['settled'] })
     expect(cache.resolve('public', []).coverageToken).toBe(coverageToken)
   })
 })
