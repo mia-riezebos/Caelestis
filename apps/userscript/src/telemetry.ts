@@ -81,6 +81,7 @@ interface ServerQueue {
 interface ServerDedupe {
   readonly server: ConnectedServer
   readonly values: Set<string>
+  readonly active: Set<string>
   readonly pending: Set<string>
 }
 
@@ -209,14 +210,16 @@ const clearTileOfferDelivery = (): void => {
 }
 
 /** Remember bounded recent delivery IDs; old values may safely be offered again after eviction. */
-const rememberDedupe = (values: Set<string>, value: string): void => {
-  if (values.has(value)) return
-  while (values.size >= MAX_DEDUPE_VALUES) {
-    const oldest = values.values().next()
+const rememberDedupe = (dedupe: ServerDedupe, value: string): void => {
+  if (dedupe.values.has(value)) return
+  while (dedupe.values.size >= MAX_DEDUPE_VALUES) {
+    const oldest = dedupe.values.values().next()
     if (oldest.done) break
-    values.delete(oldest.value)
+    dedupe.values.delete(oldest.value)
+    dedupe.active.delete(oldest.value)
+    dedupe.pending.delete(oldest.value)
   }
-  values.add(value)
+  dedupe.values.add(value)
 }
 
 const statusKey = (serverUrl: string, templateId: string): string =>
@@ -621,12 +624,18 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
       const dedupe =
         previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
           ? previousDedupe
-          : { server, values: new Set<string>(), pending: new Set<string>() }
+          : {
+              server,
+              values: new Set<string>(),
+              active: new Set<string>(),
+              pending: new Set<string>(),
+            }
       if (dedupe.values.has(eventId)) {
-        dedupe.pending.add(eventId)
+        if (dedupe.active.has(eventId)) dedupe.pending.add(eventId)
         return
       }
-      rememberDedupe(dedupe.values, eventId)
+      rememberDedupe(dedupe, eventId)
+      dedupe.active.add(eventId)
       reportedPaints.set(server.url, dedupe)
       const scopedSubmitted = tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
       const event: PaintEvent = {
@@ -651,9 +660,11 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
         body: JSON.stringify(event),
       })
       if (response?.ok) {
+        dedupe.active.delete(eventId)
         dedupe.pending.delete(eventId)
         return
       }
+      dedupe.active.delete(eventId)
       dedupe.values.delete(eventId)
       if (dedupe.pending.delete(eventId))
         queueMicrotask(() => void reportPaint(observation).catch(reportTelemetryError))
