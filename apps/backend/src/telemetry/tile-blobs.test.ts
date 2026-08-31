@@ -90,7 +90,7 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     const held = await reserveTileBlob(harness.ports, HASH, millis(1_500))
     expect(held).not.toBeNull()
     if (held === null) throw new Error('expected the legacy blob to be reserved')
-    await expect(commit(harness.sql, held.reservation)).resolves.toEqual({
+    await expect(commit(harness.sql, held.reservation)).resolves.toMatchObject({
       revision: null,
       statusChanges: [],
     })
@@ -107,7 +107,7 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     const reservation = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
     expect(reservation.blobKey).not.toBe(HASH)
     await harness.blobs.put('tiles', reservation.blobKey, BYTES)
-    await expect(commit(harness.sql, reservation)).resolves.toEqual({
+    await expect(commit(harness.sql, reservation)).resolves.toMatchObject({
       revision: null,
       statusChanges: [],
     })
@@ -125,7 +125,7 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
 
     const reservation = await reserveTileBlobUpload(harness.ports, HASH, millis(2_000))
     await harness.blobs.put('tiles', reservation.blobKey, BYTES)
-    await expect(commit(harness.sql, reservation)).resolves.toEqual({
+    await expect(commit(harness.sql, reservation)).resolves.toMatchObject({
       revision: null,
       statusChanges: [],
     })
@@ -156,7 +156,7 @@ describe.each(adapters)('$name generation-fenced tile blobs', ({ make }) => {
     await harness.blobs.put('tiles', retry.blobKey, BYTES)
     await expect(
       harness.sql.commitTileBlobReservation(retry.id, millis(302_200), observation(), []),
-    ).resolves.toEqual({ revision: null, statusChanges: [] })
+    ).resolves.toMatchObject({ revision: null, statusChanges: [] })
 
     // The first request finally completes after the retry. Both target one physical key.
     await harness.blobs.put('tiles', stale.blobKey, BYTES)

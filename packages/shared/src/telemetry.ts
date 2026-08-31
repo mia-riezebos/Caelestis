@@ -70,9 +70,33 @@ export interface PaintPixels {
  * uploaded for days.
  */
 export interface TileOffer {
+  /** Stable across uncertain acknowledgement and transport fallback when supplied. */
+  readonly deliveryId?: string
   readonly tile: TileKey
   readonly sha256: string
   readonly ts: Seconds
+}
+
+export interface LiveTileOffer extends TileOffer {
+  /** Stable across uncertain acknowledgement and HTTP fallback replay. */
+  readonly deliveryId: string
+}
+
+export interface LiveTileOfferBatch extends PainterIdentity {
+  readonly season: number
+  readonly offers: readonly LiveTileOffer[]
+}
+
+export interface LiveTileOfferCacheResponse {
+  readonly acknowledgedDeliveryIds: readonly string[]
+  readonly unresolvedDeliveryIds: readonly string[]
+  readonly error?: 'forbidden' | 'invalid'
+}
+
+export type LiveSyncClientEvent = {
+  readonly type: 'tile-offer-cache'
+  readonly requestId: string
+  readonly batch: LiveTileOfferBatch
 }
 
 export interface TileOfferResponse {
@@ -100,6 +124,11 @@ export type LiveSyncServerEvent =
   | { readonly type: 'status-reconcile'; readonly revision: number }
   | { readonly type: 'manifest-reconcile'; readonly revision: number }
   | { readonly type: 'alarms-reconcile' }
+  | {
+      readonly type: 'tile-offer-cache-result'
+      readonly requestId: string
+      readonly response: LiveTileOfferCacheResponse
+    }
 
 /** Successful tile uploads carry their authoritative progress change instead of requiring a read. */
 export interface TileUploadResponse {

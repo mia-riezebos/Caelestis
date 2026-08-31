@@ -1520,6 +1520,7 @@ export class D1SqlStore implements SqlStore {
           ),
       )
     }
+    const currentResult = statements.length
     statements.push(
       this.client
         .prepare(
@@ -1537,7 +1538,8 @@ export class D1SqlStore implements SqlStore {
              observed_at_ms = excluded.observed_at_ms,
              server_owned = excluded.server_owned
            WHERE canvas_tiles.observed_at_ms <= excluded.observed_at_ms
-             OR (excluded.server_owned = 1 AND canvas_tiles.server_owned = 0)`,
+             OR (excluded.server_owned = 1 AND canvas_tiles.server_owned = 0)
+           RETURNING sha256, observed_at_ms`,
         )
         .bind(
           observation.season,
@@ -1796,7 +1798,21 @@ export class D1SqlStore implements SqlStore {
     if (revision !== null && (!Number.isSafeInteger(revision) || revision < 1)) {
       throw new Error('tile status commit returned an invalid projection revision')
     }
-    return { revision, statusChanges }
+    const currentRow = results[currentResult]?.results[0] as
+      | { sha256?: unknown; observed_at_ms?: unknown }
+      | undefined
+    const current =
+      currentRow === undefined ||
+      typeof currentRow.sha256 !== 'string' ||
+      typeof currentRow.observed_at_ms !== 'number'
+        ? null
+        : {
+            season: observation.season,
+            tile: observation.tile,
+            hash: currentRow.sha256,
+            observedAt: currentRow.observed_at_ms as Millis,
+          }
+    return { revision, statusChanges, current }
   }
 
   async releaseTileBlobReservation(reservationId: string): Promise<void> {

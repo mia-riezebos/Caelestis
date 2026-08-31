@@ -152,6 +152,114 @@ describe('status read-model Durable Object', () => {
     }
   })
 
+  it('acknowledges ten distinct same-hash live observations from one warm generation', () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    object.applyCommittedTileGeneration(8, {
+      tile: { x: 1, y: 2 },
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_750_000_000_000),
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'report',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        lastRevision: 1,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+
+    for (let index = 0; index < 10; index++) {
+      const suffix = String(index).padStart(12, '0')
+      object.webSocketMessage(
+        socket,
+        JSON.stringify({
+          type: 'tile-offer-cache',
+          requestId: `01890f3e-7b2c-7abc-8def-${suffix}`,
+          batch: {
+            wplaceUserId: 42,
+            displayName: 'Mia',
+            season: 8,
+            offers: [
+              {
+                deliveryId: `01890f3f-7b2c-7abc-8def-${suffix}`,
+                tile: '1/2',
+                sha256: 'a'.repeat(64),
+                ts: 1_750_000_000,
+              },
+            ],
+          },
+        }),
+      )
+    }
+
+    expect(send).toHaveBeenCalledTimes(10)
+    for (const [message] of send.mock.calls) {
+      expect(JSON.parse(String(message))).toMatchObject({
+        type: 'tile-offer-cache-result',
+        response: { unresolvedDeliveryIds: [] },
+      })
+    }
+  })
+
+  it('refuses tile offers from a read-only live session', () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'read',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        lastRevision: 1,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+
+    object.webSocketMessage(
+      socket,
+      JSON.stringify({
+        type: 'tile-offer-cache',
+        requestId: '01890f3e-7b2c-7abc-8def-000000000001',
+        batch: {
+          wplaceUserId: 42,
+          displayName: 'Mia',
+          season: 8,
+          offers: [
+            {
+              deliveryId: '01890f3f-7b2c-7abc-8def-000000000001',
+              tile: '1/2',
+              sha256: 'a'.repeat(64),
+              ts: 1_750_000_000,
+            },
+          ],
+        },
+      }),
+    )
+
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toMatchObject({
+      response: {
+        acknowledgedDeliveryIds: [],
+        unresolvedDeliveryIds: ['01890f3f-7b2c-7abc-8def-000000000001'],
+        error: 'forbidden',
+      },
+    })
+  })
+
   it('chunks a valid projection larger than the per-value storage limit and reconstructs it', async () => {
     const statuses = Array.from({ length: 18_000 }, (_, index) => ({
       templateId: `01890f3e-7b2c-7abc-8def-${String(index).padStart(12, '0')}`,

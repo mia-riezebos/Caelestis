@@ -189,6 +189,7 @@ export const ServerInfo = Schema.Struct({
   description: Schema.optionalKey(Description),
   auth: Schema.Literals(['none', 'access_token']),
   liveSync: Schema.optionalKey(Schema.Literal(1)),
+  liveTileOffers: Schema.optionalKey(Schema.Literal(1)),
 })
 
 /**
@@ -613,9 +614,30 @@ export const PaintEvent = PaintEventStruct.pipe(
 )
 
 export const TileOffer = Schema.Struct({
+  deliveryId: Schema.optionalKey(Identifier),
   tile: TileKey,
   sha256: Hash,
   ts: Seconds,
+})
+
+export const LiveTileOffer = Schema.Struct({
+  deliveryId: Identifier,
+  tile: TileKey,
+  sha256: Hash,
+  ts: Seconds,
+})
+
+export const LiveTileOfferBatch = Schema.Struct({
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+  season: Season,
+  offers: boundedArray(LiveTileOffer, MAX_TILE_OFFERS),
+})
+
+export const LiveSyncClientEvent = Schema.Struct({
+  type: Schema.Literal('tile-offer-cache'),
+  requestId: Identifier,
+  batch: LiveTileOfferBatch,
 })
 
 export const TileOfferBatch = Schema.Struct({
@@ -970,6 +992,9 @@ assertExact<Exact<Schema.Schema.Type<typeof PaintPixels>, Shared.PaintPixels>>()
 assertExact<Exact<Schema.Schema.Type<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
+assertExact<Exact<Schema.Schema.Type<typeof LiveTileOffer>, Shared.LiveTileOffer>>()
+assertExact<Exact<Schema.Schema.Type<typeof LiveTileOfferBatch>, Shared.LiveTileOfferBatch>>()
+assertExact<Exact<Schema.Schema.Type<typeof LiveSyncClientEvent>, Shared.LiveSyncClientEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileUploadResponse>, Shared.TileUploadResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOfferBatch>, Shared.TileOfferBatch>>()
@@ -1000,6 +1025,9 @@ assertExact<Exact<Schema.Codec.Encoded<typeof PaintPixels>, Shared.PaintPixels>>
 assertExact<Exact<Schema.Codec.Encoded<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOffer>, Shared.TileOffer>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof LiveTileOffer>, Shared.LiveTileOffer>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof LiveTileOfferBatch>, Shared.LiveTileOfferBatch>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof LiveSyncClientEvent>, Shared.LiveSyncClientEvent>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileUploadResponse>, Shared.TileUploadResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferBatch>, Shared.TileOfferBatch>>()

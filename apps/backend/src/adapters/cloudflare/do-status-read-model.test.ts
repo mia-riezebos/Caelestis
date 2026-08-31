@@ -48,6 +48,7 @@ describe('Durable Object status read-model adapter', () => {
       {
         season: 8,
         scope: 'admin',
+        credentialScope: 'admin',
         tokenHash: 'a'.repeat(64),
         revocable: true,
         lastRevision: 4,

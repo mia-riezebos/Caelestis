@@ -33,15 +33,15 @@ The arrays passed to `writeDataPoint` have a fixed v1 meaning:
 | `index1` | Normalized route; the sampling key |
 | `blob1` | Schema version (`v1`) |
 | `blob2` | Normalized method and route template |
-| `blob3` | HTTP method |
+| `blob3` | HTTP method, or `WS` for a measured WebSocket operation |
 | `blob4` | Client (`userscript`, `frontend`, `third-party`, or `unknown`) |
 | `blob5` | Recognized userscript release or frontend deployment build; otherwise `unknown` |
 | `blob6` | Sync transport (`none`, `live`, `response-applied`, `recovery`, or `compatibility-poll`) |
 | `blob7` | Bounded reconciliation reason |
 | `blob8` | Cache outcome |
 | `blob9` | Tile-offer batch outcome |
-| `blob10` | HTTP status |
-| `double1` | Request count (always 1 before sampling) |
+| `blob10` | HTTP-equivalent operation status |
+| `double1` | Measured operation count (always 1 before sampling) |
 | `double2` | Request duration in milliseconds |
 | `double3` | D1 rows read |
 | `double4` | D1 rows written |
@@ -69,6 +69,12 @@ releases and the frontend build ID shared through deployment CI; the deployed us
 read from its package after Changesets have applied release bumps, while prior metrics-capable
 releases are retained from the generated changelog. All caller-supplied alternatives collapse to
 `unknown`.
+
+Live tile-cache commands use the bounded route `WS /telemetry/live:tile-offer-cache`. One point is
+written per command with zero D1 columns, the cache outcome, and requested/already-known counts. A
+miss or stale result remains visible as the difference between requested and already-known before
+those observations fall back to the authoritative HTTP offer route. Coordinates, hashes, delivery
+ids, credentials, and pixel data are never metric dimensions.
 
 The userscript's bounded debug counters expose the client side of exact-observation replay handling through
 `telemetry:tile-offers-avoided`, `-retried`, `-requested`, `-accepted`, and `-rejected`. These count
@@ -121,7 +127,7 @@ SELECT
   SUM(_sample_interval * double10) AS offers_rejected
 FROM caelestis_request_metrics
 WHERE timestamp >= NOW() - INTERVAL '24' HOUR
-  AND blob2 = 'POST /telemetry/tiles/offers'
+  AND blob2 IN ('POST /telemetry/tiles/offers', 'WS /telemetry/live:tile-offer-cache')
 GROUP BY batch_outcome
 ORDER BY batches DESC
 ```

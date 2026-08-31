@@ -12,7 +12,11 @@ import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, authenticateRequest, requireScopeEffect } from '../auth/middleware.js'
-import { recordTileOfferBatch, recordTileOfferBatchRequested } from '../metrics/request-metrics.js'
+import {
+  recordCacheOutcome,
+  recordTileOfferBatch,
+  recordTileOfferBatchRequested,
+} from '../metrics/request-metrics.js'
 import {
   LADDER_RESOLUTIONS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
@@ -169,6 +173,7 @@ export const createTelemetryRoutes = (
       connection: {
         readonly season: number
         readonly scope: 'public' | 'admin'
+        readonly credentialScope: 'read' | 'report' | 'admin'
         readonly tokenHash: string
         readonly revocable: boolean
         readonly lastRevision: number | null
@@ -213,6 +218,7 @@ export const createTelemetryRoutes = (
       return options.connectStatusLive(c.req.raw, {
         season,
         scope,
+        credentialScope: c.get('caller').scope,
         tokenHash: c.get('caller').tokenHash,
         revocable: c.get('caller').token !== null,
         lastRevision,
@@ -494,6 +500,7 @@ export const createTelemetryRoutes = (
       })
     }
     return runBackendHttp(c, runtime, offerTilesWithOutcome(offers), (result) => {
+      recordCacheOutcome(result.cacheOutcome)
       recordTileOfferBatch({
         requested: body.offers.length,
         accepted: result.accepted,

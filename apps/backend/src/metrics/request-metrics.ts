@@ -54,6 +54,11 @@ export type MeasuredD1Operation<A> =
 
 type MetricDataset = Pick<AnalyticsEngineDataset, 'writeDataPoint'>
 
+export interface MetricClientIdentity {
+  readonly client: string
+  readonly clientVersion: string
+}
+
 const requestMetricStorage = new AsyncLocalStorage<RequestMetricState>()
 const d1UsageStorage = new AsyncLocalStorage<{
   rowsRead: number
@@ -70,6 +75,19 @@ const userscriptVersions = new Set(
     ? __CAELESTIS_USERSCRIPT_VERSIONS__
     : ['0.5.4'],
 )
+
+/** Collapse caller-controlled client labels before they become metric dimensions. */
+export const metricClientIdentity = (accept: string | null): MetricClientIdentity => {
+  const client = parseClientMetricsAccept(accept)
+  return {
+    client: client.client,
+    clientVersion:
+      (client.client === 'userscript' && userscriptVersions.has(client.version)) ||
+      (client.client === 'frontend' && client.version === deploymentVersion)
+        ? client.version
+        : 'unknown',
+  }
+}
 
 const route = (method: string, pattern: string): string => `${method} ${pattern}`
 const metricMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
@@ -127,6 +145,9 @@ export const normalizeMetricRoute = (method: string, pathname: string): string =
 
 const isTileOfferRoute = (state: RequestMetricState): boolean =>
   state.route === 'POST /telemetry/tiles/offers'
+
+const isTileOfferMetric = (state: RequestMetricState): boolean =>
+  isTileOfferRoute(state) || state.route === 'WS /telemetry/live:tile-offer-cache'
 
 const finiteCount = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
@@ -208,11 +229,46 @@ export const recordTileOfferBatchRequested = (requested: number): void => {
   state.tileOfferCounts = { ...state.tileOfferCounts, requested: finiteCount(requested) }
 }
 
+/** Record a hibernating WebSocket tile-offer cache operation without payload dimensions. */
+export const recordLiveTileOfferCacheMetric = (
+  dataset: MetricDataset | undefined,
+  input: MetricClientIdentity & {
+    readonly cacheOutcome: Exclude<CacheOutcome, 'none'>
+    readonly requested: number
+    readonly acknowledged: number
+    readonly durationMs: number
+  },
+): void => {
+  const requested = finiteCount(input.requested)
+  const acknowledged = Math.min(requested, finiteCount(input.acknowledged))
+  writeRequestMetric(
+    dataset,
+    {
+      route: 'WS /telemetry/live:tile-offer-cache',
+      method: 'WS',
+      client: input.client,
+      clientVersion: input.clientVersion,
+      syncTransport: 'live',
+      reconciliationReason: 'post-offer',
+      cacheOutcome: input.cacheOutcome,
+      tileOfferOutcome: acknowledged > 0 ? 'already-known' : 'requested',
+      tileOfferCounts: { requested, accepted: 0, alreadyKnown: acknowledged, rejected: 0 },
+      d1RowsRead: 0,
+      d1RowsWritten: 0,
+      d1MeasuredQueries: 0,
+      d1UnmeasuredQueries: 0,
+    },
+    200,
+    input.durationMs,
+  )
+}
+
 const finalizedTileOfferOutcome = (
   state: RequestMetricState,
   status: number,
 ): TileOfferBatchOutcome => {
-  if (!isTileOfferRoute(state)) return 'none'
+  if (!isTileOfferMetric(state)) return 'none'
+  if (!isTileOfferRoute(state)) return state.tileOfferOutcome
   if (status >= 500) return 'failed'
   if (status >= 400) return 'rejected'
   return state.tileOfferOutcome === 'requested' ? 'accepted' : state.tileOfferOutcome
@@ -268,20 +324,16 @@ export const measureRequest = async (
   pathname: string,
   run: () => Promise<Response>,
 ): Promise<Response> => {
-  const client = parseClientMetricsAccept(request.headers.get('accept'))
+  const parsedClient = parseClientMetricsAccept(request.headers.get('accept'))
+  const client = metricClientIdentity(request.headers.get('accept'))
   const method = normalizeMetricMethod(request.method)
-  const clientVersion =
-    (client.client === 'userscript' && userscriptVersions.has(client.version)) ||
-    (client.client === 'frontend' && client.version === deploymentVersion)
-      ? client.version
-      : 'unknown'
   const state: RequestMetricState = {
     route: normalizeMetricRoute(request.method, pathname),
     method,
     client: client.client,
-    clientVersion,
-    syncTransport: client.transport,
-    reconciliationReason: client.reason,
+    clientVersion: client.clientVersion,
+    syncTransport: parsedClient.transport,
+    reconciliationReason: parsedClient.reason,
     cacheOutcome: 'none',
     tileOfferOutcome: pathname === '/telemetry/tiles/offers' ? 'requested' : 'none',
     tileOfferCounts: { requested: 0, accepted: 0, alreadyKnown: 0, rejected: 0 },

@@ -171,6 +171,7 @@ describe('telemetry routes', () => {
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'public',
+      credentialScope: 'read',
       tokenHash: await hashToken(readToken),
       revocable: true,
       lastRevision: 4,
@@ -183,6 +184,7 @@ describe('telemetry routes', () => {
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'admin',
+      credentialScope: 'admin',
       tokenHash: await hashToken(BOOTSTRAP),
       revocable: false,
       lastRevision: null,
@@ -331,6 +333,10 @@ describe('telemetry routes', () => {
       ],
     })
 
+    const listTelemetryTargets = vi.spyOn(sql, 'listTelemetryTargets')
+    const reserveTileBlob = vi.spyOn(sql, 'reserveTileBlob')
+    listTelemetryTargets.mockClear()
+    reserveTileBlob.mockClear()
     const repeated = await app.request('/telemetry/tiles/offers', {
       method: 'POST',
       headers: { ...bearer(reportToken), 'content-type': 'application/json' },
@@ -340,8 +346,9 @@ describe('telemetry routes', () => {
       wanted: [],
       acknowledged: ['0/0'],
       rejected: [],
-      status: { baseRevision: 2, revision: 3, templates: [], removedTemplateIds: [] },
     })
+    expect(listTelemetryTargets).not.toHaveBeenCalled()
+    expect(reserveTileBlob).not.toHaveBeenCalled()
 
     const rejected = await app.request('/telemetry/tiles/offers', {
       method: 'POST',

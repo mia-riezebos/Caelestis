@@ -41,6 +41,8 @@ import type {
 } from '../status-read-model/model.js'
 import {
   repairCommittedStatusProjection,
+  repairCommittedTileGeneration,
+  resolveCurrentTileOffers,
   type StatusReadModelPort,
 } from '../status-read-model/port.js'
 import { decodedPixelCache } from './decoded-pixel-cache.js'
@@ -384,6 +386,13 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
+  if (committed.current !== null) {
+    await repairCommittedTileGeneration(ports.statusReadModel, metadata.season, {
+      ...committed.current,
+      visibleToPublic: targets.some((target) => target.published),
+      visibleToAdmin: targets.length > 0,
+    })
+  }
   const mutation: StatusProjectionMutation | null =
     committed.revision === null
       ? null
@@ -717,6 +726,7 @@ export interface TileOfferResult {
   readonly alreadyKnown: number
   readonly rejected: number
   readonly projection: StatusProjectionChange | null
+  readonly cacheOutcome: 'hit' | 'miss' | 'stale'
 }
 
 /** Preserve per-offer decisions for capacity metrics while keeping the wire response unchanged. */
@@ -738,12 +748,43 @@ export const offerTilesWithOutcome = (
     let projection: StatusProjectionChange | null = null
     let alreadyKnown = 0
     let rejected = 0
+    let cacheOutcome: 'hit' | 'miss' | 'stale' = 'hit'
     const artifactWriteBatch = createDerivedArtifactWriteBatch(blobs)
     yield* Effect.acquireUseRelease(
       Effect.void,
       () =>
         Effect.gen(function* () {
+          const cached = new Set<string>()
+          const groups = new Map<string, typeof offers>()
           for (const offer of offers) {
+            const groupKey = `${offer.metadata.season}:${offer.metadata.includeUnpublished ? 'admin' : 'public'}`
+            groups.set(groupKey, [...(groups.get(groupKey) ?? []), offer])
+          }
+          for (const grouped of groups.values()) {
+            const first = grouped[0]
+            if (first === undefined) continue
+            const read = yield* storage('resolveCurrentTileOffers', () =>
+              resolveCurrentTileOffers(
+                statusReadModel,
+                first.metadata.season,
+                first.metadata.includeUnpublished ? 'admin' : 'public',
+                grouped.map((offer) => ({
+                  deliveryId: offer.key,
+                  tile: offer.metadata.tile,
+                  hash: offer.metadata.hash,
+                })),
+              ),
+            )
+            for (const key of read.acknowledgedDeliveryIds) cached.add(key)
+            if (read.cacheOutcome === 'stale') cacheOutcome = 'stale'
+            else if (read.cacheOutcome === 'miss' && cacheOutcome === 'hit') cacheOutcome = 'miss'
+          }
+          for (const offer of offers) {
+            if (cached.has(offer.key)) {
+              acknowledged.push(offer.key)
+              alreadyKnown++
+              continue
+            }
             const outcome = yield* storage('offerTile', () =>
               offerTilePromise({ blobs, sql, statusReadModel }, offer.metadata, {
                 artifactWriteBatch,
@@ -788,6 +829,7 @@ export const offerTilesWithOutcome = (
       alreadyKnown,
       rejected,
       projection,
+      cacheOutcome,
     }
   })
 
