@@ -699,6 +699,36 @@ describe('server telemetry client', () => {
     expect(attempts).toBe(3)
   })
 
+  it('does not start a requested upload after tile sharing is disabled', async () => {
+    let settleOffer: ((response: Response) => void) | undefined
+    let uploads = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers'))
+          return new Promise<Response>((resolve) => {
+            settleOffer = resolve
+          })
+        if (url.includes('/telemetry/tiles/1/2/')) uploads++
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(settleOffer).toBeDefined())
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+    settleOffer?.(Response.json({ wanted: ['1/2'] }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(uploads).toBe(0)
+  })
+
   it('does not rebind a retained report across seasons', async () => {
     let attempts = 0
     vi.stubGlobal(
