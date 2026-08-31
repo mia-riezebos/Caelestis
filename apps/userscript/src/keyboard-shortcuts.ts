@@ -10,6 +10,7 @@ import {
   setOwnsGroup,
   toggleAppearanceBoolean,
 } from './templates/local-store.js'
+import { isMoving } from './templates/move.js'
 import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
 import { togglePanel } from './ui/panel.js'
@@ -104,6 +105,9 @@ export const installKeyboardShortcuts = (
     if (document.hidden) endPeek()
   }
   const onKeydown = (event: KeyboardEvent): void => {
+    // Placement owns its confirm/cancel keys. This listener runs in capture so Wplace's alliance
+    // modal cannot swallow shortcuts before they reach the shared key map.
+    if (isMoving() && (event.key === 'Escape' || event.key === 'Enter')) return
     const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
 
@@ -194,13 +198,13 @@ export const installKeyboardShortcuts = (
     })
   }
 
-  window.addEventListener('keydown', onKeydown)
-  window.addEventListener('keyup', onKeyup)
+  window.addEventListener('keydown', onKeydown, true)
+  window.addEventListener('keyup', onKeyup, true)
   window.addEventListener('blur', endPeek)
   document.addEventListener('visibilitychange', onVisibility)
   return () => {
-    window.removeEventListener('keydown', onKeydown)
-    window.removeEventListener('keyup', onKeyup)
+    window.removeEventListener('keydown', onKeydown, true)
+    window.removeEventListener('keyup', onKeyup, true)
     window.removeEventListener('blur', endPeek)
     document.removeEventListener('visibilitychange', onVisibility)
     endPeek()

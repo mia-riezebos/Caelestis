@@ -36,6 +36,7 @@ const harness = vi.hoisted(() => ({
   undoPaint: vi.fn(() => true),
   redoPaint: vi.fn(() => true),
   toggleShortcutHelp: vi.fn(),
+  moving: false,
 }))
 
 vi.mock('./map-handle.js', () => ({
@@ -59,6 +60,7 @@ vi.mock('./templates/local-store.js', () => ({
   setOwnsGroup: harness.setOwnsGroup,
 }))
 vi.mock('./templates/nearest.js', () => ({ focusedTemplate: harness.focus }))
+vi.mock('./templates/move.js', () => ({ isMoving: () => harness.moving }))
 vi.mock('./ui/overlay-menu.js', () => ({
   refreshOverlayMenu: harness.refreshMenu,
   toggleOverlayMenu: harness.toggleMenu,
@@ -84,6 +86,7 @@ const press = (key: string, init: KeyboardEventInit = {}): KeyboardEvent => {
 beforeEach(async () => {
   vi.clearAllMocks()
   harness.peek = false
+  harness.moving = false
   harness.appearance = { opacity: 0.85, markMismatch: false, markSelectedColour: false }
   harness.focused = { id: 'focused', visible: true, owns: ['markers'] }
   harness.focus.mockImplementation(() => harness.focused)
@@ -126,6 +129,25 @@ describe('keyboard shortcut actions', () => {
     expect(harness.toggleAppearanceBoolean).toHaveBeenCalledWith('focused', 'markSelectedColour')
     expect(harness.setOwnsGroup).toHaveBeenCalledWith('focused', 'pixels', true)
     expect(harness.setAppearance).toHaveBeenCalledWith('focused', { opacity: 0.6 })
+  })
+
+  it('handles an alliance-modal shortcut before Wplace stops its propagation', () => {
+    const modalControl = document.createElement('button')
+    modalControl.addEventListener('keydown', (event) => event.stopPropagation())
+    document.body.append(modalControl)
+    const event = new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true })
+
+    modalControl.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(harness.toggleMenu).toHaveBeenCalledWith('focused', expect.any(Function))
+  })
+
+  it('leaves placement confirm and cancel with the active placement', () => {
+    harness.moving = true
+
+    expect(press('Escape').defaultPrevented).toBe(false)
+    expect(harness.cancelPaint).not.toHaveBeenCalled()
   })
 
   it('leaves shortcuts inactive when a shared shadow field owns the key', () => {

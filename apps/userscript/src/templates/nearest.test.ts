@@ -12,9 +12,21 @@ const harness = vi.hoisted(() => ({
     height: number
     visible: boolean
     indices: Uint8Array
+    surface?: {
+      kind: 'alliance-headquarters' | 'alliance-picture' | 'alliance-banner'
+      allianceId: number
+    }
   }>,
+  alliance: null as null | {
+    surface: { kind: 'alliance-headquarters'; allianceId: number }
+    stage: { getBoundingClientRect: () => Partial<DOMRect> }
+    frame: { getBoundingClientRect: () => Partial<DOMRect> }
+    draftId: null
+    bounds: { minX: number; minY: number; maxX: number; maxY: number }
+  },
 }))
 
+vi.mock('../alliance-surface.js', () => ({ activeAllianceSurface: () => harness.alliance }))
 vi.mock('../main.js', () => ({ viewportCentre: () => harness.centre }))
 vi.mock('./colour-filter.js', () => ({
   claimedHiddenFor: (appearance: { templateId: string }) =>
@@ -22,7 +34,11 @@ vi.mock('./colour-filter.js', () => ({
 }))
 vi.mock('./local-store.js', () => ({
   appearanceOf: (candidate: { id: string }) => ({ templateId: candidate.id }),
-  displayTemplates: () => harness.templates,
+  displayTemplatesForSurface: (surface: { kind: string; allianceId: number | null }) =>
+    harness.templates.filter((template) => {
+      const candidate = template.surface ?? { kind: 'world', allianceId: null }
+      return candidate.kind === surface.kind && candidate.allianceId === surface.allianceId
+    }),
   isTemplateVisible: vi.fn((template: { visible: boolean }) => template.visible),
 }))
 
@@ -40,12 +56,44 @@ beforeEach(() => {
   harness.centre = { x: 10, y: 10 }
   harness.hiddenColours = {}
   harness.templates = []
+  harness.alliance = null
   return import('./local-store.js').then(({ isTemplateVisible }) => {
     vi.mocked(isTemplateVisible).mockImplementation((candidate) => candidate.visible)
   })
 })
 
 describe('template focus at the viewport centre', () => {
+  it('uses the active alliance viewport and excludes world templates behind its modal', async () => {
+    harness.alliance = {
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      stage: {
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100 }),
+      },
+      frame: {
+        getBoundingClientRect: () => ({
+          left: -50,
+          top: -50,
+          right: 150,
+          bottom: 150,
+          width: 200,
+          height: 200,
+        }),
+      },
+      draftId: null,
+      bounds: { minX: -100, minY: -100, maxX: 100, maxY: 100 },
+    }
+    harness.templates = [
+      template('world-behind', 5, 5, 10, 10),
+      {
+        ...template('alliance', -5, -5, 10, 10),
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      },
+    ]
+    const { focusedTemplate } = await import('./nearest.js')
+
+    expect(focusedTemplate()?.id).toBe('alliance')
+  })
+
   it('prefers a large template containing the viewport centre over a nearer template centre', async () => {
     harness.templates = [
       template('large-containing', 0, 0, 1_000, 1_000),
