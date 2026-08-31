@@ -206,7 +206,11 @@ const trimUnsettledOffers = (serverUrl: string): void => {
   }
 }
 
-const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): OfferedTile => {
+const retainUnsettledOffer = (
+  server: ConnectedServer,
+  entry: OfferedTile,
+  trim = true,
+): OfferedTile => {
   if (server.season === null) return entry
   const existing = unsettledOffers.get(server.url)
   if (existing !== undefined && existing.season !== server.season) clearUnsettledServer(server.url)
@@ -233,7 +237,7 @@ const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): Offe
     )
   }
   unsettledOffers.set(server.url, held)
-  trimUnsettledOffers(server.url)
+  if (trim) trimUnsettledOffers(server.url)
   return held.entries.get(entry.deliveryId) ?? entry
 }
 
@@ -244,9 +248,17 @@ const rotateUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
 }
 
 /** Retry only observations still inside the bounded recent replay window. */
-const retryUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
-  if (recentTiles.has(entry.deliveryId)) rotateUnsettledOffer(serverUrl, entry)
-  else deleteUnsettledOffer(serverUrl, entry.deliveryId)
+const retryUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): void => {
+  if (!recentTiles.has(entry.deliveryId)) {
+    deleteUnsettledOffer(server.url, entry.deliveryId)
+    return
+  }
+  if (unsettledOffers.get(server.url)?.entries.has(entry.deliveryId)) {
+    rotateUnsettledOffer(server.url, entry)
+    return
+  }
+  // Trimming already removed this active delivery. Restore the bounded recent retry after failure.
+  retainUnsettledOffer(server, entry, false)
 }
 
 const clearTileOfferDelivery = (): void => {
@@ -524,7 +536,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       retryNeeded = true
       for (const entry of httpEntries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
-        retryUnsettledOffer(server.url, entry)
+        retryUnsettledOffer(server, entry)
       }
       if (response !== null && response.status >= 400 && response.status < 500)
         tileOfferMetric('rejected', httpEntries.length)
@@ -547,7 +559,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       retryNeeded = true
       for (const entry of httpEntries) {
         tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
-        retryUnsettledOffer(server.url, entry)
+        retryUnsettledOffer(server, entry)
       }
       return
     }
@@ -619,7 +631,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       } else {
         retryNeeded = true
         tileOfferAcknowledgements.retryable(server.url, owner, season, key)
-        retryUnsettledOffer(server.url, entry)
+        retryUnsettledOffer(server, entry)
       }
     }
     tileOfferMetric('accepted', accepted)

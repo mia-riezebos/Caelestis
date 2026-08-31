@@ -200,8 +200,9 @@ beforeEach(() => {
 afterEach(async () => {
   harness.state = { ...harness.state, shareTiles: false }
   for (const listener of harness.stateListeners) listener()
-  await new Promise((resolve) => setTimeout(resolve, 0))
   vi.clearAllTimers()
+  vi.useRealTimers()
+  await new Promise((resolve) => setTimeout(resolve, 0))
   vi.unstubAllGlobals()
 })
 
@@ -1341,6 +1342,66 @@ describe('server telemetry client', () => {
 
     finishAccountLoad?.()
     await vi.waitFor(() => expect(offered.size).toBe(observationCount), { timeout: 2_000 })
+  })
+
+  it('restores recent retries trimmed from a failed active batch', async () => {
+    vi.useFakeTimers()
+    const mirror = { ...server, url: 'https://mirror.example' }
+    harness.state = { ...harness.state, servers: [server, mirror] }
+    const attempts = new Map<string, Array<{ offers: Array<{ tile: string }> }>>()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.includes('/telemetry/alarms')) return Response.json({ alarms: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          const origin = new URL(url).origin
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          const held = attempts.get(origin) ?? []
+          held.push(body)
+          attempts.set(origin, held)
+          if (origin === server.url && held.length === 1)
+            return Response.json({ error: 'temporary' }, { status: 400 })
+          return Response.json({
+            wanted: [],
+            acknowledged: body.offers.map((offer) => offer.tile),
+            rejected: [],
+          })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    const observationCount = 34
+    const contents = {
+      nodes: [],
+      templates: [
+        {
+          ...template,
+          chunks: Array.from({ length: observationCount }, (_, index) => ({
+            tile: `${index}/11`,
+            hash: `hash-${index}`,
+          })),
+        },
+      ],
+    }
+    harness.serverContents?.(server, contents)
+    harness.serverContents?.(mirror, contents)
+
+    for (let index = 0; index < observationCount; index++) {
+      const bytes = new Uint8Array(1_000_000)
+      bytes[0] = index
+      harness.fetchedTile?.({ x: index, y: 11 }, bytes, 1_800_000_000 + index)
+    }
+    await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(1), { timeout: 2_000 })
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(2), { timeout: 2_000 })
+    expect(attempts.get(server.url)?.[1]?.offers.map((offer) => offer.tile)).toEqual(
+      Array.from({ length: 32 }, (_, index) => `${index + 2}/11`),
+    )
   })
 
   it('releases queued tile offers when no reporter identity is available', async () => {
