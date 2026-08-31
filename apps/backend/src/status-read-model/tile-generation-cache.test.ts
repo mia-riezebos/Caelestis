@@ -246,6 +246,36 @@ describe('tile generation cache', () => {
     ).toEqual(['winner'])
   })
 
+  it('keeps a recovered repair behind a newer same-tile commit fence', () => {
+    let token = 0
+    const options = {
+      now: () => 2_000,
+      createCoverageToken: () => `token-${token++}`,
+    }
+    const tile = { x: 1, y: 2 }
+    const first = createTileGenerationCache(options)
+    first.synchronizeCoverageToken('manifest-1')
+    const commitA = first.prepare(tile)
+
+    const recovered = createTileGenerationCache(options)
+    recovered.synchronizeCoverageToken('manifest-1')
+    const commitB = recovered.prepare(tile)
+    recovered.apply({
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      ...commitA,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    const offerA = [{ deliveryId: 'a', tile, hash: 'a'.repeat(64) }]
+
+    expect(recovered.resolve('public', offerA).unresolvedDeliveryIds).toEqual(['a'])
+    recovered.finish(tile, commitB)
+    expect(recovered.resolve('public', offerA).acknowledgedDeliveryIds).toEqual(['a'])
+  })
+
   it('restores the prior generation when a replacement commit loses', () => {
     const cache = createTileGenerationCache({ now: () => 2_000 })
     const tile = { x: 1, y: 2 }

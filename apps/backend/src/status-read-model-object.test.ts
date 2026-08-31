@@ -899,6 +899,37 @@ describe('status read-model Durable Object', () => {
     })
   })
 
+  it('keeps an evicted repair behind a newer same-tile commit fence', async () => {
+    database = new SqliteD1Database()
+    const held = new Map<string, unknown>()
+    const state = objectState(held)
+    const env = { DB: database } as unknown as Env
+    const tile = { x: 1, y: 2 }
+    const first = new StatusReadModelObject(state, env)
+    const commitA = await first.prepareTileGenerationCommit(8, tile)
+
+    const recovered = new StatusReadModelObject(state, env)
+    const commitB = await recovered.prepareTileGenerationCommit(8, tile)
+    await recovered.applyCommittedTileGeneration(8, {
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      ...commitA,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    const offer = [{ deliveryId: 'a', tile, hash: 'a'.repeat(64) }]
+
+    await expect(
+      recovered.resolveCurrentTileOffersMeasured(8, 'public', offer),
+    ).resolves.toMatchObject({ value: { unresolvedDeliveryIds: ['a'], cacheOutcome: 'miss' } })
+    await recovered.finishTileGenerationCommit(8, tile, commitB)
+    await expect(
+      recovered.resolveCurrentTileOffersMeasured(8, 'public', offer),
+    ).resolves.toMatchObject({ value: { acknowledgedDeliveryIds: ['a'], cacheOutcome: 'hit' } })
+  })
+
   it('serializes an in-flight attachment ahead of revocation cleanup', async () => {
     const fence = createLiveSessionFence()
     let release!: (active: boolean) => void

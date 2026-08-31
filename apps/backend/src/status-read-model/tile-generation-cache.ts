@@ -76,7 +76,8 @@ export const createTileGenerationCache = (
     const checkedAt = now()
     prunePendingCommits(checkedAt)
     const pending = pendingCommits.get(key)
-    if (pending === undefined || !pending.active.delete(commitToken)) return false
+    if (pending === undefined) return false
+    const knownCommit = pending.active.delete(commitToken)
     if (
       generation !== null &&
       generation.coverageToken === coverageToken &&
@@ -84,6 +85,7 @@ export const createTileGenerationCache = (
     ) {
       pending.candidate = { ...generation, expiresAt: checkedAt + ttl }
     }
+    if (!knownCommit) return true
     if (pending.active.size > 0) return true
     pendingCommits.delete(key)
     if (pending.candidate !== null && pending.candidate.coverageToken === coverageToken) {
