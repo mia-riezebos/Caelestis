@@ -260,10 +260,18 @@ describe('tile and template schemas', () => {
   })
 
   it('accepts only the explicit live sync capability version', () => {
-    const server = { id: SERVER_ID, name: 'Server', auth: 'none', liveSync: 1 }
+    const server = {
+      id: SERVER_ID,
+      name: 'Server',
+      auth: 'none',
+      liveSync: 1,
+      liveTileOffers: 1,
+    }
     expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
     expectRejected(ServerInfo, { ...server, liveSync: true })
     expectRejected(ServerInfo, { ...server, liveSync: 2 })
+    expectRejected(ServerInfo, { ...server, liveTileOffers: true })
+    expectRejected(ServerInfo, { ...server, liveTileOffers: 2 })
   })
 })
 

@@ -1,6 +1,15 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { LiveSyncServerEvent, Manifest, StatusDelta } from '@caelestis/shared'
+import type {
+  LiveSyncClientEvent,
+  LiveSyncServerEvent,
+  Manifest,
+  StatusDelta,
+} from '@caelestis/shared'
+import { parseTileKey } from '@caelestis/shared'
+import { LiveSyncClientEvent as LiveSyncClientEventSchema } from '@caelestis/wire-schema'
+import { Schema } from 'effect'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
+import { type Scope, satisfiesScope } from './auth/tokens.js'
 import {
   createSeasonManifestReadModel,
   type ManifestProjectionInput,
@@ -14,6 +23,8 @@ import {
   instrumentD1,
   type MeasuredD1Operation,
   measureD1Usage,
+  metricClientIdentity,
+  recordLiveTileOfferCacheMetric,
 } from './metrics/request-metrics.js'
 import {
   createSeasonStatusReadModel,
@@ -25,6 +36,12 @@ import {
   type StatusSnapshotRead,
   type StatusVisibilityScope,
 } from './status-read-model/model.js'
+import {
+  type CommittedTileGeneration,
+  createTileGenerationCache,
+  type TileGenerationCacheRead,
+  type TileGenerationOffer,
+} from './status-read-model/tile-generation-cache.js'
 
 const MANIFEST_KEY = 'status-read-model:v2:manifest'
 const CHUNK_PREFIX = 'status-read-model:v2:chunk:'
@@ -40,10 +57,13 @@ const MANIFEST_CACHE_CHUNK_CODE_UNITS = 128 * 1024
 interface LiveSubscriberAttachment {
   readonly season: number
   readonly scope: StatusVisibilityScope
+  readonly credentialScope?: Scope
   readonly tokenHash: string
   readonly revocable: boolean
   readonly lastRevision: number | null
   readonly revoked?: boolean
+  readonly metricClient?: string
+  readonly metricClientVersion?: string
 }
 
 export interface LiveSessionFence {
@@ -375,6 +395,8 @@ export class StatusReadModelObject extends DurableObject<Env> {
   private boundSeason: number | null = null
   private readonly sql: D1SqlStore
   private readonly liveSessions = createLiveSessionFence()
+  private readonly tileGenerations = createTileGenerationCache()
+  private readonly requestMetrics: AnalyticsEngineDataset | undefined
 
   constructor(
     private readonly objectState: DurableObjectState,
@@ -382,6 +404,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   ) {
     super(objectState, env)
     this.sql = new D1SqlStore(instrumentD1(env.DB))
+    this.requestMetrics = env.REQUEST_METRICS
     this.objectState.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'))
   }
 
@@ -532,8 +555,36 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   async notifyManifestChange(season: number): Promise<void> {
+    this.tileGenerations.invalidate()
     const revision = await this.manifestModel(season).invalidate()
     this.broadcastManifest(revision)
+  }
+
+  resolveCurrentTileOffers(
+    season: number,
+    scope: StatusVisibilityScope,
+    offers: readonly TileGenerationOffer[],
+  ): TileGenerationCacheRead {
+    this.bindSeason(season)
+    return this.tileGenerations.resolve(scope, offers)
+  }
+
+  resolveCurrentTileOffersMeasured(
+    season: number,
+    scope: StatusVisibilityScope,
+    offers: readonly TileGenerationOffer[],
+  ): Promise<MeasuredD1Operation<TileGenerationCacheRead>> {
+    return measureD1Usage(() =>
+      Promise.resolve(this.resolveCurrentTileOffers(season, scope, offers)),
+    )
+  }
+
+  async applyCommittedTileGeneration(
+    season: number,
+    generation: CommittedTileGeneration,
+  ): Promise<void> {
+    this.bindSeason(season)
+    this.tileGenerations.apply(generation)
   }
 
   async notifyAlarmChange(season: number): Promise<void> {
@@ -567,6 +618,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     }
     const season = Number(seasonHeader)
     const scope = request.headers.get('x-caelestis-scope')
+    const credentialScope = request.headers.get('x-caelestis-credential-scope')
     const tokenHash = request.headers.get('x-caelestis-token-hash')
     const revocableHeader = request.headers.get('x-caelestis-revocable')
     const revisionHeader = request.headers.get('x-caelestis-revision')
@@ -577,10 +629,13 @@ export class StatusReadModelObject extends DurableObject<Env> {
     if (tokenHash === null || !/^[0-9a-f]{64}$/.test(tokenHash)) {
       return new Response('Invalid credential identity', { status: 400 })
     }
+    if (credentialScope !== 'read' && credentialScope !== 'report' && credentialScope !== 'admin')
+      return new Response('Invalid credential scope', { status: 400 })
     if (revocableHeader !== '0' && revocableHeader !== '1') {
       return new Response('Invalid credential kind', { status: 400 })
     }
     const revocable = revocableHeader === '1'
+    const metricClient = metricClientIdentity(request.headers.get('accept'))
     if (lastRevision !== null && (!Number.isSafeInteger(lastRevision) || lastRevision < 0)) {
       return new Response('Invalid revision', { status: 400 })
     }
@@ -598,10 +653,13 @@ export class StatusReadModelObject extends DurableObject<Env> {
         server.serializeAttachment({
           season,
           scope,
+          credentialScope,
           tokenHash,
           revocable,
           lastRevision,
           revoked: false,
+          metricClient: metricClient.client,
+          metricClientVersion: metricClient.clientVersion,
         } satisfies LiveSubscriberAttachment)
         this.objectState.acceptWebSocket(server, ['status'])
         return { client, server }
@@ -628,12 +686,80 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
+    const startedAt = performance.now()
     const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
     if (attachment?.revoked === true) {
       socket.close(1008, 'credential revoked')
       return
     }
-    if (typeof message === 'string' && message === 'ping') socket.send('pong')
+    if (typeof message === 'string' && message === 'ping') {
+      socket.send('pong')
+      return
+    }
+    if (typeof message !== 'string') return
+    const event: LiveSyncClientEvent | null = (() => {
+      try {
+        return Schema.decodeUnknownSync(LiveSyncClientEventSchema)(JSON.parse(message))
+      } catch {
+        return null
+      }
+    })()
+    if (event === null) return
+    const unresolvedDeliveryIds = event.batch.offers.map((offer) => offer.deliveryId)
+    if (
+      attachment === null ||
+      attachment.season !== event.batch.season ||
+      attachment.credentialScope === undefined ||
+      !satisfiesScope(attachment.credentialScope, 'report')
+    ) {
+      this.send(socket, {
+        type: 'tile-offer-cache-result',
+        requestId: event.requestId,
+        response: { acknowledgedDeliveryIds: [], unresolvedDeliveryIds, error: 'forbidden' },
+      })
+      return
+    }
+    const uniqueDeliveries = new Set(unresolvedDeliveryIds)
+    const uniqueTiles = new Set(event.batch.offers.map((offer) => offer.tile))
+    const parsed = event.batch.offers.map((offer) => ({ offer, tile: parseTileKey(offer.tile) }))
+    if (
+      uniqueDeliveries.size !== event.batch.offers.length ||
+      uniqueTiles.size !== event.batch.offers.length ||
+      parsed.some(({ tile }) => tile === null)
+    ) {
+      this.send(socket, {
+        type: 'tile-offer-cache-result',
+        requestId: event.requestId,
+        response: { acknowledgedDeliveryIds: [], unresolvedDeliveryIds, error: 'invalid' },
+      })
+      return
+    }
+    const response = this.resolveCurrentTileOffers(
+      event.batch.season,
+      attachment.scope,
+      parsed.map(({ offer, tile }) => ({
+        deliveryId: offer.deliveryId,
+        // The null case returned above.
+        tile: tile ?? { x: -1, y: -1 },
+        hash: offer.sha256,
+      })),
+    )
+    recordLiveTileOfferCacheMetric(this.requestMetrics, {
+      client: attachment.metricClient ?? 'unknown',
+      clientVersion: attachment.metricClientVersion ?? 'unknown',
+      cacheOutcome: response.cacheOutcome,
+      requested: event.batch.offers.length,
+      acknowledged: response.acknowledgedDeliveryIds.length,
+      durationMs: performance.now() - startedAt,
+    })
+    this.send(socket, {
+      type: 'tile-offer-cache-result',
+      requestId: event.requestId,
+      response: {
+        acknowledgedDeliveryIds: response.acknowledgedDeliveryIds,
+        unresolvedDeliveryIds: response.unresolvedDeliveryIds,
+      },
+    })
   }
 
   override webSocketClose(

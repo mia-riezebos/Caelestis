@@ -16,6 +16,12 @@ import {
   type StatusSnapshotRead,
   type StatusVisibilityScope,
 } from './model.js'
+import {
+  type CommittedTileGeneration,
+  createTileGenerationCache,
+  type TileGenerationCacheRead,
+  type TileGenerationOffer,
+} from './tile-generation-cache.js'
 
 export interface StatusReadModelPort {
   readonly applyCommittedChange: (
@@ -36,6 +42,49 @@ export interface StatusReadModelPort {
   ) => Promise<ManifestProjectionRead>
   /** Optional on portable adapters; production closes live sessions for a revoked credential. */
   readonly closeCredential?: (season: number, tokenHash: string) => Promise<void>
+  readonly resolveCurrentTileOffers?: (
+    season: number,
+    scope: StatusVisibilityScope,
+    offers: readonly TileGenerationOffer[],
+  ) => Promise<TileGenerationCacheRead>
+  readonly applyCommittedTileGeneration?: (
+    season: number,
+    generation: CommittedTileGeneration,
+  ) => Promise<void>
+}
+
+export const resolveCurrentTileOffers = async (
+  readModel: StatusReadModelPort,
+  season: number,
+  scope: StatusVisibilityScope,
+  offers: readonly TileGenerationOffer[],
+): Promise<TileGenerationCacheRead> => {
+  const unresolved = (): TileGenerationCacheRead => ({
+    acknowledgedDeliveryIds: [],
+    unresolvedDeliveryIds: offers.map((offer) => offer.deliveryId),
+    cacheOutcome: 'miss',
+    coverageToken: null,
+  })
+  if (readModel.resolveCurrentTileOffers === undefined) return unresolved()
+  try {
+    return await readModel.resolveCurrentTileOffers(season, scope, offers)
+  } catch (error) {
+    console.error('tile generation cache read failed', error)
+    return unresolved()
+  }
+}
+
+/** Cache repair never changes the authoritative D1 commit that preceded it. */
+export const repairCommittedTileGeneration = async (
+  readModel: StatusReadModelPort,
+  season: number,
+  generation: CommittedTileGeneration,
+): Promise<void> => {
+  try {
+    await readModel.applyCommittedTileGeneration?.(season, generation)
+  } catch (error) {
+    console.error(error)
+  }
 }
 
 /** Projection failure never changes the outcome of the authoritative write that preceded it. */
@@ -89,6 +138,7 @@ export const closeLiveCredential = async (
 export class DirectStatusReadModel implements StatusReadModelPort {
   private readonly seasons = new Map<number, SeasonStatusReadModel>()
   private readonly manifests = new Map<number, SeasonManifestReadModel>()
+  private readonly tileGenerations = new Map<number, ReturnType<typeof createTileGenerationCache>>()
 
   constructor(private readonly sql: SqlStore) {}
 
@@ -164,6 +214,24 @@ export class DirectStatusReadModel implements StatusReadModelPort {
   }
 
   async notifyManifestChange(season: number): Promise<void> {
+    this.tileGenerations.get(season)?.invalidate()
     await this.manifestModel(season).invalidate()
+  }
+
+  resolveCurrentTileOffers(
+    season: number,
+    scope: StatusVisibilityScope,
+    offers: readonly TileGenerationOffer[],
+  ): Promise<TileGenerationCacheRead> {
+    const cache = this.tileGenerations.get(season) ?? createTileGenerationCache()
+    this.tileGenerations.set(season, cache)
+    return Promise.resolve(cache.resolve(scope, offers))
+  }
+
+  applyCommittedTileGeneration(season: number, generation: CommittedTileGeneration): Promise<void> {
+    const cache = this.tileGenerations.get(season) ?? createTileGenerationCache()
+    this.tileGenerations.set(season, cache)
+    cache.apply(generation)
+    return Promise.resolve()
   }
 }

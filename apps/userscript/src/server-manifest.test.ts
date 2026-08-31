@@ -44,11 +44,17 @@ const manifest = {
 }
 
 describe('server manifest template lifecycle', () => {
-  it('accepts only the explicit live-sync capability version', () => {
-    expect(parseServerInfo({ ...server, liveSync: 1 })).toEqual({ ...server, liveSync: 1 })
+  it('accepts only the explicit live-sync capability versions', () => {
+    expect(parseServerInfo({ ...server, liveSync: 1, liveTileOffers: 1 })).toEqual({
+      ...server,
+      liveSync: 1,
+      liveTileOffers: 1,
+    })
     expect(parseServerInfo(server)).toEqual(server)
     expect(parseServerInfo({ ...server, liveSync: true })).toBeNull()
     expect(parseServerInfo({ ...server, liveSync: 2 })).toBeNull()
+    expect(parseServerInfo({ ...server, liveTileOffers: true })).toBeNull()
+    expect(parseServerInfo({ ...server, liveTileOffers: 2 })).toBeNull()
   })
 
   it('retains current lifecycle state from a fresh manifest', () => {

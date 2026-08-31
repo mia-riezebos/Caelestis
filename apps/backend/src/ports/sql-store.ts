@@ -711,6 +711,8 @@ export interface TileObservationCommit {
   /** Revision advanced in the same transaction as the accepted tile-status rows. */
   readonly revision: number | null
   readonly statusChanges: readonly TemplateTileStatusChange[]
+  /** Present only when this commit became the current canvas generation. */
+  readonly current: (LatestTileObservation & { readonly commitOrder: number }) | null
 }
 
 export interface ContributionDelta {

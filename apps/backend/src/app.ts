@@ -36,6 +36,7 @@ export interface AppOptions {
         connection: {
           readonly season: number
           readonly scope: 'public' | 'admin'
+          readonly credentialScope: 'read' | 'report' | 'admin'
           readonly tokenHash: string
           readonly revocable: boolean
           readonly lastRevision: number | null
@@ -71,7 +72,9 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
       'serverName',
     ),
     auth: options.openAccess === true ? 'none' : 'access_token',
-    ...(options.connectStatusLive === undefined ? {} : { liveSync: 1 as const }),
+    ...(options.connectStatusLive === undefined
+      ? {}
+      : { liveSync: 1 as const, liveTileOffers: 1 as const }),
   } as const
   const server: ServerInfo =
     options.serverDescription === undefined

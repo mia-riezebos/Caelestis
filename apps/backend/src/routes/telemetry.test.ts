@@ -171,6 +171,7 @@ describe('telemetry routes', () => {
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'public',
+      credentialScope: 'read',
       tokenHash: await hashToken(readToken),
       revocable: true,
       lastRevision: 4,
@@ -183,6 +184,7 @@ describe('telemetry routes', () => {
     expect(connectStatusLive).toHaveBeenLastCalledWith(expect.any(Request), {
       season: 7,
       scope: 'admin',
+      credentialScope: 'admin',
       tokenHash: await hashToken(BOOTSTRAP),
       revocable: false,
       lastRevision: null,
@@ -265,10 +267,12 @@ describe('telemetry routes', () => {
       body: JSON.stringify(offer),
     })
     expect(offered.status).toBe(200)
-    await expect(offered.json()).resolves.toEqual({
+    const offeredBody = (await offered.json()) as { coverageToken: string }
+    expect(offeredBody).toEqual({
       wanted: ['0/0'],
       acknowledged: [],
       rejected: [],
+      coverageToken: expect.any(String),
     })
 
     const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
@@ -280,6 +284,7 @@ describe('telemetry routes', () => {
         'x-caelestis-observed-at': String(now),
         'x-caelestis-wplace-user-id': '42',
         'x-caelestis-display-name': encodeURIComponent('Mía 🎨'),
+        'x-caelestis-tile-coverage-token': offeredBody.coverageToken,
       },
       body: bytes,
     })
@@ -331,6 +336,10 @@ describe('telemetry routes', () => {
       ],
     })
 
+    const listTelemetryTargets = vi.spyOn(sql, 'listTelemetryTargets')
+    const reserveTileBlob = vi.spyOn(sql, 'reserveTileBlob')
+    listTelemetryTargets.mockClear()
+    reserveTileBlob.mockClear()
     const repeated = await app.request('/telemetry/tiles/offers', {
       method: 'POST',
       headers: { ...bearer(reportToken), 'content-type': 'application/json' },
@@ -340,8 +349,10 @@ describe('telemetry routes', () => {
       wanted: [],
       acknowledged: ['0/0'],
       rejected: [],
-      status: { baseRevision: 2, revision: 3, templates: [], removedTemplateIds: [] },
+      coverageToken: expect.any(String),
     })
+    expect(listTelemetryTargets).not.toHaveBeenCalled()
+    expect(reserveTileBlob).not.toHaveBeenCalled()
 
     const rejected = await app.request('/telemetry/tiles/offers', {
       method: 'POST',
@@ -355,6 +366,7 @@ describe('telemetry routes', () => {
       wanted: [],
       acknowledged: [],
       rejected: ['9/9'],
+      coverageToken: expect.any(String),
     })
 
     const duplicate = await app.request('/telemetry/tiles/offers', {
@@ -439,6 +451,49 @@ describe('telemetry routes', () => {
       expect.objectContaining({ baseRevision: 0, revision: 1 }),
     )
     expect(consoleError).toHaveBeenCalledWith(projectionError)
+  })
+
+  it('falls through to authoritative offer processing when the cache read fails', async () => {
+    const cacheError = new Error('cache shard unavailable')
+    const resolveCurrentTileOffers = vi.fn(async () => Promise.reject(cacheError))
+    const { app } = await harness({
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      resolveCurrentTileOffers,
+    })
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const offered = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 0,
+        offers: [
+          {
+            deliveryId: EVENT_ID,
+            tile: '0/0',
+            sha256: 'b'.repeat(64),
+            ts: seconds(Math.floor(Date.now() / 1_000)),
+          },
+        ],
+      }),
+    })
+
+    expect(offered.status).toBe(200)
+    await expect(offered.json()).resolves.toEqual({
+      wanted: ['0/0'],
+      acknowledged: [],
+      rejected: [],
+    })
+    expect(resolveCurrentTileOffers).toHaveBeenCalledOnce()
+    expect(consoleError).toHaveBeenCalledWith('tile generation cache read failed', cacheError)
   })
 
   it('publishes an accepted revision before non-fatal derived artifact writes', async () => {

@@ -1,0 +1,1696 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "d4056834-c334-46f5-8249-272fcc84b428",
+  "prevId": "be681c55-0f45-42e3-9ea7-66ddb32056ed",
+  "tables": {
+    "access_tokens": {
+      "name": "access_tokens",
+      "columns": {
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_with_token": {
+          "name": "created_with_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "access_tokens_scope_check": {
+          "name": "access_tokens_scope_check",
+          "value": "\"access_tokens\".\"scope\" IN ('read', 'report', 'admin')"
+        }
+      }
+    },
+    "applied_events": {
+      "name": "applied_events",
+      "columns": {
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "wplace_user_id": {
+          "name": "wplace_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "seen_at_ms": {
+          "name": "seen_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "applied_events_seen_at_idx": {
+          "name": "applied_events_seen_at_idx",
+          "columns": [
+            "seen_at_ms"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "applied_events_user_check": {
+          "name": "applied_events_user_check",
+          "value": "typeof(\"applied_events\".\"wplace_user_id\") = 'integer' AND \"applied_events\".\"wplace_user_id\" >= 0"
+        }
+      }
+    },
+    "canvas_tiles": {
+      "name": "canvas_tiles",
+      "columns": {
+        "season": {
+          "name": "season",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observed_at_ms": {
+          "name": "observed_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_owned": {
+          "name": "server_owned",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "commit_order": {
+          "name": "commit_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {
+        "canvas_tiles_sha256_idx": {
+          "name": "canvas_tiles_sha256_idx",
+          "columns": [
+            "sha256"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "canvas_tiles_season_tile_x_tile_y_pk": {
+          "columns": [
+            "season",
+            "tile_x",
+            "tile_y"
+          ],
+          "name": "canvas_tiles_season_tile_x_tile_y_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "canvas_tiles_season_check": {
+          "name": "canvas_tiles_season_check",
+          "value": "typeof(\"canvas_tiles\".\"season\") = 'integer' AND \"canvas_tiles\".\"season\" >= 0"
+        },
+        "canvas_tiles_coordinate_check": {
+          "name": "canvas_tiles_coordinate_check",
+          "value": "typeof(\"canvas_tiles\".\"tile_x\") = 'integer' AND typeof(\"canvas_tiles\".\"tile_y\") = 'integer'\n        AND \"canvas_tiles\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"canvas_tiles\".\"tile_y\" BETWEEN 0 AND 2047"
+        },
+        "canvas_tiles_sha256_check": {
+          "name": "canvas_tiles_sha256_check",
+          "value": "typeof(\"canvas_tiles\".\"sha256\") = 'text' AND length(\"canvas_tiles\".\"sha256\") = 64\n        AND \"canvas_tiles\".\"sha256\" NOT GLOB '*[^0-9a-f]*'"
+        }
+      }
+    },
+    "contributions": {
+      "name": "contributions",
+      "columns": {
+        "wplace_user_id": {
+          "name": "wplace_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "day_s": {
+          "name": "day_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reported_with_token": {
+          "name": "reported_with_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reported_by_user_id": {
+          "name": "reported_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "placed": {
+          "name": "placed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct": {
+          "name": "correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "repairs": {
+          "name": "repairs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "contributions_template_id_templates_id_fk": {
+          "name": "contributions_template_id_templates_id_fk",
+          "tableFrom": "contributions",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "contributions_wplace_user_id_template_id_day_s_reported_by_user_id_pk": {
+          "columns": [
+            "wplace_user_id",
+            "template_id",
+            "day_s",
+            "reported_by_user_id"
+          ],
+          "name": "contributions_wplace_user_id_template_id_day_s_reported_by_user_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "contributions_reported_with_token_check": {
+          "name": "contributions_reported_with_token_check",
+          "value": "typeof(\"contributions\".\"reported_with_token\") = 'text' AND length(\"contributions\".\"reported_with_token\") = 64\n        AND \"contributions\".\"reported_with_token\" NOT GLOB '*[^0-9a-f]*'"
+        },
+        "contributions_counter_check": {
+          "name": "contributions_counter_check",
+          "value": "typeof(\"contributions\".\"wplace_user_id\") = 'integer' AND \"contributions\".\"wplace_user_id\" >= 0\n        AND typeof(\"contributions\".\"reported_by_user_id\") = 'integer' AND \"contributions\".\"reported_by_user_id\" >= 0\n        AND typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND \"contributions\".\"day_s\" % 86400 = 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
+        }
+      }
+    },
+    "nodes": {
+      "name": "nodes",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "season": {
+          "name": "season",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "delete_token": {
+          "name": "delete_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "nodes_season_path_idx": {
+          "name": "nodes_season_path_idx",
+          "columns": [
+            "season",
+            "lower(\"path\")"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "nodes_parent_id_nodes_id_fk": {
+          "name": "nodes_parent_id_nodes_id_fk",
+          "tableFrom": "nodes",
+          "tableTo": "nodes",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "nodes_path_check": {
+          "name": "nodes_path_check",
+          "value": "\"nodes\".\"path\" GLOB '/*' AND \"nodes\".\"path\" NOT GLOB '*[%_]*'\n        AND \"nodes\".\"path\" NOT GLOB '*/' AND \"nodes\".\"path\" NOT GLOB '*//*'\n        AND length(\"nodes\".\"path\") BETWEEN 2 AND 256"
+        },
+        "nodes_parent_not_self_check": {
+          "name": "nodes_parent_not_self_check",
+          "value": "\"nodes\".\"parent_id\" IS NULL OR \"nodes\".\"parent_id\" <> \"nodes\".\"id\""
+        }
+      }
+    },
+    "painters": {
+      "name": "painters",
+      "columns": {
+        "wplace_user_id": {
+          "name": "wplace_user_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "seen_at_ms": {
+          "name": "seen_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "server_settings": {
+      "name": "server_settings",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "server_settings_single_row_check": {
+          "name": "server_settings_single_row_check",
+          "value": "\"server_settings\".\"id\" = 1"
+        }
+      }
+    },
+    "status_read_model_revisions": {
+      "name": "status_read_model_revisions",
+      "columns": {
+        "season": {
+          "name": "season",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "public_fingerprint": {
+          "name": "public_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "admin_fingerprint": {
+          "name": "admin_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fingerprints_dirty": {
+          "name": "fingerprints_dirty",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "status_read_model_revisions_values_check": {
+          "name": "status_read_model_revisions_values_check",
+          "value": "typeof(\"status_read_model_revisions\".\"season\") = 'integer' AND \"status_read_model_revisions\".\"season\" >= 0\n        AND typeof(\"status_read_model_revisions\".\"revision\") = 'integer' AND \"status_read_model_revisions\".\"revision\" > 0\n        AND length(\"status_read_model_revisions\".\"public_fingerprint\") = 64\n        AND \"status_read_model_revisions\".\"public_fingerprint\" NOT GLOB '*[^0-9a-f]*'\n        AND length(\"status_read_model_revisions\".\"admin_fingerprint\") = 64\n        AND \"status_read_model_revisions\".\"admin_fingerprint\" NOT GLOB '*[^0-9a-f]*'\n        AND typeof(\"status_read_model_revisions\".\"fingerprints_dirty\") = 'integer'\n        AND \"status_read_model_revisions\".\"fingerprints_dirty\" IN (0, 1)"
+        }
+      }
+    },
+    "telemetry_buckets": {
+      "name": "telemetry_buckets",
+      "columns": {
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resolution": {
+          "name": "resolution",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bucket_start_s": {
+          "name": "bucket_start_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "placed": {
+          "name": "placed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct": {
+          "name": "correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "repairs": {
+          "name": "repairs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "telemetry_buckets_template_id_resolution_bucket_start_s_pk": {
+          "columns": [
+            "template_id",
+            "resolution",
+            "bucket_start_s"
+          ],
+          "name": "telemetry_buckets_template_id_resolution_bucket_start_s_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "telemetry_buckets_resolution_check": {
+          "name": "telemetry_buckets_resolution_check",
+          "value": "\"telemetry_buckets\".\"resolution\" IN (60, 300, 900, 3600, 21600)"
+        },
+        "telemetry_buckets_alignment_check": {
+          "name": "telemetry_buckets_alignment_check",
+          "value": "typeof(\"telemetry_buckets\".\"bucket_start_s\") = 'integer' AND \"telemetry_buckets\".\"bucket_start_s\" >= 0\n        AND \"telemetry_buckets\".\"bucket_start_s\" % \"telemetry_buckets\".\"resolution\" = 0"
+        },
+        "telemetry_buckets_counter_check": {
+          "name": "telemetry_buckets_counter_check",
+          "value": "typeof(\"telemetry_buckets\".\"placed\") = 'integer' AND typeof(\"telemetry_buckets\".\"correct\") = 'integer'\n        AND typeof(\"telemetry_buckets\".\"repairs\") = 'integer'\n        AND \"telemetry_buckets\".\"repairs\" >= 0\n        AND \"telemetry_buckets\".\"repairs\" <= \"telemetry_buckets\".\"correct\" AND \"telemetry_buckets\".\"correct\" <= \"telemetry_buckets\".\"placed\""
+        }
+      }
+    },
+    "template_alarm_states": {
+      "name": "template_alarm_states",
+      "columns": {
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version_id": {
+          "name": "version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total": {
+          "name": "total",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "peak_correct": {
+          "name": "peak_correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "alarm_id": {
+          "name": "alarm_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pixels_lost": {
+          "name": "pixels_lost",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "first_seen_ms": {
+          "name": "first_seen_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_seen_ms": {
+          "name": "last_seen_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "probe_due_at_ms": {
+          "name": "probe_due_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "probe_pixels_lost": {
+          "name": "probe_pixels_lost",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "evaluated_at_ms": {
+          "name": "evaluated_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "0"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {
+        "template_alarm_states_probe_due_idx": {
+          "name": "template_alarm_states_probe_due_idx",
+          "columns": [
+            "probe_due_at_ms"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "template_alarm_states_template_id_templates_id_fk": {
+          "name": "template_alarm_states_template_id_templates_id_fk",
+          "tableFrom": "template_alarm_states",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "template_alarm_states_counter_check": {
+          "name": "template_alarm_states_counter_check",
+          "value": "typeof(\"template_alarm_states\".\"total\") = 'integer' AND \"template_alarm_states\".\"total\" >= 0\n        AND typeof(\"template_alarm_states\".\"peak_correct\") = 'integer'\n        AND \"template_alarm_states\".\"peak_correct\" BETWEEN 0 AND \"template_alarm_states\".\"total\""
+        },
+        "template_alarm_states_episode_check": {
+          "name": "template_alarm_states_episode_check",
+          "value": "(\"template_alarm_states\".\"alarm_id\" IS NULL AND \"template_alarm_states\".\"kind\" IS NULL AND \"template_alarm_states\".\"pixels_lost\" IS NULL\n          AND \"template_alarm_states\".\"first_seen_ms\" IS NULL AND \"template_alarm_states\".\"last_seen_ms\" IS NULL\n          AND \"template_alarm_states\".\"probe_due_at_ms\" IS NULL AND \"template_alarm_states\".\"probe_pixels_lost\" IS NULL)\n        OR (\"template_alarm_states\".\"alarm_id\" IS NOT NULL\n          AND \"template_alarm_states\".\"kind\" IN ('regression', 'sustained-griefing')\n          AND typeof(\"template_alarm_states\".\"pixels_lost\") = 'integer' AND \"template_alarm_states\".\"pixels_lost\" > 0\n          AND typeof(\"template_alarm_states\".\"first_seen_ms\") = 'integer'\n          AND typeof(\"template_alarm_states\".\"last_seen_ms\") = 'integer'\n          AND \"template_alarm_states\".\"first_seen_ms\" <= \"template_alarm_states\".\"last_seen_ms\"\n          AND ((\"template_alarm_states\".\"probe_due_at_ms\" IS NULL AND \"template_alarm_states\".\"probe_pixels_lost\" IS NULL)\n            OR (typeof(\"template_alarm_states\".\"probe_due_at_ms\") = 'integer'\n              AND typeof(\"template_alarm_states\".\"probe_pixels_lost\") = 'integer'\n              AND \"template_alarm_states\".\"probe_pixels_lost\" > 0)))"
+        }
+      }
+    },
+    "template_alarm_tile_statuses": {
+      "name": "template_alarm_tile_statuses",
+      "columns": {
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version_id": {
+          "name": "version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct": {
+          "name": "correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "wrong": {
+          "name": "wrong",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "blank": {
+          "name": "blank",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "colours_json": {
+          "name": "colours_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observed_at_ms": {
+          "name": "observed_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "template_alarm_tile_statuses_version_idx": {
+          "name": "template_alarm_tile_statuses_version_idx",
+          "columns": [
+            "version_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "template_alarm_tile_statuses_template_id_templates_id_fk": {
+          "name": "template_alarm_tile_statuses_template_id_templates_id_fk",
+          "tableFrom": "template_alarm_tile_statuses",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "template_alarm_tile_statuses_version_id_template_versions_id_fk": {
+          "name": "template_alarm_tile_statuses_version_id_template_versions_id_fk",
+          "tableFrom": "template_alarm_tile_statuses",
+          "tableTo": "template_versions",
+          "columnsFrom": [
+            "version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "template_alarm_tile_statuses_template_id_version_id_tile_x_tile_y_pk": {
+          "columns": [
+            "template_id",
+            "version_id",
+            "tile_x",
+            "tile_y"
+          ],
+          "name": "template_alarm_tile_statuses_template_id_version_id_tile_x_tile_y_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "template_alarm_tile_statuses_coordinate_check": {
+          "name": "template_alarm_tile_statuses_coordinate_check",
+          "value": "typeof(\"template_alarm_tile_statuses\".\"tile_x\") = 'integer' AND typeof(\"template_alarm_tile_statuses\".\"tile_y\") = 'integer'\n        AND \"template_alarm_tile_statuses\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"template_alarm_tile_statuses\".\"tile_y\" BETWEEN 0 AND 2047"
+        },
+        "template_alarm_tile_statuses_counter_check": {
+          "name": "template_alarm_tile_statuses_counter_check",
+          "value": "typeof(\"template_alarm_tile_statuses\".\"correct\") = 'integer' AND typeof(\"template_alarm_tile_statuses\".\"wrong\") = 'integer'\n        AND typeof(\"template_alarm_tile_statuses\".\"blank\") = 'integer'\n        AND \"template_alarm_tile_statuses\".\"correct\" >= 0 AND \"template_alarm_tile_statuses\".\"wrong\" >= 0 AND \"template_alarm_tile_statuses\".\"blank\" >= 0"
+        }
+      }
+    },
+    "template_tile_statuses": {
+      "name": "template_tile_statuses",
+      "columns": {
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version_id": {
+          "name": "version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct": {
+          "name": "correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "wrong": {
+          "name": "wrong",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "blank": {
+          "name": "blank",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "colours_json": {
+          "name": "colours_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observed_at_ms": {
+          "name": "observed_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_owned": {
+          "name": "server_owned",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        }
+      },
+      "indexes": {
+        "template_tile_statuses_version_idx": {
+          "name": "template_tile_statuses_version_idx",
+          "columns": [
+            "version_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "template_tile_statuses_template_id_templates_id_fk": {
+          "name": "template_tile_statuses_template_id_templates_id_fk",
+          "tableFrom": "template_tile_statuses",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "template_tile_statuses_version_id_template_versions_id_fk": {
+          "name": "template_tile_statuses_version_id_template_versions_id_fk",
+          "tableFrom": "template_tile_statuses",
+          "tableTo": "template_versions",
+          "columnsFrom": [
+            "version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "template_tile_statuses_template_id_version_id_tile_x_tile_y_pk": {
+          "columns": [
+            "template_id",
+            "version_id",
+            "tile_x",
+            "tile_y"
+          ],
+          "name": "template_tile_statuses_template_id_version_id_tile_x_tile_y_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "template_tile_statuses_coordinate_check": {
+          "name": "template_tile_statuses_coordinate_check",
+          "value": "typeof(\"template_tile_statuses\".\"tile_x\") = 'integer' AND typeof(\"template_tile_statuses\".\"tile_y\") = 'integer'\n        AND \"template_tile_statuses\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"template_tile_statuses\".\"tile_y\" BETWEEN 0 AND 2047"
+        },
+        "template_tile_statuses_counter_check": {
+          "name": "template_tile_statuses_counter_check",
+          "value": "typeof(\"template_tile_statuses\".\"correct\") = 'integer' AND typeof(\"template_tile_statuses\".\"wrong\") = 'integer'\n        AND typeof(\"template_tile_statuses\".\"blank\") = 'integer'\n        AND \"template_tile_statuses\".\"correct\" >= 0 AND \"template_tile_statuses\".\"wrong\" >= 0 AND \"template_tile_statuses\".\"blank\" >= 0"
+        }
+      }
+    },
+    "template_versions": {
+      "name": "template_versions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_with_token": {
+          "name": "created_with_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "min_x": {
+          "name": "min_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "min_y": {
+          "name": "min_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_x": {
+          "name": "max_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_y": {
+          "name": "max_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_pixels": {
+          "name": "total_pixels",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "colour_totals_json": {
+          "name": "colour_totals_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bounds_north": {
+          "name": "bounds_north",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bounds_south": {
+          "name": "bounds_south",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bounds_west": {
+          "name": "bounds_west",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bounds_east": {
+          "name": "bounds_east",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "template_versions_id_template_idx": {
+          "name": "template_versions_id_template_idx",
+          "columns": [
+            "id",
+            "template_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "template_versions_template_id_templates_id_fk": {
+          "name": "template_versions_template_id_templates_id_fk",
+          "tableFrom": "template_versions",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "template_versions_created_with_token_check": {
+          "name": "template_versions_created_with_token_check",
+          "value": "typeof(\"template_versions\".\"created_with_token\") = 'text' AND length(\"template_versions\".\"created_with_token\") = 64\n        AND \"template_versions\".\"created_with_token\" NOT GLOB '*[^0-9a-f]*'\n        AND (\"template_versions\".\"created_by_user_id\" IS NULL\n          OR (typeof(\"template_versions\".\"created_by_user_id\") = 'integer' AND \"template_versions\".\"created_by_user_id\" >= 0))"
+        },
+        "template_versions_bounds_all_or_none_check": {
+          "name": "template_versions_bounds_all_or_none_check",
+          "value": "(\"template_versions\".\"bounds_north\" IS NULL AND \"template_versions\".\"bounds_south\" IS NULL AND \"template_versions\".\"bounds_west\" IS NULL AND \"template_versions\".\"bounds_east\" IS NULL) OR (\"template_versions\".\"bounds_north\" IS NOT NULL AND \"template_versions\".\"bounds_south\" IS NOT NULL AND \"template_versions\".\"bounds_west\" IS NOT NULL AND \"template_versions\".\"bounds_east\" IS NOT NULL)"
+        },
+        "template_versions_pixel_bounds_check": {
+          "name": "template_versions_pixel_bounds_check",
+          "value": "typeof(\"template_versions\".\"min_x\") = 'integer' AND typeof(\"template_versions\".\"min_y\") = 'integer'\n        AND typeof(\"template_versions\".\"max_x\") = 'integer' AND typeof(\"template_versions\".\"max_y\") = 'integer'\n        AND typeof(\"template_versions\".\"total_pixels\") = 'integer'\n        AND \"template_versions\".\"min_x\" BETWEEN -1000 AND 2047999\n        AND \"template_versions\".\"min_y\" BETWEEN -1000 AND 2047999\n        AND \"template_versions\".\"max_x\" BETWEEN -999 AND 2048000\n        AND \"template_versions\".\"max_y\" BETWEEN -999 AND 2048000\n        AND \"template_versions\".\"min_x\" <> \"template_versions\".\"max_x\"\n        AND \"template_versions\".\"min_y\" < \"template_versions\".\"max_y\"\n        AND \"template_versions\".\"total_pixels\" >= 0"
+        },
+        "template_versions_bounds_range_check": {
+          "name": "template_versions_bounds_range_check",
+          "value": "\"template_versions\".\"bounds_north\" IS NULL OR (\"template_versions\".\"bounds_north\" BETWEEN -90 AND 90 AND \"template_versions\".\"bounds_south\" BETWEEN -90 AND 90 AND \"template_versions\".\"bounds_west\" BETWEEN -180 AND 180 AND \"template_versions\".\"bounds_east\" BETWEEN -180 AND 180 AND \"template_versions\".\"bounds_north\" > \"template_versions\".\"bounds_south\")"
+        }
+      }
+    },
+    "templates": {
+      "name": "templates",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "season": {
+          "name": "season",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "surface_kind": {
+          "name": "surface_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'world'"
+        },
+        "alliance_id": {
+          "name": "alliance_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "node_id": {
+          "name": "node_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "current_version_id": {
+          "name": "current_version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "timelapse_frozen_at_ms": {
+          "name": "timelapse_frozen_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "finished_at_ms": {
+          "name": "finished_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_with_token": {
+          "name": "created_with_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at_ms": {
+          "name": "updated_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "templates_surface_idx": {
+          "name": "templates_surface_idx",
+          "columns": [
+            "season",
+            "surface_kind",
+            "alliance_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "templates_node_id_nodes_id_fk": {
+          "name": "templates_node_id_nodes_id_fk",
+          "tableFrom": "templates",
+          "tableTo": "nodes",
+          "columnsFrom": [
+            "node_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "templates_current_version_fk": {
+          "name": "templates_current_version_fk",
+          "tableFrom": "templates",
+          "tableTo": "template_versions",
+          "columnsFrom": [
+            "current_version_id",
+            "id"
+          ],
+          "columnsTo": [
+            "id",
+            "template_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "templates_surface_check": {
+          "name": "templates_surface_check",
+          "value": "(\"templates\".\"surface_kind\" = 'world' AND \"templates\".\"alliance_id\" IS NULL)\n        OR (\"templates\".\"surface_kind\" IN ('alliance-headquarters', 'alliance-picture', 'alliance-banner')\n          AND typeof(\"templates\".\"alliance_id\") = 'integer' AND \"templates\".\"alliance_id\" > 0)"
+        },
+        "templates_created_with_token_check": {
+          "name": "templates_created_with_token_check",
+          "value": "typeof(\"templates\".\"created_with_token\") = 'text' AND length(\"templates\".\"created_with_token\") = 64\n        AND \"templates\".\"created_with_token\" NOT GLOB '*[^0-9a-f]*'\n        AND (\"templates\".\"created_by_user_id\" IS NULL\n          OR (typeof(\"templates\".\"created_by_user_id\") = 'integer' AND \"templates\".\"created_by_user_id\" >= 0))"
+        }
+      }
+    },
+    "tile_blob_gc_state": {
+      "name": "tile_blob_gc_state",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cursor": {
+          "name": "cursor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "completed_sweeps": {
+          "name": "completed_sweeps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "tile_blob_gc_state_single_row_check": {
+          "name": "tile_blob_gc_state_single_row_check",
+          "value": "\"tile_blob_gc_state\".\"id\" = 1"
+        },
+        "tile_blob_gc_state_sweeps_check": {
+          "name": "tile_blob_gc_state_sweeps_check",
+          "value": "typeof(\"tile_blob_gc_state\".\"completed_sweeps\") = 'integer' AND \"tile_blob_gc_state\".\"completed_sweeps\" >= 0"
+        }
+      }
+    },
+    "tile_blob_objects": {
+      "name": "tile_blob_objects",
+      "columns": {
+        "blob_key": {
+          "name": "blob_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "discovered_at_ms": {
+          "name": "discovered_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "delete_started_at_ms": {
+          "name": "delete_started_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "delete_attempts": {
+          "name": "delete_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "reclaimed_at_ms": {
+          "name": "reclaimed_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "tile_blob_objects_hash_state_idx": {
+          "name": "tile_blob_objects_hash_state_idx",
+          "columns": [
+            "sha256",
+            "state"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "tile_blob_objects_sha256_check": {
+          "name": "tile_blob_objects_sha256_check",
+          "value": "typeof(\"tile_blob_objects\".\"sha256\") = 'text' AND length(\"tile_blob_objects\".\"sha256\") = 64\n        AND \"tile_blob_objects\".\"sha256\" NOT GLOB '*[^0-9a-f]*'"
+        },
+        "tile_blob_objects_key_check": {
+          "name": "tile_blob_objects_key_check",
+          "value": "\"tile_blob_objects\".\"blob_key\" = \"tile_blob_objects\".\"sha256\" OR substr(\"tile_blob_objects\".\"blob_key\", 1, length(\"tile_blob_objects\".\"sha256\") + 1) = \"tile_blob_objects\".\"sha256\" || '/'"
+        },
+        "tile_blob_objects_state_check": {
+          "name": "tile_blob_objects_state_check",
+          "value": "\"tile_blob_objects\".\"state\" IN ('uploading', 'active', 'candidate', 'deleting', 'deleted')"
+        },
+        "tile_blob_objects_attempts_check": {
+          "name": "tile_blob_objects_attempts_check",
+          "value": "typeof(\"tile_blob_objects\".\"delete_attempts\") = 'integer' AND \"tile_blob_objects\".\"delete_attempts\" >= 0"
+        }
+      }
+    },
+    "tile_blob_reservations": {
+      "name": "tile_blob_reservations",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "blob_key": {
+          "name": "blob_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at_ms": {
+          "name": "expires_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "tile_blob_reservations_hash_expiry_idx": {
+          "name": "tile_blob_reservations_hash_expiry_idx",
+          "columns": [
+            "sha256",
+            "expires_at_ms"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "tile_blob_reservations_blob_key_tile_blob_objects_blob_key_fk": {
+          "name": "tile_blob_reservations_blob_key_tile_blob_objects_blob_key_fk",
+          "tableFrom": "tile_blob_reservations",
+          "tableTo": "tile_blob_objects",
+          "columnsFrom": [
+            "blob_key"
+          ],
+          "columnsTo": [
+            "blob_key"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "tile_blob_reservations_sha256_check": {
+          "name": "tile_blob_reservations_sha256_check",
+          "value": "typeof(\"tile_blob_reservations\".\"sha256\") = 'text' AND length(\"tile_blob_reservations\".\"sha256\") = 64\n        AND \"tile_blob_reservations\".\"sha256\" NOT GLOB '*[^0-9a-f]*'"
+        }
+      }
+    },
+    "tile_history": {
+      "name": "tile_history",
+      "columns": {
+        "season": {
+          "name": "season",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resolution_s": {
+          "name": "resolution_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bucket_start_s": {
+          "name": "bucket_start_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reported_with_token": {
+          "name": "reported_with_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reported_by_user_id": {
+          "name": "reported_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "tile_history_sha256_idx": {
+          "name": "tile_history_sha256_idx",
+          "columns": [
+            "sha256"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "tile_history_season_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_user_id_pk": {
+          "columns": [
+            "season",
+            "tile_x",
+            "tile_y",
+            "resolution_s",
+            "bucket_start_s",
+            "sha256",
+            "reported_by_user_id"
+          ],
+          "name": "tile_history_season_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_user_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "tile_history_resolution_s_check": {
+          "name": "tile_history_resolution_s_check",
+          "value": "\"tile_history\".\"resolution_s\" IN (0, 3600, 21600, 86400)"
+        },
+        "tile_history_season_check": {
+          "name": "tile_history_season_check",
+          "value": "typeof(\"tile_history\".\"season\") = 'integer' AND \"tile_history\".\"season\" >= 0"
+        },
+        "tile_history_sha256_check": {
+          "name": "tile_history_sha256_check",
+          "value": "typeof(\"tile_history\".\"sha256\") = 'text' AND length(\"tile_history\".\"sha256\") = 64\n        AND \"tile_history\".\"sha256\" NOT GLOB '*[^0-9a-f]*'"
+        },
+        "tile_history_reported_with_token_check": {
+          "name": "tile_history_reported_with_token_check",
+          "value": "typeof(\"tile_history\".\"reported_with_token\") = 'text' AND length(\"tile_history\".\"reported_with_token\") = 64\n        AND \"tile_history\".\"reported_with_token\" NOT GLOB '*[^0-9a-f]*'"
+        },
+        "tile_history_reported_by_user_id_check": {
+          "name": "tile_history_reported_by_user_id_check",
+          "value": "typeof(\"tile_history\".\"reported_by_user_id\") = 'integer' AND \"tile_history\".\"reported_by_user_id\" >= 0"
+        },
+        "tile_history_bucket_start_s_check": {
+          "name": "tile_history_bucket_start_s_check",
+          "value": "typeof(\"tile_history\".\"bucket_start_s\") = 'integer' AND \"tile_history\".\"bucket_start_s\" >= 0\n        AND (\"tile_history\".\"resolution_s\" = 0 OR \"tile_history\".\"bucket_start_s\" % \"tile_history\".\"resolution_s\" = 0)"
+        },
+        "tile_history_coordinate_check": {
+          "name": "tile_history_coordinate_check",
+          "value": "typeof(\"tile_history\".\"tile_x\") = 'integer' AND typeof(\"tile_history\".\"tile_y\") = 'integer'\n        AND \"tile_history\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"tile_history\".\"tile_y\" BETWEEN 0 AND 2047"
+        }
+      }
+    },
+    "version_tiles": {
+      "name": "version_tiles",
+      "columns": {
+        "version_id": {
+          "name": "version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "hash": {
+          "name": "hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "version_tiles_tile_idx": {
+          "name": "version_tiles_tile_idx",
+          "columns": [
+            "tile_x",
+            "tile_y"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "version_tiles_version_id_template_versions_id_fk": {
+          "name": "version_tiles_version_id_template_versions_id_fk",
+          "tableFrom": "version_tiles",
+          "tableTo": "template_versions",
+          "columnsFrom": [
+            "version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "version_tiles_version_id_tile_x_tile_y_pk": {
+          "columns": [
+            "version_id",
+            "tile_x",
+            "tile_y"
+          ],
+          "name": "version_tiles_version_id_tile_x_tile_y_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "version_tiles_hash_check": {
+          "name": "version_tiles_hash_check",
+          "value": "typeof(\"version_tiles\".\"hash\") = 'text' AND length(\"version_tiles\".\"hash\") = 64\n        AND \"version_tiles\".\"hash\" NOT GLOB '*[^0-9a-f]*'"
+        },
+        "version_tiles_coordinate_check": {
+          "name": "version_tiles_coordinate_check",
+          "value": "typeof(\"version_tiles\".\"tile_x\") = 'integer' AND typeof(\"version_tiles\".\"tile_y\") = 'integer'\n        AND \"version_tiles\".\"tile_x\" BETWEEN -1 AND 2047\n        AND \"version_tiles\".\"tile_y\" BETWEEN -1 AND 2047"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {
+      "nodes_season_path_idx": {
+        "columns": {
+          "lower(\"path\")": {
+            "isExpression": true
+          }
+        }
+      }
+    }
+  }
+}
