@@ -679,7 +679,14 @@ describe('server sync coordinator', () => {
     const { installServerSyncCoordinator } = await import('./server-sync-coordinator.js')
     installServerSyncCoordinator()
     const focusListener = addEventListener.mock.calls.find(([type]) => type === 'focus')?.[1]
-    if (typeof focusListener !== 'function') throw new Error('focus listener was not installed')
+    const onlineListener = addEventListener.mock.calls.find(([type]) => type === 'online')?.[1]
+    const offlineListener = addEventListener.mock.calls.find(([type]) => type === 'offline')?.[1]
+    if (
+      typeof focusListener !== 'function' ||
+      typeof onlineListener !== 'function' ||
+      typeof offlineListener !== 'function'
+    )
+      throw new Error('live recovery listeners were not installed')
     const clientId = new URL(FakeWebSocket.instances[0]?.url ?? '').searchParams.get('clientId')
 
     for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]) {
@@ -693,6 +700,12 @@ describe('server sync coordinator', () => {
 
     FakeWebSocket.instances.at(-1)?.close()
     focusListener(new Event('focus'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(7)
+    setOnline(false)
+    offlineListener(new Event('offline'))
+    setOnline(true)
+    onlineListener(new Event('online'))
     await vi.advanceTimersByTimeAsync(0)
     expect(FakeWebSocket.instances).toHaveLength(7)
     await vi.advanceTimersByTimeAsync(60 * 60_000 - 1)

@@ -581,12 +581,13 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
   requestLiveRevision(server, 'world', 'telemetry-status', event.revision)
 }
 
-const closeLiveConnection = (connection: LiveConnection): void => {
-  if (connection.reconnectTimer !== null) clearTimeout(connection.reconnectTimer)
+const closeLiveConnection = (connection: LiveConnection, preserveReconnect = false): void => {
+  if (!preserveReconnect && connection.reconnectTimer !== null)
+    clearTimeout(connection.reconnectTimer)
   if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
   if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
   if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
-  connection.reconnectTimer = null
+  if (!preserveReconnect) connection.reconnectTimer = null
   for (const pending of connection.pendingTileOffers.values()) {
     clearTimeout(pending.timer)
     pending.resolve(null)
@@ -797,7 +798,7 @@ export const installServerSyncCoordinator = (): void => {
     window.addEventListener('online', () => recover('online'))
     window.addEventListener('offline', () => {
       clearTimer()
-      for (const connection of liveConnections.values()) closeLiveConnection(connection)
+      for (const connection of liveConnections.values()) closeLiveConnection(connection, true)
     })
   }
   reconcileLiveConnections()
