@@ -20,6 +20,7 @@ interface RevisionState {
   revision: number
   publicFingerprint: string
   adminFingerprint: string
+  fingerprintsDirty: boolean
 }
 
 const harness = (
@@ -28,6 +29,7 @@ const harness = (
     revision: persisted?.revision ?? 0,
     publicFingerprint: '',
     adminFingerprint: '',
+    fingerprintsDirty: false,
   },
 ) => {
   let now = 1_000
@@ -58,14 +60,17 @@ const harness = (
       ) => {
         if (expectedRevision !== revisions.revision) return null
         if (
-          revisions.revision === 0 ||
-          revisions.publicFingerprint !== nextPublicFingerprint ||
-          revisions.adminFingerprint !== nextAdminFingerprint
+          !(revisions.fingerprintsDirty && _retainRevision) &&
+          (revisions.revision === 0 ||
+            revisions.fingerprintsDirty ||
+            revisions.publicFingerprint !== nextPublicFingerprint ||
+            revisions.adminFingerprint !== nextAdminFingerprint)
         ) {
           revisions.revision++
-          revisions.publicFingerprint = nextPublicFingerprint
-          revisions.adminFingerprint = nextAdminFingerprint
         }
+        revisions.publicFingerprint = nextPublicFingerprint
+        revisions.adminFingerprint = nextAdminFingerprint
+        revisions.fingerprintsDirty = false
         return revisions.revision
       },
     },
@@ -154,6 +159,52 @@ describe('season status read model', () => {
     await test.model.applyCommittedChange()
     await expect(test.model.reconcileSnapshot('public')).resolves.toMatchObject({
       snapshot: { revision: 1 },
+    })
+  })
+
+  it('retains the revision when source colour rows match an incrementally created template', async () => {
+    const test = harness()
+    test.setPublic([])
+    test.setAdmin([])
+    await test.model.reconcileSnapshot('public')
+    test.revisions.revision = 2
+    test.revisions.fingerprintsDirty = true
+    const template: TemplateStatus = {
+      templateId: 'new-template',
+      correct: 1,
+      wrong: 0,
+      blank: 0,
+      total: 1,
+      colours: [{ index: 4, total: 1, correct: 1, wrong: 0, blank: 0 }],
+      observedAt: millis(1_750_000_000_000),
+    }
+
+    await test.model.applyCommittedChange({
+      baseRevision: 1,
+      revision: 2,
+      changes: [
+        {
+          templateId: template.templateId,
+          published: true,
+          total: 1,
+          colourTotals: [{ index: 4, total: 1 }],
+          previous: null,
+          current: {
+            correct: 1,
+            wrong: 0,
+            blank: 0,
+            colours: [{ index: 4, total: 1, correct: 1, wrong: 0, blank: 0 }],
+            observedAt: template.observedAt,
+          },
+        },
+      ],
+    })
+    test.setPublic([template])
+    test.setAdmin([template])
+    test.setNow(1_101)
+
+    await expect(test.model.reconcileSnapshot('public')).resolves.toMatchObject({
+      snapshot: { revision: 2, templates: [template] },
     })
   })
 

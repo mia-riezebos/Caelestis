@@ -6,6 +6,7 @@ import {
   createChunkedManifestPersistence,
   createChunkedStatusPersistence,
   createLiveSessionFence,
+  MAX_LIVE_SUBSCRIBERS,
   StatusReadModelObject,
 } from './status-read-model-object.js'
 
@@ -729,6 +730,32 @@ describe('status read-model Durable Object', () => {
     )
     expect(missingIdentity.status).toBe(400)
     await expect(missingIdentity.text()).resolves.toBe('Invalid credential identity')
+  })
+
+  it('rejects live upgrades when the season object reaches its subscriber limit', async () => {
+    database = new SqliteD1Database()
+    const subscribers = Array.from({ length: MAX_LIVE_SUBSCRIBERS }, () => ({}) as WebSocket)
+    const object = new StatusReadModelObject(
+      objectState(new Map(), Number.POSITIVE_INFINITY, subscribers),
+      { DB: database } as unknown as Env,
+    )
+
+    const response = await object.fetch(
+      new Request('https://object.test/', {
+        headers: {
+          upgrade: 'websocket',
+          'x-caelestis-season': '8',
+          'x-caelestis-scope': 'public',
+          'x-caelestis-credential-scope': 'read',
+          'x-caelestis-token-hash': 'a'.repeat(64),
+          'x-caelestis-revocable': '0',
+        },
+      }),
+    )
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).toBe('30')
+    await expect(response.text()).resolves.toBe('Live subscriber limit reached')
   })
 
   it('serializes an in-flight attachment ahead of revocation cleanup', async () => {

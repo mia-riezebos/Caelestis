@@ -40,6 +40,7 @@ import type {
   StatusProjectionMutation,
 } from '../status-read-model/model.js'
 import {
+  finishTileGenerationCommit,
   prepareTileGenerationCommit,
   repairCommittedStatusProjection,
   repairCommittedTileGeneration,
@@ -393,13 +394,9 @@ const recordObservationPromise = async (
   if (!committed) {
     throw new Error(`tile blob reservation expired before ${metadata.hash} could be recorded`)
   }
-  const repairCoverageToken =
-    preparedCoverageToken === null
-      ? options.coverageToken
-      : options.coverageToken === undefined ||
-          options.coverageToken === preparedCoverageToken.coverageToken
-        ? preparedCoverageToken.coverageToken
-        : undefined
+  // The server recomputed coverage after prepare. A client token only supports adapters that do not
+  // implement prepare; it cannot invalidate the fresher server-owned result.
+  const repairCoverageToken = preparedCoverageToken?.coverageToken ?? options.coverageToken
   if (committed.current !== null && repairCoverageToken !== undefined) {
     await repairCommittedTileGeneration(ports.statusReadModel, metadata.season, {
       ...committed.current,
@@ -408,6 +405,13 @@ const recordObservationPromise = async (
       visibleToPublic: targets.some((target) => target.published),
       visibleToAdmin: targets.length > 0,
     })
+  } else if (preparedCoverageToken !== null) {
+    await finishTileGenerationCommit(
+      ports.statusReadModel,
+      metadata.season,
+      metadata.tile,
+      preparedCoverageToken,
+    )
   }
   const mutation: StatusProjectionMutation | null =
     committed.revision === null

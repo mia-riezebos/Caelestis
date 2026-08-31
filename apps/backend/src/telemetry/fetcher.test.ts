@@ -74,6 +74,8 @@ const harness = () => {
     prepareTileGenerationCommit: (season, tile) => direct.prepareTileGenerationCommit(season, tile),
     applyCommittedTileGeneration: (season, generation) =>
       direct.applyCommittedTileGeneration(season, generation),
+    finishTileGenerationCommit: (season, tile, commit) =>
+      direct.finishTileGenerationCommit(season, tile, commit),
   }
   const ports = { blobs, sql, counters, statusReadModel }
   const requested: string[] = []

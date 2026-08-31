@@ -57,6 +57,11 @@ export interface StatusReadModelPort {
     season: number,
     generation: CommittedTileGeneration,
   ) => Promise<void>
+  readonly finishTileGenerationCommit?: (
+    season: number,
+    tile: TileCoord,
+    commit: PreparedTileGenerationCommit,
+  ) => Promise<void>
 }
 
 export const prepareTileGenerationCommit = (
@@ -95,6 +100,20 @@ export const repairCommittedTileGeneration = async (
 ): Promise<void> => {
   try {
     await readModel.applyCommittedTileGeneration?.(season, generation)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+/** Finish a losing tile commit so an earlier authoritative winner can leave the pending fence. */
+export const finishTileGenerationCommit = async (
+  readModel: StatusReadModelPort,
+  season: number,
+  tile: TileCoord,
+  commit: PreparedTileGenerationCommit,
+): Promise<void> => {
+  try {
+    await readModel.finishTileGenerationCommit?.(season, tile, commit)
   } catch (error) {
     console.error(error)
   }
@@ -254,6 +273,17 @@ export class DirectStatusReadModel implements StatusReadModelPort {
     const cache = this.tileGenerations.get(season) ?? createTileGenerationCache()
     this.tileGenerations.set(season, cache)
     cache.apply(generation)
+    return Promise.resolve()
+  }
+
+  finishTileGenerationCommit(
+    season: number,
+    tile: TileCoord,
+    commit: PreparedTileGenerationCommit,
+  ): Promise<void> {
+    const cache = this.tileGenerations.get(season) ?? createTileGenerationCache()
+    this.tileGenerations.set(season, cache)
+    cache.finish(tile, commit)
     return Promise.resolve()
   }
 }

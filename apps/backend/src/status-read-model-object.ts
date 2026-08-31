@@ -51,6 +51,7 @@ const CHUNK_PREFIX = 'status-read-model:v2:chunk:'
 const MAX_CHUNK_JSON_BYTES = 512 * 1024
 const MAX_DELTA_MESSAGE_BYTES = 32 * 1024
 const LIVE_PROTOCOL = 'caelestis.live.v1'
+export const MAX_LIVE_SUBSCRIBERS = 256
 const MANIFEST_CACHE_INDEX_KEY = 'manifest-read-model:v1:index'
 // 128 Ki UTF-16 code units are at most 384 KiB in UTF-8, below the intended 512 KiB ceiling.
 const MANIFEST_CACHE_CHUNK_CODE_UNITS = 128 * 1024
@@ -596,6 +597,15 @@ export class StatusReadModelObject extends DurableObject<Env> {
     this.tileGenerations.apply(generation)
   }
 
+  async finishTileGenerationCommit(
+    season: number,
+    tile: TileCoord,
+    commit: PreparedTileGenerationCommit,
+  ): Promise<void> {
+    this.bindSeason(season)
+    this.tileGenerations.finish(tile, commit)
+  }
+
   async notifyAlarmChange(season: number): Promise<void> {
     this.bindSeason(season)
     const event: LiveSyncServerEvent = { type: 'alarms-reconcile' }
@@ -648,9 +658,13 @@ export class StatusReadModelObject extends DurableObject<Env> {
     if (lastRevision !== null && (!Number.isSafeInteger(lastRevision) || lastRevision < 0)) {
       return new Response('Invalid revision', { status: 400 })
     }
-
+    let capacityExceeded = false
     const response = await this.liveSessions.attach(
       async () => {
+        if (this.objectState.getWebSockets('status').length >= MAX_LIVE_SUBSCRIBERS) {
+          capacityExceeded = true
+          return false
+        }
         if (!revocable) return true
         const token = await this.sql.readAccessToken(tokenHash)
         return token !== null && (scope === 'public' || token.scope === 'admin')
@@ -674,6 +688,12 @@ export class StatusReadModelObject extends DurableObject<Env> {
         return { client, server }
       },
     )
+    if (capacityExceeded) {
+      return new Response('Live subscriber limit reached', {
+        status: 503,
+        headers: { 'Retry-After': '30' },
+      })
+    }
     if (response === null) return new Response('Credential revoked', { status: 401 })
     try {
       const { snapshot } = await this.model(season).reconcileSnapshot(scope)

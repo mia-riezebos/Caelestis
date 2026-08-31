@@ -185,8 +185,16 @@ const sqlRead = <A>(operation: string, read: () => Promise<A>) =>
 export const readStatus = (
   season: number,
   includeUnpublished: boolean,
-): Effect.Effect<StatusResponse, SqlStoreReadError, StatusReadModelService> =>
+  cacheable: boolean,
+): Effect.Effect<StatusResponse, SqlStoreReadError, SqlStoreService | StatusReadModelService> =>
   Effect.gen(function* () {
+    if (!cacheable) {
+      const sql = yield* SqlStoreService
+      const templates = yield* sqlRead('readTemplateStatuses', () =>
+        sql.readTemplateStatuses(season, includeUnpublished),
+      )
+      return { templates }
+    }
     const readModel = yield* StatusReadModelService
     const read = yield* sqlRead('reconcileStatusSnapshot', () =>
       readModel.reconcileSnapshot(season, includeUnpublished ? 'admin' : 'public'),

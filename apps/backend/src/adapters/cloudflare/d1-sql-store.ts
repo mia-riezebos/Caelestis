@@ -1757,6 +1757,12 @@ export class D1SqlStore implements SqlStore {
                      INNER JOIN templates AS template
                        ON template.id = json_extract(raw.value, '$.templateId')
                       AND template.current_version_id = json_extract(raw.value, '$.versionId')
+                     INNER JOIN template_tile_statuses AS status
+                       ON status.template_id = json_extract(raw.value, '$.templateId')
+                      AND status.version_id = json_extract(raw.value, '$.versionId')
+                      AND status.tile_x = json_extract(raw.value, '$.tileX')
+                      AND status.tile_y = json_extract(raw.value, '$.tileY')
+                      AND status.observed_at_ms = json_extract(raw.value, '$.observedAt')
                      WHERE ? = 1 OR template.published_at IS NOT NULL
                    )
                    ON CONFLICT(season) DO UPDATE SET

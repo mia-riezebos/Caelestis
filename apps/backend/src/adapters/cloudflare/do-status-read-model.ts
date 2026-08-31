@@ -89,6 +89,14 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return this.shard(season).applyCommittedTileGeneration(season, generation)
   }
 
+  finishTileGenerationCommit(
+    season: number,
+    tile: TileCoord,
+    commit: PreparedTileGenerationCommit,
+  ): Promise<void> {
+    return this.shard(season).finishTileGenerationCommit(season, tile, commit)
+  }
+
   connectLive(
     request: Request,
     connection: {

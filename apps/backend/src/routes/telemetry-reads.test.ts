@@ -49,7 +49,7 @@ const harness = async () => {
     blobs,
     sql,
     counters,
-    app: createApp(context, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
+    app: createApp(context, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 0 }),
   }
 }
 

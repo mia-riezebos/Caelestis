@@ -138,6 +138,45 @@ describe('D1SqlStore', () => {
     await expect(
       store.commitStatusProjectionRevision(1, 1, true, 'a'.repeat(64), 'b'.repeat(64)),
     ).resolves.toBe(1)
+
+    const staleHash = 'e'.repeat(64)
+    await store.reserveTileBlobUpload(
+      staleHash,
+      staleHash,
+      'stale-observation',
+      millis(1_000),
+      millis(5_000),
+    )
+    await expect(
+      store.commitTileBlobReservation(
+        'stale-observation',
+        millis(3_000),
+        {
+          season: 1,
+          tile: { x: 0, y: 0 },
+          hash: staleHash,
+          observedAt: millis(1_000),
+          reportedAt: seconds(1),
+          reportedWithToken: 'c'.repeat(64),
+          reportedByUserId: 42,
+        },
+        [
+          {
+            templateId: 'template-1',
+            versionId: 'version-1',
+            tile: { x: 0, y: 0 },
+            correct: 0,
+            wrong: 0,
+            blank: 1,
+            observedAt: millis(1_000),
+          },
+        ],
+        false,
+        false,
+        true,
+      ),
+    ).resolves.toMatchObject({ revision: null, statusChanges: [] })
+    await expect(store.readStatusProjectionRevision(1)).resolves.toBe(1)
   })
 
   it('returns a monotonic tile commit order for equal observation timestamps', async () => {

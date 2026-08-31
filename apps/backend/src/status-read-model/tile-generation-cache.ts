@@ -39,6 +39,12 @@ interface CachedTileGeneration extends CommittedTileGeneration {
   expiresAt: number
 }
 
+interface PendingTileGenerationCommits {
+  readonly active: Set<string>
+  candidate: CachedTileGeneration | null
+  expiresAt: number
+}
+
 const tileKey = (tile: TileCoord): string => `${tile.x}/${tile.y}`
 
 /** Shared season cache. D1 remains authoritative whenever this module answers unresolved. */
@@ -50,18 +56,57 @@ export const createTileGenerationCache = (
   } = {},
 ) => {
   const entries = new Map<string, CachedTileGeneration>()
-  const commitTokens = new Map<string, string>()
+  const pendingCommits = new Map<string, PendingTileGenerationCommits>()
   const now = options.now ?? Date.now
   const ttl = options.ttlMilliseconds ?? TILE_GENERATION_CACHE_TTL_MILLISECONDS
   const createCoverageToken = options.createCoverageToken ?? (() => crypto.randomUUID())
   let coverageToken = createCoverageToken()
 
+  const prunePendingCommits = (checkedAt: number): void => {
+    for (const [key, pending] of pendingCommits) {
+      if (pending.expiresAt <= checkedAt) pendingCommits.delete(key)
+    }
+  }
+
+  const settle = (
+    key: string,
+    commitToken: string,
+    generation: CommittedTileGeneration | null,
+  ): void => {
+    const checkedAt = now()
+    prunePendingCommits(checkedAt)
+    const pending = pendingCommits.get(key)
+    if (pending === undefined || !pending.active.delete(commitToken)) return
+    if (
+      generation !== null &&
+      generation.coverageToken === coverageToken &&
+      (pending.candidate === null || pending.candidate.commitOrder < generation.commitOrder)
+    ) {
+      pending.candidate = { ...generation, expiresAt: checkedAt + ttl }
+    }
+    if (pending.active.size > 0) return
+    pendingCommits.delete(key)
+    if (pending.candidate !== null && pending.candidate.coverageToken === coverageToken) {
+      entries.set(key, pending.candidate)
+    }
+  }
+
   return {
     prepare(tile: TileCoord): PreparedTileGenerationCommit {
       const key = tileKey(tile)
+      const checkedAt = now()
+      prunePendingCommits(checkedAt)
       const commitToken = createCoverageToken()
+      const held = entries.get(key)
+      const pending = pendingCommits.get(key) ?? {
+        active: new Set<string>(),
+        candidate: held !== undefined && held.expiresAt > checkedAt ? held : null,
+        expiresAt: checkedAt + ttl,
+      }
+      pending.active.add(commitToken)
+      pending.expiresAt = checkedAt + ttl
       entries.delete(key)
-      commitTokens.set(key, commitToken)
+      pendingCommits.set(key, pending)
       return { coverageToken, commitToken }
     },
 
@@ -74,6 +119,7 @@ export const createTileGenerationCache = (
       let sawMiss = false
       let sawStale = false
       const checkedAt = now()
+      prunePendingCommits(checkedAt)
       for (const offer of offers) {
         const key = tileKey(offer.tile)
         const held = entries.get(key)
@@ -108,17 +154,24 @@ export const createTileGenerationCache = (
     apply(generation: CommittedTileGeneration): void {
       if (generation.coverageToken !== coverageToken) return
       const key = tileKey(generation.tile)
-      const commitToken = commitTokens.get(key)
-      if (commitToken !== undefined && generation.commitToken !== commitToken) return
+      if (generation.commitToken !== undefined) {
+        settle(key, generation.commitToken, generation)
+        return
+      }
       const held = entries.get(key)
       if (held !== undefined && held.commitOrder >= generation.commitOrder) return
       entries.set(key, { ...generation, expiresAt: now() + ttl })
     },
 
+    finish(tile: TileCoord, commit: PreparedTileGenerationCommit): void {
+      if (commit.coverageToken !== coverageToken) return
+      settle(tileKey(tile), commit.commitToken, null)
+    },
+
     invalidate(): void {
       coverageToken = createCoverageToken()
       entries.clear()
-      commitTokens.clear()
+      pendingCommits.clear()
     },
   }
 }

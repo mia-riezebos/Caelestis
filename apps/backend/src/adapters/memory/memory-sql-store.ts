@@ -959,7 +959,7 @@ export class MemorySqlStore implements SqlStore {
         : []
     })
     let revision: number | null = null
-    if (acceptedStatuses.length > 0) {
+    if (statusChanges.length > 0) {
       const held = this.statusRevisions.get(observation.season)
       revision = (held?.revision ?? 0) + 1
       this.statusRevisions.set(observation.season, {

@@ -236,7 +236,7 @@ export const createTelemetryRoutes = (
     return runBackendHttp(
       c,
       runtime,
-      readStatus(season, c.get('caller').scope === 'admin'),
+      readStatus(season, c.get('caller').scope === 'admin', season === options.currentSeason),
       (response) => c.json(response),
     )
   })
@@ -474,6 +474,9 @@ export const createTelemetryRoutes = (
     if (body === null || body.offers.length > MAX_TILE_OFFERS) {
       return c.json({ error: 'invalid tile offer batch' }, 400)
     }
+    if (body.season !== options.currentSeason) {
+      return c.json({ error: 'season is not served by this telemetry endpoint' }, 400)
+    }
     recordTileOfferBatchRequested(body.offers.length)
     if (new Set(body.offers.map((offer) => offer.tile)).size !== body.offers.length) {
       return c.json({ error: 'tile offer batch contains duplicates' }, 400)
@@ -540,6 +543,7 @@ export const createTelemetryRoutes = (
       y >= WORLD_TILES ||
       !SHA256_HEX.test(hash) ||
       season === null ||
+      season !== options.currentSeason ||
       observedAt === null ||
       observedAt < MIN_EPOCH_SECONDS ||
       observedAt > MAX_EPOCH_SECONDS ||

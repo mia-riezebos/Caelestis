@@ -22,7 +22,7 @@ const EVENT_ID = '01890f3e-7b2c-7abc-8def-0123456789ac'
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
-const harness = async (statusReadModel?: StatusReadModelPort) => {
+const harness = async (statusReadModel?: StatusReadModelPort, currentSeason = 0) => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
@@ -40,7 +40,7 @@ const harness = async (statusReadModel?: StatusReadModelPort) => {
     blobs,
     sql,
     counters,
-    app: createApp(context, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
+    app: createApp(context, { bootstrapAdminToken: BOOTSTRAP, currentSeason }),
   }
 }
 
@@ -128,6 +128,68 @@ const uploadCanvas = async (
 
 describe('telemetry routes', () => {
   afterEach(() => vi.restoreAllMocks())
+
+  it('reads historical status directly without creating a season read model', async () => {
+    const reconcileSnapshot = vi.fn(async () => {
+      throw new Error('historical status must not reach the read model')
+    })
+    const { app } = await harness(
+      { applyCommittedChange: vi.fn(async () => null), reconcileSnapshot },
+      1,
+    )
+    const readToken = await mintToken(app, 'read')
+
+    const response = await app.request('/telemetry/status?season=0', {
+      headers: bearer(readToken),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ templates: [] })
+    expect(reconcileSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('rejects historical tile offers and uploads before resolving a season read model', async () => {
+    const resolveCurrentTileOffers = vi.fn()
+    const prepareTileGenerationCommit = vi.fn()
+    const { app } = await harness({
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      resolveCurrentTileOffers,
+      prepareTileGenerationCommit,
+    })
+    const reportToken = await mintToken(app, 'report')
+    const now = Math.floor(Date.now() / 1_000)
+
+    const offered = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 1,
+        offers: [{ tile: '0/0', sha256: 'a'.repeat(64), ts: now }],
+      }),
+    })
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${'a'.repeat(64)}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '1',
+        'x-caelestis-observed-at': String(now),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: new Uint8Array([1]),
+    })
+
+    expect(offered.status).toBe(400)
+    expect(uploaded.status).toBe(400)
+    expect(resolveCurrentTileOffers).not.toHaveBeenCalled()
+    expect(prepareTileGenerationCommit).not.toHaveBeenCalled()
+  })
 
   it('authenticates and scope-binds live upgrades before resolving a season object', async () => {
     const blobs = new MemoryBlobStore()
@@ -383,6 +445,47 @@ describe('telemetry routes', () => {
       body: JSON.stringify({ ...offer, offers: [offer.offers[0], offer.offers[0]] }),
     })
     expect(duplicate.status).toBe(400)
+  })
+
+  it('repairs an upload with the server prepare token when the client coverage token is stale', async () => {
+    const serverCommit = {
+      coverageToken: '01890f3e-7b2c-7abc-8def-012345678900',
+      commitToken: '01890f3e-7b2c-7abc-8def-012345678901',
+    }
+    const applyCommittedTileGeneration = vi.fn(async () => undefined)
+    const { app } = await harness({
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      prepareTileGenerationCommit: vi.fn(async () => serverCommit),
+      applyCommittedTileGeneration,
+    })
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const now = Math.floor(Date.now() / 1_000)
+
+    const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(now),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+        'x-caelestis-tile-coverage-token': '01890f3e-7b2c-7abc-8def-012345678902',
+      },
+      body: bytes,
+    })
+
+    expect(uploaded.status).toBe(200)
+    expect(applyCommittedTileGeneration).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining(serverCommit),
+    )
   })
 
   it('keeps upload validation separate from typed storage failures', async () => {

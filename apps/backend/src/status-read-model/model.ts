@@ -158,10 +158,10 @@ const applyScopeMutation = (
         : {
             colours: change.colourTotals.map(({ index, total }) => ({
               index,
+              total,
               correct: 0,
               wrong: 0,
               blank: 0,
-              total,
             })),
           }),
       observedAt: 0 as Millis,

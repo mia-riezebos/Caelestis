@@ -222,4 +222,75 @@ describe('tile generation cache', () => {
         .acknowledgedDeliveryIds,
     ).toEqual(['b'])
   })
+
+  it('publishes a successful concurrent commit after the losing commit settles', () => {
+    const cache = createTileGenerationCache({ now: () => 2_000 })
+    const tile = { x: 1, y: 2 }
+    const commitA = cache.prepare(tile)
+    const commitB = cache.prepare(tile)
+
+    cache.apply({
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      ...commitA,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    cache.finish(tile, commitB)
+
+    expect(
+      cache.resolve('public', [{ deliveryId: 'winner', tile, hash: 'a'.repeat(64) }])
+        .acknowledgedDeliveryIds,
+    ).toEqual(['winner'])
+  })
+
+  it('restores the prior generation when a replacement commit loses', () => {
+    const cache = createTileGenerationCache({ now: () => 2_000 })
+    const tile = { x: 1, y: 2 }
+    const coverageToken = cache.resolve('public', []).coverageToken ?? ''
+    cache.apply({
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      coverageToken,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+
+    const replacement = cache.prepare(tile)
+    cache.finish(tile, replacement)
+
+    expect(
+      cache.resolve('public', [{ deliveryId: 'prior', tile, hash: 'a'.repeat(64) }])
+        .acknowledgedDeliveryIds,
+    ).toEqual(['prior'])
+  })
+
+  it('expires abandoned commit fences without restoring stale candidates', () => {
+    let now = 1_000
+    const cache = createTileGenerationCache({ now: () => now, ttlMilliseconds: 100 })
+    const tile = { x: 1, y: 2 }
+    const coverageToken = cache.resolve('public', []).coverageToken ?? ''
+    cache.apply({
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      coverageToken,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    cache.prepare(tile)
+    now = 1_101
+
+    const replacement = cache.prepare(tile)
+    cache.finish(tile, replacement)
+
+    expect(
+      cache.resolve('public', [{ deliveryId: 'stale', tile, hash: 'a'.repeat(64) }]),
+    ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['stale'] })
+  })
 })
