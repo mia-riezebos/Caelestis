@@ -148,6 +148,7 @@ const template: ServerTemplate = {
 }
 
 beforeEach(() => {
+  vi.clearAllTimers()
   vi.resetModules()
   vi.clearAllMocks()
   account.loadAccount.mockImplementation(async () => undefined)
@@ -164,6 +165,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.clearAllTimers()
   vi.unstubAllGlobals()
 })
 
@@ -589,6 +591,39 @@ describe('server telemetry client', () => {
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-avoided', 1)
   })
 
+  it('retains a failed observation after the recent replay cache evicts it', async () => {
+    const offeredTiles: string[] = []
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          attempts++
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          offeredTiles.push(...body.offers.map((offer) => offer.tile))
+          if (attempts <= 3) return new Response(null, { status: 503 })
+          return Response.json({ wanted: [], acknowledged: ['1/2'], rejected: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(attempts).toBe(3))
+    for (let index = 0; index < 33; index++)
+      harness.fetchedTile?.({ x: 100 + index, y: 9 }, new Uint8Array([index]), 1_800_000_001)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    await vi.waitFor(() => expect(attempts).toBe(4), { timeout: 2_000 })
+    expect(offeredTiles).toEqual(['1/2', '1/2', '1/2', '1/2'])
+  })
+
   it('reports distinct tile fetches even when the server just acknowledged the same content', async () => {
     const offers: unknown[] = []
     vi.stubGlobal(
@@ -753,8 +788,10 @@ describe('server telemetry client', () => {
     expect(offers).toBe(0)
 
     finishAccountLoad?.()
-    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(offers).toBe(2))
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    harness.serverContents?.(replacement, { nodes: [], templates: [template] })
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledTimes(2), { timeout: 2_000 })
+    await vi.waitFor(() => expect(offers).toBe(2), { timeout: 2_000 })
     await new Promise((resolve) => setTimeout(resolve, 350))
     expect(offers).toBe(2)
   })
@@ -788,8 +825,11 @@ describe('server telemetry client', () => {
     const bytes = new Uint8Array([1, 2, 3])
     harness.fetchedTile?.({ x: 1, y: 2 }, bytes, 1_800_000_000)
     await vi.waitFor(() => expect(offers).toBe(1))
+    await vi.waitFor(() =>
+      expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-accepted', 0),
+    )
     harness.serverContents?.(server, { nodes: [], templates: [template] })
-    await vi.waitFor(() => expect(offers).toBe(2))
+    await vi.waitFor(() => expect(offers).toBe(2), { timeout: 2_000 })
     expect(debug.count).toHaveBeenCalledWith('telemetry:tile-offers-retried', 1)
 
     mode = 'requested'
