@@ -512,6 +512,20 @@ describe('telemetry routes', () => {
     expect(duplicate.status).toBe(400)
   })
 
+  it('rejects an oversized tile-offer body before JSON decoding', async () => {
+    const { app } = await harness()
+    const reportToken = await mintToken(app, 'report')
+
+    const response = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({ padding: 'x'.repeat(64 * 1024) }),
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'invalid tile offer batch' })
+  })
+
   it('omits an oversized response-applied delta without losing the tile disposition', async () => {
     const templates = Array.from({ length: 100 }, (_, templateIndex) => ({
       templateId: `template-${templateIndex}`,

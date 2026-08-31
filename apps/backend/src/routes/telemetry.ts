@@ -63,6 +63,7 @@ const DEFAULT_LEADERBOARD_LIMIT = 50
 const LIVE_PROTOCOL = 'caelestis.live.v1'
 const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
 const MAX_MUTATION_STATUS_BYTES = 32 * 1024
+const MAX_TILE_OFFER_BODY_BYTES = 64 * 1024
 
 const mutationStatus = (status: StatusDelta | undefined): StatusDelta | undefined =>
   status !== undefined &&
@@ -172,6 +173,16 @@ const readBoundedBody = async (request: Request, limit: number): Promise<Uint8Ar
     at += part.byteLength
   }
   return bytes
+}
+
+const readBoundedJsonBody = async (request: Request, limit: number): Promise<unknown | null> => {
+  const bytes = await readBoundedBody(request, limit)
+  if (bytes === null) return null
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes))
+  } catch {
+    return null
+  }
 }
 
 export const createTelemetryRoutes = (
@@ -504,7 +515,7 @@ export const createTelemetryRoutes = (
   routes.post('/tiles/offers', requireScopeEffect(runtime, auth, 'report'), async (c) => {
     const body = decoded(
       TileOfferBatch,
-      await c.req.json().catch(() => null),
+      await readBoundedJsonBody(c.req.raw, MAX_TILE_OFFER_BODY_BYTES),
     ) as TileOfferBatchValue | null
     if (body === null || body.offers.length > MAX_TILE_OFFERS) {
       return c.json({ error: 'invalid tile offer batch' }, 400)
