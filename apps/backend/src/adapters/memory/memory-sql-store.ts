@@ -1009,6 +1009,7 @@ export class MemorySqlStore implements SqlStore {
     for (const template of this.templates.values()) {
       if (
         template.season !== season ||
+        template.surface.kind !== 'world' ||
         template.timelapseFrozenAt === null ||
         targetStart * 1_000 > template.timelapseFrozenAt
       ) {

@@ -1806,6 +1806,7 @@ export class D1SqlStore implements SqlStore {
             INNER JOIN version_tiles
               ON version_tiles.version_id = template_versions.id
             WHERE templates.season = history.season
+              AND templates.surface_kind = 'world'
               AND templates.timelapse_frozen_at_ms IS NOT NULL
               AND ${targetStart} * 1000 <= templates.timelapse_frozen_at_ms
               AND ${ringX} <= 1
