@@ -1112,22 +1112,22 @@ export const installTelemetry = (): void => {
   })
   onStateChange(() => {
     notifyAlarmListeners()
-    if (!getState().shareTiles) {
-      clearTileOfferDelivery()
-      return
+    const shareTiles = getState().shareTiles
+    if (!shareTiles) clearTileOfferDelivery()
+    else {
+      const currentServerUrls = new Set(getState().servers.map((server) => server.url))
+      const retainedServerUrls = new Set([
+        ...flushTimers.keys(),
+        ...queued.keys(),
+        ...unsettledOffers.keys(),
+        ...offerRetryDelays.keys(),
+      ])
+      for (const serverUrl of retainedServerUrls)
+        if (!currentServerUrls.has(serverUrl)) clearServerTileOfferDelivery(serverUrl)
     }
-    const currentServerUrls = new Set(getState().servers.map((server) => server.url))
-    const retainedServerUrls = new Set([
-      ...flushTimers.keys(),
-      ...queued.keys(),
-      ...unsettledOffers.keys(),
-      ...offerRetryDelays.keys(),
-    ])
-    for (const serverUrl of retainedServerUrls)
-      if (!currentServerUrls.has(serverUrl)) clearServerTileOfferDelivery(serverUrl)
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
-      replayRecent(server)
+      replayRecent(server, shareTiles)
     }
   })
   registerServerSyncResource({

@@ -1276,6 +1276,37 @@ describe('server telemetry client', () => {
     expect(new Set(reports.map((report) => report.eventId)).size).toBe(2)
   })
 
+  it('replays failed paint reports when tile sharing is disabled', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/paints')) {
+          attempts++
+          return new Response(null, { status: attempts <= 3 ? 503 : 204 })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    harness.acceptedPaint?.({
+      season: 0,
+      observedAt: 1_800_000_000,
+      painted: 1,
+      tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+    })
+    await vi.waitFor(() => expect(attempts).toBe(3))
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+
+    await vi.waitFor(() => expect(attempts).toBe(4))
+  })
+
   it('retries one immutable paint event without changing count, order, or attribution', async () => {
     const paintAttempts: string[] = []
     vi.stubGlobal(
