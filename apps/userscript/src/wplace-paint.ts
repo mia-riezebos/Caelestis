@@ -86,8 +86,8 @@ const paintDrawerCommitButton = (swatch: Element): HTMLButtonElement | null => {
  * resulting canvas writes then flow through our canonical pixel-accounting interception exactly
  * like a hand-painted pixel.
  */
-const movePaintHistory = (title: 'Undo' | 'Redo'): boolean => {
-  const swatch = document.querySelector('[id^="color-"]')
+const movePaintHistory = (title: 'Undo' | 'Redo', root: ParentNode): boolean => {
+  const swatch = root.querySelector('[id^="color-"]')
   if (swatch === null) return false
   const drawer = paintDrawerOf(swatch)
   if (drawer === null) return false
@@ -98,13 +98,15 @@ const movePaintHistory = (title: 'Undo' | 'Redo'): boolean => {
 }
 
 /** Undo the most recently drafted pixel, if Wplace currently has one. */
-export const undoPaintDraft = (): boolean => movePaintHistory('Undo')
+export const undoPaintDraft = (root: ParentNode = document): boolean =>
+  movePaintHistory('Undo', root)
 
 /** Redo the most recently undone draft pixel, if Wplace currently has one. */
-export const redoPaintDraft = (): boolean => movePaintHistory('Redo')
+export const redoPaintDraft = (root: ParentNode = document): boolean =>
+  movePaintHistory('Redo', root)
 
-const paintDockButton = (): HTMLButtonElement | null => {
-  for (const button of document.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {
+const paintDockButton = (root: ParentNode): HTMLButtonElement | null => {
+  for (const button of root.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {
     const dock = button.parentElement
     if (
       dock?.classList.contains('absolute') === true &&
@@ -126,8 +128,8 @@ const paintDockButton = (): HTMLButtonElement | null => {
  * or title. Neither path searches arbitrary page text, so a template action or dialog button cannot
  * be mistaken for paint mode.
  */
-export const performPaintAction = (): boolean => {
-  const swatch = document.querySelector('[id^="color-"]')
+export const performPaintAction = (root: ParentNode = document): boolean => {
+  const swatch = root.querySelector('[id^="color-"]')
   if (swatch !== null) {
     const commit = paintDrawerCommitButton(swatch)
     if (commit === null || commit.disabled) return false
@@ -135,7 +137,7 @@ export const performPaintAction = (): boolean => {
     return true
   }
   const labels = new Set(['paint', 'open paint', 'paint pixel'])
-  for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
+  for (const button of root.querySelectorAll<HTMLButtonElement>('button')) {
     const label = (button.getAttribute('aria-label') ?? button.getAttribute('title') ?? '')
       .trim()
       .toLowerCase()
@@ -143,7 +145,7 @@ export const performPaintAction = (): boolean => {
     button.click()
     return true
   }
-  const dockButton = paintDockButton()
+  const dockButton = paintDockButton(root)
   if (dockButton !== null) {
     dockButton.click()
     return true
@@ -152,8 +154,8 @@ export const performPaintAction = (): boolean => {
 }
 
 /** Discard the current native Wplace draft, leaving unrelated Escape handling alone when closed. */
-export const cancelPaintDraft = (): boolean => {
-  const swatch = document.querySelector('[id^="color-"]')
+export const cancelPaintDraft = (root: ParentNode = document): boolean => {
+  const swatch = root.querySelector('[id^="color-"]')
   if (swatch === null) return false
   const close = paintDrawerCloseButton(swatch)
   if (close === null || close.disabled) return false

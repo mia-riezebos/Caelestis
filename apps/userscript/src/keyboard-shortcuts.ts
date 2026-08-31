@@ -3,7 +3,7 @@ import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
 import { currentShortcutPlatform, type ShortcutPlatform, shortcutFor } from './shortcuts.js'
-import { getState, setState } from './state.js'
+import { getState, getSurfaceAppearance, setState, setSurfaceAppearance } from './state.js'
 import {
   ownsGroup,
   setAppearance,
@@ -47,13 +47,23 @@ const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void
   setState({ appearance: { ...appearance, [property]: !appearance[property] } })
 }
 
-const toggleRings = (): void => {
+const toggleRings = (
+  allianceSurface: NonNullable<ReturnType<typeof activeAllianceSurface>>['surface'] | null,
+): void => {
   const focused = focusedTemplate()
   if (focused !== null && ownsGroup(focused, 'pixels')) {
     void toggleAppearanceBoolean(focused.id, 'contrastOutline').then((changed) => {
       if (!changed) return
       refreshOverlayMenu()
-      triggerMapRepaint()
+      if (allianceSurface === null) triggerMapRepaint()
+    })
+    return
+  }
+  if (allianceSurface !== null) {
+    const appearance = getSurfaceAppearance(allianceSurface)
+    setSurfaceAppearance(allianceSurface, {
+      ...appearance,
+      contrastOutline: !appearance.contrastOutline,
     })
     return
   }
@@ -117,6 +127,24 @@ export const installKeyboardShortcuts = (
     if (isMoving() && (event.key === 'Escape' || event.key === 'Enter')) return
     const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
+    const alliance = activeAllianceSurface()
+    const allianceSurface = alliance?.surface ?? null
+    const nativeRoot = alliance?.stage.closest('dialog[open]') ?? document
+
+    // These depend on world paint accounting or world-only appearance state. Claim them while an
+    // alliance editor is active, but never let them mutate the world behind it.
+    if (
+      alliance !== null &&
+      (shortcut === 'toggle-colour' ||
+        shortcut === 'toggle-markers' ||
+        shortcut === 'toggle-selected-colour-markers' ||
+        shortcut === 'fly-to-colour' ||
+        shortcut === 'cycle-colour-previous' ||
+        shortcut === 'cycle-colour-next')
+    ) {
+      claimShortcut(event)
+      return
+    }
 
     if (shortcut === 'show-shortcut-help') {
       claimShortcut(event)
@@ -124,7 +152,8 @@ export const installKeyboardShortcuts = (
       return
     }
     if (shortcut === 'undo-paint' || shortcut === 'redo-paint') {
-      const moved = shortcut === 'undo-paint' ? undoPaintDraft() : redoPaintDraft()
+      const moved =
+        shortcut === 'undo-paint' ? undoPaintDraft(nativeRoot) : redoPaintDraft(nativeRoot)
       if (moved) claimShortcut(event)
       return
     }
@@ -135,7 +164,10 @@ export const installKeyboardShortcuts = (
     }
     if (shortcut === 'toggle-template-menu') {
       const focused = focusedTemplate()
-      if (focused === null) return
+      if (focused === null) {
+        if (alliance !== null) claimShortcut(event)
+        return
+      }
       claimShortcut(event)
       toggleOverlayMenu(focused.id, redraw)
       return
@@ -158,7 +190,7 @@ export const installKeyboardShortcuts = (
     }
     if (shortcut === 'toggle-rings') {
       claimShortcut(event)
-      toggleRings()
+      toggleRings(allianceSurface)
       return
     }
     if (shortcut === 'toggle-selected-colour-markers') {
@@ -183,11 +215,11 @@ export const installKeyboardShortcuts = (
       return
     }
     if (shortcut === 'paint-action') {
-      if (performPaintAction()) claimShortcut(event)
+      if (performPaintAction(nativeRoot)) claimShortcut(event)
       return
     }
     if (shortcut === 'cancel-paint') {
-      if (cancelPaintDraft()) claimShortcut(event)
+      if (cancelPaintDraft(nativeRoot)) claimShortcut(event)
       return
     }
     if (shortcut === 'toggle-theme') {
@@ -198,7 +230,10 @@ export const installKeyboardShortcuts = (
     const opacity = opacityFor(shortcut)
     if (opacity === null) return
     const focused = focusedTemplate()
-    if (focused === null) return
+    if (focused === null) {
+      if (alliance !== null) claimShortcut(event)
+      return
+    }
     claimShortcut(event)
     void setOwnsGroup(focused.id, 'pixels', true).then((owned) => {
       if (owned) void setAppearance(focused.id, { opacity })
