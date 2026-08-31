@@ -448,6 +448,49 @@ describe('telemetry routes', () => {
     expect(consoleError).toHaveBeenCalledWith(projectionError)
   })
 
+  it('falls through to authoritative offer processing when the cache read fails', async () => {
+    const cacheError = new Error('cache shard unavailable')
+    const resolveCurrentTileOffers = vi.fn(async () => Promise.reject(cacheError))
+    const { app } = await harness({
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      resolveCurrentTileOffers,
+    })
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const offered = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 0,
+        offers: [
+          {
+            deliveryId: EVENT_ID,
+            tile: '0/0',
+            sha256: 'b'.repeat(64),
+            ts: seconds(Math.floor(Date.now() / 1_000)),
+          },
+        ],
+      }),
+    })
+
+    expect(offered.status).toBe(200)
+    await expect(offered.json()).resolves.toEqual({
+      wanted: ['0/0'],
+      acknowledged: [],
+      rejected: [],
+    })
+    expect(resolveCurrentTileOffers).toHaveBeenCalledOnce()
+    expect(consoleError).toHaveBeenCalledWith('tile generation cache read failed', cacheError)
+  })
+
   it('publishes an accepted revision before non-fatal derived artifact writes', async () => {
     const order: string[] = []
     const applyCommittedChange = vi.fn(async () => {

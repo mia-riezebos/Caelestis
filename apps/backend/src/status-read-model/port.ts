@@ -53,18 +53,25 @@ export interface StatusReadModelPort {
   ) => Promise<void>
 }
 
-export const resolveCurrentTileOffers = (
+export const resolveCurrentTileOffers = async (
   readModel: StatusReadModelPort,
   season: number,
   scope: StatusVisibilityScope,
   offers: readonly TileGenerationOffer[],
-): Promise<TileGenerationCacheRead> =>
-  readModel.resolveCurrentTileOffers?.(season, scope, offers) ??
-  Promise.resolve({
+): Promise<TileGenerationCacheRead> => {
+  const unresolved = (): TileGenerationCacheRead => ({
     acknowledgedDeliveryIds: [],
     unresolvedDeliveryIds: offers.map((offer) => offer.deliveryId),
     cacheOutcome: 'miss',
   })
+  if (readModel.resolveCurrentTileOffers === undefined) return unresolved()
+  try {
+    return await readModel.resolveCurrentTileOffers(season, scope, offers)
+  } catch (error) {
+    console.error('tile generation cache read failed', error)
+    return unresolved()
+  }
+}
 
 /** Cache repair never changes the authoritative D1 commit that preceded it. */
 export const repairCommittedTileGeneration = async (
@@ -206,8 +213,8 @@ export class DirectStatusReadModel implements StatusReadModelPort {
   }
 
   async notifyManifestChange(season: number): Promise<void> {
-    await this.manifestModel(season).invalidate()
     this.tileGenerations.get(season)?.invalidate()
+    await this.manifestModel(season).invalidate()
   }
 
   resolveCurrentTileOffers(

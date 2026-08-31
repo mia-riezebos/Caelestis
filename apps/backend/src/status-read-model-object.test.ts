@@ -152,15 +152,17 @@ describe('status read-model Durable Object', () => {
     }
   })
 
-  it('acknowledges ten distinct same-hash live observations from one warm generation', () => {
+  it('acknowledges ten distinct same-hash live observations from one warm generation', async () => {
     database = new SqliteD1Database()
     const object = new StatusReadModelObject(objectState(new Map()), {
       DB: database,
     } as unknown as Env)
-    object.applyCommittedTileGeneration(8, {
+    await object.applyCommittedTileGeneration(8, {
       tile: { x: 1, y: 2 },
       hash: 'a'.repeat(64),
       observedAt: millis(1_750_000_000_000),
+      authoritative: false,
+      coverageReadAt: millis(1_750_000_000_000),
       visibleToPublic: true,
       visibleToAdmin: true,
     })
@@ -258,6 +260,33 @@ describe('status read-model Durable Object', () => {
         error: 'forbidden',
       },
     })
+  })
+
+  it('persists the manifest fence across eviction before accepting cache repairs', async () => {
+    database = new SqliteD1Database()
+    const held = new Map<string, unknown>()
+    const state = objectState(held)
+    const env = { DB: database } as unknown as Env
+    const first = new StatusReadModelObject(state, env)
+
+    await first.notifyManifestChange(8)
+
+    const recovered = new StatusReadModelObject(state, env)
+    await recovered.applyCommittedTileGeneration(8, {
+      tile: { x: 1, y: 2 },
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      authoritative: false,
+      coverageReadAt: millis(0),
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+
+    expect(
+      recovered.resolveCurrentTileOffers(8, 'public', [
+        { deliveryId: 'one', tile: { x: 1, y: 2 }, hash: 'a'.repeat(64) },
+      ]),
+    ).toMatchObject({ acknowledgedDeliveryIds: [], cacheOutcome: 'miss' })
   })
 
   it('chunks a valid projection larger than the per-value storage limit and reconstructs it', async () => {
