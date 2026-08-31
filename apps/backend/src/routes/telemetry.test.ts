@@ -5,6 +5,7 @@ import {
   sha256Hex,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
@@ -31,6 +32,7 @@ const harness = async (statusReadModel?: StatusReadModelPort, currentSeason = 0)
   const context = makeBackendContext(blobs, sql, counters, statusReadModel)
   await sql.insertNode({
     id: NODE_ID,
+    surface: WORLD_TEMPLATE_SURFACE,
     season: 0,
     parentId: null,
     path: '/templates',

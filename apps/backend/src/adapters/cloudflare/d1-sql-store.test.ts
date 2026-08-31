@@ -89,6 +89,7 @@ describe('D1SqlStore', () => {
   it('commits tile status and its revision together and fences a stale reconciliation', async () => {
     await store.insertNode({
       id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/node',
@@ -182,6 +183,7 @@ describe('D1SqlStore', () => {
   it('keeps an exact status replay out of the projection revision and delta', async () => {
     await store.insertNode({
       id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/node',
@@ -263,6 +265,7 @@ describe('D1SqlStore', () => {
   it('commits many overlapping template statuses with a fixed D1 query count', async () => {
     await store.insertNode({
       id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/node',
@@ -314,6 +317,7 @@ describe('D1SqlStore', () => {
   it('rejects a classified status after the template moves to another current version', async () => {
     await store.insertNode({
       id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
       season: 1,
       parentId: null,
       path: '/node',

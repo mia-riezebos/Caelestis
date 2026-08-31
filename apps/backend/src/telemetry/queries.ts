@@ -1,4 +1,5 @@
 import {
+  type AlarmsResponse,
   type CanvasTilesResponse,
   type ContributionsResponse,
   type HistoryBucket,
@@ -180,6 +181,18 @@ const sqlRead = <A>(operation: string, read: () => Promise<A>) =>
   Effect.tryPromise({
     try: read,
     catch: (cause) => new SqlStoreReadError({ operation, cause }),
+  })
+
+export const readAlarms = (
+  season: number,
+  includeUnpublished: boolean,
+): Effect.Effect<AlarmsResponse, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const alarms = yield* sqlRead('readActiveAlarms', () =>
+      sql.readActiveAlarms(season, includeUnpublished),
+    )
+    return { alarms }
   })
 
 export const readStatus = (

@@ -15,7 +15,7 @@ CREATE TABLE `__new_status_read_model_revisions` (
         AND "__new_status_read_model_revisions"."fingerprints_dirty" IN (0, 1))
 );
 --> statement-breakpoint
-INSERT INTO `__new_status_read_model_revisions`("season", "revision", "public_fingerprint", "admin_fingerprint", "fingerprints_dirty") SELECT "season", "revision", "public_fingerprint", "admin_fingerprint", "fingerprints_dirty" FROM `status_read_model_revisions`;--> statement-breakpoint
+INSERT INTO `__new_status_read_model_revisions`("season", "revision", "public_fingerprint", "admin_fingerprint", "fingerprints_dirty") SELECT "season", "revision", "public_fingerprint", "admin_fingerprint", false FROM `status_read_model_revisions`;--> statement-breakpoint
 DROP TABLE `status_read_model_revisions`;--> statement-breakpoint
 ALTER TABLE `__new_status_read_model_revisions` RENAME TO `status_read_model_revisions`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;

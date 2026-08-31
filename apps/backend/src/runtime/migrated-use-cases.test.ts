@@ -36,13 +36,16 @@ describe('migrated Effect use cases', () => {
         sql,
         createNode({
           season: 1,
+          surface: WORLD_TEMPLATE_SURFACE,
           parentId: null,
           name: 'Effect node',
           description: 'isolated',
         }).pipe(Effect.provideService(StatusReadModelService, statusReadModel)),
       ),
     )
-    await expect(Effect.runPromise(withSql(sql, listNodes(1)))).resolves.toEqual([created])
+    await expect(
+      Effect.runPromise(withSql(sql, listNodes(1, WORLD_TEMPLATE_SURFACE))),
+    ).resolves.toEqual([created])
   })
 
   it('assembles manifests and maps rejected reads into a typed storage failure', async () => {
