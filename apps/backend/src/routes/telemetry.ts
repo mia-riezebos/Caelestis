@@ -231,14 +231,17 @@ export const createTelemetryRoutes = (
         c.req.query('client') ?? 'unknown',
         c.req.query('clientVersion') ?? 'unknown',
       )
-      const clientHash = await hashToken(`${caller.tokenHash}\u0000${clientId}`)
+      const anonymous = caller.token === null && caller.scope === 'read'
+      const clientHash = anonymous
+        ? await hashToken(`${caller.tokenHash}\u0000${clientId}`)
+        : caller.tokenHash
       return options.connectStatusLive(c.req.raw, {
         season,
         scope,
         credentialScope: caller.scope,
         tokenHash: caller.tokenHash,
         clientHash,
-        anonymous: caller.token === null && caller.scope === 'read',
+        anonymous,
         revocable: caller.token !== null,
         lastRevision,
         metricClient: metricClient.client,
