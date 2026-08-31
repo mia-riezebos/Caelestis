@@ -42,7 +42,7 @@ export interface StatusReadModelPort {
   readonly readManifestProjection?: (
     input: ManifestProjectionInput,
   ) => Promise<ManifestProjectionRead>
-  /** Optional on portable adapters; production closes live sessions for a revoked credential. */
+  /** Optional on portable adapters; production closes live sessions through this current season. */
   readonly closeCredential?: (season: number, tokenHash: string) => Promise<void>
   readonly resolveCurrentTileOffers?: (
     season: number,

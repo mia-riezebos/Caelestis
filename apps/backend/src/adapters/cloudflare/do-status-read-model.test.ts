@@ -81,7 +81,9 @@ describe('Durable Object status read-model adapter', () => {
     expect(stub.reconcileSnapshotMeasured).toHaveBeenCalledWith(8, 'admin')
     expect(stub.notifyManifestChange).toHaveBeenCalledWith(8)
     expect(stub.notifyAlarmChange).toHaveBeenCalledWith(8)
-    expect(stub.closeCredential).toHaveBeenCalledWith(8, 'b'.repeat(64))
+    expect(stub.closeCredential).toHaveBeenCalledTimes(9)
+    for (let season = 0; season <= 8; season++)
+      expect(stub.closeCredential).toHaveBeenCalledWith(season, 'b'.repeat(64))
     expect(stub.prepareTileGenerationCommit).toHaveBeenCalledWith(8, { x: 1, y: 2 })
     expect(stub.finishTileGenerationCommit).toHaveBeenCalledWith(
       8,
