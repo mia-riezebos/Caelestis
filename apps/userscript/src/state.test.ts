@@ -1537,7 +1537,7 @@ describe('server state boundaries', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(node), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([node]), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
-    const { createNode, listServerNodes } = await import('./state.js')
+    const { createNode, listServerNodes, setState } = await import('./state.js')
     const server = {
       url: 'https://example.com',
       info: serverInfo,
@@ -1547,6 +1547,7 @@ describe('server state boundaries', () => {
       season: 0,
     }
     const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    setState({ servers: [server] })
 
     await expect(createNode(server, 'Alliance folder', null, undefined, surface)).resolves.toEqual({
       ok: true,
@@ -1565,6 +1566,36 @@ describe('server state boundaries', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       'https://example.com/backend/admin/nodes?season=0&surface=alliance-banner&allianceId=535245',
     )
+  })
+
+  it('rejects alliance folders returned to a replaced server connection', async () => {
+    let finish!: (response: Response) => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finish = resolve
+          }),
+      ),
+    )
+    const { listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    setState({ servers: [server] })
+
+    const listed = listServerNodes(server, undefined, surface)
+    setState({ servers: [{ ...server, token: 'new-token' }] })
+    finish(new Response(JSON.stringify([]), { status: 200 }))
+
+    await expect(listed).resolves.toEqual({ status: 'unreachable' })
   })
 
   it('rejects an oversized body before parsing it', async () => {

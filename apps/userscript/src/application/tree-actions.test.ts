@@ -8,8 +8,24 @@ import { currentRenamingKey, finishRenaming } from '../ui/tree-state.js'
 const serverRows = vi.hoisted(() => ({
   rowsFor: vi.fn(),
 }))
+const copyState = vi.hoisted(() => ({
+  getState: vi.fn(),
+  listServerNodes: vi.fn(),
+}))
+const copyStore = vi.hoisted(() => ({
+  templateById: vi.fn(),
+}))
 
 vi.mock('../main.js', () => ({ viewportCentre: vi.fn(() => null) }))
+vi.mock('../state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../state.js')>()),
+  getState: copyState.getState,
+  listServerNodes: copyState.listServerNodes,
+}))
+vi.mock('../templates/local-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../templates/local-store.js')>()),
+  templateById: copyStore.templateById,
+}))
 vi.mock('./tree-server-state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./tree-server-state.js')>()),
   rowsFor: serverRows.rowsFor,
@@ -17,6 +33,7 @@ vi.mock('./tree-server-state.js', async (importOriginal) => ({
 
 import {
   cancelTreeActionSetup,
+  copyToServer,
   handleTreeActionPresentationIntent,
   openContextMenu,
   treeActionPresentation,
@@ -135,5 +152,40 @@ describe('server template context menu', () => {
 
     expect(menuText()).toContain('Reopen template')
     expect(menuText()).toContain('Thaw timelapse')
+  })
+})
+
+describe('copy local template to a server', () => {
+  it('offers non-root folders from the template exact alliance surface', async () => {
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    const destination = {
+      id: 'alliance-folder',
+      parentId: null,
+      path: '/alliance-folder',
+      name: 'Alliance folder',
+      createdAt: 1,
+    }
+    copyStore.templateById.mockReturnValue({
+      id: 'local-alliance-template',
+      name: 'Alliance banner',
+      surface,
+    })
+    copyState.getState.mockReturnValue({ servers: [server] })
+    copyState.listServerNodes.mockResolvedValue({ status: 'ok', nodes: [destination] })
+
+    await copyToServer('local-alliance-template', vi.fn())
+
+    expect(copyState.listServerNodes).toHaveBeenCalledWith(server, expect.any(AbortSignal), surface)
+    const operation = treeActionPresentation().operation
+    expect(operation?.options).toContainEqual({
+      value: `${server.url}|alliance-folder`,
+      label: 'https://templates.example · /alliance-folder',
+    })
+    if (operation !== undefined) {
+      handleTreeActionPresentationIntent({
+        type: 'tree-operation-cancel',
+        operationId: operation.id,
+      })
+    }
   })
 })

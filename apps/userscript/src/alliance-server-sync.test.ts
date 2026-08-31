@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 interface MockServer {
   readonly url: string
   readonly info: { readonly id: string; readonly name: string; readonly auth: 'none' }
-  readonly token: null
+  readonly token: string | null
   readonly status: 'connected'
   readonly isAdmin: false
   readonly season: number
@@ -40,13 +40,16 @@ vi.mock('./alliance-surface.js', () => ({
 }))
 
 vi.mock('./state.js', () => ({
-  activeServerToken: () => null,
+  activeServerToken: (server: MockServer) => server.token,
   getState: () => state.current,
+  isCurrentServerConnection: (server: MockServer) =>
+    state.current.servers.find((candidate) => candidate.url === server.url) === server,
   onStateChange: (listener: (next: { servers: readonly MockServer[] }) => void) => {
     state.listener = listener
   },
   sameServerConnection: (left: MockServer, right: MockServer) =>
     left.url === right.url &&
+    left.token === right.token &&
     left.info.id === right.info.id &&
     left.status === right.status &&
     left.season === right.season,
@@ -132,6 +135,36 @@ describe('alliance server sync', () => {
 
     expect(allianceManifestFor(connected.url, hq())?.server.name).toBe('Newer')
     expect(templates.syncServerTemplates).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes a captured server through the current connection lifetime', async () => {
+    const replacement = { ...connected, token: 'new-token' }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(manifest(hq(), 0, 'Initial'))))
+        .mockResolvedValueOnce(new Response(JSON.stringify(manifest(hq(), 0, 'Replacement')))),
+    )
+    const { allianceManifestFor, installAllianceServerSync, refreshAllianceManifest } =
+      await import('./alliance-server-sync.js')
+
+    installAllianceServerSync()
+    await flush()
+    state.current = { servers: [replacement] }
+    await refreshAllianceManifest(connected, hq())
+
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(fetch).mock.calls[1]?.[1]?.headers).toEqual({
+      authorization: 'Bearer new-token',
+    })
+    expect(allianceManifestFor(connected.url, hq())?.server.name).toBe('Replacement')
+    expect(templates.syncServerTemplates).toHaveBeenLastCalledWith(
+      replacement,
+      [],
+      expect.any(Function),
+      hq(),
+    )
   })
 
   it('rejects a manifest from a different server season', async () => {

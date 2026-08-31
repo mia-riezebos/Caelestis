@@ -1258,6 +1258,7 @@ export const copyToServer = async (
 ): Promise<void> => {
   const template = templateById(templateId)
   if (template === undefined) return
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
   if (copySetupRunning) return
   const targets = getState().servers.filter(
     (server) => server.isAdmin && (onlyServerUrl === undefined || server.url === onlyServerUrl),
@@ -1295,7 +1296,8 @@ export const copyToServer = async (
   try {
     listed = await Promise.all(
       targets.map(
-        async (server) => [server, await listServerNodes(server, setupController.signal)] as const,
+        async (server) =>
+          [server, await listServerNodes(server, setupController.signal, surface)] as const,
       ),
     )
   } finally {

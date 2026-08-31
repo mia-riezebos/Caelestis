@@ -8,6 +8,7 @@ import {
   activeServerToken,
   type ConnectedServer,
   getState,
+  isCurrentServerConnection,
   onStateChange,
   type State,
   sameServerConnection,
@@ -60,7 +61,9 @@ export const refreshAllianceManifest = async (
     !sameTemplateSurface(selected, surface)
   )
     return
-  await readServer(server, surface, ownGeneration, signal)
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined || !isCurrentServerConnection(current)) return
+  await readServer(current, surface, ownGeneration, signal)
 }
 
 const currentSurface = (surface: TemplateSurface, ownGeneration: number): boolean => {
@@ -85,6 +88,10 @@ const readServer = async (
     count('alliance-sync:server identity unavailable')
     return
   }
+  if (!isCurrentServerConnection(server)) {
+    count('alliance-sync:server superseded')
+    return
+  }
   if (!currentSurface(surface, ownGeneration)) {
     count('alliance-sync:surface superseded')
     return
@@ -98,7 +105,9 @@ const readServer = async (
   const requestSequence = (requestSequences.get(key) ?? 0) + 1
   requestSequences.set(key, requestSequence)
   const requestCurrent = (): boolean =>
-    requestSequences.get(key) === requestSequence && currentSurface(surface, ownGeneration)
+    requestSequences.get(key) === requestSequence &&
+    currentSurface(surface, ownGeneration) &&
+    isCurrentServerConnection(server)
   try {
     count('alliance-sync:manifest requested')
     const token = activeServerToken(server)

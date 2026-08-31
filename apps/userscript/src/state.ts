@@ -1497,7 +1497,9 @@ export const listServerNodes = async (
       surface,
       signal,
     )
-    if (!listed.ok) return { status: 'unreachable' }
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (!listed.ok || current === undefined || !isCurrentServerConnection(server))
+      return { status: 'unreachable' }
     return { status: 'ok', nodes: listed.nodes }
   }
   const contents = await listServerContents(server, signal)
