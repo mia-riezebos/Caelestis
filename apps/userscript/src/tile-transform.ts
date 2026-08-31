@@ -1163,6 +1163,11 @@ const rememberDraftedOffset = (key: string, offset: number, index: number): void
   else held.add(offset)
 }
 
+/** Sparse native Wplace draft offsets for one tile, without exposing the mutable retained set. */
+export function* draftedPixelOffsets(tile: TileCoord): IterableIterator<number> {
+  yield* draftedOffsets.get(tileKey(tile)) ?? []
+}
+
 /** The draft layer for a tile, or null if nothing has been drafted on it. */
 export const draftPixels = (tile: TileCoord): Uint8Array | null => {
   const key = tileKey(tile)
