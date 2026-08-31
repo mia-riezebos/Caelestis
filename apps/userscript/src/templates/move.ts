@@ -237,7 +237,7 @@ const isDirectControl = (target: EventTarget | null): boolean => {
     element.isContentEditable === true ||
     ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
     (element.closest?.(
-      'a,button,input,select,textarea,[contenteditable="true"],[role="button"],[role="link"],#caelestis-panel',
+      'a,button,input,select,textarea,[contenteditable="true"],[role="button"],[role="link"],#caelestis-panel,#caelestis-alliance-panel',
     ) ?? null) !== null
   )
 }

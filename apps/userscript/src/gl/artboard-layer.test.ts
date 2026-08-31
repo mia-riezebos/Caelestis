@@ -3,9 +3,10 @@
 import { describe, expect, it } from 'vitest'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
 import {
+  artboardDevicePlacement,
   artboardGeometry,
   artboardPlacement,
-  insertAllianceOverlayCanvas,
+  insertAllianceArtboardCanvases,
 } from './artboard-layer.js'
 
 const active = (
@@ -59,6 +60,23 @@ describe('alliance artboard projection', () => {
       height,
     })
   })
+
+  it('projects source pixels at the live artboard zoom instead of scaling a fixed LOD bitmap', () => {
+    expect(
+      artboardDevicePlacement(
+        { originX: -100, originY: -50, width: 20, height: 10 },
+        { originX: -1_000, originY: -1_000, width: 2_000, height: 2_000 },
+        {
+          bufferWidth: 2_400,
+          bufferHeight: 1_600,
+          frameLeft: -300,
+          frameTop: -200,
+          frameWidth: 8_000,
+          frameHeight: 8_000,
+        },
+      ),
+    ).toEqual({ left: 3_300, top: 3_600, right: 3_380, bottom: 3_640 })
+  })
 })
 
 describe('alliance artboard stacking', () => {
@@ -68,11 +86,16 @@ describe('alliance artboard stacking', () => {
     tiles.className = 'hq-tile-layer'
     const nativeOverlay = document.createElement('canvas')
     frame.append(tiles, nativeOverlay)
-    const caelestis = document.createElement('canvas')
+    const outline = document.createElement('canvas')
+    outline.setAttribute('data-caelestis-alliance-outline', '')
+    const overlay = document.createElement('canvas')
+    overlay.setAttribute('data-caelestis-alliance-overlay', '')
 
-    insertAllianceOverlayCanvas(frame, caelestis)
+    insertAllianceArtboardCanvases(frame, outline, overlay)
 
-    expect([...frame.children]).toEqual([tiles, caelestis, nativeOverlay])
+    expect([...frame.children]).toEqual([outline, tiles, overlay, nativeOverlay])
+    expect(outline.style.imageRendering).toBe('pixelated')
+    expect(overlay.style.imageRendering).toBe('pixelated')
   })
 
   it('keeps the asset art below and its native overlay above', () => {
@@ -80,10 +103,15 @@ describe('alliance artboard stacking', () => {
     const art = document.createElement('canvas')
     const nativeOverlay = document.createElement('canvas')
     frame.append(art, nativeOverlay)
-    const caelestis = document.createElement('canvas')
+    const outline = document.createElement('canvas')
+    outline.setAttribute('data-caelestis-alliance-outline', '')
+    const overlay = document.createElement('canvas')
+    overlay.setAttribute('data-caelestis-alliance-overlay', '')
 
-    insertAllianceOverlayCanvas(frame, caelestis)
+    insertAllianceArtboardCanvases(frame, outline, overlay)
 
-    expect([...frame.children]).toEqual([art, caelestis, nativeOverlay])
+    expect([...frame.children]).toEqual([outline, art, overlay, nativeOverlay])
+    expect(outline.style.imageRendering).toBe('pixelated')
+    expect(overlay.style.imageRendering).toBe('pixelated')
   })
 })

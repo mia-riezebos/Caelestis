@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import type { ActiveAllianceSurface } from '../alliance-surface.js'
 import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
 import { PANEL_ID } from './toast.js'
@@ -142,6 +143,7 @@ type Overrides = {
   serverUrl?: string
   serverTemplateId?: string
   serverVersion?: string
+  surface?: { kind: 'alliance-headquarters'; allianceId: number }
 }
 
 const template = (overrides: Overrides = {}) => ({
@@ -153,6 +155,7 @@ const template = (overrides: Overrides = {}) => ({
   originX: overrides.originX ?? 0,
   originY: overrides.originY ?? 0,
   appearance: { ...DEFAULT_APPEARANCE, ...overrides.appearance },
+  ...(overrides.surface === undefined ? {} : { surface: overrides.surface }),
   ...(overrides.serverUrl === undefined
     ? {}
     : {
@@ -307,6 +310,86 @@ afterEach(() => {
 })
 
 describe('the open menu tracks intended state, not a snapshot and not a lagging store', () => {
+  it('uses the same placement rail and follows an alliance artboard pan', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ surface, originX: -100, originY: -100, width: 20 }),
+    ])
+    harness.isMoving.mockReturnValue(true)
+    harness.movingId.mockReturnValue('a')
+    harness.placementSeq.mockReturnValue(1)
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    let frameLeft = 200
+    frame.getBoundingClientRect = () =>
+      ({
+        left: frameLeft,
+        top: 100,
+        right: frameLeft + 500,
+        bottom: 600,
+        width: 500,
+        height: 500,
+      }) as DOMRect
+    const active: ActiveAllianceSurface = {
+      surface,
+      stage,
+      frame,
+      draftId: null,
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+    }
+    const overlayMenu = await import('./overlay-menu.js')
+    const allianceRender = overlayMenu.renderAllianceOverlayControls
+
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+    const apply = document.querySelector<HTMLElement>('[data-caelestis-control="apply-move"]')
+    expect(apply).not.toBeNull()
+    expect(apply?.parentElement).toBe(dialog)
+    expect(floatingPosition(apply as HTMLElement).x).toBe(296)
+
+    frameLeft = 260
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+
+    expect(floatingPosition(apply as HTMLElement).x).toBe(356)
+
+    harness.isMoving.mockReturnValue(false)
+    harness.movingId.mockReturnValue(null)
+    harness.placementSeq.mockReturnValue(null)
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+    expect(gear('a').parentElement).toBe(dialog)
+    overlayMenu.toggleOverlayMenu('a', () =>
+      allianceRender(
+        vi.fn(),
+        active,
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      ),
+    )
+    await settle()
+    expect(menu().parentElement).toBe(dialog)
+  })
+
   it('builds the next edit on one the store has not acknowledged yet', async () => {
     // The store only publishes after the durable write resolves. Two clicks inside that window is
     // ordinary human speed, and reading the store would hand the second one a pre-Dot base.

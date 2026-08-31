@@ -14,6 +14,7 @@ import type {
   RailControlIntent,
   RailControlModel,
 } from '@caelestis/ui/elements'
+import type { ActiveAllianceSurface } from '../alliance-surface.js'
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
@@ -151,7 +152,8 @@ const localControlsRightEdge = (): number => {
     wplaceControls !== undefined && wplaceControls.width > 0
       ? Math.min(fallbackRailEdge, wplaceControls.left - RAIL_GAP)
       : fallbackRailEdge
-  const panel = document.getElementById(PANEL_ID)
+  const panel =
+    document.getElementById('caelestis-alliance-panel') ?? document.getElementById(PANEL_ID)
   if (panel === null) return railEdge
   return Math.max(
     VIEWPORT_EDGE + MENU_BUTTON_SIZE,
@@ -1449,9 +1451,12 @@ const removeRailActions = (): void => {
   railActions = []
 }
 
-const placementRailFor = (id: string): PlacementRail => {
+const placementRailFor = (id: string, host: HTMLElement): PlacementRail => {
   const existing = placementRails.get(id)
-  if (existing !== undefined && onPage(existing.apply) && onPage(existing.cancel)) return existing
+  if (existing !== undefined && onPage(existing.apply) && onPage(existing.cancel)) {
+    if (existing.apply.parentElement !== host) host.append(existing.apply, existing.cancel)
+    return existing
+  }
   removePlacementRail(id)
 
   const apply = overlayRailControl(
@@ -1477,7 +1482,7 @@ const placementRailFor = (id: string): PlacementRail => {
   cancel.setAttribute('data-caelestis-placement-action', '')
   const rail = { apply, cancel }
   placementRails.set(id, rail)
-  document.body.append(apply, cancel)
+  host.append(apply, cancel)
   return rail
 }
 
@@ -1535,6 +1540,9 @@ const detachControls = (): void => {
   menuOwner = null
   removeRailActions()
 }
+
+/** Remove the shared floating controls while their current rendering host is unavailable. */
+export const detachOverlayControls = (): void => detachControls()
 
 /**
  * Drop the controls of every template not in `live`, and everything remembered about it.
@@ -1655,7 +1663,45 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
     sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
   )
   withFrameTemplates(templates, (templates) => {
-    renderControls(rerender, mapCanvas, templates)
+    renderControls(rerender, mapCanvas, templates, screenProjection(), document.body)
+  })
+}
+
+interface AllianceControlGeometry {
+  readonly originX: number
+  readonly originY: number
+  readonly width: number
+  readonly height: number
+}
+
+/** Reuse the world template controls with the active artboard's screen projection. */
+export const renderAllianceOverlayControls = (
+  rerender: () => void,
+  active: ActiveAllianceSurface,
+  geometry: AllianceControlGeometry,
+  canvas: HTMLCanvasElement,
+): void => {
+  const frame = active.frame.getBoundingClientRect()
+  const projection: ScreenProjection | null =
+    frame.width <= 0 || frame.height <= 0 || geometry.width <= 0 || geometry.height <= 0
+      ? null
+      : {
+          pointFor: (x, y) => ({
+            x: frame.left + ((x - geometry.originX) / geometry.width) * frame.width,
+            y: frame.top + ((y - geometry.originY) / geometry.height) * frame.height,
+          }),
+          pixelsPerCanvasPixel: {
+            x: frame.width / geometry.width,
+            y: frame.height / geometry.height,
+          },
+        }
+  lastRerender = rerender
+  const templates = localTemplates().filter((template) =>
+    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, active.surface),
+  )
+  const host = active.stage.closest<HTMLElement>('dialog[open]') ?? active.stage
+  withFrameTemplates(templates, (templates) => {
+    renderControls(rerender, canvas, templates, projection, host)
   })
 }
 
@@ -1663,6 +1709,8 @@ const renderControls = (
   rerender: () => void,
   mapCanvas: HTMLCanvasElement,
   templates: readonly PlacedTemplate[],
+  projection: ScreenProjection | null,
+  host: HTMLElement,
 ): void => {
   const live = new Set(templates.map((template) => template.id))
   // Forget what has genuinely gone even on a frame with no map: returning early leaves a deleted
@@ -1774,7 +1822,6 @@ const renderControls = (
   // Sample every frame-wide geometry input before writing any control positions. Interleaving the
   // panel rectangle read with each template's left/top writes forces one layout per visible
   // template while the main panel is open.
-  const projection = screenProjection()
   const controlsRightEdge = localControlsRightEdge()
   const placements = templates.map((template) => ({
     template,
@@ -1790,7 +1837,7 @@ const renderControls = (
         removePlacementRail(template.id)
         continue
       }
-      const rail = placementRailFor(template.id)
+      const rail = placementRailFor(template.id, host)
       const railHeight = MENU_BUTTON_SIZE * 2 + RAIL_GAP
       const railTop = Math.min(
         Math.max(corner.y, VIEWPORT_EDGE),
@@ -1867,8 +1914,10 @@ const renderControls = (
       gear.addEventListener('focus', () => {
         if (isMoving()) gear.blur()
       })
-      document.body.appendChild(button)
+      host.appendChild(button)
       buttons.set(template.id, button)
+    } else if (button.parentElement !== host) {
+      host.appendChild(button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
     const title = `${template.name} — display options (T)`
@@ -1956,7 +2005,7 @@ const renderControls = (
       // Stamped from what was just built, not from what was sampled.
       menuNode.dataset.caelestisSignature = menuSignature(template)
       menuOwner = template.id
-      document.body.append(menuNode, ...railActions)
+      host.append(menuNode, ...railActions)
       // Svelte custom elements finish their first render after connection. The same-task geometry
       // pass can therefore see a zero-height host and cache that collapsed size for the viewport.
       // Measure once more after connection so a static map does not leave the menu invisible.

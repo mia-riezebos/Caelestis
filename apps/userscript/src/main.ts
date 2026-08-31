@@ -373,7 +373,9 @@ const main = (): void => {
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
   step('alliance overlay layer', installAllianceOverlayLayer)
-  onFrame((frame) => renderOverlayControls(repaint, frame.canvas), 'Overlay controls')
+  onFrame((frame) => {
+    if (activeAllianceSurface() === null) renderOverlayControls(repaint, frame.canvas)
+  }, 'Overlay controls')
   onTileFrame(draw)
   onLocalChange(redraw)
   onLocalPreviewChange(redraw)
