@@ -224,8 +224,9 @@ describe('alliance server sync', () => {
       './alliance-server-sync.js'
     )
     installAllianceServerSync()
-    await flush()
-    expect(allianceManifestFor(connected, hq())?.server.name).toBe('Old')
+    await vi.waitFor(() => {
+      expect(allianceManifestFor(connected, hq())?.server.name).toBe('Old')
+    })
 
     state.current = { servers: [replacement] }
     state.listener?.(state.current)
