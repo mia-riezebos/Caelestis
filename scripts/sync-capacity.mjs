@@ -19,10 +19,7 @@ export const projectSyncCapacity = ({
   projectedTileOfferBatches = 0,
   projectedExtraAlarmReads = 0,
 } = {}) => {
-  const baselineAvoidableWorkerRequests = Object.values(BASELINE).reduce(
-    (total, value) => total + value,
-    0,
-  )
+  const baselineAvoidableWorkerRequests = BASELINE.statusReads + BASELINE.manifestReads
   const socketUpgrades = clients
   const bootstrapReads = clients * LIVE_RESOURCES
   const recoveryReads = clients * recoveryCohorts * LIVE_RESOURCES
@@ -32,19 +29,8 @@ export const projectSyncCapacity = ({
     bootstrapReads +
     recoveryReads +
     alarmInvalidationReads +
-    projectedExtraAlarmReads +
-    projectedTileOfferBatches
+    projectedExtraAlarmReads
   const reduction = 1 - projectedAvoidableWorkerRequests / baselineAvoidableWorkerRequests
-  const maximumForTarget = Math.floor(baselineAvoidableWorkerRequests * 0.1)
-  const maximumTileOfferBatchesForTarget = Math.max(
-    0,
-    maximumForTarget -
-      socketUpgrades -
-      bootstrapReads -
-      recoveryReads -
-      alarmInvalidationReads -
-      projectedExtraAlarmReads,
-  )
   const resourceCohorts = (recoveryCohorts + 1) * CACHED_RESOURCES
   const projectionReads = resourceCohorts * clients
   const cacheOutcomes = {
@@ -65,6 +51,7 @@ export const projectSyncCapacity = ({
       ...BASELINE,
       avoidableWorkerRequests: baselineAvoidableWorkerRequests,
       requiredPaintReports: 'excluded',
+      requiredTileOfferBatches: BASELINE.tileOfferBatches,
       requiredTileWrites: 'excluded',
     },
     projected: {
@@ -73,10 +60,9 @@ export const projectSyncCapacity = ({
       recoveryReads,
       alarmInvalidationReads,
       extraAlarmReads: projectedExtraAlarmReads,
-      tileOfferBatches: projectedTileOfferBatches,
+      requiredTileOfferBatches: projectedTileOfferBatches,
       avoidableWorkerRequests: projectedAvoidableWorkerRequests,
       reductionPercent: Number((reduction * 100).toFixed(4)),
-      maximumTileOfferBatchesForNinetyPercent: maximumTileOfferBatchesForTarget,
     },
     durableObject: {
       projectionRpcRequests: projectionReads,

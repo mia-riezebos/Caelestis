@@ -60,6 +60,7 @@ const MAX_TILE_OFFER_SERVERS = 32
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 interface OfferedTile extends TileOffer {
+  readonly deliveryId: string
   readonly coord: TileCoord
   readonly bytes: Uint8Array
 }
@@ -89,6 +90,7 @@ const coverage = new Map<string, ServerCoverage>()
 const queued = new Map<string, ServerQueue>()
 const reportedPaints = new Map<string, ServerDedupe>()
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const activeOfferFlushes = new Set<string>()
 const statuses = new ClientStatusProjection<ConnectedServer>()
 const alarms = new Map<
   string,
@@ -114,7 +116,7 @@ const tileOfferMetric = (
   by = 1,
 ): void => count(`telemetry:tile-offers-${outcome}`, by)
 
-const offerKey = (entry: TileOffer): string => `${entry.tile}\u0000${entry.sha256}`
+const offerKey = (entry: OfferedTile): string => entry.deliveryId
 
 /** Remember bounded recent delivery IDs; old values may safely be offered again after eviction. */
 const rememberDedupe = (values: Set<string>, value: string): void => {
@@ -212,7 +214,7 @@ const uploadWanted = async (
           },
         )
         if (response?.ok) {
-          uploaded.add(`${entry.tile}\u0000${entry.sha256}`)
+          uploaded.add(entry.deliveryId)
           invalidateServerMismatchTile(server.url, entry.coord)
           const body = (await response.json().catch(() => null)) as { status?: unknown } | null
           const delta = statusDeltaFrom(body?.status)
@@ -235,6 +237,7 @@ const uploadWanted = async (
 
 const flushOffers = async (serverUrl: string): Promise<void> => {
   flushTimers.delete(serverUrl)
+  if (activeOfferFlushes.has(serverUrl)) return
   const pending = queued.get(serverUrl)
   queued.delete(serverUrl)
   if (
@@ -247,116 +250,130 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   const server = pending.server
   const season = server.season
   if (season === null) return
-  const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
-  const owner = serverConnectionIdentity(server)
-  for (const entry of entries)
-    tileOfferAcknowledgements.started(server.url, owner, season, offerKey(entry))
-  await loadAccount()
-  const identity = accountIdentity()
-  if (identity === null || !isCurrentServerConnection(server)) {
-    for (const entry of entries)
-      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
-    return
-  }
-  tileOfferMetric('requested', entries.length)
-  const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
-    method: 'POST',
-    headers: { ...authHeaders(server), 'content-type': 'application/json' },
-    body: JSON.stringify({
-      ...identity,
-      season,
-      offers: entries.map(({ tile, sha256, ts }) => ({ tile, sha256, ts })),
-    }),
-  })
-  if (response === null || !response.ok) {
-    for (const entry of entries)
-      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
-    if (response !== null && response.status >= 400 && response.status < 500)
-      tileOfferMetric('rejected', entries.length)
-    if (response !== null)
-      warn('install', 'telemetry tile offer was rejected', {
-        server: server.url,
-        status: response.status,
-      })
-    return
-  }
-  const body: unknown = await response.json().catch(() => null)
-  if (
-    typeof body !== 'object' ||
-    body === null ||
-    !Array.isArray((body as { wanted?: unknown }).wanted)
-  ) {
-    for (const entry of entries)
-      tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
-    return
-  }
-  const responseBody = body as {
-    wanted: unknown[]
-    acknowledged?: unknown
-    rejected?: unknown
-    status?: unknown
-  }
-  const offeredTiles = new Set<string>(entries.map((entry) => entry.tile))
-  const wanted = new Set(
-    responseBody.wanted.filter(
-      (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
-    ),
-  )
-  const acknowledged = Array.isArray(responseBody.acknowledged)
-    ? new Set(
-        responseBody.acknowledged.filter(
-          (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
-        ),
-      )
-    : null
-  const rejected = Array.isArray(responseBody.rejected)
-    ? new Set(
-        responseBody.rejected.filter(
-          (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
-        ),
-      )
-    : null
-  const completeDisposition =
-    acknowledged !== null &&
-    rejected !== null &&
-    entries.every(
-      (entry) =>
-        Number(wanted.has(entry.tile)) +
-          Number(acknowledged.has(entry.tile)) +
-          Number(rejected.has(entry.tile)) ===
-        1,
-    )
-  const offeredStatus = statusDeltaFrom(responseBody.status)
-  if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
-  const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
-  if (offeredStatus === null || missingStatus)
-    requestServerSync('post-offer', 'telemetry-status', server)
-  let accepted = 0
-  for (const entry of entries) {
-    const key = offerKey(entry)
-    if ((completeDisposition && acknowledged.has(entry.tile)) || uploaded.has(key)) {
-      tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
-      accepted++
-    } else if (completeDisposition && rejected.has(entry.tile)) {
-      // A refusal is definitive only for the current manifest coverage. Suppress hot-loop captures,
-      // but invalidate this receipt when a later manifest changes the covered tile set.
-      if (!tileOfferAcknowledgements.rejected(server.url, owner, season, key))
-        shareObservedTile(entry)
+  activeOfferFlushes.add(serverUrl)
+  const entries: OfferedTile[] = []
+  const selectedTiles = new Set<string>()
+  const remaining = new Map<string, OfferedTile>()
+  for (const [deliveryId, entry] of pending.entries) {
+    if (entries.length < MAX_TILE_OFFERS && !selectedTiles.has(entry.tile)) {
+      entries.push(entry)
+      selectedTiles.add(entry.tile)
     } else {
-      tileOfferAcknowledgements.retryable(server.url, owner, season, key)
+      remaining.set(deliveryId, entry)
     }
   }
-  tileOfferMetric('accepted', accepted)
-  if (completeDisposition) tileOfferMetric('rejected', rejected.size)
-  if (pending.entries.size > entries.length) {
-    const rest = new Map([...pending.entries].slice(entries.length))
-    queued.set(serverUrl, { server, entries: rest })
-    scheduleFlush(serverUrl)
+  if (remaining.size > 0) {
+    queued.set(serverUrl, { server, entries: remaining })
+  }
+  try {
+    const owner = serverConnectionIdentity(server)
+    for (const entry of entries)
+      tileOfferAcknowledgements.started(server.url, owner, season, offerKey(entry))
+    await loadAccount()
+    const identity = accountIdentity()
+    if (identity === null || !isCurrentServerConnection(server)) {
+      for (const entry of entries)
+        tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+      return
+    }
+    tileOfferMetric('requested', entries.length)
+    const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
+      method: 'POST',
+      headers: { ...authHeaders(server), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...identity,
+        season,
+        offers: entries.map(({ tile, sha256, ts }) => ({ tile, sha256, ts })),
+      }),
+    })
+    if (response === null || !response.ok) {
+      for (const entry of entries)
+        tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+      if (response !== null && response.status >= 400 && response.status < 500)
+        tileOfferMetric('rejected', entries.length)
+      if (response !== null)
+        warn('install', 'telemetry tile offer was rejected', {
+          server: server.url,
+          status: response.status,
+        })
+      return
+    }
+    const body: unknown = await response.json().catch(() => null)
+    if (
+      typeof body !== 'object' ||
+      body === null ||
+      !Array.isArray((body as { wanted?: unknown }).wanted)
+    ) {
+      for (const entry of entries)
+        tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+      return
+    }
+    const responseBody = body as {
+      wanted: unknown[]
+      acknowledged?: unknown
+      rejected?: unknown
+      status?: unknown
+    }
+    const offeredTiles = new Set<string>(entries.map((entry) => entry.tile))
+    const wanted = new Set(
+      responseBody.wanted.filter(
+        (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
+      ),
+    )
+    const acknowledged = Array.isArray(responseBody.acknowledged)
+      ? new Set(
+          responseBody.acknowledged.filter(
+            (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
+          ),
+        )
+      : null
+    const rejected = Array.isArray(responseBody.rejected)
+      ? new Set(
+          responseBody.rejected.filter(
+            (tile): tile is string => typeof tile === 'string' && offeredTiles.has(tile),
+          ),
+        )
+      : null
+    const completeDisposition =
+      acknowledged !== null &&
+      rejected !== null &&
+      entries.every(
+        (entry) =>
+          Number(wanted.has(entry.tile)) +
+            Number(acknowledged.has(entry.tile)) +
+            Number(rejected.has(entry.tile)) ===
+          1,
+      )
+    const offeredStatus = statusDeltaFrom(responseBody.status)
+    if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
+    const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
+    if (offeredStatus === null || missingStatus)
+      requestServerSync('post-offer', 'telemetry-status', server)
+    let accepted = 0
+    for (const entry of entries) {
+      const key = offerKey(entry)
+      if ((completeDisposition && acknowledged.has(entry.tile)) || uploaded.has(key)) {
+        tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+        accepted++
+      } else if (completeDisposition && rejected.has(entry.tile)) {
+        // A refusal is definitive only for the current manifest coverage. Suppress hot-loop captures,
+        // but invalidate this receipt when a later manifest changes the covered tile set.
+        if (!tileOfferAcknowledgements.rejected(server.url, owner, season, key))
+          shareObservedTile(entry)
+      } else {
+        tileOfferAcknowledgements.retryable(server.url, owner, season, key)
+      }
+    }
+    tileOfferMetric('accepted', accepted)
+    if (completeDisposition) tileOfferMetric('rejected', rejected.size)
+  } finally {
+    activeOfferFlushes.delete(serverUrl)
+    if (queued.get(serverUrl)?.entries.size) scheduleFlush(serverUrl)
   }
 }
 
 const scheduleFlush = (serverUrl: string): void => {
-  if (flushTimers.has(serverUrl)) return
+  if (activeOfferFlushes.has(serverUrl) || flushTimers.has(serverUrl)) return
   flushTimers.set(
     serverUrl,
     setTimeout(() => void flushOffers(serverUrl).catch(reportTelemetryError), OFFER_DELAY_MS),
@@ -389,23 +406,24 @@ const shareObservedTile = (entry: OfferedTile): void => {
       previousQueue !== undefined && isCurrentServerConnection(previousQueue.server)
         ? previousQueue
         : { server, entries: new Map<string, OfferedTile>() }
-    serverQueue.entries.set(entry.tile, entry)
+    serverQueue.entries.set(entry.deliveryId, entry)
     queued.set(server.url, serverQueue)
     scheduleFlush(server.url)
   }
 }
 
 const rememberTile = (entry: OfferedTile): void => {
-  const previous = recentTiles.get(entry.tile)
-  if (previous !== undefined) recentTileBytes -= previous.bytes.byteLength
-  recentTiles.delete(entry.tile)
-  recentTiles.set(entry.tile, entry)
+  recentTiles.set(entry.deliveryId, entry)
   recentTileBytes += entry.bytes.byteLength
   while (recentTiles.size > MAX_RECENT_TILES || recentTileBytes > MAX_RECENT_TILE_BYTES) {
-    const oldest = recentTiles.entries().next()
-    if (oldest.done) break
-    recentTiles.delete(oldest.value[0])
-    recentTileBytes -= oldest.value[1].bytes.byteLength
+    const tileCounts = new Map<string, number>()
+    for (const recent of recentTiles.values())
+      tileCounts.set(recent.tile, (tileCounts.get(recent.tile) ?? 0) + 1)
+    const duplicate = [...recentTiles].find(([, recent]) => (tileCounts.get(recent.tile) ?? 0) > 1)
+    const eviction = duplicate ?? recentTiles.entries().next().value
+    if (eviction === undefined) break
+    recentTiles.delete(eviction[0])
+    recentTileBytes -= eviction[1].bytes.byteLength
   }
 }
 
@@ -416,6 +434,7 @@ const observeTile = async (
 ): Promise<void> => {
   if (!getState().shareTiles) return
   const entry: OfferedTile = {
+    deliveryId: uuidV7(),
     tile: tileKey(tile),
     coord: tile,
     sha256: await sha256Hex(bytes),
