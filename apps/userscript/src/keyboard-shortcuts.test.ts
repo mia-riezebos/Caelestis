@@ -220,6 +220,36 @@ describe('keyboard shortcut actions', () => {
     expect(harness.toggleTheme).not.toHaveBeenCalled()
   })
 
+  it('claims native shortcuts from the editor snapshot when controls vanish or are absent', () => {
+    harness.allianceEditorActive = true
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    const stage = document.createElement('div')
+    dialog.append(stage)
+    document.body.append(dialog)
+    harness.allianceStage = stage
+    const worldHandler = vi.fn()
+    window.addEventListener('keydown', worldHandler)
+
+    harness.paintAction.mockReturnValueOnce(false)
+    harness.cancelPaint.mockReturnValueOnce(false)
+    harness.undoPaint.mockReturnValueOnce(false)
+    harness.redoPaint.mockReturnValueOnce(false)
+    expect(press('b').defaultPrevented).toBe(true)
+    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
+    expect(press('z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true)
+
+    harness.paintAction.mockImplementationOnce(() => {
+      harness.allianceEditorActive = false
+      dialog.remove()
+      return true
+    })
+    expect(press('b').defaultPrevented).toBe(true)
+    expect(worldHandler).not.toHaveBeenCalled()
+    window.removeEventListener('keydown', worldHandler)
+  })
+
   it('leaves placement confirm and cancel with the active placement', () => {
     harness.moving = true
 

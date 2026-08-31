@@ -30,9 +30,12 @@ const triggerMapRepaint = (): void => {
 }
 
 /** Claim a handled shortcut inside an alliance editor so it cannot reach the world behind it. */
-const claimShortcut = (event: KeyboardEvent): void => {
+const claimShortcut = (
+  event: KeyboardEvent,
+  allianceEditorWasActive = activeAllianceEditorStage() !== null,
+): void => {
   event.preventDefault()
-  if (activeAllianceEditorStage() !== null) event.stopImmediatePropagation()
+  if (allianceEditorWasActive) event.stopImmediatePropagation()
 }
 
 const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void => {
@@ -131,6 +134,7 @@ export const installKeyboardShortcuts = (
     const allianceEditorStage = activeAllianceEditorStage()
     const allianceSurface = alliance?.surface ?? null
     const nativeRoot = allianceEditorStage?.closest('dialog[open]') ?? document
+    const claim = (): void => claimShortcut(event, allianceEditorStage !== null)
 
     // An asset editor intentionally has no resolved surface while Wplace's draft metadata is
     // pending or invalid. Native paint controls remain safely scoped to its dialog; every action
@@ -144,7 +148,7 @@ export const installKeyboardShortcuts = (
       shortcut !== 'paint-action' &&
       shortcut !== 'cancel-paint'
     ) {
-      claimShortcut(event)
+      claim()
       return
     }
 
@@ -160,88 +164,90 @@ export const installKeyboardShortcuts = (
         shortcut === 'cycle-colour-next' ||
         shortcut === 'toggle-theme')
     ) {
-      claimShortcut(event)
+      claim()
       return
     }
 
     if (shortcut === 'show-shortcut-help') {
-      claimShortcut(event)
+      claim()
       toggleShortcutHelp(platform)
       return
     }
     if (shortcut === 'undo-paint' || shortcut === 'redo-paint') {
       const moved =
         shortcut === 'undo-paint' ? undoPaintDraft(nativeRoot) : redoPaintDraft(nativeRoot)
-      if (moved) claimShortcut(event)
+      if (allianceEditorStage !== null || moved) claim()
       return
     }
     if (shortcut === 'toggle-panel') {
-      claimShortcut(event)
+      claim()
       togglePanel()
       return
     }
     if (shortcut === 'toggle-template-menu') {
       const focused = focusedTemplate()
       if (focused === null) {
-        if (allianceEditorStage !== null) claimShortcut(event)
+        if (allianceEditorStage !== null) claim()
         return
       }
-      claimShortcut(event)
+      claim()
       toggleOverlayMenu(focused.id, redraw)
       return
     }
     if (shortcut === 'toggle-colour') {
-      claimShortcut(event)
+      claim()
       setState({ onlySelectedColour: !getState().onlySelectedColour })
       return
     }
     if (shortcut === 'toggle-visibility') {
-      claimShortcut(event)
+      claim()
       const focused = focusedTemplate({ restoreHiddenAtCentre: true })
       if (focused !== null) void setLocalVisible(focused.id, !focused.visible)
       return
     }
     if (shortcut === 'toggle-markers') {
-      claimShortcut(event)
+      claim()
       toggleMarkerKind('markMismatch')
       return
     }
     if (shortcut === 'toggle-rings') {
-      claimShortcut(event)
+      claim()
       toggleRings(allianceSurface)
       return
     }
     if (shortcut === 'toggle-selected-colour-markers') {
-      claimShortcut(event)
+      claim()
       toggleMarkerKind('markSelectedColour')
       return
     }
     if (shortcut === 'fly-to-colour') {
-      claimShortcut(event)
+      claim()
       void navigateFocusedSelectedColour()
       return
     }
     if (shortcut === 'peek-overlays') {
-      claimShortcut(event)
+      claim()
       peeking = true
       repaintPeek(true)
       return
     }
     if (shortcut === 'cycle-colour-previous' || shortcut === 'cycle-colour-next') {
-      claimShortcut(event)
+      claim()
       cycleFocusedColour(shortcut === 'cycle-colour-previous' ? -1 : 1)
       return
     }
     if (shortcut === 'paint-action') {
-      if (performPaintAction(nativeRoot)) claimShortcut(event)
+      const handled = performPaintAction(nativeRoot)
+      if (allianceEditorStage !== null || handled) claim()
       return
     }
     if (shortcut === 'cancel-paint') {
-      if (cancelPaintDraft(nativeRoot)) claimShortcut(event)
+      const handled = cancelPaintDraft(nativeRoot)
+      if (allianceEditorStage !== null || handled) claim()
       return
     }
     if (shortcut === 'toggle-theme') {
-      if (toggleWplaceTheme()) claimShortcut(event)
+      if (toggleWplaceTheme()) claim()
       return
     }
 
@@ -249,10 +255,10 @@ export const installKeyboardShortcuts = (
     if (opacity === null) return
     const focused = focusedTemplate()
     if (focused === null) {
-      if (allianceEditorStage !== null) claimShortcut(event)
+      if (allianceEditorStage !== null) claim()
       return
     }
-    claimShortcut(event)
+    claim()
     void setOwnsGroup(focused.id, 'pixels', true).then((owned) => {
       if (owned) void setAppearance(focused.id, { opacity })
     })
