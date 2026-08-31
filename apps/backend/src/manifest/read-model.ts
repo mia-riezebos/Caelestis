@@ -50,6 +50,7 @@ export interface ManifestReadModelPersistence {
 export interface SeasonManifestReadModel {
   readonly read: (input: ManifestProjectionInput) => Promise<ManifestProjectionRead>
   readonly invalidate: () => Promise<number>
+  readonly revision: () => Promise<number>
 }
 
 export const MANIFEST_READ_MODEL_TTL_MILLISECONDS = 3 * 60_000
@@ -175,5 +176,6 @@ export const createSeasonManifestReadModel = (options: {
         state = next
         return next.revision
       }),
+    revision: () => exclusive(async () => (await load()).revision),
   }
 }

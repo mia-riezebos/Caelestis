@@ -134,6 +134,8 @@ interface StoredManifestCacheIndex {
 const manifestChunkKey = (generation: string, index: number): string =>
   `manifest-read-model:v1:chunk:${generation}:${index}`
 
+const tileCoverageToken = (manifestRevision: number): string => `manifest:${manifestRevision}`
+
 const liveMeasurementHeaders = (
   usage: D1Usage,
   cacheOutcome?: Exclude<CacheOutcome, 'none'>,
@@ -423,6 +425,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   private readonly sql: D1SqlStore
   private readonly liveSessions = createLiveSessionFence()
   private readonly tileGenerations = createTileGenerationCache()
+  private tileGenerationCoverageRevision = 0
   private readonly requestMetrics: AnalyticsEngineDataset | undefined
 
   constructor(
@@ -489,6 +492,16 @@ export class StatusReadModelObject extends DurableObject<Env> {
     })
     this.manifestBound = { season, model }
     return model
+  }
+
+  private synchronizeTileGenerationCoverage(revision: number): void {
+    if (revision <= this.tileGenerationCoverageRevision) return
+    this.tileGenerationCoverageRevision = revision
+    this.tileGenerations.synchronizeCoverageToken(tileCoverageToken(revision))
+  }
+
+  private async loadTileGenerationCoverage(season: number): Promise<void> {
+    this.synchronizeTileGenerationCoverage(await this.manifestModel(season).revision())
   }
 
   private send(socket: WebSocket, event: LiveSyncServerEvent): void {
@@ -566,7 +579,10 @@ export class StatusReadModelObject extends DurableObject<Env> {
 
   async readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
     const projection = await this.manifestModel(input.season).read(input)
-    if (projection.revisionChanged) this.broadcastManifest(projection.revision)
+    if (projection.revisionChanged) {
+      this.synchronizeTileGenerationCoverage(projection.revision)
+      this.broadcastManifest(projection.revision)
+    }
     return projection
   }
 
@@ -582,8 +598,8 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   async notifyManifestChange(season: number): Promise<void> {
-    this.tileGenerations.invalidate()
     const revision = await this.manifestModel(season).invalidate()
+    this.synchronizeTileGenerationCoverage(revision)
     this.broadcastManifest(revision)
   }
 
@@ -606,12 +622,13 @@ export class StatusReadModelObject extends DurableObject<Env> {
     )
   }
 
-  prepareTileGenerationCommit(
+  async prepareTileGenerationCommit(
     season: number,
     tile: TileCoord,
   ): Promise<PreparedTileGenerationCommit> {
     this.bindSeason(season)
-    return Promise.resolve(this.tileGenerations.prepare(tile))
+    await this.loadTileGenerationCoverage(season)
+    return this.tileGenerations.prepare(tile)
   }
 
   async applyCommittedTileGeneration(
@@ -619,6 +636,9 @@ export class StatusReadModelObject extends DurableObject<Env> {
     generation: CommittedTileGeneration,
   ): Promise<void> {
     this.bindSeason(season)
+    if (generation.commitToken !== undefined) {
+      await this.loadTileGenerationCoverage(season)
+    }
     this.tileGenerations.apply(generation)
   }
 
@@ -628,6 +648,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     commit: PreparedTileGenerationCommit,
   ): Promise<void> {
     this.bindSeason(season)
+    await this.loadTileGenerationCoverage(season)
     this.tileGenerations.finish(tile, commit)
   }
 
@@ -779,7 +800,12 @@ export class StatusReadModelObject extends DurableObject<Env> {
       socket.send('pong')
       return
     }
-    if (typeof message !== 'string') return
+    if (message instanceof ArrayBuffer) {
+      if (message.byteLength > MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS) {
+        socket.close(1009, 'live message too large')
+      }
+      return
+    }
     if (message.length > MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS) {
       socket.close(1009, 'live message too large')
       return

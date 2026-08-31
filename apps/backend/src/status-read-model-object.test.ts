@@ -813,6 +813,53 @@ describe('status read-model Durable Object', () => {
     expect(socket.send).not.toHaveBeenCalled()
   })
 
+  it('closes oversized binary live messages before ignoring them', () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const socket = {
+      deserializeAttachment: () => ({ revoked: false }),
+      send: vi.fn(),
+      close: vi.fn(),
+    } as unknown as WebSocket
+
+    object.webSocketMessage(socket, new ArrayBuffer(MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS + 1))
+
+    expect(socket.close).toHaveBeenCalledWith(1009, 'live message too large')
+    expect(socket.send).not.toHaveBeenCalled()
+  })
+
+  it('applies a prepared generation after eviction between Durable Object RPCs', async () => {
+    database = new SqliteD1Database()
+    const held = new Map<string, unknown>()
+    const state = objectState(held)
+    const env = { DB: database } as unknown as Env
+    const tile = { x: 1, y: 2 }
+    const first = new StatusReadModelObject(state, env)
+    const prepared = await first.prepareTileGenerationCommit(8, tile)
+
+    const recovered = new StatusReadModelObject(state, env)
+    await recovered.applyCommittedTileGeneration(8, {
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      ...prepared,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+
+    await expect(
+      recovered.resolveCurrentTileOffersMeasured(8, 'public', [
+        { deliveryId: 'one', tile, hash: 'a'.repeat(64) },
+      ]),
+    ).resolves.toMatchObject({
+      success: true,
+      value: { acknowledgedDeliveryIds: ['one'], cacheOutcome: 'hit' },
+    })
+  })
+
   it('serializes an in-flight attachment ahead of revocation cleanup', async () => {
     const fence = createLiveSessionFence()
     let release!: (active: boolean) => void

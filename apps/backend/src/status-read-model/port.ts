@@ -98,10 +98,22 @@ export const repairCommittedTileGeneration = async (
   season: number,
   generation: CommittedTileGeneration,
 ): Promise<void> => {
+  const finishPrepared = () =>
+    generation.commitToken === undefined
+      ? Promise.resolve()
+      : finishTileGenerationCommit(readModel, season, generation.tile, {
+          coverageToken: generation.coverageToken,
+          commitToken: generation.commitToken,
+        })
+  if (readModel.applyCommittedTileGeneration === undefined) {
+    await finishPrepared()
+    return
+  }
   try {
-    await readModel.applyCommittedTileGeneration?.(season, generation)
+    await readModel.applyCommittedTileGeneration(season, generation)
   } catch (error) {
     console.error(error)
+    await finishPrepared()
   }
 }
 

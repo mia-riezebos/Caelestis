@@ -72,11 +72,11 @@ export const createTileGenerationCache = (
     key: string,
     commitToken: string,
     generation: CommittedTileGeneration | null,
-  ): void => {
+  ): boolean => {
     const checkedAt = now()
     prunePendingCommits(checkedAt)
     const pending = pendingCommits.get(key)
-    if (pending === undefined || !pending.active.delete(commitToken)) return
+    if (pending === undefined || !pending.active.delete(commitToken)) return false
     if (
       generation !== null &&
       generation.coverageToken === coverageToken &&
@@ -84,11 +84,12 @@ export const createTileGenerationCache = (
     ) {
       pending.candidate = { ...generation, expiresAt: checkedAt + ttl }
     }
-    if (pending.active.size > 0) return
+    if (pending.active.size > 0) return true
     pendingCommits.delete(key)
     if (pending.candidate !== null && pending.candidate.coverageToken === coverageToken) {
       entries.set(key, pending.candidate)
     }
+    return true
   }
 
   return {
@@ -154,10 +155,8 @@ export const createTileGenerationCache = (
     apply(generation: CommittedTileGeneration): void {
       if (generation.coverageToken !== coverageToken) return
       const key = tileKey(generation.tile)
-      if (generation.commitToken !== undefined) {
-        settle(key, generation.commitToken, generation)
+      if (generation.commitToken !== undefined && settle(key, generation.commitToken, generation))
         return
-      }
       const held = entries.get(key)
       if (held !== undefined && held.commitOrder >= generation.commitOrder) return
       entries.set(key, { ...generation, expiresAt: now() + ttl })
@@ -166,6 +165,13 @@ export const createTileGenerationCache = (
     finish(tile: TileCoord, commit: PreparedTileGenerationCommit): void {
       if (commit.coverageToken !== coverageToken) return
       settle(tileKey(tile), commit.commitToken, null)
+    },
+
+    synchronizeCoverageToken(next: string): void {
+      if (coverageToken === next) return
+      coverageToken = next
+      entries.clear()
+      pendingCommits.clear()
     },
 
     invalidate(): void {
