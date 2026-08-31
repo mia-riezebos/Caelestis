@@ -18,6 +18,7 @@ export interface ServerInfo {
   readonly description?: string
   readonly auth: ServerAuthMode
   readonly liveSync?: 1
+  readonly liveTileOffers?: 1
 }
 
 export interface TreeNode {
@@ -65,6 +66,7 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
     return null
   if (value.auth !== 'none' && value.auth !== 'access_token') return null
   if (value.liveSync !== undefined && value.liveSync !== 1) return null
+  if (value.liveTileOffers !== undefined && value.liveTileOffers !== 1) return null
   if (
     value.description !== undefined &&
     (typeof value.description !== 'string' ||
@@ -78,6 +80,7 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
     ...(typeof value.description === 'string' ? { description: value.description } : {}),
     auth: value.auth,
     ...(value.liveSync === 1 ? { liveSync: 1 as const } : {}),
+    ...(value.liveTileOffers === 1 ? { liveTileOffers: 1 as const } : {}),
   }
 }
 

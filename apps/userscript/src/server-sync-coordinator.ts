@@ -1,4 +1,11 @@
-import type { LiveSyncServerEvent, ReconciliationReason, SyncTransport } from '@caelestis/shared'
+import {
+  type LiveSyncServerEvent,
+  type LiveTileOfferBatch,
+  type LiveTileOfferCacheResponse,
+  type ReconciliationReason,
+  type SyncTransport,
+  uuidV7,
+} from '@caelestis/shared'
 import { serverEndpoint } from './server-url.js'
 import {
   type ConnectedServer,
@@ -20,6 +27,7 @@ const LIVE_HEARTBEAT_MS = 15 * 60_000
 const LIVE_HEARTBEAT_TIMEOUT_MS = 10_000
 const LIVE_RECOVERY_POLL_MS = 60 * 60_000
 const LIVE_BOOTSTRAP_FALLBACK_MS = 1_000
+const LIVE_COMMAND_TIMEOUT_MS = 5_000
 
 export type ParsedLiveEvent =
   | Exclude<LiveSyncServerEvent, { readonly type: 'manifest-reconcile' }>
@@ -74,6 +82,13 @@ interface LiveConnection {
   attempts: number
   healthy: boolean
   manifestRevision: number | null
+  readonly pendingTileOffers: Map<
+    string,
+    {
+      readonly resolve: (response: LiveTileOfferCacheResponse | null) => void
+      readonly timer: ReturnType<typeof setTimeout>
+    }
+  >
 }
 
 const resources = new Map<string, ServerSyncResource>()
@@ -288,19 +303,13 @@ export const requestServerSync = (
   armTimer()
 }
 
-const requestLiveServerSync = (
-  reason: ReconciliationReason,
-  server: ConnectedServer,
-): void => {
+const requestLiveServerSync = (reason: ReconciliationReason, server: ConnectedServer): void => {
   for (const resource of resources.values()) {
     if (resource.live === true) requestServerSync(reason, resource.id, server)
   }
 }
 
-const requestAvailableServerSync = (
-  reason: ReconciliationReason,
-  onlyResource?: string,
-): void => {
+const requestAvailableServerSync = (reason: ReconciliationReason, onlyResource?: string): void => {
   for (const server of connected()) {
     for (const resource of resources.values()) {
       if (onlyResource !== undefined && resource.id !== onlyResource) continue
@@ -385,8 +394,7 @@ const finishPendingLiveRevision = (
   if (pending?.size === 0) pendingLiveRevisions.delete(owner)
   if (!isCurrentServerConnection(server)) return
   const current = revisionNumber(server, scope, resource)
-  if (current === null || current < expected)
-    requestServerSync('revision-gap', resource, server)
+  if (current === null || current < expected) requestServerSync('revision-gap', resource, server)
 }
 
 /** Apply a full read only if no response-driven delta advanced the resource while it was in flight. */
@@ -472,6 +480,29 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
     return { type: 'status-delta', delta: candidate.delta as never }
   }
   if (candidate.type === 'alarms-reconcile') return { type: 'alarms-reconcile' }
+  if (
+    candidate.type === 'tile-offer-cache-result' &&
+    typeof candidate.requestId === 'string' &&
+    typeof candidate.response === 'object' &&
+    candidate.response !== null
+  ) {
+    const response = candidate.response as Record<string, unknown>
+    if (
+      Array.isArray(response.acknowledgedDeliveryIds) &&
+      response.acknowledgedDeliveryIds.every((id) => typeof id === 'string') &&
+      Array.isArray(response.unresolvedDeliveryIds) &&
+      response.unresolvedDeliveryIds.every((id) => typeof id === 'string') &&
+      (response.error === undefined ||
+        response.error === 'forbidden' ||
+        response.error === 'invalid')
+    ) {
+      return {
+        type: 'tile-offer-cache-result',
+        requestId: candidate.requestId,
+        response: response as unknown as LiveTileOfferCacheResponse,
+      }
+    }
+  }
   return null
 }
 
@@ -509,6 +540,15 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     if (!applied) requestServerSync('revision-gap', 'telemetry-status', server)
     return
   }
+  if (event.type === 'tile-offer-cache-result') {
+    const live = liveConnections.get(serverConnectionIdentity(server))
+    const pending = live?.pendingTileOffers.get(event.requestId)
+    if (pending === undefined) return
+    live?.pendingTileOffers.delete(event.requestId)
+    clearTimeout(pending.timer)
+    pending.resolve(event.response)
+    return
+  }
   requestLiveRevision(server, 'world', 'telemetry-status', event.revision)
 }
 
@@ -518,6 +558,11 @@ const closeLiveConnection = (connection: LiveConnection): void => {
   if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
   if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
   connection.reconnectTimer = null
+  for (const pending of connection.pendingTileOffers.values()) {
+    clearTimeout(pending.timer)
+    pending.resolve(null)
+  }
+  connection.pendingTileOffers.clear()
   connection.bootstrapFallbackTimer = null
   connection.heartbeatTimer = null
   connection.heartbeatTimeout = null
@@ -607,8 +652,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
   socket.addEventListener('open', () => {
     if (connection.socket !== socket || !isCurrentServerConnection(server)) return
     connection.healthy = true
-    if (connection.bootstrapFallbackTimer !== null)
-      clearTimeout(connection.bootstrapFallbackTimer)
+    if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
     connection.bootstrapFallbackTimer = null
     deferHealthyLiveSchedules(server)
     armLiveHeartbeat(connection)
@@ -660,6 +704,7 @@ const reconcileLiveConnections = (): void => {
         attempts: 0,
         healthy: false,
         manifestRevision: null,
+        pendingTileOffers: new Map(),
       }
       liveConnections.set(owner, connection)
     }
@@ -721,3 +766,32 @@ export const installServerSyncCoordinator = (): void => {
 }
 
 export const serverLiveSyncHealthy = (server: ConnectedServer): boolean => liveHealthy(server)
+
+export const requestLiveTileOfferCache = (
+  server: ConnectedServer,
+  batch: LiveTileOfferBatch,
+): Promise<LiveTileOfferCacheResponse | null> => {
+  const connection = liveConnections.get(serverConnectionIdentity(server))
+  if (
+    server.info?.liveTileOffers !== 1 ||
+    !liveHealthy(server) ||
+    connection?.socket === null ||
+    connection === undefined
+  )
+    return Promise.resolve(null)
+  const requestId = uuidV7()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      connection.pendingTileOffers.delete(requestId)
+      resolve(null)
+    }, LIVE_COMMAND_TIMEOUT_MS)
+    connection.pendingTileOffers.set(requestId, { resolve, timer })
+    try {
+      connection.socket?.send(JSON.stringify({ type: 'tile-offer-cache', requestId, batch }))
+    } catch {
+      clearTimeout(timer)
+      connection.pendingTileOffers.delete(requestId)
+      resolve(null)
+    }
+  })
+}
