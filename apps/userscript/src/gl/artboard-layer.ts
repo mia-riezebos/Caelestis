@@ -24,6 +24,7 @@ import {
   onLocalPreviewChange,
   type PlacedTemplate,
 } from '../templates/local-store.js'
+import { abortMoveOutsideSurface } from '../templates/move.js'
 import { detachOverlayControls, renderAllianceOverlayControls } from '../ui/overlay-menu.js'
 import { appearanceTransitionSet, prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
@@ -580,9 +581,10 @@ class ArtboardRenderer {
 let renderer: ArtboardRenderer | null = null
 
 const reconcileRenderer = (): void => {
+  const active = activeAllianceSurface()
+  void abortMoveOutsideSurface(active?.surface ?? null)
   renderer?.dispose()
   renderer = null
-  const active = activeAllianceSurface()
   if (active === null) return
   const geometry = artboardGeometry(active)
   if (geometry === null || geometry.width <= 0 || geometry.height <= 0) return

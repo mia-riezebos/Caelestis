@@ -418,6 +418,64 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     expect(appearanceWritten(1)).toMatchObject({ radius: 1, hiddenColours: [1] })
   })
 
+  it('preserves a template write queue while another surface owns the controls', async () => {
+    const hq = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let call = 0
+    harness.setAppearance.mockImplementation(async () => {
+      if (++call === 1) await held
+      return true
+    })
+    harness.localTemplates.mockReturnValue([
+      template(),
+      template({ id: 'hq', name: 'hq.png', surface: hq }),
+    ])
+    rerender()
+    gear('a').click()
+    rerender()
+    await setRadius()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    frame.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    overlayMenu.renderAllianceOverlayControls(
+      vi.fn(),
+      {
+        surface: hq,
+        stage,
+        frame,
+        draftId: null,
+        bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+      },
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+
+    rerender()
+    ;(await byKey('swatch:1')).click()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+
+    release()
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledTimes(2)
+  })
+
   it('composes a queued edit against the store the earlier write left behind', async () => {
     // Each write sends a whole Appearance. A queued snapshot taken before an earlier write
     // reconciled another tab's change would put that change straight back.

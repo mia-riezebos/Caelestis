@@ -395,6 +395,21 @@ describe('template placement controls', () => {
     await vi.waitFor(() => expect(harness.placeLocalTemplate).toHaveBeenCalledWith('test', 0, 0))
   })
 
+  it('cancels an alliance placement only after its drawing surface disappears or changes', async () => {
+    const hq = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([{ ...harness.localTemplates()[0], surface: hq }])
+    const moves = await import('./move.js')
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+
+    await moves.abortMoveOutsideSurface(hq)
+    expect(moves.movingId()).toBe('test')
+    expect(harness.clearLocalPreview).not.toHaveBeenCalled()
+
+    await moves.abortMoveOutsideSurface({ kind: 'alliance-picture', allianceId: 535_245 })
+    expect(moves.movingId()).toBeNull()
+    expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
+  })
+
   it('clamps alliance middle-click placement to signed HQ bounds', async () => {
     const target = { tagName: 'CANVAS', closest: vi.fn(() => null) }
     harness.activeAlliance = {

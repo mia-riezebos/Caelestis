@@ -1,6 +1,7 @@
 import {
   sameTemplateSurface,
   TRANSPARENT_INDEX,
+  templateSurfaceKey,
   WORLD_TEMPLATE_SURFACE,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
@@ -320,6 +321,8 @@ interface PlacementRail {
 }
 
 const placementRails = new Map<string, PlacementRail>()
+/** Surface whose controls currently occupy the shared floating-control host. */
+let controlSurface: string | null = null
 
 const overlayRailControl = (
   model: RailControlModel,
@@ -1659,11 +1662,20 @@ const cornerOnScreen = (
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   lastRerender = rerender
-  const templates = localTemplates().filter((template) =>
+  const catalog = localTemplates()
+  const templates = catalog.filter((template) =>
     sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
   )
   withFrameTemplates(templates, (templates) => {
-    renderControls(rerender, mapCanvas, templates, screenProjection(), document.body)
+    renderControls(
+      rerender,
+      mapCanvas,
+      templates,
+      screenProjection(),
+      document.body,
+      templateSurfaceKey(WORLD_TEMPLATE_SURFACE),
+      new Set(catalog.map((template) => template.id)),
+    )
   })
 }
 
@@ -1696,12 +1708,21 @@ export const renderAllianceOverlayControls = (
           },
         }
   lastRerender = rerender
-  const templates = localTemplates().filter((template) =>
+  const catalog = localTemplates()
+  const templates = catalog.filter((template) =>
     sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, active.surface),
   )
   const host = active.stage.closest<HTMLElement>('dialog[open]') ?? active.stage
   withFrameTemplates(templates, (templates) => {
-    renderControls(rerender, canvas, templates, projection, host)
+    renderControls(
+      rerender,
+      canvas,
+      templates,
+      projection,
+      host,
+      templateSurfaceKey(active.surface),
+      new Set(catalog.map((template) => template.id)),
+    )
   })
 }
 
@@ -1711,12 +1732,17 @@ const renderControls = (
   templates: readonly PlacedTemplate[],
   projection: ScreenProjection | null,
   host: HTMLElement,
+  surface: string,
+  catalogLive: ReadonlySet<string>,
 ): void => {
-  const live = new Set(templates.map((template) => template.id))
+  if (controlSurface !== surface) {
+    detachControls()
+    controlSurface = surface
+  }
   // Forget what has genuinely gone even on a frame with no map: returning early leaves a deleted
   // template's delete question and failures behind, ready to be handed to the next record that
   // takes its durable id.
-  sweepControls(live)
+  sweepControls(catalogLive)
   const openTemplate = openFor === null ? undefined : templateFor(openFor)
   if (openTemplate !== undefined && !isTemplateVisible(openTemplate)) closeOverlayMenu()
   if (mapCanvas.parentElement === null) {

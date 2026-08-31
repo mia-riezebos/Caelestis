@@ -39,6 +39,7 @@ import { horizontalSpans } from './placement.js'
 
 interface MoveSession {
   readonly id: string
+  readonly surface: TemplateSurface
   /** Server drafts persist their new origin remotely before the local preview is accepted. */
   readonly persistRemote?: (originX: number, originY: number) => Promise<boolean>
   x: number
@@ -505,6 +506,7 @@ const begin = (
   placements += 1
   const nextSession: MoveSession = {
     id,
+    surface: template.surface ?? WORLD_TEMPLATE_SURFACE,
     ...(persistRemote === undefined ? {} : { persistRemote }),
     x: restoredOrigin?.x ?? template.originX,
     y: restoredOrigin?.y ?? template.originY,
@@ -681,6 +683,13 @@ export const abort = async (): Promise<void> => {
   } finally {
     stopObserving()
   }
+}
+
+/** Cancel an alliance placement when its editor is no longer the active drawing surface. */
+export const abortMoveOutsideSurface = async (surface: TemplateSurface | null): Promise<void> => {
+  if (session === null || session.surface.kind === 'world') return
+  if (surface !== null && sameTemplateSurface(session.surface, surface)) return
+  await abort()
 }
 
 /** Tile-aligned bounds of the template being moved, for drawing its outline. */
