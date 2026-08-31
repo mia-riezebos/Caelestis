@@ -228,7 +228,7 @@ const railButton = (): CaelestisRailControl => {
 }
 
 const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl => {
-  const existing = active.stage.querySelector(`#${ALLIANCE_BUTTON_ID}`)
+  const existing = active.stage.ownerDocument.getElementById(ALLIANCE_BUTTON_ID)
   if (existing !== null) return existing as CaelestisRailControl
   const button = active.stage.ownerDocument.createElement(
     'caelestis-rail-control',
@@ -249,8 +249,15 @@ const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl
 }
 
 const positionAllianceRail = (active: ActiveAllianceSurface): void => {
-  const wrapper = active.stage.querySelector<HTMLElement>(`#${ALLIANCE_BUTTON_WRAPPER_ID}`)
-  if (wrapper !== null) wrapper.style.top = `${allianceRailTop(active.stage, GAP, GAP)}px`
+  const wrapper = active.stage.ownerDocument.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)
+  if (wrapper === null) return
+  const parent = wrapper.parentElement
+  if (parent === null) return
+  wrapper.style.top = `${active.stage.offsetTop + allianceRailTop(active.stage, GAP, GAP)}px`
+  wrapper.style.right = `${Math.max(
+    0,
+    parent.clientWidth - active.stage.offsetLeft - active.stage.offsetWidth + GAP,
+  )}px`
 }
 
 const mountAllianceRail = (active: ActiveAllianceSurface): void => {
@@ -263,12 +270,11 @@ const mountAllianceRail = (active: ActiveAllianceSurface): void => {
   wrapper.dataset.tip = 'Caelestis — alliance templates'
   Object.assign(wrapper.style, {
     position: 'absolute',
-    right: '12px',
-    top: `${allianceRailTop(active.stage, GAP, GAP)}px`,
-    zIndex: '20',
+    zIndex: '40',
   } satisfies Partial<CSSStyleDeclaration>)
   wrapper.appendChild(allianceRailButton(active))
-  active.stage.appendChild(wrapper)
+  ;(active.stage.parentElement ?? active.stage).appendChild(wrapper)
+  positionAllianceRail(active)
   const realm = active.stage.ownerDocument.defaultView
   if (realm !== null) {
     allianceRailObserver = new realm.MutationObserver(() => positionAllianceRail(active))
@@ -853,9 +859,9 @@ const treeCallbacks = (): TreeCallbacks => ({
   onAddServer: () => {
     if (panelSurface.kind === 'world') showView('settings')
   },
-  onCreateFolder: (target) => void createFolder(target, rerenderTree),
-  onImportTemplate: (target) => void importTemplate(target, rerenderTree),
-  onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
+  onCreateFolder: (target) => void createFolder(target, rerenderTree, panelSurface),
+  onImportTemplate: (target) => void importTemplate(target, rerenderTree, panelSurface),
+  onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree, panelSurface),
   onCopyToServer: (id) => void copyToServer(id, rerenderTree),
   onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
     dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
@@ -919,12 +925,20 @@ const buildSveltePanel = (): CaelestisPanel => {
         setOpen(false)
         break
       case 'resize-preview':
-        if (allianceStage !== null) allianceDrawerInset.apply(allianceStage, intent.width, GAP)
+        if (allianceStage !== null) {
+          allianceDrawerInset.apply(allianceStage, intent.width, GAP)
+          const active = activeAllianceSurface()
+          if (active !== null) positionAllianceRail(active)
+        }
         redraw()
         break
       case 'resize-commit':
         setState({ panelWidth: intent.width })
-        if (allianceStage !== null) allianceDrawerInset.apply(allianceStage, intent.width, GAP)
+        if (allianceStage !== null) {
+          allianceDrawerInset.apply(allianceStage, intent.width, GAP)
+          const active = activeAllianceSurface()
+          if (active !== null) positionAllianceRail(active)
+        }
         break
       case 'tree':
         if (handleTreeActionPresentationIntent(intent.intent)) {
@@ -1034,7 +1048,11 @@ const setOpen = (next: boolean): void => {
   if (!panelOpen()) {
     cancelTreeActionSetup(new Error('panel closed'))
     existing?.remove()
-    if (panelSessions.scope() === 'alliance') allianceDrawerInset.clear()
+    if (panelSessions.scope() === 'alliance') {
+      allianceDrawerInset.clear()
+      const active = activeAllianceSurface()
+      if (active !== null) positionAllianceRail(active)
+    }
     syncProfileTimer()
     // Give map-anchored controls the reclaimed width immediately, even while the map is still.
     redraw()
@@ -1043,6 +1061,8 @@ const setOpen = (next: boolean): void => {
   if (existing !== null) return
   if (allianceStage !== null) {
     allianceDrawerInset.apply(allianceStage, panelWidthForViewport(getState().panelWidth), GAP)
+    const active = activeAllianceSurface()
+    if (active !== null) positionAllianceRail(active)
   }
   const host = panelHost ?? document.body
   host.appendChild(buildSveltePanel())
@@ -1256,13 +1276,14 @@ export const installPanel = (): void => {
   })
   window.addEventListener('resize', () => {
     positionRail()
+    const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
+    if (panel !== null) {
+      const width = panelWidthForViewport(getState().panelWidth)
+      panel.model = panelModel(width)
+      if (allianceStage !== null) allianceDrawerInset.apply(allianceStage, width, GAP)
+    }
     const active = activeAllianceSurface()
     if (active !== null) positionAllianceRail(active)
-    const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
-    if (panel === null) return
-    const width = panelWidthForViewport(getState().panelWidth)
-    panel.model = panelModel(width)
-    if (allianceStage !== null) allianceDrawerInset.apply(allianceStage, width, GAP)
     redraw()
   })
   onStateChange(syncColourModeState)

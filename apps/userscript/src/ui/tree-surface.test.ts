@@ -6,6 +6,7 @@ const scoped = vi.hoisted(() => ({ manifest: null as ServerManifest | null }))
 
 vi.mock('../alliance-server-sync.js', () => ({
   allianceManifestFor: (_serverUrl: string, _surface: TemplateSurface) => scoped.manifest,
+  refreshAllianceManifest: vi.fn(),
 }))
 
 import type { ConnectedServer } from '../state.js'
@@ -37,11 +38,12 @@ const callbacks = {
 
 afterEach(() => {
   scoped.manifest = null
-  setState({ servers: [], customOrder: [], collapsed: [] })
+  vi.clearAllMocks()
+  setState({ servers: [], customOrder: [], collapsed: [], localFolders: [] })
 })
 
 describe('surface-scoped template tree', () => {
-  it('renders the selected alliance manifest without world navigation or editing actions', () => {
+  it('renders creation actions and only the selected alliance surface', () => {
     scoped.manifest = {
       season: 0,
       surface,
@@ -65,21 +67,73 @@ describe('surface-scoped template tree', () => {
         },
       ],
     }
-    setState({ servers: [server], collapsed: [] })
+    setState({
+      servers: [server],
+      collapsed: [],
+      localFolders: [
+        { id: 'hq', parentId: null, name: 'HQ folder', visible: true, surface },
+        {
+          id: 'world',
+          parentId: null,
+          name: 'World folder',
+          visible: true,
+          surface: { kind: 'world', allianceId: null },
+        },
+      ],
+    })
 
     const adapter = templateTreeAdapter(callbacks, vi.fn(), '', surface)
     const row = adapter.model.entries.find(
       (entry) => entry.type === 'row' && entry.name === 'HQ guide',
     )
 
-    expect(row).toMatchObject({ type: 'row', name: 'HQ guide' })
+    const local = adapter.model.entries.find(
+      (entry) => entry.type === 'row' && entry.key === 'local',
+    )
+    const serverRoot = adapter.model.entries.find(
+      (entry) => entry.type === 'row' && entry.key === `server:${server.url}`,
+    )
+
+    expect(row).toMatchObject({ type: 'row', name: 'HQ guide', renamable: true })
     expect(row).not.toHaveProperty('contextMenu')
     expect(row).not.toHaveProperty('leadingActions')
-    expect(adapter.model.entries).not.toContainEqual(
+    expect(local).toMatchObject({
+      type: 'row',
+      actions: [
+        expect.objectContaining({ label: 'New folder' }),
+        expect.objectContaining({ label: 'Import template' }),
+      ],
+    })
+    expect(serverRoot).toMatchObject({
+      type: 'row',
+      actions: [
+        expect.objectContaining({ label: 'New folder' }),
+        expect.objectContaining({ label: 'Import template' }),
+      ],
+    })
+    expect(adapter.model.entries).toContainEqual(
       expect.objectContaining({ type: 'action', key: 'local-import' }),
     )
     expect(adapter.model.entries).not.toContainEqual(
       expect.objectContaining({ type: 'action', key: 'add-server' }),
+    )
+    expect(adapter.model.entries).toContainEqual(
+      expect.objectContaining({ type: 'row', name: 'HQ folder' }),
+    )
+    expect(adapter.model.entries).not.toContainEqual(
+      expect.objectContaining({ type: 'row', name: 'World folder' }),
+    )
+
+    adapter.handle({ type: 'action', key: 'local', actionId: 'row-0' })
+    adapter.handle({ type: 'action', key: `server:${server.url}`, actionId: 'row-1' })
+    adapter.handle({ type: 'action', key: 'local-import', actionId: 'run' })
+
+    expect(callbacks.onCreateFolder).toHaveBeenCalledWith(expect.objectContaining({ key: 'local' }))
+    expect(callbacks.onImportTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ key: `server:${server.url}` }),
+    )
+    expect(callbacks.onImportTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'local' }),
     )
   })
 })

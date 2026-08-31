@@ -1,4 +1,12 @@
-import { TILE_SIZE, WORLD_PIXELS } from '@caelestis/shared'
+import {
+  sameTemplateSurface,
+  type TemplateSurface,
+  TILE_SIZE,
+  templateSurfaceBounds,
+  WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
+import { activeAllianceSurface } from '../alliance-surface.js'
 import { log, warn } from '../debug.js'
 import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget, repaint } from '../main.js'
 import {
@@ -114,10 +122,19 @@ export const movePreviewOrigin = (id: string): { x: number; y: number } | null =
 
 const isOverTemplate = (clientX: number, clientY: number): boolean => {
   if (session === null) return false
-  const point = canvasPixelAt(clientX, clientY)
-  if (point === null) return false
   const template = session === null ? undefined : templateById(session.id)
   if (template === undefined) return false
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  const point = placementPointAt(surface, clientX, clientY)
+  if (point === null) return false
+  if (surface.kind !== 'world') {
+    return (
+      point.x >= session.x &&
+      point.x < session.x + template.width &&
+      point.y >= session.y &&
+      point.y < session.y + template.height
+    )
+  }
   return (
     horizontalSpans({ ...template, originX: session.x }).some(
       (span) => point.x >= span.worldStart && point.x < span.worldEnd,
@@ -128,11 +145,26 @@ const isOverTemplate = (clientX: number, clientY: number): boolean => {
 }
 
 const boundedOrigin = (
-  template: { width: number; height: number; wrapX?: boolean },
+  template: {
+    width: number
+    height: number
+    wrapX?: boolean
+    surface?: TemplateSurface
+  },
   x: number,
   y: number,
 ): { x: number; y: number } => {
   const roundedX = Math.round(x)
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  if (surface.kind !== 'world') {
+    const bounds = placementBounds(surface)
+    return bounds === null
+      ? { x: roundedX, y: Math.round(y) }
+      : {
+          x: Math.min(Math.max(bounds.minX, roundedX), bounds.maxX - template.width),
+          y: Math.min(Math.max(bounds.minY, Math.round(y)), bounds.maxY - template.height),
+        }
+  }
   return {
     x:
       template.wrapX === true
@@ -142,10 +174,98 @@ const boundedOrigin = (
   }
 }
 
+const matchingAllianceSurface = (surface: TemplateSurface) => {
+  if (surface.kind === 'world') return null
+  const active = activeAllianceSurface()
+  return active !== null && sameTemplateSurface(active.surface, surface) ? active : null
+}
+
+const placementBounds = (surface: TemplateSurface) => {
+  const active = matchingAllianceSurface(surface)
+  return surface.kind === 'alliance-headquarters' && active?.bounds !== null
+    ? (active?.bounds ?? templateSurfaceBounds(surface))
+    : templateSurfaceBounds(surface)
+}
+
+const placementPointAt = (
+  surface: TemplateSurface,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } | null => {
+  if (surface.kind === 'world') return canvasPixelAt(clientX, clientY)
+  const active = matchingAllianceSurface(surface)
+  const bounds = placementBounds(surface)
+  if (active === null || bounds === null) return null
+  const rect = active.frame.getBoundingClientRect()
+  if (
+    rect.width <= 0 ||
+    rect.height <= 0 ||
+    clientX < rect.left ||
+    clientX >= rect.right ||
+    clientY < rect.top ||
+    clientY >= rect.bottom
+  ) {
+    return null
+  }
+  return {
+    x: bounds.minX + ((clientX - rect.left) / rect.width) * (bounds.maxX - bounds.minX),
+    y: bounds.minY + ((clientY - rect.top) / rect.height) * (bounds.maxY - bounds.minY),
+  }
+}
+
+const placementScale = (surface: TemplateSurface): { x: number; y: number } | null => {
+  if (surface.kind === 'world') return cssPixelsPerCanvasPixel()
+  const active = matchingAllianceSurface(surface)
+  const bounds = placementBounds(surface)
+  if (active === null || bounds === null) return null
+  const rect = active.frame.getBoundingClientRect()
+  const width = bounds.maxX - bounds.minX
+  const height = bounds.maxY - bounds.minY
+  return rect.width > 0 && rect.height > 0 && width > 0 && height > 0
+    ? { x: rect.width / width, y: rect.height / height }
+    : null
+}
+
+const isDirectControl = (target: EventTarget | null): boolean => {
+  if (target === null || typeof target !== 'object') return false
+  const element = target as {
+    isContentEditable?: boolean
+    tagName?: string
+    closest?: (selector: string) => Element | null
+  }
+  return (
+    element.isContentEditable === true ||
+    ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
+    (element.closest?.(
+      'a,button,input,select,textarea,[contenteditable="true"],[role="button"],[role="link"],#caelestis-panel',
+    ) ?? null) !== null
+  )
+}
+
+const isPlacementInteractionTarget = (
+  surface: TemplateSurface,
+  target: EventTarget | null,
+): boolean => {
+  if (surface.kind === 'world') return !isPageControl(target) && isMapInteractionTarget(target)
+  if (isDirectControl(target) || target === null) return false
+  const active = matchingAllianceSurface(surface)
+  if (active === null) return false
+  try {
+    return active.frame.contains(target as Node)
+  } catch {
+    return false
+  }
+}
+
 /** Borrow the map's own cursor for as long as placement owns the pointer. */
 const setCursor = (shape: string): void => {
-  const canvas = document.querySelector<HTMLElement>('canvas.maplibregl-canvas')
-  if (canvas !== null) canvas.style.cursor = shape
+  const template = session === null ? undefined : templateById(session.id)
+  const surface = template?.surface ?? WORLD_TEMPLATE_SURFACE
+  const host =
+    surface.kind === 'world'
+      ? document.querySelector<HTMLElement>('canvas.maplibregl-canvas')
+      : matchingAllianceSurface(surface)?.frame
+  if (host !== null && host !== undefined) host.style.cursor = shape
 }
 
 const onPointerDown = (event: PointerEvent): void => {
@@ -153,13 +273,15 @@ const onPointerDown = (event: PointerEvent): void => {
   // One pointer owns a drag until it ends. A second touch, pen, or mouse button must not replace
   // its origin or recenter the template underneath it.
   if (session.dragging !== null) return
-  if (isPageControl(event.target) || !isMapInteractionTarget(event.target)) return
+  const template = templateById(session.id)
+  if (template === undefined) return
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  if (!isPlacementInteractionTarget(surface, event.target)) return
   suppressMiddleAuxClickFor = null
   // Middle click: jump, do not drag. A long move should not require dragging the whole way.
   if (event.button === 1) {
-    const point = canvasPixelAt(event.clientX, event.clientY)
-    const template = session === null ? undefined : templateById(session.id)
-    if (point === null || template === undefined) return
+    const point = placementPointAt(surface, event.clientX, event.clientY)
+    if (point === null) return
     event.preventDefault()
     suppressMiddleAuxClickFor = event.pointerId
     const next = boundedOrigin(
@@ -176,10 +298,11 @@ const onPointerDown = (event: PointerEvent): void => {
   if (event.button !== 0) return
   // The template's own outline is the boundary. Starting elsewhere remains a map pan.
   if (!isOverTemplate(event.clientX, event.clientY)) return
+  const scale = placementScale(surface)
+  if (scale === null) return
   event.preventDefault()
   event.stopPropagation()
   setCursor('grabbing')
-  const scale = cssPixelsPerCanvasPixel()
   session.dragging = {
     pointerId: event.pointerId,
     pointerX: event.clientX,
@@ -239,10 +362,13 @@ const onPointerUp = (event: PointerEvent): void => {
 
 const swallowNextClick = (): void => {
   const clickTarget = window
+  const template = session === null ? undefined : templateById(session.id)
+  const surface = template?.surface ?? WORLD_TEMPLATE_SURFACE
   const swallow = (event: Event): void => {
     clickTarget.removeEventListener('click', swallow, true)
     clearTimeout(timer)
-    if (isPageControl(event.target)) return
+    if (surface.kind === 'world' ? isPageControl(event.target) : isDirectControl(event.target))
+      return
     event.preventDefault()
     event.stopPropagation()
   }
@@ -261,24 +387,28 @@ const onBlur = (): void => {
 }
 
 const isPageControl = (target: EventTarget | null): boolean => {
-  if (target === null || typeof target !== 'object') return false
-  const element = target as {
-    isContentEditable?: boolean
-    tagName?: string
-    closest?: (selector: string) => Element | null
-  }
-  return (
-    element.isContentEditable === true ||
-    ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
-    (element.closest?.(
-      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"],#caelestis-panel',
-    ) ?? null) !== null
-  )
+  if (isDirectControl(target) || target === null || typeof target !== 'object')
+    return isDirectControl(target)
+  const element = target as { closest?: (selector: string) => Element | null }
+  return (element.closest?.('dialog,[role="dialog"]') ?? null) !== null
 }
 
-const isPageControlEvent = (event: Event): boolean =>
-  isPageControl(event.target) ||
-  event.composedPath?.().some((target) => isPageControl(target)) === true
+const isPageControlEvent = (event: Event): boolean => {
+  if (session !== null) {
+    const template = templateById(session.id)
+    const surface = template?.surface ?? WORLD_TEMPLATE_SURFACE
+    if (surface.kind !== 'world') {
+      return (
+        isDirectControl(event.target) ||
+        event.composedPath?.().some((target) => isDirectControl(target)) === true
+      )
+    }
+  }
+  return (
+    isPageControl(event.target) ||
+    event.composedPath?.().some((target) => isPageControl(target)) === true
+  )
+}
 
 const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
