@@ -37,8 +37,13 @@ const harness = vi.hoisted(() => ({
   redoPaint: vi.fn(() => true),
   toggleShortcutHelp: vi.fn(),
   moving: false,
+  allianceActive: false,
 }))
 
+vi.mock('./alliance-surface.js', () => ({
+  activeAllianceSurface: () =>
+    harness.allianceActive ? { surface: { kind: 'alliance-headquarters' } } : null,
+}))
 vi.mock('./map-handle.js', () => ({
   getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
 }))
@@ -87,6 +92,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   harness.peek = false
   harness.moving = false
+  harness.allianceActive = false
   harness.appearance = { opacity: 0.85, markMismatch: false, markSelectedColour: false }
   harness.focused = { id: 'focused', visible: true, owns: ['markers'] }
   harness.focus.mockImplementation(() => harness.focused)
@@ -132,8 +138,10 @@ describe('keyboard shortcut actions', () => {
   })
 
   it('handles an alliance-modal shortcut before Wplace stops its propagation', () => {
+    harness.allianceActive = true
     const modalControl = document.createElement('button')
-    modalControl.addEventListener('keydown', (event) => event.stopPropagation())
+    const wplaceHandler = vi.fn((event: Event) => event.stopPropagation())
+    modalControl.addEventListener('keydown', wplaceHandler)
     document.body.append(modalControl)
     const event = new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true })
 
@@ -141,6 +149,7 @@ describe('keyboard shortcut actions', () => {
 
     expect(event.defaultPrevented).toBe(true)
     expect(harness.toggleMenu).toHaveBeenCalledWith('focused', expect.any(Function))
+    expect(wplaceHandler).not.toHaveBeenCalled()
   })
 
   it('leaves placement confirm and cancel with the active placement', () => {
