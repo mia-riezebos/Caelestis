@@ -48,7 +48,9 @@ const progressForTemplate = (
     id: template.serverTemplateId,
     totalPixels: template.opaque,
   })
-  return progress === null ? [] : freshestColourProgress(progress, accounting.colours)
+  return progress === null
+    ? []
+    : freshestColourProgress(progress, accounting.colours, accounting.draftedColours)
 }
 
 /** The colour counts decorating Wplace's palette belong only to what the viewport is focused on. */

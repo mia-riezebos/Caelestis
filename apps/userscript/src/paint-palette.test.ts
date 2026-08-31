@@ -23,6 +23,7 @@ const harness = vi.hoisted(() => ({
   colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
   paintOpen: true,
   selectedColour: 0 as number | null,
+  draftedColours: new Set<number>(),
   selectPaintColour: vi.fn(() => true),
   navigationTargets: {
     unpainted: {
@@ -87,6 +88,7 @@ vi.mock('./templates/mismatch.js', () => ({
   pixelAccounting: {
     read: (template: { id: string }) => ({
       colours: harness.localProgress,
+      draftedColours: harness.draftedColours,
       nearest: (
         index: number,
         kind: 'unpainted' | 'mismatched',
@@ -119,6 +121,7 @@ beforeEach(() => {
   harness.colourNavigationOrder = 'unpainted-first'
   harness.paintOpen = true
   harness.selectedColour = 0
+  harness.draftedColours = new Set()
   harness.navigationTargets.unpainted = {
     templateId: 'local',
     x: 12,
@@ -204,10 +207,28 @@ describe('Wplace paint palette progress', () => {
       )?.model?.value,
     ).toBe('1')
 
+    harness.draftedColours = new Set([0])
+    harness.localProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
+    ]
+    harness.mismatchListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
+
+    // The response baseline may catch up before Wplace clears its native draft. Selecting the
+    // effective local result rather than adding it keeps that paint from counting twice.
     harness.serverProgress = [
       { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
     ]
     harness.statusListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
+
+    harness.draftedColours = new Set()
+    harness.localProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 0, known: 3, total: 3 },
+    ]
+    harness.mismatchListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()

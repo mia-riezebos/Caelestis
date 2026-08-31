@@ -20,6 +20,7 @@ import {
   serverMismatchMaskFor,
 } from '../server-mismatch.js'
 import {
+  draftedPixelOffsets,
   draftPixels,
   ensureTilePixels,
   loadTilePixels,
@@ -131,6 +132,8 @@ export interface TemplatePixelAccounting {
   readonly wanted: Uint8Array
   readonly progress: TemplateProgress
   readonly colours: readonly TemplateColourProgress[]
+  /** Desired palette entries currently affected by native Wplace draft pixels. */
+  readonly draftedColours: ReadonlySet<number>
   /** Read or schedule one tile's canonical classification. */
   readonly tile: (tile: TileCoord) => TilePixelAccounting | null
   /** Read or schedule only the unpainted coordinates needed by the selected-colour guide. */
@@ -1937,6 +1940,23 @@ export const pixelAccounting = Object.freeze({
     },
     get colours() {
       return colourProgressFor(template)
+    },
+    get draftedColours() {
+      const colours = new Set<number>()
+      for (const key of templateTileKeys(template)) {
+        const tile = parseTileKey(key)
+        if (tile === null) continue
+        for (const offset of draftedPixelOffsets(tile)) {
+          const tileX = offset % TILE_SIZE
+          const localX = sourceXAt(template, tile.x * TILE_SIZE + tileX)
+          const localY = tile.y * TILE_SIZE + (offset - tileX) / TILE_SIZE - template.originY
+          if (localX === null || localY < 0 || localY >= template.height) continue
+          const wanted = template.indices[localY * template.width + localX]
+          if (wanted !== undefined && wanted < PALETTE_SIZE && wanted !== TRANSPARENT_INDEX)
+            colours.add(wanted)
+        }
+      }
+      return colours
     },
     tile: (tile) => tileAccountingFor(template, tile),
     unpainted: (tile) => mismatchAnswer(template, tile, 'unpainted'),

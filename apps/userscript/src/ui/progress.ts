@@ -53,5 +53,18 @@ export const freshestProgress = (
 
 export const freshestColourProgress = (
   server: readonly TemplateColourProgress[],
-  _local: readonly TemplateColourProgress[],
-): readonly TemplateColourProgress[] => server
+  local: readonly TemplateColourProgress[],
+  draftedColours?: ReadonlySet<number>,
+): readonly TemplateColourProgress[] => {
+  if (draftedColours === undefined || draftedColours.size === 0) return server
+  const localByIndex = new Map(local.map((entry) => [entry.index, entry]))
+  return server.map((entry) => {
+    const current = localByIndex.get(entry.index)
+    return draftedColours.has(entry.index) &&
+      current !== undefined &&
+      current.total === entry.total &&
+      current.known === current.total
+      ? current
+      : entry
+  })
+}
