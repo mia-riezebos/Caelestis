@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { seconds } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
@@ -408,6 +409,52 @@ describe('server sync coordinator', () => {
     expect(alarms).toHaveBeenCalledWith(liveServer, 'interval', 'recovery')
   })
 
+  it('correlates a live tile cache acknowledgement without an HTTP request', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveTileOffers: 1 as const },
+      token: 'ABCDEFGHJKMNPQRSTVWXYZ2345',
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, requestLiveTileOfferCache } = await import(
+      './server-sync-coordinator.js'
+    )
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+
+    const pending = requestLiveTileOfferCache(liveServer, {
+      wplaceUserId: 42,
+      displayName: 'Mia',
+      season: 0,
+      offers: [
+        {
+          deliveryId: '01890f3e-7b2c-7abc-8def-000000000001',
+          tile: '1/2',
+          sha256: 'a'.repeat(64),
+          ts: seconds(1_800_000_000),
+        },
+      ],
+    })
+    const command = JSON.parse(socket.sent.at(-1) ?? '{}') as { requestId?: string }
+    expect(command.requestId).toBeTypeOf('string')
+    socket.receive({
+      type: 'tile-offer-cache-result',
+      requestId: command.requestId,
+      response: {
+        acknowledgedDeliveryIds: ['01890f3e-7b2c-7abc-8def-000000000001'],
+        unresolvedDeliveryIds: [],
+      },
+    })
+
+    await expect(pending).resolves.toEqual({
+      acknowledgedDeliveryIds: ['01890f3e-7b2c-7abc-8def-000000000001'],
+      unresolvedDeliveryIds: [],
+    })
+  })
+
   it('coalesces malformed, out-of-order, and reconnect recovery into bounded reads', async () => {
     const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
     state.current = { servers: [liveServer] }
@@ -639,11 +686,8 @@ describe('server sync coordinator', () => {
     state.identities.set(liveServer, lifetime)
     state.current = { servers: [liveServer] }
     vi.stubGlobal('WebSocket', FakeWebSocket)
-    const {
-      installServerSyncCoordinator,
-      registerServerSyncResource,
-      serverLiveSyncHealthy,
-    } = await import('./server-sync-coordinator.js')
+    const { installServerSyncCoordinator, registerServerSyncResource, serverLiveSyncHealthy } =
+      await import('./server-sync-coordinator.js')
     const status = vi.fn(async () => ({ status: 'unchanged' as const, revision: '1' }))
     registerServerSyncResource({
       id: 'telemetry-status',
@@ -686,11 +730,7 @@ describe('server sync coordinator', () => {
     expect(serverLiveSyncHealthy(capabilityWithdrawn)).toBe(false)
     expect(socket.readyState).toBe(3)
     expect(status).toHaveBeenCalledOnce()
-    expect(status).toHaveBeenCalledWith(
-      capabilityWithdrawn,
-      'state-change',
-      'compatibility-poll',
-    )
+    expect(status).toHaveBeenCalledWith(capabilityWithdrawn, 'state-change', 'compatibility-poll')
   })
 
   it('falls back once when an advertised live socket never opens', async () => {
