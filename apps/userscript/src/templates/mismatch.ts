@@ -108,6 +108,11 @@ export interface TemplateColourProgressDelta {
   readonly unpainted: number
 }
 
+/** One native draft pixel's correction, keyed so later batches can replace the same coordinate. */
+export interface TemplateDraftPixelDelta extends TemplateColourProgressDelta {
+  readonly key: string
+}
+
 export type ColourTargetKind = 'unpainted' | 'mismatched'
 
 export interface ColourNavigationTarget {
@@ -140,8 +145,8 @@ export interface TemplatePixelAccounting {
   readonly wanted: Uint8Array
   readonly progress: TemplateProgress
   readonly colours: readonly TemplateColourProgress[]
-  /** Exact draft-only corrections over captured server pixels, independent of scan coverage. */
-  readonly draftColourDeltas: readonly TemplateColourProgressDelta[]
+  /** Sparse per-pixel draft corrections over captured server pixels, independent of scan coverage. */
+  readonly draftPixelDeltas: readonly TemplateDraftPixelDelta[]
   /** Read or schedule one tile's canonical classification. */
   readonly tile: (tile: TileCoord) => TilePixelAccounting | null
   /** Read or schedule only the unpainted coordinates needed by the selected-colour guide. */
@@ -1967,25 +1972,23 @@ export const pixelAccounting = Object.freeze({
     get colours() {
       return colourProgressFor(template)
     },
-    get draftColourDeltas() {
-      const deltas = new Map<number, TemplateColourProgressDelta>()
-      const move = (
+    get draftPixelDeltas() {
+      const deltas: TemplateDraftPixelDelta[] = []
+      const correction = (
+        key: string,
         index: number,
         from: 'completed' | 'mismatched' | 'unpainted',
         to: 'completed' | 'mismatched' | 'unpainted',
-      ): void => {
-        if (from === to) return
-        const held = deltas.get(index) ?? {
+      ): TemplateDraftPixelDelta => {
+        const delta: TemplateDraftPixelDelta = {
+          key,
           index,
           completed: 0,
           mismatched: 0,
           unpainted: 0,
         }
-        deltas.set(index, {
-          ...held,
-          [from]: held[from] - 1,
-          [to]: held[to] + 1,
-        })
+        if (from === to) return delta
+        return { ...delta, [from]: -1, [to]: 1 }
       }
       for (const key of templateTileKeys(template)) {
         const tile = parseTileKey(key)
@@ -2024,10 +2027,17 @@ export const pixelAccounting = Object.freeze({
                 })()
               : category(server[offset] as number)
           if (serverCategory !== null)
-            move(wanted, serverCategory, category(draft[offset] as number))
+            deltas.push(
+              correction(
+                `${tile.x}/${tile.y}/${offset}`,
+                wanted,
+                serverCategory,
+                category(draft[offset] as number),
+              ),
+            )
         }
       }
-      return [...deltas.values()].sort((left, right) => left.index - right.index)
+      return deltas.sort((left, right) => left.key.localeCompare(right.key))
     },
     tile: (tile) => tileAccountingFor(template, tile),
     unpainted: (tile) => mismatchAnswer(template, tile, 'unpainted'),

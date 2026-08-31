@@ -22,7 +22,8 @@ const harness = vi.hoisted(() => ({
   colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
   paintOpen: true,
   selectedColour: 0 as number | null,
-  draftColourDeltas: [] as Array<{
+  draftPixelDeltas: [] as Array<{
+    key: string
     index: number
     completed: number
     mismatched: number
@@ -92,7 +93,7 @@ vi.mock('./templates/mismatch.js', () => ({
   pixelAccounting: {
     read: (template: { id: string }) => ({
       colours: harness.localProgress,
-      draftColourDeltas: harness.draftColourDeltas,
+      draftPixelDeltas: harness.draftPixelDeltas,
       nearest: (
         index: number,
         kind: 'unpainted' | 'mismatched',
@@ -134,7 +135,7 @@ beforeEach(() => {
   harness.colourNavigationOrder = 'unpainted-first'
   harness.paintOpen = true
   harness.selectedColour = 0
-  harness.draftColourDeltas = []
+  harness.draftPixelDeltas = []
   harness.navigationTargets.unpainted = {
     templateId: 'local',
     x: 12,
@@ -224,7 +225,9 @@ describe('Wplace paint palette progress', () => {
     harness.localProgress = [
       { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 3 },
     ]
-    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: -1, unpainted: 0 }]
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
@@ -238,7 +241,7 @@ describe('Wplace paint palette progress', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
 
-    harness.draftColourDeltas = []
+    harness.draftPixelDeltas = []
     harness.localProgress = [
       { index: 0, completed: 2, mismatched: 1, unpainted: 0, known: 3, total: 3 },
     ]
@@ -314,30 +317,36 @@ describe('Wplace paint palette progress', () => {
       )?.model?.value
     expect(badge()).toBe('8')
 
-    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: -1, unpainted: 0 }]
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('7')
 
     // Undo/cancel has no accepted-paint event and therefore returns to the server baseline.
-    harness.draftColourDeltas = []
+    harness.draftPixelDeltas = []
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('8')
 
-    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: -1, unpainted: 0 }]
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('7')
 
     harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
-    harness.draftColourDeltas = []
+    harness.draftPixelDeltas = []
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('7')
 
     // A second disjoint batch composes with the still-pending accepted paint.
-    harness.draftColourDeltas = [{ index: 0, completed: 1, mismatched: 0, unpainted: -1 }]
+    harness.draftPixelDeltas = [
+      { key: '0/0/1', index: 0, completed: 1, mismatched: 0, unpainted: -1 },
+    ]
     harness.draftListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('6')
@@ -350,6 +359,57 @@ describe('Wplace paint palette progress', () => {
     harness.statusListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(badge()).toBe('4')
+  })
+
+  it('lets an overlapping accepted repaint cancel a pending correction', async () => {
+    harness.focused = {
+      id: 'remote-overlapping-draft',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 7, known: 10, total: 10 },
+    ]
+    const swatch = document.createElement('button')
+    swatch.id = 'color-1'
+    document.body.appendChild(swatch)
+    const { installPaintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.statusListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    const badge = (): string | undefined =>
+      swatch.querySelector<HTMLElement & { model?: { value: string } }>(
+        'caelestis-palette-progress',
+      )?.model?.value
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('7')
+
+    harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
+    harness.draftPixelDeltas = []
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('7')
+
+    // The same coordinate is drafted back to its retained server category. Its explicit zero delta
+    // replaces, then cancels, the pending correction instead of being mistaken for no active draft.
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', index: 0, completed: 0, mismatched: 0, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('8')
+
+    harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
+    harness.draftPixelDeltas = []
+    harness.draftListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(badge()).toBe('8')
   })
 
   it('cycles repeated F navigation past its previous focused-template target', async () => {
