@@ -162,7 +162,7 @@ describe('status read-model Durable Object', () => {
       hash: 'a'.repeat(64),
       observedAt: millis(1_750_000_000_000),
       commitOrder: 1,
-      coverageReadAt: millis(1_750_000_000_000),
+      coverageToken: object.resolveCurrentTileOffers(8, 'public', []).coverageToken ?? '',
       visibleToPublic: true,
       visibleToAdmin: true,
     })
@@ -262,14 +262,14 @@ describe('status read-model Durable Object', () => {
     })
   })
 
-  it('persists the manifest fence across eviction before accepting cache repairs', async () => {
+  it('rejects an old object incarnation token after eviction', async () => {
     database = new SqliteD1Database()
     const held = new Map<string, unknown>()
     const state = objectState(held)
     const env = { DB: database } as unknown as Env
     const first = new StatusReadModelObject(state, env)
 
-    await first.notifyManifestChange(8)
+    const oldToken = first.resolveCurrentTileOffers(8, 'public', []).coverageToken ?? ''
 
     const recovered = new StatusReadModelObject(state, env)
     await recovered.applyCommittedTileGeneration(8, {
@@ -277,7 +277,7 @@ describe('status read-model Durable Object', () => {
       hash: 'a'.repeat(64),
       observedAt: millis(1_000),
       commitOrder: 1,
-      coverageReadAt: millis(0),
+      coverageToken: oldToken,
       visibleToPublic: true,
       visibleToAdmin: true,
     })

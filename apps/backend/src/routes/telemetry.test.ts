@@ -267,10 +267,12 @@ describe('telemetry routes', () => {
       body: JSON.stringify(offer),
     })
     expect(offered.status).toBe(200)
-    await expect(offered.json()).resolves.toEqual({
+    const offeredBody = (await offered.json()) as { coverageToken: string }
+    expect(offeredBody).toEqual({
       wanted: ['0/0'],
       acknowledged: [],
       rejected: [],
+      coverageToken: expect.any(String),
     })
 
     const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
@@ -282,6 +284,7 @@ describe('telemetry routes', () => {
         'x-caelestis-observed-at': String(now),
         'x-caelestis-wplace-user-id': '42',
         'x-caelestis-display-name': encodeURIComponent('Mía 🎨'),
+        'x-caelestis-tile-coverage-token': offeredBody.coverageToken,
       },
       body: bytes,
     })
@@ -346,6 +349,7 @@ describe('telemetry routes', () => {
       wanted: [],
       acknowledged: ['0/0'],
       rejected: [],
+      coverageToken: expect.any(String),
     })
     expect(listTelemetryTargets).not.toHaveBeenCalled()
     expect(reserveTileBlob).not.toHaveBeenCalled()
@@ -362,6 +366,7 @@ describe('telemetry routes', () => {
       wanted: [],
       acknowledged: [],
       rejected: ['9/9'],
+      coverageToken: expect.any(String),
     })
 
     const duplicate = await app.request('/telemetry/tiles/offers', {

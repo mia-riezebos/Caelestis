@@ -51,7 +51,6 @@ const MAX_CHUNK_JSON_BYTES = 512 * 1024
 const MAX_DELTA_MESSAGE_BYTES = 32 * 1024
 const LIVE_PROTOCOL = 'caelestis.live.v1'
 const MANIFEST_CACHE_INDEX_KEY = 'manifest-read-model:v1:index'
-const TILE_COVERAGE_INVALIDATED_AT_KEY = 'tile-generation-cache:v1:coverage-invalidated-at'
 // 128 Ki UTF-16 code units are at most 384 KiB in UTF-8, below the intended 512 KiB ceiling.
 const MANIFEST_CACHE_CHUNK_CODE_UNITS = 128 * 1024
 
@@ -397,7 +396,6 @@ export class StatusReadModelObject extends DurableObject<Env> {
   private readonly sql: D1SqlStore
   private readonly liveSessions = createLiveSessionFence()
   private readonly tileGenerations = createTileGenerationCache()
-  private tileCoverageInvalidatedAt: number | null = null
   private readonly requestMetrics: AnalyticsEngineDataset | undefined
 
   constructor(
@@ -557,10 +555,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   async notifyManifestChange(season: number): Promise<void> {
-    const invalidatedAt = Date.now()
-    this.tileCoverageInvalidatedAt = invalidatedAt
-    this.tileGenerations.invalidate(invalidatedAt)
-    await this.objectState.storage.put(TILE_COVERAGE_INVALIDATED_AT_KEY, invalidatedAt)
+    this.tileGenerations.invalidate()
     const revision = await this.manifestModel(season).invalidate()
     this.broadcastManifest(revision)
   }
@@ -589,11 +584,6 @@ export class StatusReadModelObject extends DurableObject<Env> {
     generation: CommittedTileGeneration,
   ): Promise<void> {
     this.bindSeason(season)
-    if (this.tileCoverageInvalidatedAt === null) {
-      const persisted = await this.objectState.storage.get<number>(TILE_COVERAGE_INVALIDATED_AT_KEY)
-      this.tileCoverageInvalidatedAt = persisted ?? Number.NEGATIVE_INFINITY
-      if (persisted !== undefined) this.tileGenerations.invalidate(persisted)
-    }
     this.tileGenerations.apply(generation)
   }
 

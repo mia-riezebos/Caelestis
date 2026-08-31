@@ -13,6 +13,8 @@ export interface TileGenerationCacheRead {
   readonly acknowledgedDeliveryIds: readonly string[]
   readonly unresolvedDeliveryIds: readonly string[]
   readonly cacheOutcome: 'hit' | 'miss' | 'stale'
+  /** Opaque authority token captured before any coverage query derived from this read. */
+  readonly coverageToken: string | null
 }
 
 export interface CommittedTileGeneration {
@@ -20,8 +22,8 @@ export interface CommittedTileGeneration {
   readonly hash: string
   readonly observedAt: Millis
   readonly commitOrder: number
-  /** Wall-clock instant after the coverage query that produced the visibility flags. */
-  readonly coverageReadAt: Millis
+  /** Token returned before the coverage query that produced the visibility flags. */
+  readonly coverageToken: string
   readonly visibleToPublic: boolean
   readonly visibleToAdmin: boolean
 }
@@ -34,12 +36,17 @@ const tileKey = (tile: TileCoord): string => `${tile.x}/${tile.y}`
 
 /** Shared season cache. D1 remains authoritative whenever this module answers unresolved. */
 export const createTileGenerationCache = (
-  options: { readonly now?: () => number; readonly ttlMilliseconds?: number } = {},
+  options: {
+    readonly now?: () => number
+    readonly ttlMilliseconds?: number
+    readonly createCoverageToken?: () => string
+  } = {},
 ) => {
   const entries = new Map<string, CachedTileGeneration>()
   const now = options.now ?? Date.now
   const ttl = options.ttlMilliseconds ?? TILE_GENERATION_CACHE_TTL_MILLISECONDS
-  let coverageInvalidatedAt = Number.NEGATIVE_INFINITY
+  const createCoverageToken = options.createCoverageToken ?? (() => crypto.randomUUID())
+  let coverageToken = createCoverageToken()
 
   return {
     resolve(
@@ -78,19 +85,20 @@ export const createTileGenerationCache = (
         acknowledgedDeliveryIds,
         unresolvedDeliveryIds,
         cacheOutcome: sawStale ? 'stale' : sawMiss ? 'miss' : 'hit',
+        coverageToken,
       }
     },
 
     apply(generation: CommittedTileGeneration): void {
-      if (generation.coverageReadAt <= coverageInvalidatedAt) return
+      if (generation.coverageToken !== coverageToken) return
       const key = tileKey(generation.tile)
       const held = entries.get(key)
       if (held !== undefined && held.commitOrder >= generation.commitOrder) return
       entries.set(key, { ...generation, expiresAt: now() + ttl })
     },
 
-    invalidate(invalidatedAt = now()): void {
-      coverageInvalidatedAt = Math.max(coverageInvalidatedAt, invalidatedAt)
+    invalidate(): void {
+      coverageToken = createCoverageToken()
       entries.clear()
     },
   }
