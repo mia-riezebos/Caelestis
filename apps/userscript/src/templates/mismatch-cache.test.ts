@@ -31,6 +31,9 @@ vi.mock('../debug.js', () => ({ count: vi.fn() }))
 vi.mock('../tile-transform.js', () => ({
   draftPixels: () => harness.draft,
   ensureTilePixels: vi.fn(),
+  draftedPixelOffsets: function* () {
+    if (harness.draft?.[0] !== 255) yield 0
+  },
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
   onTilePixelsAvailable: harness.onTilePixelsAvailable,
@@ -736,6 +739,23 @@ describe('visible mismatch answer retention', () => {
     const fixed = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
     expect(fixed?.disagreements).toHaveLength(0)
     expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
+    expect(pixelAccounting.read(selected).colours).toEqual([
+      { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
+    ])
+    expect(pixelAccounting.read(selected).draftedColours).toEqual(new Set([0]))
+
+    harness.draft[0] = 2
+    changed?.({ x: 0, y: 0 }, [0, 0, 2])
+    expect(pixelAccounting.read(selected).colours).toEqual([
+      { index: 0, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
+    ])
+
+    harness.draft[0] = 255
+    changed?.({ x: 0, y: 0 }, [0, 0, 255])
+    expect(pixelAccounting.read(selected).colours).toEqual([
+      { index: 0, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
+    ])
+    expect(pixelAccounting.read(selected).draftedColours).toEqual(new Set())
   })
 
   it('removes a disagreement when the matching draft lands on a non-symmetric row', async () => {

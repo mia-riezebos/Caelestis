@@ -29,12 +29,26 @@ describe('template progress model calculations', () => {
     ).toEqual([1, 4])
   })
 
-  it('keeps server aggregate and colour baselines authoritative while local scans load', () => {
+  it('keeps server baselines while scans load and uses a fully classified local colour', () => {
     const local = { completed: 20, mismatched: 0, unpainted: 0, known: 20, total: 100 }
     const serverColours = [
       { index: 0, completed: 2, mismatched: 1, unpainted: 1, known: 4, total: 4 },
+      { index: 1, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
     ]
     expect(freshestProgress(progress, local)).toBe(progress)
     expect(freshestColourProgress(serverColours, [])).toBe(serverColours)
+    expect(
+      freshestColourProgress(
+        serverColours,
+        [
+          { index: 0, completed: 3, mismatched: 1, unpainted: 0, known: 4, total: 4 },
+          { index: 1, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
+        ],
+        new Set([0]),
+      ),
+    ).toEqual([
+      { index: 0, completed: 3, mismatched: 1, unpainted: 0, known: 4, total: 4 },
+      { index: 1, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
+    ])
   })
 })

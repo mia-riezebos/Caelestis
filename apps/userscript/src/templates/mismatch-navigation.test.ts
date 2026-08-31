@@ -31,6 +31,9 @@ vi.mock('../debug.js', () => ({ count: vi.fn() }))
 vi.mock('../tile-transform.js', () => ({
   draftPixels: () => harness.draft,
   ensureTilePixels: vi.fn(),
+  draftedPixelOffsets: function* () {
+    if (harness.draft?.[0] !== 255) yield 0
+  },
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
   onTilePixelsAvailable: vi.fn(),
