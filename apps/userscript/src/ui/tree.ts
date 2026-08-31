@@ -1072,14 +1072,22 @@ export const templateTreeAdapter = (
         ...(actionModel === undefined ? {} : { action: actionModel }),
       })
     },
-    action: (key, depth, label, _title, run) => {
+    action: (key, depth, label, title, run) => {
       const action = {
         id: 'run',
         label,
         icon: key === 'add-server' ? 'extension' : 'uploadFile',
       } as const
       actions.set(`${key}:run`, run)
-      entries.push({ type: 'action', key, depth, action })
+      entries.push({
+        type: 'action',
+        key,
+        depth,
+        action,
+        variant: key === 'add-server' ? 'ghost' : 'compact',
+        ...(key === 'add-server' ? { showIcon: true } : {}),
+        title,
+      })
     },
     finish: () => undefined,
   }

@@ -108,6 +108,59 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('keeps the pre-refactor Daisy variants for standalone tree actions', () => {
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          entries: [
+            {
+              type: 'action',
+              key: 'local-import',
+              depth: 1,
+              variant: 'compact',
+              title: 'A .wplace file, a Blue Marble export, or an image',
+              action: { id: 'run', label: 'Import a template', icon: 'uploadFile' },
+            },
+            {
+              type: 'action',
+              key: 'add-server',
+              depth: 0,
+              variant: 'ghost',
+              showIcon: true,
+              title: 'Add another server',
+              action: { id: 'run', label: 'Add another server', icon: 'extension' },
+            },
+          ],
+        },
+      },
+    })
+    flushSync()
+
+    const importWrap = document.querySelector<HTMLElement>('.standalone.compact')
+    const importButton = importWrap?.querySelector<HTMLButtonElement>('button')
+    const addWrap = document.querySelector<HTMLElement>('.standalone.ghost')
+    const addButton = addWrap?.querySelector<HTMLButtonElement>('button')
+    const importStyle = getComputedStyle(importButton as Element)
+    const addStyle = getComputedStyle(addButton as Element)
+
+    expect(getComputedStyle(importWrap as Element).padding).toBe('0px 12px 8px 36px')
+    expect(importStyle.blockSize).toBe('1.5rem')
+    expect(importStyle.getPropertyValue('--button-padding')).toBe('0.5rem')
+    expect(importStyle.getPropertyValue('--button-font-size')).toBe('0.6875rem')
+    expect(importButton?.title).toBe('A .wplace file, a Blue Marble export, or an image')
+    expect(importButton?.querySelector('svg')).toBeNull()
+
+    expect(getComputedStyle(addWrap as Element).padding).toBe('8px 12px 0px')
+    expect(addStyle.blockSize).toBe('2rem')
+    expect(addStyle.getPropertyValue('--button-padding')).toBe('0.75rem')
+    expect(addStyle.gap).toBe('0.375rem')
+    expect(addStyle.getPropertyValue('--button-font-size')).toBe('0.75rem')
+    expect(addButton?.querySelector('svg')).not.toBeNull()
+    void unmount(component)
+  })
+
   it('uses roving focus and exposes progress detail on demand', () => {
     const component = mount(TemplateTree, { target: document.body, props: { model } })
     flushSync()

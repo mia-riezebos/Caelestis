@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '../foundations/Button.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import ProgressMeter from '../progress/ProgressMeter.svelte'
@@ -342,8 +343,15 @@
           {#if entry.action !== undefined}<button type="button" onclick={() => emit({ type: 'action', key: entry.key, actionId: entry.action?.id ?? '' })}>{entry.action.label}</button>{/if}
         </div>
       {:else}
-        <div class="standalone" role="treeitem" aria-selected="false" aria-level={entry.depth + 1}>
-          <button type="button" onclick={() => emit({ type: 'action', key: entry.key, actionId: entry.action.id })}>{entry.action.label}</button>
+        <div class:compact={entry.variant === 'compact'} class:ghost={entry.variant === 'ghost'} class="standalone" role="treeitem" aria-selected="false" aria-level={entry.depth + 1}>
+          {#if entry.showIcon === true}
+            <Button label={entry.action.label} title={entry.title} kind={entry.variant === 'ghost' ? 'ghost' : 'default'} size={entry.variant === 'compact' ? 'compact' : 'small'} onclick={() => emit({ type: 'action', key: entry.key, actionId: entry.action.id })}>
+              <svg class="standalone-icon" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.action.icon]} /></svg>
+              <span>{entry.action.label}</span>
+            </Button>
+          {:else}
+            <Button label={entry.action.label} title={entry.title} kind={entry.variant === 'ghost' ? 'ghost' : 'default'} size={entry.variant === 'compact' ? 'compact' : 'small'} onclick={() => emit({ type: 'action', key: entry.key, actionId: entry.action.id })} />
+          {/if}
         </div>
       {/if}
     {/each}
@@ -388,8 +396,11 @@
   .colours { display: flex; gap: 2px; inline-size: 100%; }
   .colours span { flex: 1; block-size: 0.35rem; border-radius: 999px; }
   .notice { display: flex; align-items: center; gap: 0.5rem; min-block-size: 1.75rem; padding-inline-end: 0.75rem; color: var(--caelestis-muted-text); font-size: 0.72rem; }
-  .standalone { display: flex; justify-content: center; padding: 0.5rem 0.75rem; }
-  .notice button, .standalone button, .progress-detail button { border: 0; border-radius: 0.45rem; background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
+  .standalone { display: flex; }
+  .standalone.compact { justify-content: flex-start; padding: 0 0.75rem 0.5rem 2.25rem; }
+  .standalone.ghost { justify-content: center; padding: 0.5rem 0.75rem 0; }
+  .standalone-icon { inline-size: 1rem; block-size: 1rem; flex: 0 0 auto; fill: currentColor; opacity: 0.6; }
+  .notice button, .progress-detail button { border: 0; border-radius: 0.45rem; background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
   .operation { display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; margin: 0 0.5rem 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-raised-surface); font: 500 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
   .operation select { min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; }
   .operation small { color: var(--caelestis-muted-text); }
