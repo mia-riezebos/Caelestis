@@ -245,13 +245,21 @@ describe('the Drizzle schema and migration history agree', () => {
         .join('\n')
         .replaceAll('--> statement-breakpoint', ''),
     )
+    const insertNode = database.prepare(
+      `INSERT INTO nodes (
+        id, season, parent_id, path, name, description, delete_token, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
+    )
+    insertNode.run('legacy-node', 1, null, '/legacy', 'Legacy', 1_000)
+    insertNode.run('legacy-child', 1, 'legacy-node', '/legacy/child', 'Child', 1_001)
     database
       .prepare(
-        `INSERT INTO nodes (
-          id, season, parent_id, path, name, description, delete_token, created_at_ms
-        ) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?)`,
+        `INSERT INTO templates (
+          id, season, node_id, name, current_version_id, published_at,
+          created_with_token, created_by_user_id, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
       )
-      .run('legacy-node', 1, '/legacy', 'Legacy', 1_000)
+      .run('legacy-template', 1, 'legacy-child', 'Legacy template', '0'.repeat(64), 1_002, 1_002)
 
     for (const migration of migrations.slice(surfaceIndex)) {
       database.exec(`BEGIN;\n${migration.sql.replaceAll('--> statement-breakpoint', '')}\nCOMMIT;`)
@@ -262,6 +270,13 @@ describe('the Drizzle schema and migration history agree', () => {
         .prepare('SELECT surface_kind, alliance_id FROM nodes WHERE id = ?')
         .get('legacy-node'),
     ).toEqual({ surface_kind: 'world', alliance_id: null })
+    expect(
+      database.prepare('SELECT parent_id FROM nodes WHERE id = ?').get('legacy-child'),
+    ).toEqual({ parent_id: 'legacy-node' })
+    expect(
+      database.prepare('SELECT node_id FROM templates WHERE id = ?').get('legacy-template'),
+    ).toEqual({ node_id: 'legacy-child' })
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     database.close()
   })
 })

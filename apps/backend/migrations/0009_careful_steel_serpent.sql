@@ -1,4 +1,4 @@
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
+PRAGMA defer_foreign_keys=ON;--> statement-breakpoint
 CREATE TABLE `__new_nodes` (
 	`id` text PRIMARY KEY NOT NULL,
 	`season` integer NOT NULL,
@@ -23,6 +23,6 @@ CREATE TABLE `__new_nodes` (
 INSERT INTO `__new_nodes`("id", "season", "surface_kind", "alliance_id", "parent_id", "path", "name", "description", "delete_token", "created_at_ms") SELECT "id", "season", 'world', NULL, "parent_id", "path", "name", "description", "delete_token", "created_at_ms" FROM `nodes`;--> statement-breakpoint
 DROP TABLE `nodes`;--> statement-breakpoint
 ALTER TABLE `__new_nodes` RENAME TO `nodes`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
+PRAGMA defer_foreign_keys=OFF;--> statement-breakpoint
 CREATE UNIQUE INDEX `nodes_world_path_idx` ON `nodes` (`season`,lower("path")) WHERE "nodes"."surface_kind" = 'world';--> statement-breakpoint
 CREATE UNIQUE INDEX `nodes_alliance_surface_path_idx` ON `nodes` (`season`,`surface_kind`,`alliance_id`,lower("path")) WHERE "nodes"."surface_kind" <> 'world';
