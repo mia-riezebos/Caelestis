@@ -34,9 +34,10 @@ const connectedServers = (): ReadonlyMap<string, ConnectedServer> =>
   new Map(getState().servers.map((server) => [server.url, server]))
 
 interface DraftColourProjection {
-  readonly baseline: TemplateColourProgress
+  baseline: TemplateColourProgress
   delta: TemplateColourProgressDelta
-  pending: TemplateColourProgress | null
+  pending: TemplateColourProgressDelta
+  acceptedActive: TemplateColourProgressDelta | null
 }
 
 const draftProjections = new Map<string, Map<number, DraftColourProjection>>()
@@ -53,6 +54,36 @@ const serverCovers = (
       ? server.completed <= target.completed
       : true
 }
+
+const zeroDelta = (index: number): TemplateColourProgressDelta => ({
+  index,
+  completed: 0,
+  mismatched: 0,
+  unpainted: 0,
+})
+
+const addDelta = (
+  left: TemplateColourProgressDelta,
+  right: TemplateColourProgressDelta,
+): TemplateColourProgressDelta => ({
+  index: left.index,
+  completed: left.completed + right.completed,
+  mismatched: left.mismatched + right.mismatched,
+  unpainted: left.unpainted + right.unpainted,
+})
+
+const subtractDelta = (
+  left: TemplateColourProgressDelta,
+  right: TemplateColourProgressDelta,
+): TemplateColourProgressDelta => ({
+  index: left.index,
+  completed: left.completed - right.completed,
+  mismatched: left.mismatched - right.mismatched,
+  unpainted: left.unpainted - right.unpainted,
+})
+
+const deltaIsEmpty = (delta: TemplateColourProgressDelta): boolean =>
+  delta.completed === 0 && delta.mismatched === 0 && delta.unpainted === 0
 
 /**
  * Reconcile a draft against the server snapshot that was visible when that colour was first edited.
@@ -76,25 +107,36 @@ const progressWithDrafts = (
     let state = states.get(entry.index)
     if (delta !== undefined) {
       if (state === undefined || state.baseline.total !== entry.total) {
-        state = { baseline: entry, delta, pending: null }
+        state = {
+          baseline: entry,
+          delta,
+          pending: zeroDelta(entry.index),
+          acceptedActive: null,
+        }
         states.set(entry.index, state)
       } else state.delta = delta
     }
     if (state === undefined) return entry
 
-    const active = delta === undefined ? null : applyColourProgressDelta(state.baseline, delta)
-    const target =
-      state.pending === null
-        ? active
-        : active === null ||
-            Math.abs(state.pending.completed - state.baseline.completed) >=
-              Math.abs(active.completed - state.baseline.completed)
-          ? state.pending
-          : active
-    if (target === null || serverCovers(entry, target, state.baseline)) {
+    if (delta === undefined) state.acceptedActive = null
+    if (!deltaIsEmpty(state.pending)) {
+      const pendingTarget = applyColourProgressDelta(state.baseline, state.pending)
+      if (serverCovers(entry, pendingTarget, state.baseline)) {
+        state.baseline = entry
+        state.pending = zeroDelta(entry.index)
+      }
+    }
+    const active =
+      delta === undefined
+        ? zeroDelta(entry.index)
+        : subtractDelta(delta, state.acceptedActive ?? zeroDelta(entry.index))
+    const combined = addDelta(state.pending, active)
+    if (deltaIsEmpty(combined)) {
       if (delta === undefined) states.delete(entry.index)
       return entry
     }
+    const target = applyColourProgressDelta(state.baseline, combined)
+    if (serverCovers(entry, target, state.baseline)) return entry
     return target
   })
   for (const index of [...states.keys()]) {
@@ -135,7 +177,12 @@ const retainAcceptedDraft = (): void => {
   const states = draftProjections.get(template.id)
   if (states === undefined) return
   for (const state of states.values()) {
-    state.pending = applyColourProgressDelta(state.baseline, state.delta)
+    const contribution = subtractDelta(
+      state.delta,
+      state.acceptedActive ?? zeroDelta(state.delta.index),
+    )
+    state.pending = addDelta(state.pending, contribution)
+    state.acceptedActive = state.delta
   }
 }
 
