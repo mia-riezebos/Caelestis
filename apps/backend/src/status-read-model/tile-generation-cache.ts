@@ -19,7 +19,7 @@ export interface CommittedTileGeneration {
   readonly tile: TileCoord
   readonly hash: string
   readonly observedAt: Millis
-  readonly authoritative: boolean
+  readonly commitOrder: number
   /** Wall-clock instant after the coverage query that produced the visibility flags. */
   readonly coverageReadAt: Millis
   readonly visibleToPublic: boolean
@@ -85,12 +85,7 @@ export const createTileGenerationCache = (
       if (generation.coverageReadAt <= coverageInvalidatedAt) return
       const key = tileKey(generation.tile)
       const held = entries.get(key)
-      if (
-        held !== undefined &&
-        held.observedAt > generation.observedAt &&
-        !(generation.authoritative && !held.authoritative)
-      )
-        return
+      if (held !== undefined && held.commitOrder >= generation.commitOrder) return
       entries.set(key, { ...generation, expiresAt: now() + ttl })
     },
 

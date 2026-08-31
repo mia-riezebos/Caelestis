@@ -1242,6 +1242,7 @@ export class D1SqlStore implements SqlStore {
         sha256: observation.hash,
         observedAtMs: observation.observedAt,
         serverOwned: forceCurrent,
+        commitOrder: 1,
       })
       .onConflictDoUpdate({
         target: [canvasTiles.season, canvasTiles.tileX, canvasTiles.tileY],
@@ -1249,6 +1250,7 @@ export class D1SqlStore implements SqlStore {
           sha256: observation.hash,
           observedAtMs: observation.observedAt,
           serverOwned: forceCurrent,
+          commitOrder: sql`${canvasTiles.commitOrder} + 1`,
         },
         ...(forceCurrent
           ? {
@@ -1525,9 +1527,9 @@ export class D1SqlStore implements SqlStore {
       this.client
         .prepare(
           `INSERT INTO canvas_tiles (
-             season, tile_x, tile_y, sha256, observed_at_ms, server_owned
+             season, tile_x, tile_y, sha256, observed_at_ms, server_owned, commit_order
            )
-           SELECT ?, ?, ?, ?, ?, ?
+           SELECT ?, ?, ?, ?, ?, ?, 1
            WHERE EXISTS (
              SELECT 1 FROM tile_blob_reservations AS reservation
              INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
@@ -1536,10 +1538,11 @@ export class D1SqlStore implements SqlStore {
            ON CONFLICT(season, tile_x, tile_y) DO UPDATE SET
              sha256 = excluded.sha256,
              observed_at_ms = excluded.observed_at_ms,
-             server_owned = excluded.server_owned
+             server_owned = excluded.server_owned,
+             commit_order = canvas_tiles.commit_order + 1
            WHERE canvas_tiles.observed_at_ms <= excluded.observed_at_ms
              OR (excluded.server_owned = 1 AND canvas_tiles.server_owned = 0)
-           RETURNING sha256, observed_at_ms`,
+           RETURNING sha256, observed_at_ms, commit_order`,
         )
         .bind(
           observation.season,
@@ -1799,18 +1802,22 @@ export class D1SqlStore implements SqlStore {
       throw new Error('tile status commit returned an invalid projection revision')
     }
     const currentRow = results[currentResult]?.results[0] as
-      | { sha256?: unknown; observed_at_ms?: unknown }
+      | { sha256?: unknown; observed_at_ms?: unknown; commit_order?: unknown }
       | undefined
     const current =
       currentRow === undefined ||
       typeof currentRow.sha256 !== 'string' ||
-      typeof currentRow.observed_at_ms !== 'number'
+      typeof currentRow.observed_at_ms !== 'number' ||
+      typeof currentRow.commit_order !== 'number' ||
+      !Number.isSafeInteger(currentRow.commit_order) ||
+      currentRow.commit_order < 0
         ? null
         : {
             season: observation.season,
             tile: observation.tile,
             hash: currentRow.sha256,
             observedAt: currentRow.observed_at_ms as Millis,
+            commitOrder: currentRow.commit_order,
           }
     return { revision, statusChanges, current }
   }

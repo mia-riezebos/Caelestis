@@ -10,7 +10,7 @@ describe('tile generation cache', () => {
       tile: { x: 1, y: 2 },
       hash: 'a'.repeat(64),
       observedAt: millis(1_000),
-      authoritative: false,
+      commitOrder: 1,
       coverageReadAt: millis(1_000),
       visibleToPublic: true,
       visibleToAdmin: true,
@@ -40,7 +40,7 @@ describe('tile generation cache', () => {
       tile: { x: 1, y: 2 },
       hash: 'b'.repeat(64),
       observedAt: millis(2_000),
-      authoritative: false,
+      commitOrder: 2,
       coverageReadAt: millis(10_000),
       visibleToPublic: false,
       visibleToAdmin: true,
@@ -49,7 +49,7 @@ describe('tile generation cache', () => {
       tile: { x: 1, y: 2 },
       hash: 'a'.repeat(64),
       observedAt: millis(1_000),
-      authoritative: false,
+      commitOrder: 1,
       coverageReadAt: millis(10_000),
       visibleToPublic: true,
       visibleToAdmin: true,
@@ -68,7 +68,7 @@ describe('tile generation cache', () => {
       tile: { x: 1, y: 2 },
       hash: 'a'.repeat(64),
       observedAt: millis(2_000),
-      authoritative: false,
+      commitOrder: 1,
       coverageReadAt: millis(10_000),
       visibleToPublic: true,
       visibleToAdmin: true,
@@ -82,19 +82,19 @@ describe('tile generation cache', () => {
     ).toMatchObject({ unresolvedDeliveryIds: ['two'], cacheOutcome: 'stale' })
   })
 
-  it('accepts an older authoritative replacement but not an older client observation', () => {
+  it('uses authoritative commit order instead of observation timestamp or repair arrival', () => {
     const cache = createTileGenerationCache({ now: () => 10_000 })
-    const generation = (hash: string, observedAt: number, authoritative: boolean) => ({
+    const generation = (hash: string, observedAt: number, commitOrder: number) => ({
       tile: { x: 1, y: 2 },
       hash: hash.repeat(64),
       observedAt: millis(observedAt),
-      authoritative,
+      commitOrder,
       coverageReadAt: millis(10_000),
       visibleToPublic: true,
       visibleToAdmin: true,
     })
-    cache.apply(generation('b', 2_000, false))
-    cache.apply(generation('a', 1_000, true))
+    cache.apply(generation('b', 2_000, 1))
+    cache.apply(generation('a', 1_000, 2))
 
     expect(
       cache.resolve('public', [
@@ -102,7 +102,7 @@ describe('tile generation cache', () => {
       ]).acknowledgedDeliveryIds,
     ).toEqual(['authoritative'])
 
-    cache.apply(generation('c', 500, false))
+    cache.apply(generation('c', 3_000, 1))
     expect(
       cache.resolve('public', [
         { deliveryId: 'older-client', tile: { x: 1, y: 2 }, hash: 'c'.repeat(64) },
@@ -117,7 +117,7 @@ describe('tile generation cache', () => {
       tile: { x: 1, y: 2 },
       hash: 'a'.repeat(64),
       observedAt: millis(1_000),
-      authoritative: false,
+      commitOrder: 1,
       coverageReadAt: millis(coverageReadAt),
       visibleToPublic: true,
       visibleToAdmin: true,
