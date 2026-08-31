@@ -91,10 +91,12 @@ const subtractPixelDelta = (
 const deltaIsEmpty = (delta: TemplateColourProgressDelta): boolean =>
   delta.completed === 0 && delta.mismatched === 0 && delta.unpainted === 0
 
+const samePixelBasis = (left: TemplateDraftPixelDelta, right: TemplateDraftPixelDelta): boolean =>
+  left.basis === right.basis && left.index === right.index
+
 const samePixelDelta = (left: TemplateDraftPixelDelta, right: TemplateDraftPixelDelta): boolean =>
   left.key === right.key &&
-  left.basis === right.basis &&
-  left.index === right.index &&
+  samePixelBasis(left, right) &&
   left.completed === right.completed &&
   left.mismatched === right.mismatched &&
   left.unpainted === right.unpainted
@@ -154,7 +156,8 @@ const progressWithDrafts = (
       for (const [key, pixel] of state.pending) {
         if (pixel.index !== index) continue
         const held = state.rebasedFrom.get(key)
-        const rebased = held?.basis === pixel.basis ? addPixelDelta(held, pixel) : pixel
+        const rebased =
+          held !== undefined && samePixelBasis(held, pixel) ? addPixelDelta(held, pixel) : pixel
         if (deltaIsEmpty(rebased)) state.rebasedFrom.delete(key)
         else state.rebasedFrom.set(key, rebased)
         state.pending.delete(key)
@@ -167,7 +170,7 @@ const progressWithDrafts = (
     [...rawActive].map(([key, pixel]) => {
       const rebase = state.rebasedFrom.get(key)
       if (rebase === undefined) return [key, pixel]
-      if (rebase.basis === pixel.basis) return [key, subtractPixelDelta(pixel, rebase)]
+      if (samePixelBasis(rebase, pixel)) return [key, subtractPixelDelta(pixel, rebase)]
       state.rebasedFrom.delete(key)
       return [key, pixel]
     }),
@@ -227,7 +230,8 @@ const retainAcceptedDraft = (): void => {
   if (state === undefined) return
   for (const raw of pixelAccounting.read(template).draftPixelDeltas) {
     const rebase = state.rebasedFrom.get(raw.key)
-    const pixel = rebase?.basis === raw.basis ? subtractPixelDelta(raw, rebase) : raw
+    const pixel =
+      rebase !== undefined && samePixelBasis(rebase, raw) ? subtractPixelDelta(raw, rebase) : raw
     if (deltaIsEmpty(pixel)) state.pending.delete(pixel.key)
     else state.pending.set(pixel.key, pixel)
     state.acceptedActive.set(pixel.key, pixel)

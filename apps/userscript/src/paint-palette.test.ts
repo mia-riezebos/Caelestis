@@ -486,6 +486,45 @@ describe('Wplace paint palette progress', () => {
     expect(badge()).toBe('8')
   })
 
+  it('drops a cleared rebase when a template version changes the desired colour', async () => {
+    harness.focused = {
+      id: 'remote-replaced-version',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 0, known: 3, total: 3 },
+      { index: 1, completed: 5, mismatched: 0, unpainted: 2, known: 7, total: 7 },
+    ]
+    const { installPaintPaletteProgress, paintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
+    harness.draftPixelDeltas = []
+    harness.draftListeners.at(-1)?.()
+
+    harness.serverProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
+      { index: 1, completed: 5, mismatched: 0, unpainted: 2, known: 7, total: 7 },
+    ]
+    harness.statusListeners.at(-1)?.()
+
+    // The replacement keeps the placed template ID and captured tile basis, but wants colour 1 at
+    // this coordinate. Its draft must not inherit colour 0's retained category transfer.
+    harness.draftPixelDeltas = [
+      { key: '0/0/0', basis: 'tile-1', index: 1, completed: 1, mismatched: 0, unpainted: -1 },
+    ]
+    harness.draftListeners.at(-1)?.()
+    expect(paintPaletteProgress()).toEqual([
+      { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
+      { index: 1, completed: 6, mismatched: 0, unpainted: 1, known: 7, total: 7 },
+    ])
+  })
+
   it('cycles repeated F navigation past its previous focused-template target', async () => {
     const { navigateFocusedSelectedColour } = await import('./paint-palette.js')
 
