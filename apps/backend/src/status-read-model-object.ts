@@ -604,6 +604,8 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   async notifyManifestChange(season: number): Promise<void> {
+    this.bindSeason(season)
+    this.tileGenerations.invalidate()
     const revision = await this.manifestModel(season).invalidate()
     this.synchronizeTileGenerationCoverage(revision)
     this.broadcastManifest(revision)

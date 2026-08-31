@@ -244,6 +244,46 @@ describe('status read-model Durable Object', () => {
     expect(coverageToken).toBeTruthy()
   })
 
+  it('stops acknowledging tile generations while manifest invalidation is pending', async () => {
+    database = new SqliteD1Database()
+    const state = objectState(new Map())
+    const object = new StatusReadModelObject(state, { DB: database } as unknown as Env)
+    const tile = { x: 1, y: 2 }
+    await object.applyCommittedTileGeneration(8, {
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      coverageToken: object.resolveCurrentTileOffers(8, 'public', []).coverageToken ?? '',
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    const originalPut = state.storage.put.bind(state.storage)
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let started!: () => void
+    const saving = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    state.storage.put = vi.fn(async (key, value) => {
+      started()
+      await blocked
+      return originalPut(key, value)
+    })
+
+    const invalidating = object.notifyManifestChange(8)
+    await saving
+    expect(
+      object.resolveCurrentTileOffers(8, 'public', [
+        { deliveryId: 'old', tile, hash: 'a'.repeat(64) },
+      ]),
+    ).toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['old'] })
+    release()
+    await invalidating
+  })
+
   it('refuses tile offers from a read-only live session', () => {
     database = new SqliteD1Database()
     const object = new StatusReadModelObject(objectState(new Map()), {
