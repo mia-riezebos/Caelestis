@@ -493,8 +493,9 @@ describe('server sync coordinator', () => {
     })
     registerServerSyncResource({
       id: 'alliance-manifest',
-      scope: () => 'banner:1',
+      scope: () => 'alliance-banner:1',
       refresh: allianceManifest,
+      live: true,
       reconcileOnManifestEvent: true,
     })
     registerServerSyncResource({
@@ -557,8 +558,59 @@ describe('server sync coordinator', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
-    expect(allianceManifest).not.toHaveBeenCalled()
+    expect(allianceManifest).toHaveBeenCalledOnce()
     expect(alarms).toHaveBeenCalledOnce()
+  })
+
+  it('routes manifest events to the exact active drawing surface', async () => {
+    const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource } = await import(
+      './server-sync-coordinator.js'
+    )
+    const world = vi.fn(async () => ({ status: 'unchanged' as const }))
+    const alliance = vi.fn(async () => ({ status: 'unchanged' as const }))
+    registerServerSyncResource({
+      id: 'world-manifest',
+      scope: () => 'world',
+      refresh: world,
+      live: true,
+      reconcileOnManifestEvent: true,
+    })
+    registerServerSyncResource({
+      id: 'alliance-manifest',
+      scope: () => 'alliance-picture:42',
+      refresh: alliance,
+      live: true,
+      reconcileOnManifestEvent: true,
+    })
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    await vi.advanceTimersByTimeAsync(0)
+    world.mockClear()
+    alliance.mockClear()
+
+    socket.receive({
+      type: 'manifest-reconcile',
+      revision: 2,
+      surface: { kind: 'alliance-picture', allianceId: 42 },
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(alliance).toHaveBeenCalledOnce()
+    expect(world).not.toHaveBeenCalled()
+
+    alliance.mockClear()
+    socket.receive({
+      type: 'manifest-reconcile',
+      revision: 3,
+      surface: { kind: 'world', allianceId: null },
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(world).toHaveBeenCalledOnce()
+    expect(alliance).not.toHaveBeenCalled()
   })
 
   it('lets an in-flight bootstrap satisfy the socket ready revision', async () => {

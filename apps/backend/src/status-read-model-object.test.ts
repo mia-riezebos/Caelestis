@@ -730,6 +730,8 @@ describe('status read-model Durable Object', () => {
       ],
     })
     await recovered.notifyManifestChange(8)
+    const allianceSurface = { kind: 'alliance-picture' as const, allianceId: 42 }
+    await recovered.notifyManifestChange(8, allianceSurface)
     await recovered.notifyAlarmChange(8)
     await recovered.closeCredential(8, 'b'.repeat(64))
 
@@ -737,6 +739,9 @@ describe('status read-model Durable Object', () => {
       expect(subscriber.send).toHaveBeenCalledWith(expect.stringContaining('"type":"status-delta"'))
       expect(subscriber.send).toHaveBeenCalledWith(
         JSON.stringify({ type: 'manifest-reconcile', revision: 2 }),
+      )
+      expect(subscriber.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: 'manifest-reconcile', revision: 3, surface: allianceSurface }),
       )
       expect(subscriber.send).toHaveBeenCalledWith(JSON.stringify({ type: 'alarms-reconcile' }))
     }

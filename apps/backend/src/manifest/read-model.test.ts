@@ -177,6 +177,52 @@ describe('manifest read model', () => {
     expect(persisted).toMatchObject({ revision: 2, entries: [] })
   })
 
+  it('invalidates only the changed drawing surface', async () => {
+    let persisted: PersistedManifestReadModel | null = null
+    const source = vi.fn(async () => manifest('a'.repeat(64)))
+    const model = createSeasonManifestReadModel({
+      season: 7,
+      source,
+      persistence: {
+        load: async () => persisted,
+        save: async (next) => {
+          persisted = next
+        },
+      },
+    })
+    const headquarters = {
+      ...input,
+      surface: { kind: 'alliance-headquarters' as const, allianceId: 42 },
+    }
+    const picture = {
+      ...input,
+      surface: { kind: 'alliance-picture' as const, allianceId: 42 },
+    }
+    const banner = {
+      ...input,
+      surface: { kind: 'alliance-banner' as const, allianceId: 42 },
+    }
+    await model.read(input)
+    await model.read(headquarters)
+    await model.read(picture)
+    await model.read(banner)
+
+    await expect(model.invalidate(picture.surface)).resolves.toBe(2)
+    const saved = persisted as PersistedManifestReadModel | null
+    expect(saved?.entries.map(({ key }) => key).sort()).toEqual([
+      'public:alliance-banner:42',
+      'public:alliance-headquarters:42',
+      'public:world',
+    ])
+    source.mockClear()
+    await model.read(input)
+    await model.read(headquarters)
+    await model.read(banner)
+    expect(source).not.toHaveBeenCalled()
+    await model.read(picture)
+    expect(source).toHaveBeenCalledOnce()
+  })
+
   it('keeps the last durable projection when invalidation persistence fails', async () => {
     let persisted: PersistedManifestReadModel | null = null
     let fail = false

@@ -4,6 +4,9 @@ import {
   type LiveTileOfferCacheResponse,
   type ReconciliationReason,
   type SyncTransport,
+  type TemplateSurface,
+  templateSurface,
+  templateSurfaceKey,
   uuidV7,
 } from '@caelestis/shared'
 import { userscriptVersion } from './client-metrics.js'
@@ -60,7 +63,11 @@ const liveClientId = (serverUrl: string): string => {
 
 export type ParsedLiveEvent =
   | Exclude<LiveSyncServerEvent, { readonly type: 'manifest-reconcile' }>
-  | { readonly type: 'manifest-reconcile'; readonly revision: number | null }
+  | {
+      readonly type: 'manifest-reconcile'
+      readonly revision: number | null
+      readonly surface: TemplateSurface | null
+    }
 
 export interface ServerSyncResult {
   readonly status: 'changed' | 'unchanged' | 'failed' | 'skipped'
@@ -79,7 +86,7 @@ export interface ServerSyncResource {
   ) => Promise<ServerSyncResult>
   /** Healthy live transport suppresses interval polling for this resource. */
   readonly live?: boolean
-  /** A global manifest revision invalidates this resource's currently active surface. */
+  /** Manifest events invalidate this resource when their exact surface matches its active scope. */
   readonly reconcileOnManifestEvent?: boolean
   /** Optional resource-owned validation/application for a compact live event. */
   readonly applyLiveEvent?: (server: ConnectedServer, event: unknown) => boolean
@@ -488,15 +495,23 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
   })()
   if (typeof parsed !== 'object' || parsed === null || !('type' in parsed)) return null
   const candidate = parsed as Record<string, unknown>
-  if (candidate.type === 'manifest-reconcile' && !('revision' in candidate)) {
-    return { type: 'manifest-reconcile', revision: null }
-  }
-  if (
-    candidate.type === 'manifest-reconcile' &&
-    Number.isSafeInteger(candidate.revision) &&
-    Number(candidate.revision) >= 0
-  ) {
-    return { type: 'manifest-reconcile', revision: Number(candidate.revision) }
+  if (candidate.type === 'manifest-reconcile') {
+    const revision = !('revision' in candidate)
+      ? null
+      : Number.isSafeInteger(candidate.revision) && Number(candidate.revision) >= 0
+        ? Number(candidate.revision)
+        : undefined
+    if (revision === undefined) return null
+    const surface = !('surface' in candidate)
+      ? null
+      : typeof candidate.surface === 'object' && candidate.surface !== null
+        ? templateSurface(
+            (candidate.surface as Record<string, unknown>).kind,
+            (candidate.surface as Record<string, unknown>).allianceId,
+          )
+        : null
+    if ('surface' in candidate && surface === null) return null
+    return { type: 'manifest-reconcile', revision, surface }
   }
   if (
     (candidate.type === 'ready' || candidate.type === 'status-reconcile') &&
@@ -543,20 +558,25 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     return
   }
   if (event.type === 'manifest-reconcile') {
-    if (event.revision === null) {
+    const reconcile = (): void => {
+      const scope = event.surface === null ? null : templateSurfaceKey(event.surface)
       for (const resource of resources.values()) {
-        if (resource.reconcileOnManifestEvent === true)
+        if (
+          resource.reconcileOnManifestEvent === true &&
+          (scope === null || resource.scope(server) === scope)
+        ) {
           requestServerSync('revision-gap', resource.id, server)
+        }
       }
+    }
+    if (event.revision === null) {
+      reconcile()
       return
     }
     const live = liveConnections.get(serverConnectionIdentity(server))
     if (live === undefined || event.revision <= (live.manifestRevision ?? -1)) return
     live.manifestRevision = event.revision
-    for (const resource of resources.values()) {
-      if (resource.reconcileOnManifestEvent === true)
-        requestServerSync('revision-gap', resource.id, server)
-    }
+    reconcile()
     return
   }
   if (event.type === 'alarms-reconcile') {

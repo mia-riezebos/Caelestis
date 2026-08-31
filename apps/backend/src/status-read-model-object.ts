@@ -4,6 +4,7 @@ import type {
   LiveSyncServerEvent,
   Manifest,
   StatusDelta,
+  TemplateSurface,
 } from '@caelestis/shared'
 import { parseTileKey, type TileCoord } from '@caelestis/shared'
 import { LiveSyncClientEvent as LiveSyncClientEventSchema } from '@caelestis/wire-schema'
@@ -598,17 +599,21 @@ export class StatusReadModelObject extends DurableObject<Env> {
     return measureD1Usage(() => this.readManifestProjection(input))
   }
 
-  private broadcastManifest(revision: number): void {
-    const event: LiveSyncServerEvent = { type: 'manifest-reconcile', revision }
+  private broadcastManifest(revision: number, surface?: TemplateSurface): void {
+    const event: LiveSyncServerEvent = {
+      type: 'manifest-reconcile',
+      revision,
+      ...(surface === undefined ? {} : { surface }),
+    }
     for (const socket of this.subscribers()) this.send(socket, event)
   }
 
-  async notifyManifestChange(season: number): Promise<void> {
+  async notifyManifestChange(season: number, surface?: TemplateSurface): Promise<void> {
     this.bindSeason(season)
     this.tileGenerations.invalidate()
-    const revision = await this.manifestModel(season).invalidate()
+    const revision = await this.manifestModel(season).invalidate(surface)
     this.synchronizeTileGenerationCoverage(revision)
-    this.broadcastManifest(revision)
+    this.broadcastManifest(revision, surface)
   }
 
   resolveCurrentTileOffers(

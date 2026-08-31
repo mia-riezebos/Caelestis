@@ -1,4 +1,4 @@
-import type { TileCoord } from '@caelestis/shared'
+import type { TemplateSurface, TileCoord } from '@caelestis/shared'
 import {
   createSeasonManifestReadModel,
   type ManifestProjectionInput,
@@ -35,7 +35,7 @@ export interface StatusReadModelPort {
     scope: StatusVisibilityScope,
   ) => Promise<StatusSnapshotRead>
   /** Optional on portable adapters; production uses it to wake hibernating manifest subscribers. */
-  readonly notifyManifestChange?: (season: number) => Promise<void>
+  readonly notifyManifestChange?: (season: number, surface?: TemplateSurface) => Promise<void>
   /** Optional on portable adapters; production wakes live clients after alarm state changes. */
   readonly notifyAlarmChange?: (season: number) => Promise<void>
   /** Optional for compatibility adapters; prepared production and direct adapters cache manifests. */
@@ -150,9 +150,10 @@ export const repairCommittedStatusProjection = async (
 export const publishManifestChange = async (
   readModel: StatusReadModelPort,
   season: number,
+  surface?: TemplateSurface,
 ): Promise<void> => {
   try {
-    await readModel.notifyManifestChange?.(season)
+    await readModel.notifyManifestChange?.(season, surface)
   } catch (error) {
     console.error(error)
   }
@@ -258,9 +259,9 @@ export class DirectStatusReadModel implements StatusReadModelPort {
     return this.manifestModel(input.season).read(input)
   }
 
-  async notifyManifestChange(season: number): Promise<void> {
+  async notifyManifestChange(season: number, surface?: TemplateSurface): Promise<void> {
     this.tileGenerations.get(season)?.invalidate()
-    await this.manifestModel(season).invalidate()
+    await this.manifestModel(season).invalidate(surface)
   }
 
   resolveCurrentTileOffers(

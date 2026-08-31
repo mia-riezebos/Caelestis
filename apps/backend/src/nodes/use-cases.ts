@@ -33,8 +33,12 @@ const storage = <A>(operation: string, run: () => Promise<A>) =>
     catch: (cause) => new BackendStorageError({ operation, cause }),
   })
 
-export const publicNode = ({ season: _season, surface: _surface, description, ...node }: NodeRecord) =>
-  description === null ? node : { ...node, description }
+export const publicNode = ({
+  season: _season,
+  surface: _surface,
+  description,
+  ...node
+}: NodeRecord) => (description === null ? node : { ...node, description })
 
 export const createNode = (input: {
   readonly season: number
@@ -94,7 +98,7 @@ export const createNode = (input: {
           ? new RequestValidationError({ message: cause.message })
           : new BackendStorageError({ operation: 'insertNode', cause }),
     })
-    yield* Effect.promise(() => publishManifestChange(statusReadModel, input.season))
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, input.season, input.surface))
     return publicNode(inserted)
   })
 
@@ -169,7 +173,9 @@ export const patchNode = (input: {
     if (updated === null) {
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
     }
-    yield* Effect.promise(() => publishManifestChange(statusReadModel, updated.season))
+    yield* Effect.promise(() =>
+      publishManifestChange(statusReadModel, updated.season, updated.surface),
+    )
     return publicNode(updated)
   })
 
@@ -221,7 +227,7 @@ export const deleteNodeCascade = (
     if (deleted.templates > 0) {
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, node.season))
     }
-    yield* Effect.promise(() => publishManifestChange(statusReadModel, node.season))
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, node.season, node.surface))
     return deleted
   })
 
@@ -246,5 +252,5 @@ export const deleteEmptyNode = (
           ? new ResourceConflictError({ message: cause.message })
           : new BackendStorageError({ operation: 'deleteNode', cause }),
     })
-    yield* Effect.promise(() => publishManifestChange(statusReadModel, node.season))
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, node.season, node.surface))
   })

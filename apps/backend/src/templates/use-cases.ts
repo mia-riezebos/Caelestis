@@ -116,7 +116,7 @@ export const createTemplate = (
         }),
       catch: (cause) => templateFailure('storeTemplate', cause),
     })
-    yield* Effect.promise(() => publishManifestChange(statusReadModel, season))
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, season, input.surface))
     return stored
   })
 
@@ -172,7 +172,9 @@ export const replaceTemplateVersion = (input: {
       catch: (cause) => templateFailure('replaceTemplateVersion', cause),
     })
     yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
-    yield* Effect.promise(() => publishManifestChange(statusReadModel, existing.season))
+    yield* Effect.promise(() =>
+      publishManifestChange(statusReadModel, existing.season, existing.surface),
+    )
     return stored
   })
 
@@ -249,7 +251,9 @@ export const patchTemplate = (
     if (input.published !== undefined) {
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
     }
-    yield* Effect.promise(() => publishManifestChange(statusReadModel, existing.season))
+    yield* Effect.promise(() =>
+      publishManifestChange(statusReadModel, existing.season, existing.surface),
+    )
 
     return {
       id: input.templateId,
@@ -292,7 +296,9 @@ export const deleteTemplate = (
     })
     if (deleted) {
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
-      yield* Effect.promise(() => publishManifestChange(statusReadModel, existing.season))
+      yield* Effect.promise(() =>
+        publishManifestChange(statusReadModel, existing.season, existing.surface),
+      )
       return
     }
     const current = yield* Effect.tryPromise({

@@ -51,7 +51,7 @@ export interface ManifestReadModelPersistence {
 
 export interface SeasonManifestReadModel {
   readonly read: (input: ManifestProjectionInput) => Promise<ManifestProjectionRead>
-  readonly invalidate: () => Promise<number>
+  readonly invalidate: (surface?: TemplateSurface) => Promise<number>
   readonly revision: () => Promise<number>
 }
 
@@ -131,7 +131,10 @@ export const createSeasonManifestReadModel = (options: {
         const serializedBytes = new TextEncoder().encode(JSON.stringify(manifest)).byteLength
         const revisionChanged = keyed !== undefined && keyed.manifest.version !== manifest.version
         const revision = revisionChanged ? current.revision + 1 : current.revision
-        const retained = revisionChanged ? [] : current.entries.filter((entry) => entry.key !== key)
+        const configuredServerChanged = keyed !== undefined && keyed.configuredServer !== server
+        const retained = configuredServerChanged
+          ? []
+          : current.entries.filter((entry) => entry.key !== key)
         const entries = [
           ...retained,
           {
@@ -170,10 +173,21 @@ export const createSeasonManifestReadModel = (options: {
           ? { ...base, notModified: true as const }
           : { ...base, notModified: false as const, manifest }
       }),
-    invalidate: () =>
+    invalidate: (surface) =>
       exclusive(async () => {
         const current = await load()
-        const next = { season: options.season, revision: current.revision + 1, entries: [] }
+        const invalidatedKeys =
+          surface === undefined
+            ? null
+            : new Set([projectionKey('public', surface), projectionKey('admin', surface)])
+        const next = {
+          season: options.season,
+          revision: current.revision + 1,
+          entries:
+            invalidatedKeys === null
+              ? []
+              : current.entries.filter((entry) => !invalidatedKeys.has(entry.key)),
+        }
         await options.persistence.save(next)
         state = next
         return next.revision

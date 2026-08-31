@@ -1,4 +1,4 @@
-import type { TileCoord } from '@caelestis/shared'
+import type { TemplateSurface, TileCoord } from '@caelestis/shared'
 import type { ManifestProjectionInput, ManifestProjectionRead } from '../../manifest/read-model.js'
 import {
   type MeasuredD1Operation,
@@ -89,8 +89,8 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return measuredValue(measured)
   }
 
-  notifyManifestChange(season: number): Promise<void> {
-    return this.shard(season).notifyManifestChange(season)
+  notifyManifestChange(season: number, surface?: TemplateSurface): Promise<void> {
+    return this.shard(season).notifyManifestChange(season, surface)
   }
 
   notifyAlarmChange(season: number): Promise<void> {

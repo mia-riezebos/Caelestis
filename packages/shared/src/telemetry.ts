@@ -1,3 +1,4 @@
+import type { TemplateSurface } from './template-surface.js'
 import type { TileKey } from './tiles.js'
 import type { Millis, Seconds } from './time.js'
 
@@ -122,7 +123,12 @@ export type LiveSyncServerEvent =
   | { readonly type: 'ready'; readonly revision: number }
   | { readonly type: 'status-delta'; readonly delta: StatusDelta }
   | { readonly type: 'status-reconcile'; readonly revision: number }
-  | { readonly type: 'manifest-reconcile'; readonly revision: number }
+  | {
+      readonly type: 'manifest-reconcile'
+      readonly revision: number
+      /** Absent means every manifest surface changed, such as after a server rename. */
+      readonly surface?: TemplateSurface
+    }
   | { readonly type: 'alarms-reconcile' }
   | {
       readonly type: 'tile-offer-cache-result'

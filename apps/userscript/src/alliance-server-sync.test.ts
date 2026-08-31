@@ -1,4 +1,10 @@
-import { parseClientMetricsAccept, type TemplateSurface } from '@caelestis/shared'
+import {
+  parseClientMetricsAccept,
+  type ReconciliationReason,
+  type SyncTransport,
+  type TemplateSurface,
+  templateSurfaceKey,
+} from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface MockServer {
@@ -40,7 +46,14 @@ const localStore = vi.hoisted(() => ({
 
 const coordinator = vi.hoisted(() => ({
   resource: null as null | {
-    refresh: (server: MockServer, reason: 'connect' | 'interval') => Promise<unknown>
+    readonly live?: boolean
+    readonly reconcileOnManifestEvent?: boolean
+    readonly scope: (server: MockServer) => string | null
+    refresh: (
+      server: MockServer,
+      reason: ReconciliationReason,
+      transport: SyncTransport,
+    ) => Promise<unknown>
   },
 }))
 
@@ -133,31 +146,44 @@ describe('alliance server sync', () => {
     vi.unstubAllGlobals()
   })
 
-  it('registers the selected surface as a coordinator-managed manifest resource', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(JSON.stringify(manifest(hq(), 0, 'Current')))),
-    )
-    const { allianceManifestFor, installAllianceServerSync } = await import(
-      './alliance-server-sync.js'
-    )
+  it.each(['alliance-headquarters', 'alliance-picture', 'alliance-banner'] as const)(
+    'registers %s as a live coordinator-managed manifest resource',
+    async (kind) => {
+      const surface: TemplateSurface = { kind, allianceId: 535_245 }
+      alliance.active = { surface }
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify(manifest(surface, 0, 'Current')))),
+      )
+      const { allianceManifestFor, installAllianceServerSync } = await import(
+        './alliance-server-sync.js'
+      )
 
-    installAllianceServerSync()
-    await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
-    expect(fetch).toHaveBeenCalledTimes(1)
-    expect(
-      parseClientMetricsAccept(
-        new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).get('accept'),
-      ),
-    ).toMatchObject({
-      client: 'userscript',
-      transport: 'compatibility-poll',
-      reason: 'connect',
-    })
-    expect(allianceManifestFor(connected, hq())?.server.name).toBe('Current')
-    expect(templates.syncServerTemplates).toHaveBeenCalledTimes(1)
-  })
+      installAllianceServerSync()
+      await flush()
+      expect(coordinator.resource).toMatchObject({
+        live: true,
+        reconcileOnManifestEvent: true,
+      })
+      expect(coordinator.resource?.scope(connected)).toBe(templateSurfaceKey(surface))
+      await coordinator.resource?.refresh(connected, 'connect', 'recovery')
+      expect(fetch).toHaveBeenCalledTimes(1)
+      expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toContain(
+        `surface=${encodeURIComponent(kind)}&allianceId=535245`,
+      )
+      expect(
+        parseClientMetricsAccept(
+          new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).get('accept'),
+        ),
+      ).toMatchObject({
+        client: 'userscript',
+        transport: 'recovery',
+        reason: 'connect',
+      })
+      expect(allianceManifestFor(connected, surface)?.server.name).toBe('Current')
+      expect(templates.syncServerTemplates).toHaveBeenCalledTimes(1)
+    },
+  )
 
   it('refreshes a captured server through the current connection lifetime', async () => {
     const replacement = { ...connected, token: 'new-token' }
@@ -173,7 +199,7 @@ describe('alliance server sync', () => {
 
     installAllianceServerSync()
     await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     state.current = { servers: [replacement] }
     await refreshAllianceManifest(connected, hq())
 
@@ -201,7 +227,7 @@ describe('alliance server sync', () => {
 
     installAllianceServerSync()
     await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
 
     expect(allianceManifestFor(connected, hq())).toBeNull()
     expect(templates.syncServerTemplates).not.toHaveBeenCalled()
@@ -217,7 +243,7 @@ describe('alliance server sync', () => {
 
     installAllianceServerSync()
     await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
 
     await vi.waitFor(() => {
       expect(nodes.rememberNodes).toHaveBeenCalledWith(connected.url, manifestNodes, hq())
@@ -241,7 +267,7 @@ describe('alliance server sync', () => {
     )
     installAllianceServerSync()
     await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     expect(allianceManifestFor(connected, hq())?.server.name).toBe('Old')
 
     state.current = { servers: [replacement] }
@@ -262,7 +288,7 @@ describe('alliance server sync', () => {
     const { installAllianceServerSync } = await import('./alliance-server-sync.js')
     installAllianceServerSync()
     await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     vi.mocked(fetch).mockClear()
 
     state.listener?.({ servers: [{ ...connected, info: { ...connected.info, name: 'Renamed' } }] })
@@ -283,7 +309,7 @@ describe('alliance server sync', () => {
     const { installAllianceServerSync } = await import('./alliance-server-sync.js')
     installAllianceServerSync()
     await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     expect(fetch).toHaveBeenCalledTimes(1)
     templates.syncServerTemplates.mockImplementation(
       async (_server, known: readonly unknown[] | undefined) =>
@@ -299,7 +325,7 @@ describe('alliance server sync', () => {
 
     finishRetirement()
     await flush()
-    await coordinator.resource?.refresh(connected, 'connect')
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 })

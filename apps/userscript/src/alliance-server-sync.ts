@@ -1,5 +1,6 @@
 import {
   type ReconciliationReason,
+  type SyncTransport,
   sameTemplateSurface,
   type TemplateSurface,
   templateSurfaceKey,
@@ -22,10 +23,10 @@ import {
   getState,
   isCurrentServerConnection,
   onStateChange,
-  serverConnectionIdentity,
-  serverConnectionSignal,
   type State,
   sameServerConnection,
+  serverConnectionIdentity,
+  serverConnectionSignal,
 } from './state.js'
 import { forgetServerSurfaceTemplates } from './templates/local-store.js'
 import { forgetSurfaceNodes, rememberNodes } from './templates/server-nodes.js'
@@ -89,7 +90,7 @@ export const refreshAllianceManifest = async (
     return
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(current)) return
-  await readServer(current, surface, ownGeneration, signal, 'manual')
+  await readServer(current, surface, ownGeneration, signal, 'manual', 'compatibility-poll')
 }
 
 const currentSurface = (surface: TemplateSurface, ownGeneration: number): boolean => {
@@ -105,6 +106,7 @@ const readServer = async (
   ownGeneration: number,
   signal: AbortSignal,
   reason: ReconciliationReason,
+  transport: SyncTransport,
 ): Promise<ServerSyncResult> => {
   count('alliance-sync:server considered')
   if (server.status !== 'connected' || !isCurrentServerConnection(server)) {
@@ -144,7 +146,7 @@ const readServer = async (
       async () =>
         await fetch(serverEndpoint(server.url, `/manifest?${query}`), {
           headers: {
-            ...userscriptClientHeaders({ transport: 'compatibility-poll', reason }),
+            ...userscriptClientHeaders({ transport, reason }),
             ...(token === null ? {} : { authorization: `Bearer ${token}` }),
           },
           signal: AbortSignal.any([
@@ -253,15 +255,16 @@ export const installAllianceServerSync = (): void => {
   onStateChange(stateChanged)
   registerServerSyncResource({
     id: ALLIANCE_MANIFEST_RESOURCE,
+    live: true,
     reconcileOnManifestEvent: true,
     scope: () =>
       selected !== null && readyGeneration === generation ? templateSurfaceKey(selected) : null,
-    refresh: async (server, reason) => {
+    refresh: async (server, reason, transport) => {
       const surface = selected
       const signal = controller?.signal
       if (surface === null || signal === undefined || readyGeneration !== generation)
         return { status: 'skipped' }
-      return readServer(server, surface, generation, signal, reason)
+      return readServer(server, surface, generation, signal, reason, transport)
     },
   })
   selectActiveSurface()
