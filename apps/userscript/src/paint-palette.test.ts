@@ -21,6 +21,7 @@ const harness = vi.hoisted(() => ({
   tilePixelListeners: [] as Array<
     (tile: { x: number; y: number }, triples: readonly number[], source: 'server' | 'draft') => void
   >,
+  tilePixelEvictionListeners: [] as Array<(tile: { x: number; y: number }) => void>,
   focused: null as {
     id: string
     serverUrl?: string
@@ -146,6 +147,10 @@ vi.mock('./tile-transform.js', () => ({
     ) => void,
   ) => {
     harness.tilePixelListeners.push(listener)
+    return vi.fn()
+  },
+  onTilePixelsEvicted: (listener: (tile: { x: number; y: number }) => void) => {
+    harness.tilePixelEvictionListeners.push(listener)
     return vi.fn()
   },
 }))
@@ -608,6 +613,36 @@ describe('Wplace paint palette progress', () => {
     paintPaletteProgress()
 
     harness.tilePixelListeners.at(-1)?.({ x: 3, y: 4 }, [0, 0, 0], 'server')
+    harness.draftPixelDeltas = [
+      { key: '3/4/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+
+    expect(paintPaletteProgress()[0]).toMatchObject({ completed: 4, mismatched: 0 })
+  })
+
+  it('forgets cleared coordinate rebases when their source tile is evicted', async () => {
+    harness.focused = {
+      id: 'remote-evicted-source',
+      serverUrl: server.url,
+      serverTemplateId: 'remote',
+      opaque: 10,
+    }
+    harness.serverProgress = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 7, known: 10, total: 10 },
+    ]
+    const { installPaintPaletteProgress, paintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.draftPixelDeltas = [
+      { key: '3/4/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
+    ]
+    harness.acceptedPaintListeners.at(-1)?.({ painted: 1, tiles: [{ pixels: { x: [0] } }] })
+    harness.draftPixelDeltas = []
+    harness.serverProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 7, known: 10, total: 10 },
+    ]
+    paintPaletteProgress()
+
+    harness.tilePixelEvictionListeners.at(-1)?.({ x: 3, y: 4 })
     harness.draftPixelDeltas = [
       { key: '3/4/0', basis: 'tile-1', index: 0, completed: 1, mismatched: -1, unpainted: 0 },
     ]

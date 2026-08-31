@@ -19,6 +19,7 @@ import {
   onAcceptedPaint,
   onPaintSubmission,
   onTilePixels,
+  onTilePixelsEvicted,
   type PaintSubmission,
 } from './tile-transform.js'
 import { applyColourProgressDelta } from './ui/progress.js'
@@ -566,6 +567,9 @@ export const installPaintPaletteProgress = (): void => {
   onPaintSubmission(snapshotSubmittedDraft)
   onTilePixels((tile, triples, source) => {
     if (source === 'server' && triples.length > 0 && forgetRebasedTile(tile)) queueRender()
+  })
+  onTilePixelsEvicted((tile) => {
+    if (forgetRebasedTile(tile)) queueRender()
   })
   onAcceptedPaint((paint) => {
     const submitted = paint.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
