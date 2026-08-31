@@ -349,16 +349,30 @@ describe('server sync coordinator', () => {
       `caelestis.auth.b64.${btoa(liveServer.token).replace(/=+$/, '')}`,
     ])
 
-    socket.open()
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
     expect(alarms).toHaveBeenCalledOnce()
-    expect(status).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
-    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
+    expect(status).toHaveBeenLastCalledWith(liveServer, 'connect', 'compatibility-poll')
+    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'connect', 'compatibility-poll')
     status.mockClear()
     manifest.mockClear()
     alarms.mockClear()
+
+    socket.open()
+    socket.receive({ type: 'ready', revision: 7 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(status).not.toHaveBeenCalled()
+    expect(manifest).not.toHaveBeenCalled()
+    expect(alarms).not.toHaveBeenCalled()
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+    window.dispatchEvent(new Event('online'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(status).not.toHaveBeenCalled()
+    expect(manifest).not.toHaveBeenCalled()
+    expect(alarms).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect(status).not.toHaveBeenCalled()
@@ -471,6 +485,41 @@ describe('server sync coordinator', () => {
     expect(alarms).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(1_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('lets an in-flight bootstrap satisfy the socket ready revision', async () => {
+    const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource } = await import(
+      './server-sync-coordinator.js'
+    )
+    let finishBootstrap!: () => void
+    const refresh = vi.fn(
+      async () =>
+        await new Promise<{ status: 'unchanged'; revision: string }>((resolve) => {
+          finishBootstrap = () => resolve({ status: 'unchanged', revision: '7' })
+        }),
+    )
+    registerServerSyncResource({
+      id: 'telemetry-status',
+      scope: () => 'world',
+      refresh,
+      live: true,
+    })
+    installServerSyncCoordinator()
+    vi.advanceTimersByTime(0)
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    socket.receive({ type: 'status-reconcile', revision: 7 })
+    finishBootstrap()
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(refresh).toHaveBeenCalledOnce()
   })
 
   it('retries a failed initial live snapshot before the long recovery cadence', async () => {

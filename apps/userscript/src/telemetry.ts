@@ -27,6 +27,7 @@ import {
   applyServerSyncSnapshot,
   registerServerSyncResource,
   requestServerSync,
+  serverLiveSyncHealthy,
   type ServerSyncResult,
   serverSyncRevision,
 } from './server-sync-coordinator.js'
@@ -460,7 +461,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     const offeredStatus = statusDeltaFrom(responseBody.status)
     if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
     const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
-    if (offeredStatus === null || missingStatus)
+    if ((offeredStatus === null || missingStatus) && !serverLiveSyncHealthy(server))
       requestServerSync('post-offer', 'telemetry-status', server)
     let accepted = 0
     for (const entry of entries) {
@@ -749,10 +750,13 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
       serverConnectionIdentity(server),
       server.season,
     )
+    // The coordinator already includes status in the initial connection sweep. Only a later
+    // manifest change invalidates an established status surface; alarms cannot run until the first
+    // coverage snapshot exists, so they still need that first targeted read.
+    if (previous !== null) requestServerSync('manifest-applied', 'telemetry-status', server)
+    requestServerSync('manifest-applied', 'telemetry-alarms', server)
   }
   replayRecent(server, !seasonChanged)
-  requestServerSync('manifest-applied', 'telemetry-status', server)
-  requestServerSync('manifest-applied', 'telemetry-alarms', server)
 }
 
 const alarmFrom = (value: unknown): Alarm | null => {
