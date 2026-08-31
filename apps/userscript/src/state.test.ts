@@ -291,6 +291,45 @@ describe('server state boundaries', () => {
     )
   })
 
+  it('restores legacy and alliance Local folder scopes', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() =>
+        JSON.stringify({
+          localFolders: [
+            { id: 'legacy', parentId: null, name: 'Legacy', visible: true },
+            {
+              id: 'hq',
+              parentId: null,
+              name: 'HQ',
+              visible: true,
+              surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+            },
+            {
+              id: 'invalid',
+              parentId: null,
+              name: 'Invalid',
+              visible: true,
+              surface: { kind: 'alliance-banner', allianceId: -1 },
+            },
+          ],
+        }),
+      ),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState().localFolders).toEqual([
+      expect.objectContaining({
+        id: 'legacy',
+        surface: { kind: 'world', allianceId: null },
+      }),
+      expect.objectContaining({
+        id: 'hq',
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      }),
+    ])
+  })
+
   it('does not accept a visibility scope when durable storage refuses it', async () => {
     vi.stubGlobal(
       'GM_setValue',
@@ -1485,6 +1524,49 @@ describe('server state boundaries', () => {
     })
   })
 
+  it('creates and lists server folders for the exact alliance surface', async () => {
+    const node = {
+      id: NODE_A,
+      parentId: null,
+      path: '/alliance-folder',
+      name: 'Alliance folder',
+      createdAt: 1_800_000_000_000,
+    }
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(node), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([node]), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { createNode, listServerNodes } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+
+    await expect(createNode(server, 'Alliance folder', null, undefined, surface)).resolves.toEqual({
+      ok: true,
+      node,
+    })
+    await expect(listServerNodes(server, undefined, surface)).resolves.toEqual({
+      status: 'ok',
+      nodes: [node],
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      season: 0,
+      surfaceKind: 'alliance-banner',
+      allianceId: 535245,
+      parentId: null,
+    })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://example.com/backend/admin/nodes?season=0&surface=alliance-banner&allianceId=535245',
+    )
+  })
+
   it('rejects an oversized body before parsing it', async () => {
     vi.stubGlobal(
       'fetch',
@@ -1574,5 +1656,48 @@ describe('server state boundaries', () => {
       message: 'Error: request timed out',
       ambiguous: true,
     })
+  })
+
+  it('sends alliance identity with a scoped upload', async () => {
+    const uploadedBodies: (BodyInit | null | undefined)[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        uploadedBodies.push(init?.body)
+        return new Response(
+          JSON.stringify({
+            templateId: TEMPLATE_A,
+            versionId: '019fed50-87a1-7523-a88c-bdeafad49684',
+          }),
+          { status: 200 },
+        )
+      }),
+    )
+    const { setState, uploadTemplate } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+
+    await expect(
+      uploadTemplate(server, {
+        nodeId: null,
+        name: 'Alliance banner',
+        originX: 0,
+        originY: 0,
+        png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+        surface: { kind: 'alliance-banner', allianceId: 535_245 },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    const uploadedForm = uploadedBodies[0]
+    expect(uploadedForm).toBeInstanceOf(FormData)
+    if (!(uploadedForm instanceof FormData)) throw new Error('expected multipart upload')
+    expect(uploadedForm.get('surfaceKind')).toBe('alliance-banner')
+    expect(uploadedForm.get('allianceId')).toBe('535245')
   })
 })

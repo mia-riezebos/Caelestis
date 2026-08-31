@@ -46,6 +46,23 @@ export const onAllianceManifestChange = (listener: () => void): (() => void) => 
   return () => manifestListeners.delete(listener)
 }
 
+/** Refresh one server after an alliance-surface edit instead of waiting for the next poll. */
+export const refreshAllianceManifest = async (
+  server: ConnectedServer,
+  surface: TemplateSurface,
+): Promise<void> => {
+  const ownGeneration = generation
+  const signal = controller?.signal
+  if (
+    signal === undefined ||
+    readyGeneration !== ownGeneration ||
+    selected === null ||
+    !sameTemplateSurface(selected, surface)
+  )
+    return
+  await readServer(server, surface, ownGeneration, signal)
+}
+
 const currentSurface = (surface: TemplateSurface, ownGeneration: number): boolean => {
   const active = activeAllianceSurface()
   return (

@@ -1,3 +1,4 @@
+import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import {
   addLocalFolders,
   leaseLocalFolder,
@@ -250,6 +251,7 @@ export const copyLocalTemplateToServer = async (
     originX: template.originX,
     originY: template.originY,
     png,
+    surface: template.surface ?? WORLD_TEMPLATE_SURFACE,
   })
   // The write result is useful immediately. Reconciliation still belongs to this transaction, but
   // a slow manifest must not keep a completed upload looking stuck behind its 120-second timeout.
@@ -431,6 +433,7 @@ export const moveServerTemplateToServer = async (
     originX: drawn.originX,
     originY: drawn.originY,
     png,
+    surface: drawn.surface ?? WORLD_TEMPLATE_SURFACE,
   })
   if (!uploaded.ok) {
     void reconcileServer(destination)
@@ -931,6 +934,7 @@ const transplantWhileDestinationHeld = async (
         originX: carried.template.originX,
         originY: carried.template.originY,
         png,
+        surface: carried.template.surface ?? WORLD_TEMPLATE_SURFACE,
       })
       if (!uploaded.ok) return { ok: false, nodes, templates, message: uploaded.message }
       if (carried.sourceRevision?.published === true) {

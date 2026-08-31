@@ -98,6 +98,35 @@ afterEach(() => {
 })
 
 describe('local template lifecycle', () => {
+  it('persists alliance scope and rejects a folder from another surface', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    const { setState } = await import('../state.js')
+    setState({
+      localFolders: [
+        { id: 'hq', parentId: null, name: 'HQ', visible: true, surface },
+        {
+          id: 'world',
+          parentId: null,
+          name: 'World',
+          visible: true,
+          surface: { kind: 'world', allianceId: null },
+        },
+      ],
+    })
+    const store = await import('./local-store.js')
+
+    const added = await store.addLocalTemplate(template({ originX: -10, originY: -20 }), surface)
+
+    expect(added.surface).toEqual(surface)
+    expect(added.tiles.size).toBe(0)
+    expect(persistence.saveTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ surface }),
+      null,
+    )
+    await expect(store.setTemplateFolder(added.id, 'world')).resolves.toBe(false)
+    await expect(store.setTemplateFolder(added.id, 'hq')).resolves.toBe(true)
+  })
+
   it('includes concurrent reservations when admitting a larger reconciliation winner', async () => {
     const { indexIncreaseWithinBudget } = await import('./local-store.js')
 

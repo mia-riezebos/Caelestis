@@ -3,6 +3,7 @@ import {
   type TemplateSurface,
   templateSurface,
   templateSurfaceKey,
+  WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
@@ -126,6 +127,8 @@ export interface LocalFolder {
   readonly parentId: string | null
   readonly name: string
   readonly visible: boolean
+  /** Exact drawing surface. Records written before alliance support are world-scoped. */
+  readonly surface?: TemplateSurface
 }
 
 /** Browser-owned drawing preferences for an overlay whose pixels remain server-owned. */
@@ -363,6 +366,13 @@ export const loadState = (): State => {
           (candidate.parentId !== null && typeof candidate.parentId !== 'string')
         )
           continue
+        const surface =
+          candidate.surface === undefined
+            ? WORLD_TEMPLATE_SURFACE
+            : isRecord(candidate.surface)
+              ? templateSurface(candidate.surface.kind, candidate.surface.allianceId)
+              : null
+        if (surface === null) continue
         folderIds.add(candidate.id)
         localFolders.push({
           id: candidate.id,
@@ -370,6 +380,7 @@ export const loadState = (): State => {
           name: candidate.name,
           // Records written before folder visibility existed were visible.
           visible: candidate.visible !== false,
+          surface,
         })
         if (localFolders.length >= MAX_LOCAL_FOLDERS) break
       }
@@ -693,12 +704,17 @@ const fetchNodes = async (
   base: string,
   token: string | null,
   season: number,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  signal?: AbortSignal,
 ): Promise<NodeListResult> => {
   try {
+    const query = new URLSearchParams({ season: String(season), surface: surface.kind })
+    if (surface.allianceId !== null) query.set('allianceId', String(surface.allianceId))
     const { response, body } = await requestServerTree(
-      serverEndpoint(base, `/admin/nodes?season=${season}`),
+      serverEndpoint(base, `/admin/nodes?${query}`),
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        ...(signal === undefined ? {} : { signal }),
       },
     )
     if (!response.ok)
@@ -973,6 +989,7 @@ export const createNode = async (
   name: string,
   parentId: string | null,
   description?: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
@@ -989,6 +1006,8 @@ export const createNode = async (
         },
         body: JSON.stringify({
           season: server.season,
+          surfaceKind: surface.kind,
+          ...(surface.allianceId === null ? {} : { allianceId: surface.allianceId }),
           parentId,
           name,
           ...(description === undefined ? {} : { description }),
@@ -1178,7 +1197,12 @@ export const deleteNode = async (
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
 export const listNodes = async (server: ConnectedServer): Promise<NodeListResult> => {
   if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
-  const result = await fetchNodes(server.url, activeServerToken(server), server.season)
+  const result = await fetchNodes(
+    server.url,
+    activeServerToken(server),
+    server.season,
+    WORLD_TEMPLATE_SURFACE,
+  )
   if (!result.ok && (result.status === 401 || result.status === 403)) {
     noteAuthFailure(server, result.status)
   }
@@ -1200,6 +1224,7 @@ export const uploadTemplate = async (
     originX: number
     originY: number
     png: Blob
+    surface?: TemplateSurface
   },
 ): Promise<{ ok: true; id: string; version: string } | UploadFailure> => {
   const begun = beginUpload(server)
@@ -1213,6 +1238,10 @@ export const uploadTemplate = async (
     form.set('name', input.name)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
+    if (input.surface?.kind !== undefined && input.surface.kind !== 'world') {
+      form.set('surfaceKind', input.surface.kind)
+      form.set('allianceId', String(input.surface.allianceId))
+    }
     const { response, body } = await requestServerUpload(
       serverEndpoint(server.url, '/admin/templates'),
       {
@@ -1457,7 +1486,20 @@ export type ServerNodesResult =
 export const listServerNodes = async (
   server: ConnectedServer,
   signal?: AbortSignal,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<ServerNodesResult> => {
+  if (server.season === null) return { status: 'unreachable' }
+  if (surface.kind !== 'world') {
+    const listed = await fetchNodes(
+      server.url,
+      activeServerToken(server),
+      server.season,
+      surface,
+      signal,
+    )
+    if (!listed.ok) return { status: 'unreachable' }
+    return { status: 'ok', nodes: listed.nodes }
+  }
   const contents = await listServerContents(server, signal)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (contents === null || current === undefined || !isCurrentServerConnection(server))
