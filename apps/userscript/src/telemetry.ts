@@ -431,7 +431,11 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       clearTileOfferDelivery()
       return
     }
-    if (identity === null || !isCurrentServerConnection(server)) {
+    if (identity === null) {
+      clearServerTileOfferDelivery(server.url)
+      return
+    }
+    if (!isCurrentServerConnection(server)) {
       retryNeeded = true
       retryImmediately = false
       for (const entry of entries) {
