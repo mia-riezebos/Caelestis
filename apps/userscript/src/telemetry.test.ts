@@ -950,16 +950,32 @@ describe('server telemetry client', () => {
     expect(attempts).toBe(3)
   })
 
-  it('releases retained retries when their report server is removed', async () => {
-    let attempts = 0
+  it('does not restore an in-flight retry after its report server is replaced', async () => {
+    const mirror = { ...server, url: 'https://mirror.example' }
+    harness.state = { ...harness.state, servers: [server, mirror] }
+    let settleRemovedOffer: ((response: Response) => void) | undefined
+    const attempts = new Map<string, string[][]>()
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
         if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
         if (url.endsWith('/telemetry/tiles/offers')) {
-          attempts++
-          return new Response(null, { status: 503 })
+          const origin = new URL(url).origin
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          const held = attempts.get(origin) ?? []
+          held.push(body.offers.map((offer) => offer.tile))
+          attempts.set(origin, held)
+          if (origin === server.url && held.length === 1)
+            return new Promise<Response>((resolve) => {
+              settleRemovedOffer = resolve
+            })
+          if (origin === server.url && held.length <= 3) return new Response(null, { status: 503 })
+          return Response.json({
+            wanted: [],
+            acknowledged: body.offers.map((offer) => offer.tile),
+            rejected: [],
+          })
         }
         return new Response(null, { status: 204 })
       }),
@@ -967,22 +983,53 @@ describe('server telemetry client', () => {
     const { installTelemetry } = await import('./telemetry.js')
     installTelemetry()
     harness.serverContents?.(server, { nodes: [], templates: [template] })
+    const mirrorChunks = Array.from({ length: 33 }, (_, index) => ({
+      tile: `${100 + index}/9`,
+      hash: `mirror-${index}`,
+    }))
+    harness.serverContents?.(mirror, {
+      nodes: [],
+      templates: [{ ...template, chunks: mirrorChunks }],
+    })
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1]), 1_800_000_000)
-    await vi.waitFor(() => expect(attempts).toBe(3))
-    for (let index = 0; index < 33; index++)
-      harness.fetchedTile?.({ x: 100 + index, y: 9 }, new Uint8Array([index]), 1_800_000_001)
-    await new Promise((resolve) => setTimeout(resolve, 25))
+    await vi.waitFor(() => expect(settleRemovedOffer).toBeDefined())
 
-    harness.state = { ...harness.state, servers: [] }
-    for (const listener of harness.stateListeners) listener()
-    const replacement = { ...server }
     harness.retiredServers.add(server)
-    harness.state = { ...harness.state, servers: [replacement] }
+    harness.state = { ...harness.state, servers: [mirror] }
     for (const listener of harness.stateListeners) listener()
-    harness.serverContents?.(replacement, { nodes: [], templates: [template] })
+    settleRemovedOffer?.(new Response(null, { status: 503 }))
+    await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(3))
+
+    for (let index = 0; index < mirrorChunks.length; index++)
+      harness.fetchedTile?.(
+        { x: 100 + index, y: 9 },
+        new Uint8Array([index]),
+        1_800_000_001 + index,
+      )
+    await vi.waitFor(() =>
+      expect(attempts.get(mirror.url)?.flat()).toHaveLength(mirrorChunks.length),
+    )
+
+    const replacement = { ...server }
+    harness.state = { ...harness.state, servers: [mirror, replacement] }
+    for (const listener of harness.stateListeners) listener()
+    harness.serverContents?.(replacement, {
+      nodes: [],
+      templates: [
+        {
+          ...template,
+          chunks: [
+            { tile: '1/2', hash: 'chunk' },
+            { tile: '2/2', hash: 'replacement' },
+          ],
+        },
+      ],
+    })
+    harness.fetchedTile?.({ x: 2, y: 2 }, new Uint8Array([2]), 1_800_000_100)
+    await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(4))
     await new Promise((resolve) => setTimeout(resolve, 350))
 
-    expect(attempts).toBe(3)
+    expect(attempts.get(server.url)?.slice(3)).toEqual([['2/2']])
   })
 
   it('keeps failed tile retries inside the bounded recent replay window', async () => {
@@ -1498,6 +1545,55 @@ describe('server telemetry client', () => {
     account.identity = { wplaceUserId: 42, displayName: 'Mía 🎨' }
     harness.serverContents?.(server, contents)
     await vi.waitFor(() => expect(offered.size).toBe(observationCount), { timeout: 2_000 })
+  })
+
+  it('preserves the account retry delay when new tile observations arrive', async () => {
+    vi.useFakeTimers()
+    account.identity = null
+    const offered: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          const body = JSON.parse(String(init?.body)) as { offers: Array<{ tile: string }> }
+          offered.push(...body.offers.map((offer) => offer.tile))
+          return Response.json({
+            wanted: [],
+            acknowledged: body.offers.map((offer) => offer.tile),
+            rejected: [],
+          })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, {
+      nodes: [],
+      templates: [
+        {
+          ...template,
+          chunks: [
+            { tile: '1/12', hash: 'hash-1' },
+            { tile: '2/12', hash: 'hash-2' },
+          ],
+        },
+      ],
+    })
+
+    harness.fetchedTile?.({ x: 1, y: 12 }, new Uint8Array([1]), 1_800_000_000)
+    await vi.waitFor(() => expect(account.loadAccount).toHaveBeenCalledOnce())
+
+    harness.fetchedTile?.({ x: 2, y: 12 }, new Uint8Array([2]), 1_800_000_001)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(account.loadAccount).toHaveBeenCalledOnce()
+    expect(offered).toEqual([])
+
+    account.identity = { wplaceUserId: 42, displayName: 'Mía 🎨' }
+    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.waitFor(() => expect(offered).toEqual(['1/12', '2/12']))
   })
 
   it('does not let a retired account-load completion clear its replacement fence', async () => {

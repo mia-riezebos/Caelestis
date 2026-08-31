@@ -249,6 +249,7 @@ const rotateUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
 
 /** Retry only observations still inside the bounded recent replay window. */
 const retryUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): void => {
+  if (!getState().shareTiles || !isCurrentServerConnection(server)) return
   if (!recentTiles.has(entry.deliveryId)) {
     deleteUnsettledOffer(server.url, entry.deliveryId)
     return
@@ -716,7 +717,11 @@ const shareObservedTile = (entry: OfferedTile): void => {
         : { server, entries: new Map<string, OfferedTile>() }
     serverQueue.entries.set(retained.deliveryId, retained)
     queued.set(server.url, serverQueue)
-    scheduleFlush(server.url)
+    const identityRetryDelay =
+      accountIdentity() === null && !accountIdentityKnownUnavailable()
+        ? offerRetryDelays.get(server.url)
+        : undefined
+    scheduleFlush(server.url, identityRetryDelay ?? OFFER_DELAY_MS)
   }
 }
 
