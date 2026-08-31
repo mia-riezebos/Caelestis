@@ -76,6 +76,18 @@ export const nodeChainVisible = (
   return true
 }
 
+/** Drop one exact surface's parent map when its owning connection lifetime ends. */
+export const forgetSurfaceNodes = (
+  serverUrl: string,
+  surface: TemplateSurface,
+): readonly string[] => {
+  const key = parentMapKey(serverUrl, surface)
+  const byId = parents.get(key)
+  parents.delete(key)
+  revision++
+  return byId === undefined ? [] : [...byId.keys()]
+}
+
 /**
  * Drop one server's folders, and report which they were.
  *

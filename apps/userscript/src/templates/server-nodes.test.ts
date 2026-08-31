@@ -8,6 +8,7 @@ vi.mock('../state.js', () => ({
 
 import {
   forgetNodes,
+  forgetSurfaceNodes,
   nodeChainVisible,
   nodeScopeKey,
   rememberNodes,
@@ -48,5 +49,12 @@ describe('server folder parents', () => {
       ['alliance-parent', null],
       ['alliance-child', 'alliance-parent'],
     ])
+
+    expect(forgetSurfaceNodes(serverUrl, allianceSurface)).toEqual([
+      'alliance-parent',
+      'alliance-child',
+    ])
+    expect(serverNodeParents(serverUrl, allianceSurface)).toEqual([])
+    expect(serverNodeParents(serverUrl)).toHaveLength(2)
   })
 })

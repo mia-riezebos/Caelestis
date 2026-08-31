@@ -5,7 +5,7 @@ import type { ServerManifest } from '../server-manifest.js'
 const scoped = vi.hoisted(() => ({ manifest: null as ServerManifest | null }))
 
 vi.mock('../alliance-server-sync.js', () => ({
-  allianceManifestFor: (_serverUrl: string, _surface: TemplateSurface) => scoped.manifest,
+  allianceManifestFor: (_server: unknown, _surface: TemplateSurface) => scoped.manifest,
   refreshAllianceManifest: vi.fn(),
 }))
 

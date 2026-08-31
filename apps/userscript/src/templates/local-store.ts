@@ -17,6 +17,7 @@ import {
   type ConnectedServer,
   getState,
   getSurfaceAppearance,
+  isCurrentServerConnection,
   isScopeVisible,
   type LocalFolder,
   serverTemplatePreference,
@@ -60,6 +61,8 @@ import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './serv
 export interface PlacedTemplate extends ImportedTemplate {
   /** Drawing surface this placement belongs to. Legacy browser-owned templates are world-scoped. */
   readonly surface?: TemplateSurface
+  /** Runtime owner for server rows; absent on Local and legacy restored records. */
+  readonly serverConnection?: ConnectedServer
   /** Painted world-tile keys (`x/y`) used to bound mismatch and navigation work. */
   readonly tiles: ReadonlySet<string>
   readonly visible: boolean
@@ -474,6 +477,11 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
   // folders had no chain here at all, so their switches fell through to a set the renderer never
   // read: the box moved, and nothing else did.
   if (template.serverUrl !== undefined) {
+    if (
+      template.serverConnection !== undefined &&
+      !isCurrentServerConnection(template.serverConnection)
+    )
+      return false
     if (!isScopeVisible(`server:${template.serverUrl}`)) return false
     return nodeChainVisible(
       template.serverUrl,
@@ -1003,6 +1011,7 @@ export const putServerTemplate = async (
     serverTemplateId: string
     serverNodeId: string | null
     serverVersion: string
+    serverConnection?: ConnectedServer
     serverTileKeys?: readonly string[]
     wrapX?: boolean
   },
@@ -1050,13 +1059,24 @@ export const updateServerTemplateMetadata = async (
   id: string,
   name: string,
   serverNodeId: string | null,
+  serverConnection?: ConnectedServer,
 ): Promise<boolean> =>
   await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || !isServerTemplate(existing)) return false
     if (name.length === 0 || name.length > MAX_TEMPLATE_NAME_LENGTH) return false
-    if (existing.name === name && existing.serverNodeId === serverNodeId) return true
-    templates.set(id, { ...existing, name, serverNodeId })
+    if (
+      existing.name === name &&
+      existing.serverNodeId === serverNodeId &&
+      (serverConnection === undefined || existing.serverConnection === serverConnection)
+    )
+      return true
+    templates.set(id, {
+      ...existing,
+      name,
+      serverNodeId,
+      ...(serverConnection === undefined ? {} : { serverConnection }),
+    })
     notify()
     return true
   })
@@ -1097,6 +1117,21 @@ export const forgetServerTemplates = async (serverUrl: string): Promise<void> =>
     }
     if (removed) notify()
   })
+}
+
+/** Forget one server's rows on one drawing surface while preserving its other canvases. */
+export const forgetServerSurfaceTemplates = async (
+  serverUrl: string,
+  surface: TemplateSurface,
+): Promise<void> => {
+  const ids = [...templates.values()]
+    .filter(
+      (template) =>
+        template.serverUrl === serverUrl &&
+        sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+    )
+    .map(({ id }) => id)
+  await Promise.all(ids.map(async (id) => await forgetServerTemplate(id)))
 }
 
 export const addLocalTemplate = async (

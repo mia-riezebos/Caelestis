@@ -31,7 +31,11 @@ const templates = vi.hoisted(() => ({
   ),
 }))
 const nodes = vi.hoisted(() => ({
+  forgetSurfaceNodes: vi.fn(),
   rememberNodes: vi.fn(),
+}))
+const localStore = vi.hoisted(() => ({
+  forgetServerSurfaceTemplates: vi.fn(async () => undefined),
 }))
 
 vi.mock('./alliance-surface.js', () => ({
@@ -60,6 +64,7 @@ vi.mock('./state.js', () => ({
 
 vi.mock('./templates/server-sync.js', () => templates)
 vi.mock('./templates/server-nodes.js', () => nodes)
+vi.mock('./templates/local-store.js', () => localStore)
 vi.mock('./debug.js', () => ({ count: vi.fn() }))
 vi.mock('./server-manifest.js', () => ({
   parseServerManifest: (raw: unknown) => raw,
@@ -137,7 +142,7 @@ describe('alliance server sync', () => {
     finishOlder(new Response(JSON.stringify(manifest(hq(), 0, 'Older'))))
     await flush()
 
-    expect(allianceManifestFor(connected.url, hq())?.server.name).toBe('Newer')
+    expect(allianceManifestFor(connected, hq())?.server.name).toBe('Newer')
     expect(templates.syncServerTemplates).toHaveBeenCalledTimes(1)
   })
 
@@ -162,7 +167,7 @@ describe('alliance server sync', () => {
     expect(vi.mocked(fetch).mock.calls[1]?.[1]?.headers).toEqual({
       authorization: 'Bearer new-token',
     })
-    expect(allianceManifestFor(connected.url, hq())?.server.name).toBe('Replacement')
+    expect(allianceManifestFor(replacement, hq())?.server.name).toBe('Replacement')
     expect(templates.syncServerTemplates).toHaveBeenLastCalledWith(
       replacement,
       [],
@@ -183,7 +188,7 @@ describe('alliance server sync', () => {
     installAllianceServerSync()
     await flush()
 
-    expect(allianceManifestFor(connected.url, hq())).toBeNull()
+    expect(allianceManifestFor(connected, hq())).toBeNull()
     expect(templates.syncServerTemplates).not.toHaveBeenCalled()
   })
 
@@ -198,10 +203,38 @@ describe('alliance server sync', () => {
     installAllianceServerSync()
     await flush()
 
-    expect(nodes.rememberNodes).toHaveBeenCalledWith(connected.url, manifestNodes, hq())
+    await vi.waitFor(() => {
+      expect(nodes.rememberNodes).toHaveBeenCalledWith(connected.url, manifestNodes, hq())
+    })
     expect(nodes.rememberNodes.mock.invocationCallOrder[0]).toBeLessThan(
       templates.syncServerTemplates.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     )
+  })
+
+  it('retires admitted surface state before polling a replacement connection', async () => {
+    const replacement = { ...connected, token: 'new-token' }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(manifest(hq(), 0, 'Old'))))
+        .mockResolvedValueOnce(new Response(null, { status: 503 })),
+    )
+    const { allianceManifestFor, installAllianceServerSync } = await import(
+      './alliance-server-sync.js'
+    )
+    installAllianceServerSync()
+    await flush()
+    expect(allianceManifestFor(connected, hq())?.server.name).toBe('Old')
+
+    state.current = { servers: [replacement] }
+    state.listener?.(state.current)
+
+    expect(allianceManifestFor(replacement, hq())).toBeNull()
+    expect(nodes.forgetSurfaceNodes).toHaveBeenCalledWith(connected.url, hq())
+    expect(localStore.forgetServerSurfaceTemplates).toHaveBeenCalledWith(connected.url, hq())
+    await flush()
+    expect(allianceManifestFor(replacement, hq())).toBeNull()
   })
 
   it('does not poll for cosmetic state changes', async () => {

@@ -394,9 +394,7 @@ const buildTree = <Result>(
     sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
   )
   const scopedRowsFor = (server: ConnectedServer) =>
-    surface.kind === 'world'
-      ? rowsFor(server)
-      : (allianceManifestFor(server.url, surface) ?? undefined)
+    surface.kind === 'world' ? rowsFor(server) : (allianceManifestFor(server, surface) ?? undefined)
   const localOnly = drawnTemplates.filter((template) => !isServerTemplate(template))
   const drawnByServer = new Map<string, Map<string, PlacedTemplate>>()
   for (const template of drawnTemplates) {

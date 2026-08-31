@@ -13,7 +13,8 @@ import {
   type State,
   sameServerConnection,
 } from './state.js'
-import { rememberNodes } from './templates/server-nodes.js'
+import { forgetServerSurfaceTemplates } from './templates/local-store.js'
+import { forgetSurfaceNodes, rememberNodes } from './templates/server-nodes.js'
 import { syncServerTemplates } from './templates/server-sync.js'
 
 const MANIFEST_TIMEOUT_MS = 15_000
@@ -26,7 +27,10 @@ let selected: TemplateSurface | null = null
 let readyGeneration = -1
 let transition = Promise.resolve()
 let lastConnectedServers: readonly ConnectedServer[] = []
-const manifests = new Map<string, ServerManifest>()
+const manifests = new Map<
+  string,
+  { readonly owner: ConnectedServer; readonly manifest: ServerManifest }
+>()
 const requestSequences = new Map<string, number>()
 const manifestListeners = new Set<() => void>()
 
@@ -39,9 +43,16 @@ const notifyManifestChange = (): void => {
 
 /** The scoped rows behind the alliance panel; absent until that exact manifest has arrived. */
 export const allianceManifestFor = (
-  serverUrl: string,
+  server: ConnectedServer,
   surface: TemplateSurface,
-): ServerManifest | null => manifests.get(manifestKey(serverUrl, surface)) ?? null
+): ServerManifest | null => {
+  const admitted = manifests.get(manifestKey(server.url, surface))
+  return admitted !== undefined &&
+    isCurrentServerConnection(server) &&
+    isCurrentServerConnection(admitted.owner)
+    ? admitted.manifest
+    : null
+}
 
 export const onAllianceManifestChange = (listener: () => void): (() => void) => {
   manifestListeners.add(listener)
@@ -126,7 +137,7 @@ const readServer = async (
       return
     }
     count('alliance-sync:manifest admitted')
-    manifests.set(key, manifest)
+    manifests.set(key, { owner: server, manifest })
     rememberNodes(server.url, manifest.nodes, surface)
     notifyManifestChange()
     await syncServerTemplates(server, manifest.templates, requestCurrent, surface)
@@ -161,6 +172,7 @@ const retire = async (surface: TemplateSurface): Promise<void> => {
   const removals: Promise<void>[] = []
   for (const server of getState().servers) {
     changed = manifests.delete(manifestKey(server.url, surface)) || changed
+    forgetSurfaceNodes(server.url, surface)
     if (server.status === 'connected') {
       removals.push(syncServerTemplates(server, [], undefined, surface))
     }
@@ -199,6 +211,7 @@ const connectedServers = (state: State): readonly ConnectedServer[] =>
 
 const connectionsChanged = (next: readonly ConnectedServer[]): boolean =>
   next.length !== lastConnectedServers.length ||
+  lastConnectedServers.some((previous) => !isCurrentServerConnection(previous)) ||
   next.some(
     (server) => !lastConnectedServers.some((previous) => sameServerConnection(previous, server)),
   )
@@ -206,7 +219,20 @@ const connectionsChanged = (next: readonly ConnectedServer[]): boolean =>
 const stateChanged = (next: State): void => {
   const connected = connectedServers(next)
   if (!connectionsChanged(connected)) return
+  const surface = selected
+  let changed = false
+  if (surface !== null) {
+    for (const previous of lastConnectedServers) {
+      if (isCurrentServerConnection(previous)) continue
+      const key = manifestKey(previous.url, surface)
+      changed = manifests.delete(key) || changed
+      requestSequences.delete(key)
+      forgetSurfaceNodes(previous.url, surface)
+      void forgetServerSurfaceTemplates(previous.url, surface)
+    }
+  }
   lastConnectedServers = connected
+  if (changed) notifyManifestChange()
   syncSelected()
 }
 
