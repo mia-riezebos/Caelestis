@@ -675,8 +675,11 @@ describe('server sync coordinator', () => {
     const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
     state.current = { servers: [liveServer] }
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    const addEventListener = vi.spyOn(window, 'addEventListener')
     const { installServerSyncCoordinator } = await import('./server-sync-coordinator.js')
     installServerSyncCoordinator()
+    const focusListener = addEventListener.mock.calls.find(([type]) => type === 'focus')?.[1]
+    if (typeof focusListener !== 'function') throw new Error('focus listener was not installed')
     const clientId = new URL(FakeWebSocket.instances[0]?.url ?? '').searchParams.get('clientId')
 
     for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]) {
@@ -689,6 +692,9 @@ describe('server sync coordinator', () => {
     expect(FakeWebSocket.instances).toHaveLength(7)
 
     FakeWebSocket.instances.at(-1)?.close()
+    focusListener(new Event('focus'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(7)
     await vi.advanceTimersByTimeAsync(60 * 60_000 - 1)
     expect(FakeWebSocket.instances).toHaveLength(7)
     await vi.advanceTimersByTimeAsync(1)

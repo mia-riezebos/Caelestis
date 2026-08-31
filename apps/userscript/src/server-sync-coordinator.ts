@@ -660,7 +660,8 @@ const openLiveConnection = (connection: LiveConnection): void => {
     server.info?.liveSync !== 1 ||
     server.season === null ||
     typeof WebSocket === 'undefined' ||
-    connection.socket !== null
+    connection.socket !== null ||
+    connection.reconnectTimer !== null
   )
     return
   const endpoint = new URL(serverEndpoint(server.url, '/telemetry/live'))
