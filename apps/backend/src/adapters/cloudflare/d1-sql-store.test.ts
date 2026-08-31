@@ -140,6 +140,37 @@ describe('D1SqlStore', () => {
     ).resolves.toBe(1)
   })
 
+  it('returns a monotonic tile commit order for equal observation timestamps', async () => {
+    const observedAt = millis(2_000)
+    const commit = async (hash: string, reservationId: string) => {
+      await store.reserveTileBlobUpload(hash, hash, reservationId, millis(1_000), millis(5_000))
+      return store.commitTileBlobReservation(
+        reservationId,
+        millis(2_500),
+        {
+          season: 1,
+          tile: { x: 0, y: 0 },
+          hash,
+          observedAt,
+          reportedAt: seconds(2),
+          reportedWithToken: 'c'.repeat(64),
+          reportedByUserId: 42,
+        },
+        [],
+        false,
+        false,
+        true,
+      )
+    }
+
+    await expect(commit('a'.repeat(64), 'first')).resolves.toMatchObject({
+      current: { hash: 'a'.repeat(64), commitOrder: 1 },
+    })
+    await expect(commit('b'.repeat(64), 'second')).resolves.toMatchObject({
+      current: { hash: 'b'.repeat(64), commitOrder: 2 },
+    })
+  })
+
   it('commits many overlapping template statuses with a fixed D1 query count', async () => {
     await store.insertNode({
       id: 'node-1',

@@ -140,6 +140,7 @@ export class MemorySqlStore implements SqlStore {
     }
   >()
   private readonly canvasTiles = new Map<string, TileObservation>()
+  private readonly canvasTileCommitOrders = new Map<string, number>()
   private readonly serverOwnedCanvasTiles = new Set<string>()
   private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
   private readonly serverOwnedTemplateStatuses = new Set<string>()
@@ -765,6 +766,7 @@ export class MemorySqlStore implements SqlStore {
       (forceCurrent && !this.serverOwnedCanvasTiles.has(key))
     ) {
       this.canvasTiles.set(key, { ...observation, tile: { ...observation.tile } })
+      this.canvasTileCommitOrders.set(key, (this.canvasTileCommitOrders.get(key) ?? 0) + 1)
       if (forceCurrent) this.serverOwnedCanvasTiles.add(key)
       else this.serverOwnedCanvasTiles.delete(key)
     }
@@ -931,6 +933,8 @@ export class MemorySqlStore implements SqlStore {
         return [key, this.templateTileStatuses.get(key) ?? null] as const
       }),
     )
+    const canvasKey = `${observation.season}\u0000${tileKey(observation.tile)}`
+    const previousCommitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
     await this.recordTileObservation(
       observation,
       acceptedStatuses.map(({ status }) => status),
@@ -965,11 +969,15 @@ export class MemorySqlStore implements SqlStore {
         fingerprintsDirty: true,
       })
     }
-    const current = this.canvasTiles.get(`${observation.season}\u0000${tileKey(observation.tile)}`)
+    const current = this.canvasTiles.get(canvasKey)
+    const commitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
     return {
       revision,
       statusChanges,
-      current: current === undefined ? null : { ...current, tile: { ...current.tile } },
+      current:
+        current === undefined || commitOrder === previousCommitOrder
+          ? null
+          : { ...current, tile: { ...current.tile }, commitOrder },
     }
   }
 

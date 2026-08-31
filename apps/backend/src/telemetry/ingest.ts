@@ -390,7 +390,6 @@ const recordObservationPromise = async (
   if (committed.current !== null) {
     await repairCommittedTileGeneration(ports.statusReadModel, metadata.season, {
       ...committed.current,
-      authoritative: options.authoritative ?? false,
       coverageReadAt,
       visibleToPublic: targets.some((target) => target.published),
       visibleToAdmin: targets.length > 0,
