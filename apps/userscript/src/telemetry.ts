@@ -153,6 +153,16 @@ const clearUnsettledServer = (serverUrl: string): void => {
   for (const deliveryId of [...held.entries.keys()]) deleteUnsettledOffer(serverUrl, deliveryId)
 }
 
+const clearServerTileOfferDelivery = (serverUrl: string): void => {
+  const timer = flushTimers.get(serverUrl)
+  if (timer !== undefined) clearTimeout(timer)
+  flushTimers.delete(serverUrl)
+  delayedFlushes.delete(serverUrl)
+  queued.delete(serverUrl)
+  clearUnsettledServer(serverUrl)
+  offerRetryDelays.delete(serverUrl)
+}
+
 const retainUnsettledOffer = (server: ConnectedServer, entry: OfferedTile): OfferedTile => {
   if (server.season === null) return entry
   const existing = unsettledOffers.get(server.url)
@@ -188,12 +198,13 @@ const rotateUnsettledOffer = (serverUrl: string, entry: OfferedTile): void => {
 }
 
 const clearTileOfferDelivery = (): void => {
-  for (const timer of flushTimers.values()) clearTimeout(timer)
-  flushTimers.clear()
-  delayedFlushes.clear()
-  queued.clear()
-  for (const serverUrl of [...unsettledOffers.keys()]) clearUnsettledServer(serverUrl)
-  offerRetryDelays.clear()
+  const serverUrls = new Set([
+    ...flushTimers.keys(),
+    ...queued.keys(),
+    ...unsettledOffers.keys(),
+    ...offerRetryDelays.keys(),
+  ])
+  for (const serverUrl of serverUrls) clearServerTileOfferDelivery(serverUrl)
 }
 
 /** Remember bounded recent delivery IDs; old values may safely be offered again after eviction. */
@@ -441,7 +452,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
             Number(rejected.has(entry.tile)) ===
           1,
       )
-    if (!getState().shareTiles) return
+    if (!getState().shareTiles || !isCurrentServerConnection(server)) return
     const offeredStatus = statusDeltaFrom(responseBody.status)
     if (offeredStatus !== null) applyStatusDelta(server, offeredStatus)
     const { uploaded, missingStatus } = await uploadWanted(server, identity, entries, wanted)
@@ -1105,6 +1116,15 @@ export const installTelemetry = (): void => {
       clearTileOfferDelivery()
       return
     }
+    const currentServerUrls = new Set(getState().servers.map((server) => server.url))
+    const retainedServerUrls = new Set([
+      ...flushTimers.keys(),
+      ...queued.keys(),
+      ...unsettledOffers.keys(),
+      ...offerRetryDelays.keys(),
+    ])
+    for (const serverUrl of retainedServerUrls)
+      if (!currentServerUrls.has(serverUrl)) clearServerTileOfferDelivery(serverUrl)
     for (const server of getState().servers) {
       if (server.status !== 'connected') continue
       replayRecent(server)
