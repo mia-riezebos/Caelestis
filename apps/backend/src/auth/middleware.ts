@@ -1,5 +1,9 @@
+import { Effect } from 'effect'
 import type { MiddlewareHandler } from 'hono'
-import type { AccessToken, SqlStore } from '../ports/index.js'
+import type { AccessToken } from '../ports/index.js'
+import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
+import { BackendStorageError, ForbiddenError, UnauthorizedError } from '../runtime/errors.js'
+import { runBackendMiddleware } from '../runtime/hono.js'
 import { hashToken, type Scope, satisfiesScope } from './tokens.js'
 
 /** What a request proved about itself. */
@@ -54,7 +58,6 @@ const equalsConstantTime = (left: string, right: string): boolean => {
 }
 
 export interface AuthOptions {
-  readonly sql: SqlStore
   /**
    * The operator's bootstrap credential, from the environment.
    *
@@ -102,41 +105,66 @@ export interface AuthOptions {
  */
 const OPEN_ACCESS_HASH = '0'.repeat(64)
 
-export const requireScope =
-  ({ sql, bootstrapAdminToken, openAccess }: AuthOptions, required: Scope): MiddlewareHandler =>
-  async (c, next) => {
-    const presented = bearerToken(c.req.header('authorization'))
-    // A fallback, not a short circuit. Returning here before reading the credential downgraded an
-    // authenticated admin to `read` on an open server, so `includeUnpublished` went false and the
-    // one caller who is supposed to see drafts stopped seeing them. Anonymous access is what a
-    // request with no usable credential gets, not what every request gets.
-    const anonymousRead = required === 'read' && openAccess === true
+/** Authenticate one request against the SQL service supplied by the prepared Effect runtime. */
+export const authenticateRequest = (
+  authorization: string | undefined,
+  config: AuthOptions,
+  required: Scope,
+): Effect.Effect<
+  Caller,
+  UnauthorizedError | ForbiddenError | BackendStorageError,
+  SqlStoreService
+> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const presented = bearerToken(authorization)
+    const anonymousRead = required === 'read' && config.openAccess === true
     if (presented === null) {
-      if (!anonymousRead) return c.json({ error: 'unauthorized' }, 401)
-      c.set('caller', { scope: 'read', token: null, tokenHash: OPEN_ACCESS_HASH })
-      return next()
+      if (!anonymousRead) {
+        return yield* Effect.fail(new UnauthorizedError({ message: 'unauthorized' }))
+      }
+      return { scope: 'read', token: null, tokenHash: OPEN_ACCESS_HASH }
     }
 
-    // The `length > 0` arm is unreachable today and kept deliberately: `bearerToken` returns null
-    // for an empty token, so `presented` is never '' and an empty configured secret can never match
-    // on length. No test can pin it — said here rather than left looking load-bearing. It stays
-    // because the day someone loosens `bearerToken`, an unset secret must not become a valid
-    // credential.
     if (
-      bootstrapAdminToken !== undefined &&
-      bootstrapAdminToken.length > 0 &&
-      equalsConstantTime(presented, bootstrapAdminToken)
+      config.bootstrapAdminToken !== undefined &&
+      config.bootstrapAdminToken.length > 0 &&
+      equalsConstantTime(presented, config.bootstrapAdminToken)
     ) {
-      c.set('caller', { scope: 'admin', token: null, tokenHash: await hashToken(presented) })
-      return next()
+      const tokenHash = yield* Effect.tryPromise({
+        try: () => hashToken(presented),
+        catch: (cause) => new BackendStorageError({ operation: 'hashToken', cause }),
+      })
+      return { scope: 'admin', token: null, tokenHash }
     }
 
-    // Absence is revocation. Revoking deletes the row, so there is no second "is it still live"
-    // condition to forget — a reader that finds a token is holding a usable one.
-    const token = await sql.readAccessToken(await hashToken(presented))
-    if (token === null) return c.json({ error: 'unauthorized' }, 401)
-    if (!satisfiesScope(token.scope, required)) return c.json({ error: 'forbidden' }, 403)
+    const tokenHash = yield* Effect.tryPromise({
+      try: () => hashToken(presented),
+      catch: (cause) => new BackendStorageError({ operation: 'hashToken', cause }),
+    })
+    const token = yield* Effect.tryPromise({
+      try: () => sql.readAccessToken(tokenHash),
+      catch: (cause) => new BackendStorageError({ operation: 'readAccessToken', cause }),
+    })
+    if (token === null) {
+      return yield* Effect.fail(new UnauthorizedError({ message: 'unauthorized' }))
+    }
+    if (!satisfiesScope(token.scope, required)) {
+      return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
+    }
+    return { scope: token.scope, token, tokenHash: token.tokenHash }
+  })
 
-    c.set('caller', { scope: token.scope, token, tokenHash: token.tokenHash })
-    return next()
-  }
+/** Effect-backed scope middleware for routes migrated off hand-passed SQL authentication. */
+export const requireScopeEffect =
+  (runtime: BackendRuntime, config: AuthOptions, required: Scope): MiddlewareHandler =>
+  async (c, next) =>
+    runBackendMiddleware(
+      c,
+      runtime,
+      authenticateRequest(c.req.header('authorization'), config, required),
+      (caller) => {
+        c.set('caller', caller)
+        return next()
+      },
+    )

@@ -87,7 +87,7 @@ describe('storeTemplate', () => {
     const ports = await harness()
     const png = await encodeIndexedPng(2, 2, new Uint8Array([0, 1, 2, 3]))
 
-    const stored = await storeTemplate(ports, input(png))
+    const stored = await storeTemplate(ports.blobs, ports.sql, input(png))
 
     expect(stored.templateId).toMatch(UUID_V7)
     expect(stored.versionId).toMatch(UUID_V7)
@@ -121,7 +121,7 @@ describe('storeTemplate', () => {
     const height = 2_584
     const png = await encodeIndexedPng(width, height, new Uint8Array(width * height))
 
-    const stored = await storeTemplate(ports, input(png))
+    const stored = await storeTemplate(ports.blobs, ports.sql, input(png))
 
     expect(stored.totalPixels).toBe(width * height)
     expect(stored.chunks).toHaveLength(6)
@@ -131,7 +131,7 @@ describe('storeTemplate', () => {
     const ports = await harness()
     const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
 
-    const stored = await storeTemplate(ports, input(png, { originX: 999 }))
+    const stored = await storeTemplate(ports.blobs, ports.sql, input(png, { originX: 999 }))
 
     expect(stored.bbox).toEqual<PixelBounds>({ minX: 999, minY: 0, maxX: 1001, maxY: 1 })
     expect(stored.chunks.map(({ tile }) => tile)).toEqual(['0/0', '1/0'])
@@ -142,8 +142,8 @@ describe('storeTemplate', () => {
     const ports = await harness()
     const png = await encodeIndexedPng(2, 2, new Uint8Array([4, 4, 4, 4]))
 
-    const first = await storeTemplate(ports, input(png))
-    const second = await storeTemplate(ports, input(png))
+    const first = await storeTemplate(ports.blobs, ports.sql, input(png))
+    const second = await storeTemplate(ports.blobs, ports.sql, input(png))
 
     expect(second.chunks[0]?.hash).toBe(first.chunks[0]?.hash)
     expect(ports.blobs.puts).toHaveLength(1)
@@ -154,7 +154,7 @@ describe('storeTemplate', () => {
   it('replaces pixels after the template moves away from its former folder', async () => {
     const ports = await harness()
     const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
-    const first = await storeTemplate(ports, input(png))
+    const first = await storeTemplate(ports.blobs, ports.sql, input(png))
     const destination = '01890f3e-7b2c-7abc-8def-0123456789ac'
     await ports.sql.insertNode({
       id: destination,
@@ -170,7 +170,7 @@ describe('storeTemplate', () => {
     await ports.sql.deleteNode(NODE_ID)
 
     await expect(
-      storeTemplate(ports, { ...input(png), templateId: first.templateId }),
+      storeTemplate(ports.blobs, ports.sql, { ...input(png), templateId: first.templateId }),
     ).resolves.toMatchObject({ templateId: first.templateId })
     await expect(ports.sql.readTemplate(first.templateId)).resolves.toMatchObject({
       nodeId: destination,
@@ -180,7 +180,7 @@ describe('storeTemplate', () => {
   it('reports the live publication state after a concurrent replacement', async () => {
     const ports = await harness()
     const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
-    const first = await storeTemplate(ports, input(png))
+    const first = await storeTemplate(ports.blobs, ports.sql, input(png))
     const insert = ports.sql.insertTemplateVersion.bind(ports.sql)
     ports.sql.insertTemplateVersion = async (...args) => {
       await insert(...args)
@@ -188,7 +188,7 @@ describe('storeTemplate', () => {
     }
 
     await expect(
-      storeTemplate(ports, { ...input(png), templateId: first.templateId }),
+      storeTemplate(ports.blobs, ports.sql, { ...input(png), templateId: first.templateId }),
     ).resolves.toMatchObject({ published: true })
   })
 
@@ -196,7 +196,9 @@ describe('storeTemplate', () => {
     const ports = await harness()
     const png = await encodeIndexedPng(401_000, 1, new Uint8Array(401_000))
 
-    const error = await storeTemplate(ports, input(png)).catch((caught: unknown) => caught)
+    const error = await storeTemplate(ports.blobs, ports.sql, input(png)).catch(
+      (caught: unknown) => caught,
+    )
     expect(error).toBeInstanceOf(StoreTemplateError)
     expect(error).toHaveProperty('message', expect.stringMatching(/more than the 400/))
     expect(ports.blobs.hasAllCalls).toHaveLength(0)

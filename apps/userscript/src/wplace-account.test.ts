@@ -113,6 +113,21 @@ describe('wplace account state', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('clears a definitive missing identity before a transient refresh failure', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockRejectedValueOnce(new Error('network unavailable'))
+    vi.stubGlobal('fetch', fetchMock)
+    const { accountIdentityKnownUnavailable, loadAccount } = await import('./wplace-account.js')
+
+    await loadAccount()
+    expect(accountIdentityKnownUnavailable()).toBe(true)
+    await loadAccount(0)
+
+    expect(accountIdentityKnownUnavailable()).toBe(false)
+  })
+
   it('clears the previous account when the session becomes unauthorised', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

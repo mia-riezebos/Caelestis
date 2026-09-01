@@ -1,7 +1,16 @@
 import type { ServerInfo } from '@caelestis/shared'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
-import { type AuthOptions, requireScope } from '../auth/middleware.js'
-import type { Ports } from '../ports/index.js'
+import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
+import {
+  type BackendRuntime,
+  SqlStoreService,
+  StatusReadModelService,
+} from '../runtime/backend-runtime.js'
+import { BackendStorageError, SqlStoreReadError } from '../runtime/errors.js'
+import { runBackendHttp } from '../runtime/hono.js'
+import { mergeServerInfo } from '../server-info.js'
+import { publishManifestChange } from '../status-read-model/port.js'
 
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4096
@@ -13,20 +22,46 @@ const MAX_DESCRIPTION_LENGTH = 4096
  * redeploy — the whole point of moving it out of `[vars]`. The vars stay the value a fresh
  * deployment begins with; anything set here wins for as long as it is set.
  */
-export const resolveServerInfo = async (
-  ports: Pick<Ports, 'sql'>,
+export const resolveServerInfoEffect = (
   base: ServerInfo,
-): Promise<ServerInfo> => {
-  const settings = await ports.sql.readServerSettings()
-  const description = settings.description ?? base.description
-  const resolved = { id: base.id, name: settings.name ?? base.name, auth: base.auth }
-  return description === undefined || description === null ? resolved : { ...resolved, description }
-}
+): Effect.Effect<ServerInfo, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const settings = yield* Effect.tryPromise({
+      try: () => sql.readServerSettings(),
+      catch: (cause) => new SqlStoreReadError({ operation: 'readServerSettings', cause }),
+    })
+    return mergeServerInfo(base, settings)
+  })
 
-export const createServerRoutes = (ports: Pick<Ports, 'sql'>, base: ServerInfo) => {
+export const writeServerSettings = (settings: {
+  readonly name?: string
+  readonly description?: string | null
+}): Effect.Effect<void, BackendStorageError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    yield* Effect.tryPromise({
+      try: () => sql.writeServerSettings(settings),
+      catch: (cause) => new BackendStorageError({ operation: 'writeServerSettings', cause }),
+    })
+  })
+
+const writeServerSettingsAndPublish = (
+  settings: Parameters<typeof writeServerSettings>[0],
+  season: number,
+): Effect.Effect<void, BackendStorageError, SqlStoreService | StatusReadModelService> =>
+  Effect.gen(function* () {
+    yield* writeServerSettings(settings)
+    const statusReadModel = yield* StatusReadModelService
+    yield* Effect.promise(() => publishManifestChange(statusReadModel, season))
+  })
+
+export const createServerRoutes = (runtime: BackendRuntime, base: ServerInfo) => {
   const routes = new Hono()
   // Public, and deliberately so: this is how a userscript decides whether it needs a token at all.
-  routes.get('/', async (c) => c.json(await resolveServerInfo(ports, base)))
+  routes.get('/', (c) =>
+    runBackendHttp(c, runtime, resolveServerInfoEffect(base), (server) => c.json(server)),
+  )
   return routes
 }
 
@@ -36,10 +71,14 @@ export const createServerRoutes = (ports: Pick<Ports, 'sql'>, base: ServerInfo) 
  * Its own route under `/admin` rather than a method on the public one, so the read stays reachable
  * without a credential while the write never is.
  */
-export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) => {
+export const createServerAdminRoutes = (
+  runtime: BackendRuntime,
+  auth: AuthOptions,
+  currentSeason: number,
+) => {
   const routes = new Hono()
 
-  routes.use('/*', requireScope(auth, 'admin'))
+  routes.use('/*', requireScopeEffect(runtime, auth, 'admin'))
 
   routes.patch('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
@@ -67,13 +106,20 @@ export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOpt
       return c.json({ error: 'patch must set at least one of name, description' }, 400)
     }
 
-    await ports.sql.writeServerSettings({
-      ...(name === undefined ? {} : { name: (name as string).trim() }),
-      ...(description === undefined
-        ? {}
-        : { description: description === null ? null : (description as string) }),
-    })
-    return c.json({ ok: true })
+    return runBackendHttp(
+      c,
+      runtime,
+      writeServerSettingsAndPublish(
+        {
+          ...(name === undefined ? {} : { name: (name as string).trim() }),
+          ...(description === undefined
+            ? {}
+            : { description: description === null ? null : (description as string) }),
+        },
+        currentSeason,
+      ),
+      () => c.json({ ok: true }),
+    )
   })
 
   return routes

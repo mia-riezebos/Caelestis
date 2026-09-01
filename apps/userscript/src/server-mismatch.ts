@@ -1,4 +1,5 @@
 import { decodeMismatchMask, type MismatchMask, TILE_SIZE, type TileCoord } from '@caelestis/shared'
+import { userscriptClientHeaders } from './client-metrics.js'
 import {
   deleteCachedServerMismatch,
   deleteCachedServerMismatchTile,
@@ -105,7 +106,10 @@ const readMask = async (
       `/telemetry/templates/${templateId}/versions/${version}/tiles/${tile.x}/${tile.y}/mismatches?season=${server.season}`,
     ),
     {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+      headers:
+        token === null
+          ? userscriptClientHeaders()
+          : { ...userscriptClientHeaders(), authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
   ).catch(() => null)

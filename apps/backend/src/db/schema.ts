@@ -35,6 +35,31 @@ export const serverSettings = sqliteTable(
   (table) => [check('server_settings_single_row_check', sql`${table.id} = 1`)],
 )
 
+/** D1-owned rebuild metadata keeps season revisions monotonic if a projection object is lost. */
+export const statusReadModelRevisions = sqliteTable(
+  'status_read_model_revisions',
+  {
+    season: integer('season').primaryKey(),
+    revision: integer('revision').notNull(),
+    publicFingerprint: text('public_fingerprint').notNull(),
+    adminFingerprint: text('admin_fingerprint').notNull(),
+    fingerprintsDirty: integer('fingerprints_dirty', { mode: 'boolean' }).notNull().default(false),
+  },
+  (table) => [
+    check(
+      'status_read_model_revisions_values_check',
+      sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0
+        AND typeof(${table.revision}) = 'integer' AND ${table.revision} > 0
+        AND length(${table.publicFingerprint}) = 64
+        AND ${table.publicFingerprint} NOT GLOB '*[^0-9a-f]*'
+        AND length(${table.adminFingerprint}) = 64
+        AND ${table.adminFingerprint} NOT GLOB '*[^0-9a-f]*'
+        AND typeof(${table.fingerprintsDirty}) = 'integer'
+        AND ${table.fingerprintsDirty} IN (0, 1)`,
+    ),
+  ],
+)
+
 export const nodes = sqliteTable(
   'nodes',
   {
@@ -599,6 +624,8 @@ export const canvasTiles = sqliteTable(
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
     /** Distinguishes the backend mirror from client reports when resolving clock skew. */
     serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
+    /** Monotonic per-tile order for projecting concurrent accepted commits into derived caches. */
+    commitOrder: integer('commit_order').notNull().default(0),
   },
   (table) => [
     primaryKey({ columns: [table.season, table.tileX, table.tileY] }),

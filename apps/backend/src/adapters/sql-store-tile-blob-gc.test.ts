@@ -120,7 +120,7 @@ describe.each(adapters)('$name tile blob lifecycle contract', ({ make }) => {
     })
     await expect(
       store.commitTileBlobReservation('after', millis(3_200), observation(HASH, millis(3_200)), []),
-    ).resolves.toBe(true)
+    ).resolves.toMatchObject({ revision: null, statusChanges: [] })
     await expect(store.readTileBlob(HASH)).resolves.toMatchObject({
       blobKey,
       state: 'active',
@@ -159,7 +159,7 @@ describe.each(adapters)('$name tile blob lifecycle contract', ({ make }) => {
         observation(HASH, millis(1_200)),
         [],
       ),
-    ).resolves.toBe(true)
+    ).resolves.toMatchObject({ revision: null, statusChanges: [] })
 
     await expect(store.noteTileBlobObject(HASH, HASH, millis(1_300))).resolves.toBe('candidate')
     await expect(store.claimTileBlobDeletion(HASH, millis(1_400))).resolves.toBe('claimed')

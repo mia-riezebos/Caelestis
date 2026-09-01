@@ -6,8 +6,11 @@
  * be easier to write and would leak the underlying API's assumptions straight through.
  */
 
-/** Blobs are segregated by kind: templates sliced to tile boundaries, and mirrored canvas tiles. */
-export type BlobNamespace = 'chunks' | 'tiles'
+/**
+ * Blobs are segregated by kind: template chunks, mirrored canvas tiles, and reconstructible
+ * immutable products derived from those two authoritative inputs.
+ */
+export type BlobNamespace = 'chunks' | 'tiles' | 'derived'
 
 export interface BlobListPage {
   /** Keys relative to the requested namespace, in the object store's stable listing order. */

@@ -73,6 +73,7 @@ import {
   type TileHistoryQuery,
   type TileHistoryReporterRow,
   type TileObservation,
+  type TileObservationCommit,
   tooManyTemplateIds,
 } from '../../ports/index.js'
 import {
@@ -129,7 +130,17 @@ export class MemorySqlStore implements SqlStore {
   >()
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
+  private readonly statusRevisions = new Map<
+    number,
+    {
+      revision: number
+      publicFingerprint: string
+      adminFingerprint: string
+      fingerprintsDirty: boolean
+    }
+  >()
   private readonly canvasTiles = new Map<string, TileObservation>()
+  private readonly canvasTileCommitOrders = new Map<string, number>()
   private readonly serverOwnedCanvasTiles = new Set<string>()
   private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
   private readonly serverOwnedTemplateStatuses = new Set<string>()
@@ -706,6 +717,9 @@ export class MemorySqlStore implements SqlStore {
         hash: chunk.hash,
         bbox: { ...version.bbox },
         finished: template.finishedAt !== null,
+        published: template.publishedAt !== null,
+        totalPixels: version.totalPixels,
+        ...(version.colourTotals === undefined ? {} : { colourTotals: version.colourTotals }),
       })
     }
     return targets.sort((left, right) => left.templateId.localeCompare(right.templateId))
@@ -752,6 +766,7 @@ export class MemorySqlStore implements SqlStore {
       (forceCurrent && !this.serverOwnedCanvasTiles.has(key))
     ) {
       this.canvasTiles.set(key, { ...observation, tile: { ...observation.tile } })
+      this.canvasTileCommitOrders.set(key, (this.canvasTileCommitOrders.get(key) ?? 0) + 1)
       if (forceCurrent) this.serverOwnedCanvasTiles.add(key)
       else this.serverOwnedCanvasTiles.delete(key)
     }
@@ -883,27 +898,87 @@ export class MemorySqlStore implements SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory = true,
     forceCurrent = false,
-  ): Promise<boolean> {
+    includeUnpublished = false,
+  ): Promise<TileObservationCommit | null> {
     this.expireTileBlobReservations(now)
     const reservation = this.tileBlobReservations.get(reservationId)
-    if (reservation === undefined || reservation.hash !== observation.hash) return false
+    if (reservation === undefined || reservation.hash !== observation.hash) return null
     if (
       [...this.tileBlobObjects.values()].some(
         (object) => object.hash === reservation.hash && object.state === 'deleting',
       )
     ) {
-      return false
+      return null
     }
     const object = this.tileBlobObjects.get(reservation.blobKey)
-    if (object === undefined || object.hash !== reservation.hash) return false
+    if (object === undefined || object.hash !== reservation.hash) return null
     this.tileBlobObjects.set(object.blobKey, {
       ...object,
       state: 'active',
       reclaimedAt: null,
     })
-    await this.recordTileObservation(observation, statuses, recordHistory, forceCurrent)
+    const acceptedStatuses = statuses.flatMap((status) => {
+      const template = this.templates.get(status.templateId)
+      const version = this.templateVersions.get(status.versionId)
+      return template !== undefined &&
+        version !== undefined &&
+        template.currentVersionId === status.versionId &&
+        (includeUnpublished || template.publishedAt !== null)
+        ? [{ status, template, version }]
+        : []
+    })
+    const previous = new Map(
+      acceptedStatuses.map(({ status }) => {
+        const key = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
+        return [key, this.templateTileStatuses.get(key) ?? null] as const
+      }),
+    )
+    const canvasKey = `${observation.season}\u0000${tileKey(observation.tile)}`
+    const previousCommitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
+    await this.recordTileObservation(
+      observation,
+      acceptedStatuses.map(({ status }) => status),
+      recordHistory,
+      forceCurrent,
+    )
     this.tileBlobReservations.delete(reservationId)
-    return true
+    const statusChanges = acceptedStatuses.flatMap(({ status, template, version }) => {
+      const key = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
+      const current = this.templateTileStatuses.get(key)
+      const before = previous.get(key) ?? null
+      return current !== undefined && JSON.stringify(current) !== JSON.stringify(before)
+        ? [
+            {
+              published: template.publishedAt !== null,
+              totalPixels: version.totalPixels,
+              ...(version.colourTotals === undefined ? {} : { colourTotals: version.colourTotals }),
+              previous: before,
+              current,
+            },
+          ]
+        : []
+    })
+    let revision: number | null = null
+    if (statusChanges.length > 0) {
+      const held = this.statusRevisions.get(observation.season)
+      revision = (held?.revision ?? 0) + 1
+      this.statusRevisions.set(observation.season, {
+        revision,
+        publicFingerprint: held?.publicFingerprint ?? '0'.repeat(64),
+        adminFingerprint: held?.adminFingerprint ?? '0'.repeat(64),
+        fingerprintsDirty: true,
+      })
+    }
+    const current = this.canvasTiles.get(canvasKey)
+    const commitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
+    return {
+      revision,
+      statusChanges,
+      current:
+        current === undefined || commitOrder === previousCommitOrder
+          ? null
+          : { ...current, tile: { ...current.tile }, commitOrder },
+    }
   }
 
   async releaseTileBlobReservation(reservationId: string): Promise<void> {
@@ -1150,6 +1225,49 @@ export class MemorySqlStore implements SqlStore {
       })
     }
     return out.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async readStatusProjectionRevision(season: number): Promise<number> {
+    if (!Number.isSafeInteger(season) || season < 0) throw new RangeError('invalid season')
+    return this.statusRevisions.get(season)?.revision ?? 0
+  }
+
+  async commitStatusProjectionRevision(
+    season: number,
+    expectedRevision: number,
+    retainRevision: boolean,
+    publicFingerprint: string,
+    adminFingerprint: string,
+  ): Promise<number | null> {
+    if (
+      !Number.isSafeInteger(season) ||
+      season < 0 ||
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0 ||
+      !/^[0-9a-f]{64}$/.test(publicFingerprint) ||
+      !/^[0-9a-f]{64}$/.test(adminFingerprint)
+    ) {
+      throw new RangeError('invalid status projection revision metadata')
+    }
+    const held = this.statusRevisions.get(season)
+    if ((held?.revision ?? 0) !== expectedRevision) return null
+    const changed =
+      held === undefined ||
+      held.publicFingerprint !== publicFingerprint ||
+      held.adminFingerprint !== adminFingerprint
+    const revision =
+      held?.fingerprintsDirty && retainRevision
+        ? held.revision
+        : changed || held?.fingerprintsDirty
+          ? (held?.revision ?? 0) + 1
+          : held.revision
+    this.statusRevisions.set(season, {
+      revision,
+      publicFingerprint,
+      adminFingerprint,
+      fingerprintsDirty: false,
+    })
+    return revision
   }
 
   async evaluateTemplateAlarm(

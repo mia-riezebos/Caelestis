@@ -1,11 +1,14 @@
 import { millis } from '@caelestis/shared'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
 import { hashToken } from '../auth/tokens.js'
-import type { Ports, TemplateVersionRecord } from '../ports/index.js'
+import { measureRequest } from '../metrics/request-metrics.js'
+import type { TemplateVersionRecord } from '../ports/index.js'
+import { makeBackendContext } from '../runtime/backend-runtime.js'
+import { DirectStatusReadModel } from '../status-read-model/port.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const MEMBER = 'member-token'
@@ -39,14 +42,24 @@ const template = (templateId: string, versionId: string, tileX: number): Templat
 describe('server and manifest routes', () => {
   let sql: MemorySqlStore
   let app: ReturnType<typeof createApp>
+  let notifyManifestChange: ReturnType<typeof vi.fn<(season: number) => Promise<void>>>
 
   beforeEach(async () => {
     sql = new MemorySqlStore()
-    const ports: Ports = {
-      blobs: new MemoryBlobStore(),
+    const directStatus = new DirectStatusReadModel(sql)
+    notifyManifestChange = vi.fn(async (_season: number) => undefined)
+    const context = makeBackendContext(
+      new MemoryBlobStore(),
       sql,
-      counters: new MemoryCounterStore(sql, () => createdAt),
-    }
+      new MemoryCounterStore(sql, () => createdAt),
+      {
+        applyCommittedChange: (season, mutation) =>
+          directStatus.applyCommittedChange(season, mutation),
+        reconcileSnapshot: (season, scope) => directStatus.reconcileSnapshot(season, scope),
+        readManifestProjection: (input) => directStatus.readManifestProjection(input),
+        notifyManifestChange: (season) => notifyManifestChange(season),
+      },
+    )
     await sql.insertNode({
       id: '01890f3a-6b7c-7def-8123-456789abcde0',
       surface: { kind: 'world', allianceId: null },
@@ -101,8 +114,11 @@ describe('server and manifest routes', () => {
       createdWithToken: 'bootstrap',
       createdAt,
     })
-    app = createApp(ports, serverOptions)
+    notifyManifestChange.mockImplementation((season) => directStatus.notifyManifestChange(season))
+    app = createApp(context, serverOptions)
   })
+
+  afterEach(() => vi.restoreAllMocks())
 
   it('serves public server information and reports the configured auth mode', async () => {
     const response = await app.request('/server')
@@ -114,12 +130,12 @@ describe('server and manifest routes', () => {
       auth: 'access_token',
     })
 
-    const ports: Ports = {
-      blobs: new MemoryBlobStore(),
+    const context = makeBackendContext(
+      new MemoryBlobStore(),
       sql,
-      counters: new MemoryCounterStore(sql, () => createdAt),
-    }
-    const open = createApp(ports, { ...serverOptions, openAccess: true })
+      new MemoryCounterStore(sql, () => createdAt),
+    )
+    const open = createApp(context, { ...serverOptions, openAccess: true })
     await expect((await open.request('/server')).json()).resolves.toMatchObject({ auth: 'none' })
 
     // And the advertisement has to be true. `/server` is public precisely so a userscript can decide
@@ -141,11 +157,26 @@ describe('server and manifest routes', () => {
     expect((await open.request('/admin/nodes?season=7')).status).toBe(401)
   })
 
+  it('maps a typed server-settings read failure to the existing 500 response', async () => {
+    const error = new Error('database unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    sql.readServerSettings = async () => {
+      throw error
+    }
+
+    const response = await app.request('/server')
+
+    expect(response.status).toBe(500)
+    expect(await response.text()).toBe('Internal Server Error')
+    expect(consoleError).toHaveBeenCalledWith(error)
+  })
+
   it('honours a weak or listed If-None-Match, and a season query', async () => {
     // The one conditional test sent a single exact strong tag, which the old `header === etag`
     // compare satisfied too — so the RFC 9110 parsing was untested. And no test sent `?season=` at
     // all: the route's parse and its 400 could both be deleted with the suite green, while
     // season-scoping is an acceptance criterion covered only at the store level.
+    const assemble = vi.spyOn(sql, 'listManifestTemplates')
     const first = await app.request('/manifest', bearer(MEMBER))
     const etag = first.headers.get('etag') as string
 
@@ -165,6 +196,7 @@ describe('server and manifest routes', () => {
     expect([weak.status, listed.status, wildcard.status, stale.status]).toEqual([
       304, 304, 304, 200,
     ])
+    expect(assemble).toHaveBeenCalledOnce()
 
     // The ETag has to be readable cross-origin or none of the above is reachable by the userscript,
     // which is the only client and is cross-origin by definition.
@@ -174,7 +206,35 @@ describe('server and manifest routes', () => {
     const other = await app.request('/manifest?season=99', bearer(MEMBER))
     expect(other.status).toBe(200)
     expect(((await other.json()) as { season: number }).season).toBe(99)
+    expect(assemble).toHaveBeenCalledTimes(2)
     expect((await app.request('/manifest?season=abc', bearer(MEMBER))).status).toBe(400)
+  })
+
+  it('records the manifest projection cache outcome on the request metric', async () => {
+    const writeDataPoint = vi.fn()
+    const request = new Request('https://example.test/manifest', bearer(MEMBER))
+
+    const response = await measureRequest({ writeDataPoint }, request, '/manifest', async () =>
+      app.fetch(request),
+    )
+
+    expect(response.status).toBe(200)
+    expect(writeDataPoint).toHaveBeenCalledOnce()
+    expect(writeDataPoint.mock.calls[0]?.[0]?.blobs?.[7]).toBe('miss')
+
+    const etag = response.headers.get('etag') as string
+    const conditional = new Request('https://example.test/manifest', {
+      headers: { ...bearer(MEMBER).headers, 'if-none-match': etag },
+    })
+    const notModified = await measureRequest(
+      { writeDataPoint },
+      conditional,
+      '/manifest',
+      async () => app.fetch(conditional),
+    )
+    expect(notModified.status).toBe(304)
+    expect(writeDataPoint.mock.calls[1]?.[0]?.blobs?.[7]).toBe('hit')
+    expect(writeDataPoint.mock.calls[1]?.[0]?.blobs?.[9]).toBe('304')
   })
 
   it('selects one alliance surface without leaking world or another alliance', async () => {
@@ -266,16 +326,24 @@ describe('server and manifest routes', () => {
       })
 
     it('renames it for everyone, without a redeploy', async () => {
+      const before = await app.request('/manifest', bearer(MEMBER))
+      const previousEtag = before.headers.get('etag') ?? ''
       expect((await patch({ name: 'Caelestis' })).status).toBe(200)
+      expect(notifyManifestChange).toHaveBeenCalledWith(serverOptions.currentSeason)
 
       const info = (await (await app.request('/server')).json()) as { name: string }
       expect(info.name).toBe('Caelestis')
-      const manifest = (await (await app.request('/manifest', bearer(MEMBER))).json()) as {
+      const response = await app.request('/manifest', {
+        headers: { ...bearer(MEMBER).headers, 'if-none-match': previousEtag },
+      })
+      const manifest = (await response.json()) as {
         server: { name: string }
       }
       // The manifest carries the name too, and it is where anyone would look to check a rename
       // worked — so a rename visible on one and not the other is worse than no rename at all.
       expect(manifest.server.name).toBe('Caelestis')
+      expect(response.status).toBe(200)
+      expect(response.headers.get('etag')).not.toBe(previousEtag)
     })
 
     it('leaves the description alone when only the name is set', async () => {

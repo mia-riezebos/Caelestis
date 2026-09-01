@@ -1,0 +1,158 @@
+# Capacity metrics
+
+Issue #159 establishes the comparison format for the cached live-sync PRD. Backend requests write
+one non-blocking point to the `caelestis_request_metrics` Workers Analytics Engine dataset. Static
+frontend traffic stays in Cloudflare's built-in `caelestis-frontend` Worker analytics: routing every
+asset through application code solely to duplicate that count would create the invocations this PRD
+is meant to remove.
+
+## Captured baseline
+
+The original production observation covered 24 hours with five to six active users and exceeded
+20,000 total Worker requests. The dashboard-rounded top paths in the supplied capture were:
+
+| Traffic class | Path | Requests |
+| --- | --- | ---: |
+| Status | `/backend/telemetry/status` | 8.79k |
+| Manifest | `/backend/manifest` | 3.79k |
+| Tile offer | `/backend/telemetry/tiles/offers` | 2.08k |
+| Frontend | `/` | 1.26k |
+
+Source: [24-hour Cloudflare top-path capture](https://i.mia.cx/file/2026/08/e28d618d-c538-455b-ac55-67f4f1d71532).
+
+Future comparisons must record the UTC window, active-client count, backend request totals, frontend
+request totals, required paint/tile writes, avoidable reads, D1 rows read, and any incomplete D1
+measurement. Keep the five traffic classes above separate even when presenting a combined total.
+
+## Dataset contract
+
+The arrays passed to `writeDataPoint` have a fixed v1 meaning:
+
+| Column | Meaning |
+| --- | --- |
+| `index1` | Normalized route; the sampling key |
+| `blob1` | Schema version (`v1`) |
+| `blob2` | Normalized method and route template |
+| `blob3` | HTTP method, or `WS` for a measured WebSocket operation |
+| `blob4` | Client (`userscript`, `frontend`, `third-party`, or `unknown`) |
+| `blob5` | Recognized userscript release or frontend deployment build; otherwise `unknown` |
+| `blob6` | Sync transport (`none`, `live`, `response-applied`, `recovery`, or `compatibility-poll`) |
+| `blob7` | Bounded reconciliation reason |
+| `blob8` | Cache outcome |
+| `blob9` | Tile-offer batch outcome |
+| `blob10` | HTTP-equivalent operation status |
+| `double1` | Measured operation count (always 1 before sampling) |
+| `double2` | Request duration in milliseconds |
+| `double3` | D1 rows read |
+| `double4` | D1 rows written |
+| `double5` | Attempted D1 queries through APIs that expose result metadata |
+| `double6` | Attempted D1 queries through APIs that discard result metadata |
+| `double7` | Tile offers requested |
+| `double8` | Tile offers accepted for upload |
+| `double9` | Tile offers already known |
+| `double10` | Tile offers rejected as irrelevant |
+
+D1 exposes exact row metadata from successful `all`, `run`, and batch results. Query attempts are
+counted before awaiting D1 so failures remain visible, while row counts are added only from returned
+metadata. `raw`, `first`, and `exec` do not expose metadata; those calls increment `double6` instead
+of pretending they read zero rows. Native positional `raw` rows are preserved because joined reads
+can contain duplicate column names. Status and manifest projection operations collect the same
+metadata inside their Durable Object and return it with the RPC result, where the originating Worker
+request merges it into these columns. True projection-cache hits therefore remain zero-D1 reads,
+while misses, stale rebuilds, and forced repairs retain their actual D1 attribution.
+
+The metrics layer stores no URL query, raw route parameter, authorization value, token digest,
+username, user agent, tile coordinate, hash, or pixel payload. Unknown paths collapse to `other`.
+Client metadata uses a short vendor media type in the CORS-safelisted `Accept` header so anonymous
+cross-origin reads do not gain a preflight. The backend admits only explicitly known userscript
+releases and the frontend build ID shared through deployment CI; the deployed userscript version is
+read from its package after Changesets have applied release bumps, while prior metrics-capable
+releases are retained from the generated changelog. All caller-supplied alternatives collapse to
+`unknown`.
+
+WebSocket upgrades use `GET /telemetry/live`. Their Durable Object bootstrap reads and cache outcome
+return to the originating Worker metric, and the userscript identifies its exact allowlisted version
+through bounded query parameters because browser WebSocket handshakes cannot set `Accept`.
+
+Live tile-cache commands use the bounded route `WS /telemetry/live:tile-offer-cache`. One point is
+written per command with zero D1 columns, the cache outcome, and requested/already-known counts. A
+miss or stale result remains visible as the difference between requested and already-known before
+those observations fall back to the authoritative HTTP offer route. Coordinates, hashes, delivery
+ids, credentials, and pixel data are never metric dimensions.
+
+The userscript's bounded debug counters expose the client side of exact-observation replay handling through
+`telemetry:tile-offers-avoided`, `-retried`, `-requested`, `-accepted`, and `-rejected`. These count
+observations rather than HTTP batches and are available from `__caelestis.counters()`. Server-side
+requested, accepted-for-upload, already-known, and rejected outcomes remain authoritative in the
+Analytics Engine columns above. A new Wplace fetch is always a new observation, even when its tile,
+content hash, and timestamp match an earlier fetch; only retry or replay of that same observation ID
+can be suppressed.
+
+## Repeatable queries
+
+Use a fixed UTC start and end in place of the relative interval when capturing a release comparison.
+Analytics Engine sampling is accounted for with `_sample_interval`.
+
+```sql
+SELECT
+  blob2 AS route,
+  blob4 AS client,
+  blob5 AS client_version,
+  SUM(_sample_interval * double1) AS requests,
+  SUM(_sample_interval * double3) AS d1_rows_read,
+  SUM(_sample_interval * double4) AS d1_rows_written,
+  SUM(_sample_interval * double6) AS d1_queries_without_row_metadata
+FROM caelestis_request_metrics
+WHERE timestamp >= NOW() - INTERVAL '24' HOUR
+GROUP BY route, client, client_version
+ORDER BY requests DESC
+```
+
+```sql
+SELECT
+  blob6 AS sync_transport,
+  blob7 AS reconciliation_reason,
+  blob8 AS cache_outcome,
+  SUM(_sample_interval * double1) AS requests,
+  SUM(_sample_interval * double3) AS d1_rows_read
+FROM caelestis_request_metrics
+WHERE timestamp >= NOW() - INTERVAL '24' HOUR
+GROUP BY sync_transport, reconciliation_reason, cache_outcome
+ORDER BY requests DESC
+```
+
+```sql
+SELECT
+  blob9 AS batch_outcome,
+  SUM(_sample_interval * double1) AS batches,
+  SUM(_sample_interval * double7) AS offers_requested,
+  SUM(_sample_interval * double8) AS offers_accepted,
+  SUM(_sample_interval * double9) AS offers_already_known,
+  SUM(_sample_interval * double10) AS offers_rejected
+FROM caelestis_request_metrics
+WHERE timestamp >= NOW() - INTERVAL '24' HOUR
+  AND blob2 IN ('POST /telemetry/tiles/offers', 'WS /telemetry/live:tile-offer-cache')
+GROUP BY batch_outcome
+ORDER BY batches DESC
+```
+
+Query the same UTC window in Workers Analytics for `caelestis-frontend` and record its request total
+alongside these backend results. Tile offers (`POST /telemetry/tiles/offers`), paint reports
+(`POST /telemetry/paints`), and requested tile writes (`PUT /telemetry/tiles/:x/:y/:hash`) are
+required report traffic. Keep them separate from avoidable sync reads when calculating the PRD's 90
+percent reduction target.
+
+## Five-client acceptance budget
+
+`pnpm capacity:report` reproduces the conservative 24-hour healthy-live projection used by issue
+#167. It counts five socket upgrades, three bootstrap reads per client, and 24 hourly recovery
+cohorts for status, manifest, and alarms. Because the captured values are rounded to two-decimal `k`
+values, the gate uses the lowest possible avoidable baseline of 12,570 status and manifest requests
+rather than treating 12,580 as exact. The result includes four scheduled alarm invalidations and is
+400 avoidable Worker requests, a 96.8178 percent reduction.
+
+Pass a measured post-rollout offer count back into the same gate with
+`pnpm capacity:report -- --tile-offer-batches <count> --extra-alarm-reads <count>`. Required paint
+reports, tile-offer batches, and requested tile writes remain excluded from the avoidable reduction
+in both modes, while the report records their measured volume. The complete recovery matrix and
+rollout measurement gate are in [sync-acceptance.md](./sync-acceptance.md).

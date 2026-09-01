@@ -71,6 +71,27 @@
       "when": 1788134106241,
       "tag": "0009_careful_steel_serpent",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788218876577,
+      "tag": "0009_breezy_red_skull",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1788218900820,
+      "tag": "0010_charming_photon",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788218931135,
+      "tag": "0011_tearful_young_avengers",
+      "breakpoints": true
     }
   ]
 }

@@ -636,6 +636,9 @@ export interface AlarmTileRecord extends ManifestTileRecord {
 export interface TelemetryTarget extends ManifestTileRecord {
   readonly bbox: PixelBounds
   readonly finished: boolean
+  readonly published: boolean
+  readonly totalPixels: number
+  readonly colourTotals?: readonly { readonly index: number; readonly total: number }[]
 }
 
 export interface TileObservation {
@@ -695,6 +698,22 @@ export interface TemplateTileStatusRecord {
     readonly total: number
   }[]
   readonly observedAt: Millis
+}
+
+export interface TemplateTileStatusChange {
+  readonly published: boolean
+  readonly totalPixels: number
+  readonly colourTotals?: readonly { readonly index: number; readonly total: number }[]
+  readonly previous: TemplateTileStatusRecord | null
+  readonly current: TemplateTileStatusRecord
+}
+
+export interface TileObservationCommit {
+  /** Revision advanced in the same transaction as the accepted tile-status rows. */
+  readonly revision: number | null
+  readonly statusChanges: readonly TemplateTileStatusChange[]
+  /** Present only when this commit became the current canvas generation. */
+  readonly current: (LatestTileObservation & { readonly commitOrder: number }) | null
 }
 
 export interface ContributionDelta {
@@ -972,7 +991,7 @@ export interface SqlStore {
 
   /**
    * Atomically verify the reservation, activate its object, and create both SQL reference kinds.
-   * False means the reservation expired or a deletion fence won first; no reference was created.
+   * Null means the reservation expired or a deletion fence won first; no reference was created.
    */
   commitTileBlobReservation(
     reservationId: string,
@@ -981,7 +1000,9 @@ export interface SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
     forceCurrent?: boolean,
-  ): Promise<boolean>
+    /** Whether the committing reporter may still target an unpublished current version. */
+    includeUnpublished?: boolean,
+  ): Promise<TileObservationCommit | null>
 
   releaseTileBlobReservation(reservationId: string): Promise<void>
 
@@ -1009,6 +1030,21 @@ export interface SqlStore {
     includeUnpublished: boolean,
     options?: { readonly serverOwnedOnly?: boolean },
   ): Promise<readonly TemplateStatus[]>
+
+  /** Read the revision that must fence an authoritative projection rebuild. */
+  readStatusProjectionRevision(season: number): Promise<number>
+
+  /**
+   * Publish fingerprints only if no tile-status commit advanced the revision since the source read.
+   * Null asks the caller to reread rather than publishing mixed-revision data.
+   */
+  commitStatusProjectionRevision(
+    season: number,
+    expectedRevision: number,
+    retainRevision: boolean,
+    publicFingerprint: string,
+    adminFingerprint: string,
+  ): Promise<number | null>
 
   /** Atomically evaluate and persist one complete template snapshot. */
   evaluateTemplateAlarm(

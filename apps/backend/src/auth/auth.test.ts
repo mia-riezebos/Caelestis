@@ -4,19 +4,32 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { AccessToken, Ports } from '../ports/index.js'
+import type { AccessToken } from '../ports/index.js'
+import { makeBackendContext } from '../runtime/backend-runtime.js'
 import { hashToken, mintToken, SCOPES, type Scope, satisfiesScope, TOKEN_LENGTH } from './tokens.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 
-const harness = () => {
+const harness = (
+  closeCredential: (season: number, tokenHash: string) => Promise<void> = vi.fn(
+    async (_season: number, _tokenHash: string) => undefined,
+  ),
+) => {
   const sql = new MemorySqlStore()
-  const ports: Ports = {
-    blobs: new MemoryBlobStore(),
+  const context = makeBackendContext(
+    new MemoryBlobStore(),
     sql,
-    counters: new MemoryCounterStore(sql, () => millis(Date.now())),
-  }
-  return { sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
+    new MemoryCounterStore(sql, () => millis(Date.now())),
+    {
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      closeCredential,
+    },
+  )
+  return { sql, closeCredential, app: createApp(context, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
 const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
@@ -384,7 +397,7 @@ describe('the admin token surface', () => {
 
 describe('revocation', () => {
   it('stops a revoked token working immediately', async () => {
-    const { app } = harness()
+    const { app, closeCredential } = harness()
     const holder = await mint(app, 'leaked', 'admin')
     const token = holder.body.token as string
 
@@ -395,6 +408,7 @@ describe('revocation', () => {
       method: 'DELETE',
       ...bearer(BOOTSTRAP),
     })
+    expect(closeCredential).toHaveBeenCalledWith(0, holder.body.tokenHash)
 
     const after = await app.request('/admin/tokens', bearer(token))
     expect(after.status).toBe(401)
@@ -416,6 +430,25 @@ describe('revocation', () => {
       401,
     )
     expect((await app.request('/admin/tokens', bearer(kept.body.token as string))).status).toBe(200)
+  })
+
+  it('reports live cleanup failure and lets idempotent revocation retry the fence', async () => {
+    const closeCredential = vi
+      .fn<(season: number, tokenHash: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('Durable Object unavailable'))
+      .mockResolvedValue(undefined)
+    const { app } = harness(closeCredential)
+    const holder = await mint(app, 'retry cleanup', 'admin')
+    const revoke = () =>
+      app.request(`/admin/tokens/${holder.body.tokenHash}`, {
+        method: 'DELETE',
+        ...bearer(BOOTSTRAP),
+      })
+
+    expect((await revoke()).status).toBe(500)
+    expect((await revoke()).status).toBe(204)
+    expect(closeCredential).toHaveBeenCalledTimes(2)
+    expect(closeCredential).toHaveBeenLastCalledWith(0, holder.body.tokenHash)
   })
 
   it('answers a repeated revoke the same way, because absence is the outcome', async () => {
@@ -450,17 +483,17 @@ describe('the bootstrap credential', () => {
     // `length > 0` arm: `bearerToken` rejects an empty token first, so that arm is unreachable —
     // see the note on it.
     const sql = new MemorySqlStore()
-    const ports: Ports = {
-      blobs: new MemoryBlobStore(),
+    const context = makeBackendContext(
+      new MemoryBlobStore(),
       sql,
-      counters: new MemoryCounterStore(sql, () => millis(Date.now())),
-    }
+      new MemoryCounterStore(sql, () => millis(Date.now())),
+    )
     // A nonempty credential, because `bearer('')` is rejected by the parser before the bootstrap
     // comparison runs at all — so an empty presentation cannot tell whether an unset secret is
     // matching everything. This is the regression that mattered: with no ADMIN_TOKEN configured,
     // any bearer value must be refused, not treated as the operator.
     for (const bootstrapAdminToken of [undefined, '']) {
-      const app = createApp(ports, { bootstrapAdminToken })
+      const app = createApp(context, { bootstrapAdminToken })
       const response = await app.request('/admin/tokens', bearer('ABCDEFGHJKMNPQRSTVWXYZ2345'))
       expect(response.status).toBe(401)
     }
@@ -571,15 +604,15 @@ describe('the bootstrap credential in the list', () => {
 
   it('is absent when the server has no bootstrap path', async () => {
     const sql = new MemorySqlStore()
-    const ports: Ports = {
-      blobs: new MemoryBlobStore(),
+    const context = makeBackendContext(
+      new MemoryBlobStore(),
       sql,
-      counters: new MemoryCounterStore(sql, () => millis(Date.now())),
-    }
-    const app = createApp(ports, { bootstrapAdminToken: BOOTSTRAP })
+      new MemoryCounterStore(sql, () => millis(Date.now())),
+    )
+    const app = createApp(context, { bootstrapAdminToken: BOOTSTRAP })
     const minted = await mint(app, 'real', 'admin')
     // A server whose only admin is a stored token must not claim an environment one it does not have.
-    const other = createApp(ports, {})
+    const other = createApp(context, {})
     const response = await other.request('/admin/tokens', bearer(minted.body.token as string))
     const body = (await response.json()) as { tokens: { label: string }[] }
     expect(body.tokens.map((one) => one.label)).toEqual(['real'])

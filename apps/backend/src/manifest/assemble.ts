@@ -6,7 +6,10 @@ import {
   type TemplateSurface,
   tileKey,
 } from '@caelestis/shared'
-import type { Ports } from '../ports/index.js'
+import { Effect } from 'effect'
+import type { SqlStore } from '../ports/index.js'
+import { SqlStoreService } from '../runtime/backend-runtime.js'
+import { BackendStorageError } from '../runtime/errors.js'
 
 export interface AssembleManifestOptions {
   readonly server: ServerInfo
@@ -22,18 +25,15 @@ const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000
 
-export const assembleManifest = async (
-  ports: Pick<Ports, 'sql'>,
+const assembleManifestWithSql = async (
+  sql: SqlStore,
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
   const surface = options.surface ?? { kind: 'world', allianceId: null }
   const [nodeRecords, templateRecords, tileRecords] = await Promise.all([
-    ports.sql.listNodes(options.season, surface),
-    ports.sql.listManifestTemplates(
-      { season: options.season, surface },
-      options.includeUnpublished,
-    ),
-    ports.sql.listManifestTiles({ season: options.season, surface }, options.includeUnpublished),
+    sql.listNodes(options.season, surface),
+    sql.listManifestTemplates({ season: options.season, surface }, options.includeUnpublished),
+    sql.listManifestTiles({ season: options.season, surface }, options.includeUnpublished),
   ])
 
   const nodes = nodeRecords
@@ -125,12 +125,24 @@ export const assembleManifest = async (
   ].sort((left, right) => left.localeCompare(right))
   const normalizedServer: ServerInfo =
     options.server.description === undefined
-      ? { id: options.server.id, name: options.server.name, auth: options.server.auth }
+      ? {
+          id: options.server.id,
+          name: options.server.name,
+          auth: options.server.auth,
+          ...(options.server.liveSync === undefined ? {} : { liveSync: options.server.liveSync }),
+          ...(options.server.liveTileOffers === undefined
+            ? {}
+            : { liveTileOffers: options.server.liveTileOffers }),
+        }
       : {
           id: options.server.id,
           name: options.server.name,
           description: options.server.description,
           auth: options.server.auth,
+          ...(options.server.liveSync === undefined ? {} : { liveSync: options.server.liveSync }),
+          ...(options.server.liveTileOffers === undefined
+            ? {}
+            : { liveTileOffers: options.server.liveTileOffers }),
         }
   const unsigned: Manifest = {
     version: VERSION_PLACEHOLDER,
@@ -144,3 +156,21 @@ export const assembleManifest = async (
   const version = await sha256Hex(new TextEncoder().encode(JSON.stringify(unsigned)))
   return { ...unsigned, version }
 }
+
+/** Compatibility entry point for assembler tests and callers that have not migrated yet. */
+export const assembleManifest = (
+  sql: SqlStore,
+  options: AssembleManifestOptions,
+): Promise<Manifest> => assembleManifestWithSql(sql, options)
+
+/** Assemble one manifest from the SQL service supplied by the prepared backend runtime. */
+export const assembleManifestEffect = (
+  options: AssembleManifestOptions,
+): Effect.Effect<Manifest, BackendStorageError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    return yield* Effect.tryPromise({
+      try: () => assembleManifestWithSql(sql, options),
+      catch: (cause) => new BackendStorageError({ operation: 'assembleManifest', cause }),
+    })
+  })

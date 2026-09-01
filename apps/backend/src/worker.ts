@@ -1,12 +1,15 @@
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
+import { DurableObjectStatusReadModel } from './adapters/cloudflare/do-status-read-model.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
-import { createApp } from './app.js'
-import type { Ports } from './ports/index.js'
+import { type App, createApp } from './app.js'
+import { instrumentD1, measureRequest } from './metrics/request-metrics.js'
+import { makeBackendContext } from './runtime/backend-runtime.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
 export { AlarmWatcher } from './alarm-watcher.js'
+export { StatusReadModelObject } from './status-read-model-object.js'
 export { TelemetryShard } from './telemetry-shard.js'
 
 /**
@@ -47,6 +50,44 @@ const tileBlobGcMode = (value: string | undefined): TileBlobGcMode => {
   throw new Error(`Unsupported TILE_BLOB_GC_MODE: ${JSON.stringify(value)}`)
 }
 
+/** One prepared Hono/Effect runtime per Worker environment object, released with that environment. */
+const preparedApps = new WeakMap<Env, App>()
+const preparedStatusReadModels = new WeakMap<Env, DurableObjectStatusReadModel>()
+
+const statusReadModelFor = (env: Env): DurableObjectStatusReadModel => {
+  const prepared = preparedStatusReadModels.get(env)
+  if (prepared !== undefined) return prepared
+  const created = new DurableObjectStatusReadModel(env.STATUS_READ_MODEL)
+  preparedStatusReadModels.set(env, created)
+  return created
+}
+
+const appFor = (env: Env): App => {
+  const prepared = preparedApps.get(env)
+  if (prepared !== undefined) return prepared
+
+  const context = makeBackendContext(
+    new R2BlobStore(env.BLOBS),
+    new D1SqlStore(instrumentD1(env.DB)),
+    new DurableObjectCounterStore(env.TELEMETRY),
+    statusReadModelFor(env),
+  )
+  const app = createApp(context, {
+    bootstrapAdminToken: env.ADMIN_TOKEN,
+    serverId: env.SERVER_ID,
+    serverName: env.SERVER_NAME,
+    serverDescription: env.SERVER_DESCRIPTION,
+    // Without the season, every deployment answers as season 0. Without openAccess, a server that
+    // advertises anonymous reads still rejects its manifest. Keep both in the prepared app config.
+    currentSeason: parseSeason(env.SEASON),
+    openAccess: env.OPEN_ACCESS === 'true',
+    connectStatusLive: (request, connection) =>
+      statusReadModelFor(env).connectLive(request, connection),
+  })
+  preparedApps.set(env, app)
+  return app
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (env.SHARD_STRATEGY !== 'single') {
@@ -54,43 +95,39 @@ export default {
     }
 
     const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
-    if (mountedRequest === null) return new Response('Not Found', { status: 404 })
-
-    const ports: Ports = {
-      blobs: new R2BlobStore(env.BLOBS),
-      sql: new D1SqlStore(env.DB),
-      counters: new DurableObjectCounterStore(env.TELEMETRY),
+    if (mountedRequest === null) {
+      return measureRequest(
+        env.REQUEST_METRICS,
+        request,
+        'other',
+        async () => new Response('Not Found', { status: 404 }),
+      )
     }
 
-    return createApp(ports, {
-      bootstrapAdminToken: env.ADMIN_TOKEN,
-      serverId: env.SERVER_ID,
-      serverName: env.SERVER_NAME,
-      serverDescription: env.SERVER_DESCRIPTION,
-      // Both were reachable only from tests. Without the season, every deployment answered as
-      // season 0 — a later-season server served season 0's manifest, which for a fresh one is empty,
-      // and `ServerInfo` carries no season for a client to notice. Without openAccess, a server
-      // could not be opened at all.
-      currentSeason: parseSeason(env.SEASON),
-      openAccess: env.OPEN_ACCESS === 'true',
-    }).fetch(mountedRequest)
+    return measureRequest(
+      env.REQUEST_METRICS,
+      mountedRequest,
+      new URL(mountedRequest.url).pathname,
+      async () => appFor(env).fetch(mountedRequest),
+    )
   },
 
   // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
   async scheduled(_controller, env, ctx): Promise<void> {
-    const ports: Ports = {
+    const stores = {
       blobs: new R2BlobStore(env.BLOBS),
-      sql: new D1SqlStore(env.DB),
+      sql: new D1SqlStore(instrumentD1(env.DB)),
       counters: new DurableObjectCounterStore(env.TELEMETRY),
+      statusReadModel: statusReadModelFor(env),
     }
     const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
     ctx.waitUntil(
-      fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
+      fetchCanvasTiles(stores, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
         // A prior template may already have persisted a probe when later scan work fails. Always
         // reconcile the watcher so that durable work cannot be stranded until the next cron.
         await env.ALARM_WATCHER.getByName('global').schedule()
       }),
     )
-    ctx.waitUntil(runTileBlobGc(ports, { mode: gcMode }).then(() => undefined))
+    ctx.waitUntil(runTileBlobGc(stores, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>

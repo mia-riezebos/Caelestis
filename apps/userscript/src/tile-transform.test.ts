@@ -15,6 +15,7 @@ import {
   loadTilePixels,
   onAcceptedPaint,
   onFetchedTile,
+  onPaintSubmission,
   onTileFrame,
   onTilePixels,
   project,
@@ -1344,7 +1345,9 @@ describe('transparent browser hooks', () => {
 
   it('reports a paint only after wplace accepts it', async () => {
     const observed = vi.fn()
+    const submitted = vi.fn()
     onAcceptedPaint(observed)
+    onPaintSubmission(submitted)
     class FakeCanvas {
       getContext(): null {
         return null
@@ -1381,6 +1384,8 @@ describe('transparent browser hooks', () => {
     })
     await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce())
 
+    expect(submitted).toHaveBeenCalledOnce()
+    expect(observed.mock.calls[0]?.[0].submission).toBe(submitted.mock.calls[0]?.[0])
     expect(observed.mock.calls[0]?.[0]).toMatchObject({ ...body, painted: 1 })
     expect(observed.mock.calls[0]?.[0].observedAt).toEqual(expect.any(Number))
   })

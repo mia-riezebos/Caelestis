@@ -1,4 +1,10 @@
-import type { TemplateSurface } from '@caelestis/shared'
+import {
+  parseClientMetricsAccept,
+  type ReconciliationReason,
+  type SyncTransport,
+  type TemplateSurface,
+  templateSurfaceKey,
+} from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface MockServer {
@@ -38,6 +44,19 @@ const localStore = vi.hoisted(() => ({
   forgetServerSurfaceTemplates: vi.fn(async () => undefined),
 }))
 
+const coordinator = vi.hoisted(() => ({
+  resource: null as null | {
+    readonly live?: boolean
+    readonly reconcileOnManifestEvent?: boolean
+    readonly scope: (server: MockServer) => string | null
+    refresh: (
+      server: MockServer,
+      reason: ReconciliationReason,
+      transport: SyncTransport,
+    ) => Promise<unknown>
+  },
+}))
+
 vi.mock('./alliance-surface.js', () => ({
   activeAllianceSurface: () => alliance.active,
   onActiveAllianceSurfaceChange: (listener: () => void) => {
@@ -51,6 +70,8 @@ vi.mock('./state.js', () => ({
   getState: () => state.current,
   isCurrentServerConnection: (server: MockServer) =>
     state.current.servers.find((candidate) => candidate.url === server.url) === server,
+  serverConnectionIdentity: (server: object) => server,
+  serverConnectionSignal: () => new AbortController().signal,
   onStateChange: (listener: (next: { servers: readonly MockServer[] }) => void) => {
     state.listener = listener
   },
@@ -60,6 +81,13 @@ vi.mock('./state.js', () => ({
     left.info.id === right.info.id &&
     left.status === right.status &&
     left.season === right.season,
+}))
+
+vi.mock('./server-sync-coordinator.js', () => ({
+  registerServerSyncResource: (resource: NonNullable<typeof coordinator.resource>) => {
+    coordinator.resource = resource
+  },
+  requestServerSync: vi.fn(),
 }))
 
 vi.mock('./templates/server-sync.js', () => templates)
@@ -89,6 +117,7 @@ const hq = (allianceId = 535_245): TemplateSurface => ({
 })
 
 const manifest = (surface: TemplateSurface, season = 0, name = 'Example') => ({
+  version: name,
   season,
   surface,
   server: { ...connected.info, name },
@@ -109,6 +138,7 @@ describe('alliance server sync', () => {
     alliance.listener = null
     state.current = { servers: [connected] }
     state.listener = null
+    coordinator.resource = null
   })
 
   afterEach(() => {
@@ -116,35 +146,44 @@ describe('alliance server sync', () => {
     vi.unstubAllGlobals()
   })
 
-  it('keeps the newest response for one server and surface', async () => {
-    let finishOlder!: (response: Response) => void
-    let finishNewer!: (response: Response) => void
-    const older = new Promise<Response>((resolve) => {
-      finishOlder = resolve
-    })
-    const newer = new Promise<Response>((resolve) => {
-      finishNewer = resolve
-    })
-    vi.stubGlobal('fetch', vi.fn().mockReturnValueOnce(older).mockReturnValueOnce(newer))
-    const { allianceManifestFor, installAllianceServerSync } = await import(
-      './alliance-server-sync.js'
-    )
+  it.each(['alliance-headquarters', 'alliance-picture', 'alliance-banner'] as const)(
+    'registers %s as a live coordinator-managed manifest resource',
+    async (kind) => {
+      const surface: TemplateSurface = { kind, allianceId: 535_245 }
+      alliance.active = { surface }
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify(manifest(surface, 0, 'Current')))),
+      )
+      const { allianceManifestFor, installAllianceServerSync } = await import(
+        './alliance-server-sync.js'
+      )
 
-    installAllianceServerSync()
-    await flush()
-    expect(fetch).toHaveBeenCalledTimes(1)
-    vi.advanceTimersByTime(60_000)
-    await flush()
-    expect(fetch).toHaveBeenCalledTimes(2)
-
-    finishNewer(new Response(JSON.stringify(manifest(hq(), 0, 'Newer'))))
-    await flush()
-    finishOlder(new Response(JSON.stringify(manifest(hq(), 0, 'Older'))))
-    await flush()
-
-    expect(allianceManifestFor(connected, hq())?.server.name).toBe('Newer')
-    expect(templates.syncServerTemplates).toHaveBeenCalledTimes(1)
-  })
+      installAllianceServerSync()
+      await flush()
+      expect(coordinator.resource).toMatchObject({
+        live: true,
+        reconcileOnManifestEvent: true,
+      })
+      expect(coordinator.resource?.scope(connected)).toBe(templateSurfaceKey(surface))
+      await coordinator.resource?.refresh(connected, 'connect', 'recovery')
+      expect(fetch).toHaveBeenCalledTimes(1)
+      expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toContain(
+        `surface=${encodeURIComponent(kind)}&allianceId=535245`,
+      )
+      expect(
+        parseClientMetricsAccept(
+          new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).get('accept'),
+        ),
+      ).toMatchObject({
+        client: 'userscript',
+        transport: 'recovery',
+        reason: 'connect',
+      })
+      expect(allianceManifestFor(connected, surface)?.server.name).toBe('Current')
+      expect(templates.syncServerTemplates).toHaveBeenCalledTimes(1)
+    },
+  )
 
   it('refreshes a captured server through the current connection lifetime', async () => {
     const replacement = { ...connected, token: 'new-token' }
@@ -160,13 +199,14 @@ describe('alliance server sync', () => {
 
     installAllianceServerSync()
     await flush()
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     state.current = { servers: [replacement] }
     await refreshAllianceManifest(connected, hq())
 
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(fetch).mock.calls[1]?.[1]?.headers).toEqual({
-      authorization: 'Bearer new-token',
-    })
+    expect(new Headers(vi.mocked(fetch).mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
+      'Bearer new-token',
+    )
     expect(allianceManifestFor(replacement, hq())?.server.name).toBe('Replacement')
     expect(templates.syncServerTemplates).toHaveBeenLastCalledWith(
       replacement,
@@ -187,6 +227,7 @@ describe('alliance server sync', () => {
 
     installAllianceServerSync()
     await flush()
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
 
     expect(allianceManifestFor(connected, hq())).toBeNull()
     expect(templates.syncServerTemplates).not.toHaveBeenCalled()
@@ -202,6 +243,7 @@ describe('alliance server sync', () => {
 
     installAllianceServerSync()
     await flush()
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
 
     await vi.waitFor(() => {
       expect(nodes.rememberNodes).toHaveBeenCalledWith(connected.url, manifestNodes, hq())
@@ -224,9 +266,9 @@ describe('alliance server sync', () => {
       './alliance-server-sync.js'
     )
     installAllianceServerSync()
-    await vi.waitFor(() => {
-      expect(allianceManifestFor(connected, hq())?.server.name).toBe('Old')
-    })
+    await flush()
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
+    expect(allianceManifestFor(connected, hq())?.server.name).toBe('Old')
 
     state.current = { servers: [replacement] }
     state.listener?.(state.current)
@@ -246,6 +288,7 @@ describe('alliance server sync', () => {
     const { installAllianceServerSync } = await import('./alliance-server-sync.js')
     installAllianceServerSync()
     await flush()
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     vi.mocked(fetch).mockClear()
 
     state.listener?.({ servers: [{ ...connected, info: { ...connected.info, name: 'Renamed' } }] })
@@ -259,10 +302,6 @@ describe('alliance server sync', () => {
     const retirement = new Promise<void>((resolve) => {
       finishRetirement = resolve
     })
-    templates.syncServerTemplates.mockImplementation(
-      async (_server, known: readonly unknown[] | undefined) =>
-        known?.length === 0 ? await retirement : undefined,
-    )
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify(manifest(alliance.active?.surface ?? hq())))),
@@ -270,7 +309,12 @@ describe('alliance server sync', () => {
     const { installAllianceServerSync } = await import('./alliance-server-sync.js')
     installAllianceServerSync()
     await flush()
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     expect(fetch).toHaveBeenCalledTimes(1)
+    templates.syncServerTemplates.mockImplementation(
+      async (_server, known: readonly unknown[] | undefined) =>
+        known?.length === 0 ? await retirement : undefined,
+    )
 
     alliance.active = { surface: { kind: 'alliance-banner', allianceId: 535_245 } }
     alliance.listener?.()
@@ -281,6 +325,7 @@ describe('alliance server sync', () => {
 
     finishRetirement()
     await flush()
+    await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 })

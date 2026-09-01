@@ -11,8 +11,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
-import type { Ports, TemplateVersionRecord } from '../ports/index.js'
-import { fetchAlarmFollowUps, fetchCanvasTiles, RING_STALENESS_SECONDS } from './fetcher.js'
+import type { TemplateVersionRecord } from '../ports/index.js'
+import { DirectStatusReadModel, type StatusReadModelPort } from '../status-read-model/port.js'
+import {
+  type FetcherStores,
+  fetchAlarmFollowUps,
+  fetchCanvasTiles,
+  RING_STALENESS_SECONDS,
+} from './fetcher.js'
 
 const TOKEN = 'a'.repeat(64)
 const NOW = seconds(1_750_032_000)
@@ -55,7 +61,23 @@ const harness = () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(NOW * 1_000))
-  const ports: Ports = { blobs, sql, counters }
+  const direct = new DirectStatusReadModel(sql)
+  const notifyAlarmChange = vi.fn(async () => undefined)
+  const statusReadModel: StatusReadModelPort = {
+    applyCommittedChange: (season, mutation) => direct.applyCommittedChange(season, mutation),
+    reconcileSnapshot: (season, scope) => direct.reconcileSnapshot(season, scope),
+    readManifestProjection: (input) => direct.readManifestProjection(input),
+    notifyManifestChange: (season) => direct.notifyManifestChange(season),
+    notifyAlarmChange,
+    resolveCurrentTileOffers: (season, scope, offers) =>
+      direct.resolveCurrentTileOffers(season, scope, offers),
+    prepareTileGenerationCommit: (season, tile) => direct.prepareTileGenerationCommit(season, tile),
+    applyCommittedTileGeneration: (season, generation) =>
+      direct.applyCommittedTileGeneration(season, generation),
+    finishTileGenerationCommit: (season, tile, commit) =>
+      direct.finishTileGenerationCommit(season, tile, commit),
+  }
+  const ports = { blobs, sql, counters, statusReadModel }
   const requested: string[] = []
   const userAgents: (string | null)[] = []
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -67,7 +89,7 @@ const harness = () => {
     const body = await tileBytes(Number(match[1]) * 7 + Number(match[2]))
     return new Response(body.slice())
   }) as typeof fetch
-  return { ports, sql, requested, userAgents, fetchImpl }
+  return { ports, sql, requested, userAgents, fetchImpl, notifyAlarmChange }
 }
 
 describe('the 6-hour tile fetcher', () => {
@@ -121,6 +143,135 @@ describe('the 6-hour tile fetcher', () => {
       fetchImpl,
     })
     expect(third).toMatchObject({ fetched: 0, unchanged: 9, fresh: 0 })
+  })
+
+  it('removes the cached generation before an authoritative replacement finishes', async () => {
+    const { ports, sql } = harness()
+    const tile = { x: 5, y: 5 }
+    await sql.insertTemplateVersion(version('lone', [tile]))
+    const oldBytes = await tileBytes(1)
+    const newBytes = await tileBytes(2)
+    const oldHash = await sha256Hex(oldBytes)
+    const newHash = await sha256Hex(newBytes)
+    const offer = (deliveryId: string, hash: string) => [{ deliveryId, tile, hash }]
+    const fetchOld = (async () => new Response(oldBytes.slice())) as typeof fetch
+
+    await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl: fetchOld, maxTiles: 1 })
+    await expect(
+      ports.statusReadModel.resolveCurrentTileOffers?.(0, 'admin', offer('old', oldHash)),
+    ).resolves.toMatchObject({ acknowledgedDeliveryIds: ['old'] })
+
+    let releaseRepair: () => void = () => {}
+    const repairGate = new Promise<void>((resolve) => {
+      releaseRepair = () => resolve()
+    })
+    let repairStarted: () => void = () => {}
+    const repairStart = new Promise<void>((resolve) => {
+      repairStarted = () => resolve()
+    })
+    const apply = ports.statusReadModel?.applyCommittedTileGeneration
+    if (apply === undefined) throw new Error('tile generation repair is not configured')
+    vi.spyOn(ports.statusReadModel, 'applyCommittedTileGeneration').mockImplementation(
+      async (season, generation) => {
+        repairStarted()
+        await repairGate
+        await apply(season, generation)
+      },
+    )
+
+    const replacing = fetchCanvasTiles(ports, {
+      season: 0,
+      now: seconds(NOW + 1),
+      fetchImpl: (async () => new Response(newBytes.slice())) as typeof fetch,
+      maxTiles: 1,
+    })
+    await repairStart
+
+    await expect(
+      ports.statusReadModel.resolveCurrentTileOffers?.(0, 'admin', offer('old', oldHash)),
+    ).resolves.toMatchObject({ acknowledgedDeliveryIds: [], unresolvedDeliveryIds: ['old'] })
+    releaseRepair()
+    await replacing
+    await expect(
+      ports.statusReadModel.resolveCurrentTileOffers?.(0, 'admin', offer('new', newHash)),
+    ).resolves.toMatchObject({ acknowledgedDeliveryIds: ['new'] })
+  })
+
+  it('applies all status changes from one fetch job in one projection call', async () => {
+    const { ports, sql, fetchImpl } = harness()
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    for (const x of [5, 6]) {
+      await sql.insertTemplateVersion({
+        ...version(`tile-${x}`, [{ x, y: 5 }]),
+        bbox: {
+          minX: x * TILE_SIZE,
+          minY: 5 * TILE_SIZE,
+          maxX: x * TILE_SIZE + 1,
+          maxY: 5 * TILE_SIZE + 1,
+        },
+        chunks: [{ tileX: x, tileY: 5, hash }],
+      })
+    }
+    const applyCommittedChange = vi.fn(async () => null)
+    const statusReadModel: StatusReadModelPort = {
+      applyCommittedChange,
+      reconcileSnapshot: vi.fn(),
+    }
+
+    await fetchCanvasTiles(
+      { ...ports, statusReadModel },
+      {
+        season: 0,
+        now: NOW,
+        fetchImpl,
+        maxTiles: 2,
+      },
+    )
+
+    expect(applyCommittedChange).toHaveBeenCalledTimes(1)
+    expect(applyCommittedChange).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ baseRevision: 0, revision: 2 }),
+    )
+  })
+
+  it('flushes committed projection changes when a later fetch-job read aborts', async () => {
+    const { ports, sql, fetchImpl } = harness()
+    const chunk = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    const hash = await sha256Hex(chunk)
+    await ports.blobs.put('chunks', hash, chunk)
+    await sql.insertTemplateVersion({
+      ...version('first', [{ x: 5, y: 5 }]),
+      bbox: {
+        minX: 5 * TILE_SIZE,
+        minY: 5 * TILE_SIZE,
+        maxX: 5 * TILE_SIZE + 1,
+        maxY: 5 * TILE_SIZE + 1,
+      },
+      chunks: [{ tileX: 5, tileY: 5, hash }],
+    })
+    const applyCommittedChange = vi.fn(async () => null)
+    const statusReadModel: StatusReadModelPort = {
+      applyCommittedChange,
+      reconcileSnapshot: vi.fn(),
+    }
+    const readLatestTile = sql.readLatestTile.bind(sql)
+    let reads = 0
+    vi.spyOn(sql, 'readLatestTile').mockImplementation(async (...args) => {
+      reads++
+      if (reads === 2) throw new Error('D1 read failed')
+      return readLatestTile(...args)
+    })
+
+    await expect(
+      fetchCanvasTiles(
+        { ...ports, statusReadModel },
+        { season: 0, now: NOW, fetchImpl, maxTiles: 2 },
+      ),
+    ).rejects.toThrow('D1 read failed')
+    expect(applyCommittedChange).toHaveBeenCalledTimes(1)
   })
 
   it('survives an upstream failure without abandoning the run', async () => {
@@ -207,7 +358,7 @@ describe('the 6-hour tile fetcher', () => {
     const bytes = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, canvas)
     const evaluate = vi.spyOn(sql, 'evaluateTemplateAlarm')
     const record = vi
-      .spyOn(sql, 'recordTileObservation')
+      .spyOn(sql, 'commitTileBlobReservation')
       .mockRejectedValueOnce(new Error('status write failed'))
 
     await fetchCanvasTiles(ports, {
@@ -303,7 +454,7 @@ describe('the 6-hour tile fetcher', () => {
   }, 20_000)
 
   it('opens on a six-hour regression and promotes only after a worsening follow-up', async () => {
-    const { ports, sql } = harness()
+    const { ports, sql, notifyAlarmChange } = harness()
     const chunk = await encodeIndexedPng(20, 1, new Uint8Array(20).fill(1))
     const hash = await sha256Hex(chunk)
     await ports.blobs.put('chunks', hash, chunk)
@@ -330,6 +481,7 @@ describe('the 6-hour tile fetcher', () => {
     const fetchImpl = (async () => new Response((await canvas()).slice())) as typeof fetch
 
     await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    notifyAlarmChange.mockClear()
     lost = 10
     const scanAt = seconds(NOW + 6 * 60 * 60)
     const scan = await fetchCanvasTiles(ports, {
@@ -339,6 +491,8 @@ describe('the 6-hour tile fetcher', () => {
       alarmIdFactory: () => 'alarm-1',
     })
     expect(scan.followUpScheduled).toBe(true)
+    expect(notifyAlarmChange).toHaveBeenCalledOnce()
+    expect(notifyAlarmChange).toHaveBeenCalledWith(0)
     await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
       expect.objectContaining({ id: 'alarm-1', kind: 'regression', pixelsLost: 10 }),
     ])
@@ -353,6 +507,7 @@ describe('the 6-hour tile fetcher', () => {
         pending: 0,
       },
     )
+    expect(notifyAlarmChange).toHaveBeenCalledTimes(2)
     await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
       expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 11 }),
     ])
@@ -540,7 +695,7 @@ describe('the 6-hour tile fetcher', () => {
         listAlarmTiles: vi.fn(async () => []),
         listManifestTemplates,
       },
-    } as unknown as Ports
+    } as unknown as FetcherStores
     const probes = ['one', 'two'].map((templateId) => ({
       templateId,
       versionId: `${templateId}-version`,

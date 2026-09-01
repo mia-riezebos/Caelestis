@@ -45,6 +45,7 @@ afterEach(() => {
 describe('surface-scoped template tree', () => {
   it('renders creation actions and only the selected alliance surface', () => {
     scoped.manifest = {
+      version: 'alliance-manifest-v1',
       season: 0,
       surface,
       server: serverInfo,

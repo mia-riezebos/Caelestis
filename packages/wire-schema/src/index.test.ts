@@ -16,11 +16,14 @@ import {
   PaintPixels,
   PaintTile,
   ServerInfo,
+  StatusDelta,
+  StatusResponse,
   Template,
   TemplateStatus,
   TileHistoryResponse,
   TileOffer,
   TileOfferResponse,
+  TileUploadResponse,
 } from './index.js'
 
 const HASH = 'a'.repeat(64)
@@ -109,14 +112,16 @@ const encoders = [
   Schema.encodeSync(PaintEvent),
   Schema.encodeSync(TileOffer),
   Schema.encodeSync(TileOfferResponse),
+  Schema.encodeSync(TileUploadResponse),
   Schema.encodeSync(TemplateStatus),
+  Schema.encodeSync(StatusDelta),
   Schema.encodeSync(NodeStatus),
   Schema.encodeSync(Alarm),
   Schema.encodeSync(AlarmsResponse),
 ]
 
 it('exposes every exported wire schema as a bidirectional codec', () => {
-  expect(encoders).toHaveLength(14)
+  expect(encoders).toHaveLength(16)
 })
 
 describe('tile and template schemas', () => {
@@ -252,6 +257,21 @@ describe('tile and template schemas', () => {
     }
     if (accepted) expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
     else expectRejected(ServerInfo, server)
+  })
+
+  it('accepts only the explicit live sync capability version', () => {
+    const server = {
+      id: SERVER_ID,
+      name: 'Server',
+      auth: 'none',
+      liveSync: 1,
+      liveTileOffers: 1,
+    }
+    expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
+    expectRejected(ServerInfo, { ...server, liveSync: true })
+    expectRejected(ServerInfo, { ...server, liveSync: 2 })
+    expectRejected(ServerInfo, { ...server, liveTileOffers: true })
+    expectRejected(ServerInfo, { ...server, liveTileOffers: 2 })
   })
 })
 
@@ -1378,6 +1398,51 @@ describe('cross-field and time-unit schemas', () => {
       observedAt: MILLIS,
     }
     expect(Schema.decodeUnknownSync(TemplateStatus)(status)).toEqual(status)
+  })
+
+  it('accepts a monotonic status revision while remaining compatible with older responses', () => {
+    expect(Schema.decodeUnknownSync(StatusResponse)({ revision: 3, templates: [] })).toEqual({
+      revision: 3,
+      templates: [],
+    })
+    expect(Schema.decodeUnknownSync(StatusResponse)({ templates: [] })).toEqual({ templates: [] })
+    expectRejected(StatusResponse, { revision: -1, templates: [] })
+  })
+
+  it('accepts ordered status deltas and rejects overlaps or backwards revisions', () => {
+    const delta = {
+      baseRevision: 3,
+      revision: 4,
+      templates: [],
+      removedTemplateIds: [TEMPLATE_ID],
+    }
+    expect(Schema.decodeUnknownSync(StatusDelta)(delta)).toEqual(delta)
+    expect(
+      Schema.decodeUnknownSync(TileOfferResponse)({
+        wanted: [],
+        acknowledged: ['0/0'],
+        rejected: [],
+        status: delta,
+      }),
+    ).toEqual({ wanted: [], acknowledged: ['0/0'], rejected: [], status: delta })
+    expect(Schema.decodeUnknownSync(TileOfferResponse)({ wanted: [] })).toEqual({ wanted: [] })
+    expect(Schema.decodeUnknownSync(TileUploadResponse)({ status: delta })).toEqual({
+      status: delta,
+    })
+    expectRejected(StatusDelta, { ...delta, baseRevision: 5 })
+    expectRejected(StatusDelta, {
+      ...delta,
+      templates: [
+        {
+          templateId: TEMPLATE_ID,
+          correct: 0,
+          wrong: 0,
+          blank: 1,
+          total: 1,
+          observedAt: MILLIS,
+        },
+      ],
+    })
   })
 
   it('rejects per-colour status rows that do not partition the template total', () => {

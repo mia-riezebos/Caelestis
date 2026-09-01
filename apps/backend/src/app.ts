@@ -1,13 +1,15 @@
 import type { ServerInfo } from '@caelestis/shared'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import type { Ports } from './ports/index.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
+import { type BackendContext, createBackendRuntime } from './runtime/backend-runtime.js'
+import { runBackendHttp } from './runtime/hono.js'
 
 /**
  * The Hono app, deliberately free of any runtime binding.
@@ -28,12 +30,29 @@ export interface AppOptions {
   readonly serverDescription?: string | undefined
   readonly openAccess?: boolean | undefined
   readonly currentSeason?: number | undefined
+  readonly connectStatusLive?:
+    | ((
+        request: Request,
+        connection: {
+          readonly season: number
+          readonly scope: 'public' | 'admin'
+          readonly credentialScope: 'read' | 'report' | 'admin'
+          readonly tokenHash: string
+          readonly clientHash: string
+          readonly anonymous: boolean
+          readonly revocable: boolean
+          readonly lastRevision: number | null
+          readonly metricClient: string
+          readonly metricClientVersion: string
+        },
+      ) => Promise<Response>)
+    | undefined
 }
 
-export const createApp = (ports: Ports, options: AppOptions = {}) => {
+export const createApp = (context: BackendContext, options: AppOptions = {}) => {
   const app = new Hono()
+  const runtime = createBackendRuntime(context)
   const auth = {
-    sql: ports.sql,
     bootstrapAdminToken: options.bootstrapAdminToken,
     openAccess: options.openAccess,
   }
@@ -57,6 +76,9 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
       'serverName',
     ),
     auth: options.openAccess === true ? 'none' : 'access_token',
+    ...(options.connectStatusLive === undefined
+      ? {}
+      : { liveSync: 1 as const, liveTileOffers: 1 as const }),
   } as const
   const server: ServerInfo =
     options.serverDescription === undefined
@@ -87,17 +109,27 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   // rather than a promise to be kept.
   app.use('/*', cors({ origin: '*', exposeHeaders: ['ETag'], maxAge: 86_400 }))
 
-  app.get('/health', (c) => c.json({ ok: true }))
-  app.route('/server', createServerRoutes(ports, server))
-  app.route('/admin/server', createServerAdminRoutes(ports, auth))
-  app.route('/manifest', createManifestRoutes(ports, auth, { server, currentSeason }))
+  app.get('/health', (c) =>
+    runBackendHttp(c, runtime, Effect.succeed({ ok: true }), (health) => c.json(health)),
+  )
+  app.route('/server', createServerRoutes(runtime, server))
+  app.route('/admin/server', createServerAdminRoutes(runtime, auth, currentSeason))
+  app.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
 
-  app.route('/admin/tokens', createTokenRoutes(auth))
-  app.route('/admin/nodes', createNodeRoutes(ports, auth))
-  app.route('/admin/templates', createTemplateRoutes(ports, auth))
-  app.route('/chunks', createChunkRoutes(ports, auth))
-  app.route('/tiles', createTileRoutes(ports, auth))
-  app.route('/telemetry', createTelemetryRoutes(ports, auth, { currentSeason }))
+  app.route('/admin/tokens', createTokenRoutes(runtime, auth, currentSeason))
+  app.route('/admin/nodes', createNodeRoutes(runtime, auth))
+  app.route('/admin/templates', createTemplateRoutes(runtime, auth))
+  app.route('/chunks', createChunkRoutes(runtime, auth))
+  app.route('/tiles', createTileRoutes(runtime, auth))
+  app.route(
+    '/telemetry',
+    createTelemetryRoutes(runtime, auth, {
+      currentSeason,
+      ...(options.connectStatusLive === undefined
+        ? {}
+        : { connectStatusLive: options.connectStatusLive }),
+    }),
+  )
 
   return app
 }

@@ -518,23 +518,14 @@ describe('server state boundaries', () => {
     ).resolves.toBeNull()
   })
 
-  it('orders overlapping manifest responses across tree refreshes and polls', async () => {
+  it('coalesces overlapping manifest reads for the same connection and scope', async () => {
     let finishFirst = (_response: Response): void => undefined
-    let finishSecond = (_response: Response): void => undefined
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockImplementationOnce(
-        async () =>
-          await new Promise<Response>((resolve) => {
-            finishFirst = resolve
-          }),
-      )
-      .mockImplementationOnce(
-        async () =>
-          await new Promise<Response>((resolve) => {
-            finishSecond = resolve
-          }),
-      )
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        await new Promise<Response>((resolve) => {
+          finishFirst = resolve
+        }),
+    )
     vi.stubGlobal('fetch', fetchMock)
     const { isLatestServerContents, listServerContents, onServerContents, setState } = await import(
       './state.js'
@@ -554,39 +545,28 @@ describe('server state boundaries', () => {
 
     const first = listServerContents(server)
     const second = listServerContents(server)
-    finishSecond(new Response(JSON.stringify(manifest), { status: 200 }))
-    const newer = await second
     finishFirst(new Response(JSON.stringify(manifest), { status: 200 }))
-    const older = await first
+    const [firstContents, secondContents] = await Promise.all([first, second])
 
-    expect(newer).not.toBeNull()
-    expect(older).not.toBeNull()
-    if (newer === null || older === null) throw new Error('expected valid manifests')
-    expect(isLatestServerContents(server.url, newer)).toBe(true)
-    expect(isLatestServerContents(server.url, older)).toBe(false)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(firstContents).not.toBeNull()
+    expect(secondContents).toBe(firstContents)
+    if (firstContents === null) throw new Error('expected valid manifest')
+    expect(isLatestServerContents(server.url, firstContents)).toBe(true)
     expect(observed).toHaveBeenCalledOnce()
-    expect(observed).toHaveBeenCalledWith(server, newer)
+    expect(observed).toHaveBeenCalledWith(server, firstContents)
   })
 
-  it('gives a folder picker the admitted newer tree when its own response loses the race', async () => {
+  it('gives a folder picker the admitted tree from a shared in-flight read', async () => {
     let finishPicker = (_response: Response): void => undefined
-    let finishPoll = (_response: Response): void => undefined
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn<typeof fetch>()
-        .mockImplementationOnce(
-          async () =>
-            await new Promise<Response>((resolve) => {
-              finishPicker = resolve
-            }),
-        )
-        .mockImplementationOnce(
-          async () =>
-            await new Promise<Response>((resolve) => {
-              finishPoll = resolve
-            }),
-        ),
+      vi.fn<typeof fetch>(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finishPicker = resolve
+          }),
+      ),
     )
     const { admitServerContents, listServerContents, listServerNodes, onServerContents, setState } =
       await import('./state.js')
@@ -619,11 +599,66 @@ describe('server state boundaries', () => {
 
     const picker = listServerNodes(server)
     const poll = listServerContents(server)
-    finishPoll(new Response(JSON.stringify({ ...manifest, nodes: [newerNode] }), { status: 200 }))
+    finishPicker(new Response(JSON.stringify({ ...manifest, nodes: [newerNode] }), { status: 200 }))
     await poll
-    finishPicker(new Response(JSON.stringify({ ...manifest, nodes: [olderNode] }), { status: 200 }))
 
     await expect(picker).resolves.toEqual({ status: 'ok', nodes: [newerNode] })
+  })
+
+  it('cancels a shared manifest read when its connection is removed', async () => {
+    let aborted = false
+    const fetchMock = vi.fn<typeof fetch>(
+      async (_input, init) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+              reject(init.signal?.reason)
+            },
+            { once: true },
+          )
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { listServerContents, removeServer, setState } = await import('./state.js')
+    const server = {
+      url: 'https://retired.example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+
+    const pending = listServerContents(server)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    removeServer(server.url)
+
+    await expect(pending).resolves.toBeNull()
+    expect(aborted).toBe(true)
+  })
+
+  it('keeps retirement observable before a connection signal is first requested', async () => {
+    const { removeServer, serverConnectionIdentity, serverConnectionSignal, setState } =
+      await import('./state.js')
+    const server = {
+      url: 'https://queued-retired.example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+    serverConnectionIdentity(server)
+
+    removeServer(server.url)
+
+    expect(serverConnectionSignal(server).aborted).toBe(true)
   })
 
   it('keeps folder helpers on the retained tree when the newest manifest is rejected', async () => {
@@ -1237,9 +1272,12 @@ describe('server state boundaries', () => {
       }),
     )
     expect(refreshed).toHaveBeenCalledOnce()
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
-      authorization: 'Bearer keep-me',
-    })
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
+      'Bearer keep-me',
+    )
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('accept')).toContain(
+      'application/vnd.caelestis.client+json',
+    )
   })
 
   it('uses open access without deleting a rejected persisted token', async () => {
@@ -1263,10 +1301,16 @@ describe('server state boundaries', () => {
       }),
     )
     expect(activeServerToken(connected)).toBeNull()
-    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
-      authorization: 'Bearer stale-code',
-    })
-    expect(fetchMock.mock.calls[2]?.[1]?.headers).toEqual({})
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
+      'Bearer stale-code',
+    )
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('accept')).toContain(
+      'application/vnd.caelestis.client+json',
+    )
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).has('authorization')).toBe(false)
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).get('accept')).toContain(
+      'application/vnd.caelestis.client+json',
+    )
   })
 
   it('publishes each stored-server refresh as soon as that server settles', async () => {

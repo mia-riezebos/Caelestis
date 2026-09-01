@@ -1,6 +1,7 @@
 import {
   PALETTE_RGB,
   quantiseToPalette,
+  type ReconciliationReason,
   sameTemplateSurface,
   sha256Hex,
   type TemplateSurface,
@@ -10,8 +11,10 @@ import {
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
+import { userscriptClientHeaders } from '../client-metrics.js'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
+import { registerServerSyncResource } from '../server-sync-coordinator.js'
 import { serverEndpoint } from '../server-url.js'
 import {
   activeServerToken,
@@ -129,8 +132,11 @@ export const fetchChunkWithinBudget = async (
     const response = await fetch(serverEndpoint(server.url, `/chunks/${hash}`), {
       headers:
         activeServerToken(server) === null
-          ? {}
-          : { authorization: `Bearer ${activeServerToken(server)}` },
+          ? userscriptClientHeaders()
+          : {
+              ...userscriptClientHeaders(),
+              authorization: `Bearer ${activeServerToken(server)}`,
+            },
       signal: AbortSignal.any([generationSignal, AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS)]),
     })
     if (!response.ok) return null
@@ -410,6 +416,7 @@ const syncServerTemplatesOnce = async (
   known?: readonly ServerTemplate[],
   snapshotCurrent: () => boolean = () => true,
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  reason: ReconciliationReason = 'unknown',
 ): Promise<void> => {
   const connectionCurrent = (): boolean => isCurrentServerConnection(server)
   if (server.status !== 'connected' || !connectionCurrent() || !snapshotCurrent()) return
@@ -422,7 +429,7 @@ const syncServerTemplatesOnce = async (
     snapshotCurrent()
   let available = known ?? null
   if (known === undefined) {
-    const contents = await listServerContents(server, signal)
+    const contents = await listServerContents(server, signal, reason)
     if (!current()) return
     if (contents !== null) {
       snapshotCurrent = () => isLatestServerContents(server.url, contents)
@@ -557,6 +564,7 @@ interface PendingServerSync {
   readonly surface: TemplateSurface
   readonly known?: readonly ServerTemplate[]
   readonly snapshotCurrent?: () => boolean
+  readonly reason: ReconciliationReason
 }
 
 /** The newest request per server. Slow downloads must never make minute polls pile up behind them. */
@@ -584,6 +592,7 @@ const ensureServerSyncRun = (key: string): Promise<void> => {
         requested.known,
         requested.snapshotCurrent,
         requested.surface,
+        requested.reason,
       )
     }
   })()
@@ -606,6 +615,7 @@ export const syncServerTemplates = async (
   known?: readonly ServerTemplate[],
   snapshotCurrent?: () => boolean,
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  reason: ReconciliationReason = 'unknown',
 ): Promise<void> => {
   // Immutable state rows may change cosmetic server metadata in place. Credentials, deployment,
   // season, scope, and connectivity define the lifetime that is allowed to continue this work.
@@ -620,6 +630,7 @@ export const syncServerTemplates = async (
     pendingServerSyncs.set(key, {
       server,
       surface,
+      reason,
       known: pending.known,
       ...(pending.snapshotCurrent === undefined
         ? {}
@@ -629,6 +640,7 @@ export const syncServerTemplates = async (
     pendingServerSyncs.set(key, {
       server,
       surface,
+      reason,
       ...(known === undefined ? {} : { known }),
       ...(snapshotCurrent === undefined ? {} : { snapshotCurrent }),
     })
@@ -638,25 +650,28 @@ export const syncServerTemplates = async (
   }
 }
 
-/** How often to ask a server whether anything changed. */
-const POLL_MS = 60_000
-let timer: ReturnType<typeof setInterval> | null = null
-
-const syncAll = (): void => {
-  for (const server of getState().servers) void syncServerTemplates(server)
-}
-
 /**
  * Keep every connected server's templates on the canvas.
  *
- * Polled rather than pushed, because there is nothing to push over: a server is a plain HTTP host
- * with no socket. A minute is chosen against what changes — someone publishing a template or
- * uploading new artwork — rather than against paint activity, which this does not track.
+ * The shared coordinator supplies the compatibility cadence. Successful manifests flow through the
+ * central snapshot listener, so the tree, canvas, telemetry coverage, and revision schedule all use
+ * the same response.
  */
 export const installServerSync = (): void => {
-  syncAll()
-  if (timer !== null) clearInterval(timer)
-  timer = setInterval(syncAll, POLL_MS)
+  lastConnected = getState().servers.filter((server) => server.status === 'connected')
+  registerServerSyncResource({
+    id: 'world-manifest',
+    live: true,
+    reconcileOnManifestEvent: true,
+    scope: (server) => (server.status === 'connected' && server.season !== null ? 'world' : null),
+    refresh: async (server, reason, transport) => {
+      const contents = await listServerContents(server, undefined, reason, transport)
+      if (contents === null) return { status: 'failed' }
+      return contents.revision === undefined
+        ? { status: 'unchanged' }
+        : { status: 'unchanged', revision: contents.revision }
+    },
+  })
   /**
    * And whenever the set of servers changes.
    *
@@ -665,8 +680,8 @@ export const installServerSync = (): void => {
    * so the first sweep finds nothing and the first real one is a poll away. Connecting a server and
    * watching an empty map for up to sixty seconds reads as broken.
    *
-   * Cheap to over-call. A server whose templates are all at versions we hold does no work beyond one
-   * manifest fetch, which is the same request the tree makes anyway.
+   * The coordinator owns the resulting refresh; this listener only retires obsolete download
+   * generations so unrelated settings changes remain local.
    */
   onStateChange(() => {
     const connected = getState().servers.filter((server) => server.status === 'connected')
@@ -683,7 +698,6 @@ export const installServerSync = (): void => {
       }
     }
     lastConnected = connected
-    syncAll()
   })
 }
 

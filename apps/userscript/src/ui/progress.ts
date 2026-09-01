@@ -1,4 +1,8 @@
-import type { TemplateColourProgress, TemplateProgress } from '../templates/mismatch.js'
+import type {
+  TemplateColourProgress,
+  TemplateColourProgressDelta,
+  TemplateProgress,
+} from '../templates/mismatch.js'
 
 export const emptyProgress = (total: number): TemplateProgress => ({
   completed: 0,
@@ -55,3 +59,19 @@ export const freshestColourProgress = (
   server: readonly TemplateColourProgress[],
   _local: readonly TemplateColourProgress[],
 ): readonly TemplateColourProgress[] => server
+
+/** Apply one exact category transfer while preserving a complete colour-progress invariant. */
+export const applyColourProgressDelta = (
+  baseline: TemplateColourProgress,
+  delta: TemplateColourProgressDelta,
+): TemplateColourProgress => {
+  const completed = Math.max(0, Math.min(baseline.known, baseline.completed + delta.completed))
+  const remaining = baseline.known - completed
+  const mismatched = Math.max(0, Math.min(remaining, baseline.mismatched + delta.mismatched))
+  return {
+    ...baseline,
+    completed,
+    mismatched,
+    unpainted: remaining - mismatched,
+  }
+}

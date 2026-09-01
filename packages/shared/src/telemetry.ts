@@ -1,3 +1,4 @@
+import type { TemplateSurface } from './template-surface.js'
 import type { TileKey } from './tiles.js'
 import type { Millis, Seconds } from './time.js'
 
@@ -70,14 +71,74 @@ export interface PaintPixels {
  * uploaded for days.
  */
 export interface TileOffer {
+  /** Stable across uncertain acknowledgement and transport fallback when supplied. */
+  readonly deliveryId?: string
   readonly tile: TileKey
   readonly sha256: string
   readonly ts: Seconds
 }
 
+export interface LiveTileOffer extends TileOffer {
+  /** Stable across uncertain acknowledgement and HTTP fallback replay. */
+  readonly deliveryId: string
+}
+
+export interface LiveTileOfferBatch extends PainterIdentity {
+  readonly season: number
+  readonly offers: readonly LiveTileOffer[]
+}
+
+export interface LiveTileOfferCacheResponse {
+  readonly acknowledgedDeliveryIds: readonly string[]
+  readonly unresolvedDeliveryIds: readonly string[]
+  readonly error?: 'forbidden' | 'invalid'
+}
+
+export type LiveSyncClientEvent = {
+  readonly type: 'tile-offer-cache'
+  readonly requestId: string
+  readonly batch: LiveTileOfferBatch
+}
+
 export interface TileOfferResponse {
   /** Tiles the server does not already have and wants the bytes for. */
   readonly wanted: readonly TileKey[]
+  /** Offered observations the server already holds and has durably acknowledged. */
+  readonly acknowledged?: readonly TileKey[]
+  /** Offered observations the server refused; omitted by older compatible servers. */
+  readonly rejected?: readonly TileKey[]
+  /** Authoritative progress replacements produced while accepting already-held tile bytes. */
+  readonly status?: StatusDelta
+}
+
+/** Ordered replacements for the templates changed between two materialized status revisions. */
+export interface StatusDelta {
+  readonly baseRevision: number
+  readonly revision: number
+  readonly templates: readonly TemplateStatus[]
+  readonly removedTemplateIds: readonly string[]
+}
+
+export type LiveSyncServerEvent =
+  | { readonly type: 'ready'; readonly revision: number }
+  | { readonly type: 'status-delta'; readonly delta: StatusDelta }
+  | { readonly type: 'status-reconcile'; readonly revision: number }
+  | {
+      readonly type: 'manifest-reconcile'
+      readonly revision: number
+      /** Absent means every manifest surface changed, such as after a server rename. */
+      readonly surface?: TemplateSurface
+    }
+  | { readonly type: 'alarms-reconcile' }
+  | {
+      readonly type: 'tile-offer-cache-result'
+      readonly requestId: string
+      readonly response: LiveTileOfferCacheResponse
+    }
+
+/** Successful tile uploads carry their authoritative progress change instead of requiring a read. */
+export interface TileUploadResponse {
+  readonly status?: StatusDelta
 }
 
 /** One reporter offering the template-covered tiles it has just fetched from wplace. */
@@ -88,6 +149,8 @@ export interface TileOfferBatch extends PainterIdentity {
 
 /** Current server-derived progress for every template the caller may read. */
 export interface StatusResponse {
+  /** Monotonic season projection revision; absent on older servers. */
+  readonly revision?: number
   readonly templates: readonly TemplateStatus[]
 }
 

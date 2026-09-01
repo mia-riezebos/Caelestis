@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
+import type { ManifestProjectionInput } from './manifest/read-model.js'
+import { DirectStatusReadModel } from './status-read-model/port.js'
 import worker from './worker.js'
 
 // `worker.ts` re-exports the Durable Object, whose module imports `cloudflare:workers` — absent
@@ -29,6 +32,7 @@ afterEach(() => {
 
 const env = () => {
   d1 = new SqliteD1Database()
+  const statusReadModel = new DirectStatusReadModel(new D1SqlStore(d1 as unknown as D1Database))
   return {
     SHARD_STRATEGY: 'single',
     DB: d1,
@@ -36,6 +40,15 @@ const env = () => {
     // `DurableObjectCounterStore` resolves its stub in the constructor, so the namespace has to
     // answer `getByName` even on a path that never calls the shard.
     TELEMETRY: { getByName: () => ({}) },
+    STATUS_READ_MODEL: {
+      getByName: () => ({
+        readManifestProjectionMeasured: async (input: ManifestProjectionInput) => ({
+          success: true as const,
+          value: await statusReadModel.readManifestProjection?.(input),
+          usage: { rowsRead: 0, rowsWritten: 0, measuredQueries: 0, unmeasuredQueries: 0 },
+        }),
+      }),
+    },
     ALARM_WATCHER: { getByName: () => ({ schedule: async () => undefined }) },
     ADMIN_TOKEN: BOOTSTRAP,
   } as unknown as Env
@@ -112,9 +125,14 @@ it('forwards the configured identity, season and open access to the app', async 
     name: 'Second Season Server',
     description: 'Configured, not defaulted',
     auth: 'none',
+    liveSync: 1,
+    liveTileOffers: 1,
   })
   expect(manifest.status).toBe(200)
-  await expect(manifest.json()).resolves.toMatchObject({ season: 0 })
+  await expect(manifest.json()).resolves.toMatchObject({
+    season: 0,
+    server: { liveSync: 1, liveTileOffers: 1 },
+  })
 })
 
 it('mounts the runtime app beneath its configured base path', async () => {
@@ -129,6 +147,23 @@ it('mounts the runtime app beneath its configured base path', async () => {
   expect(mounted.status).toBe(200)
   await expect(mounted.json()).resolves.toEqual({ ok: true })
   expect(outside.status).toBe(404)
+})
+
+it('reuses one prepared app and Effect runtime for the same Worker environment', async () => {
+  const getByName = vi.fn(() => ({}))
+  const configured = {
+    ...env(),
+    TELEMETRY: { getByName },
+  } as unknown as Env
+
+  expect((await worker.fetch(new Request('https://example.com/health'), configured)).status).toBe(
+    200,
+  )
+  expect((await worker.fetch(new Request('https://example.com/server'), configured)).status).toBe(
+    200,
+  )
+
+  expect(getByName).toHaveBeenCalledTimes(1)
 })
 
 it('runs scheduled tile blob GC in configured dry-run mode without R2 deletion', async () => {
