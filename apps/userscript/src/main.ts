@@ -12,7 +12,7 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
-import { installAllianceOverlayLayer } from './gl/artboard-layer.js'
+import { installAllianceOverlayLayer, repaintAllianceOverlayLayer } from './gl/artboard-layer.js'
 import {
   installOverlayLayer,
   overlayGpuMemoryBytes,
@@ -116,6 +116,7 @@ const repaintMap = (): void => {
 export const redraw = (): void => {
   repaint()
   repaintMap()
+  repaintAllianceOverlayLayer()
 }
 
 /** Keep the GL layer attached across delayed map creation, style reloads, and SPA map replacement. */
@@ -372,7 +373,9 @@ const main = (): void => {
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
   step('alliance overlay layer', installAllianceOverlayLayer)
-  onFrame((frame) => renderOverlayControls(repaint, frame.canvas), 'Overlay controls')
+  onFrame((frame) => {
+    if (activeAllianceSurface() === null) renderOverlayControls(repaint, frame.canvas)
+  }, 'Overlay controls')
   onTileFrame(draw)
   onLocalChange(redraw)
   onLocalPreviewChange(redraw)

@@ -5,6 +5,7 @@ import {
   type Seconds,
   sameTemplateSurface,
   seconds,
+  type TemplateSurface,
   type TileHistoryFrame,
   templateSurface,
   WORLD_PIXELS,
@@ -193,6 +194,17 @@ const parseColourStatuses = (value: string): readonly ColourStatus[] => {
 const pathStartsWith = (prefix: SQL | string): SQL =>
   sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
 
+const nodeSurfaceWhere = (surface: TemplateSurface): SQL =>
+  and(
+    eq(nodes.surfaceKind, surface.kind),
+    surface.allianceId === null
+      ? isNull(nodes.allianceId)
+      : eq(nodes.allianceId, surface.allianceId),
+  ) as SQL
+
+const nodeScopeWhere = (season: number, surface: TemplateSurface): SQL =>
+  and(eq(nodes.season, season), nodeSurfaceWhere(surface)) as SQL
+
 const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
   const out: T[][] = []
   for (let offset = 0; offset < rows.length; offset += size) {
@@ -230,6 +242,10 @@ const mentions = (error: unknown, text: string): boolean => {
   return false
 }
 
+const mentionsNodePathConflict = (error: unknown): boolean =>
+  mentions(error, "UNIQUE constraint failed: index 'nodes_world_path_idx'") ||
+  mentions(error, "UNIQUE constraint failed: index 'nodes_alliance_surface_path_idx'")
+
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
   resolution: row.resolution,
@@ -239,15 +255,20 @@ const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => 
   repairs: row.repairs,
 })
 
-const toNode = (row: typeof nodes.$inferSelect): NodeRecord => ({
-  id: row.id,
-  season: row.season,
-  parentId: row.parentId,
-  path: row.path,
-  name: row.name,
-  description: row.description,
-  createdAt: row.createdAtMs,
-})
+const toNode = (row: typeof nodes.$inferSelect): NodeRecord => {
+  const surface = templateSurface(row.surfaceKind, row.allianceId)
+  if (surface === null) throw new Error(`node ${row.id} has an invalid surface`)
+  return {
+    id: row.id,
+    surface,
+    season: row.season,
+    parentId: row.parentId,
+    path: row.path,
+    name: row.name,
+    description: row.description,
+    createdAt: row.createdAtMs,
+  }
+}
 
 const toTileBlobObject = (row: typeof tileBlobObjects.$inferSelect): TileBlobObject => ({
   blobKey: row.blobKey,
@@ -276,6 +297,9 @@ export class D1SqlStore implements SqlStore {
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
+      if (!sameTemplateSurface(parent.surface, node.surface)) {
+        throw new InvalidNodeParentError('parent node belongs to a different surface')
+      }
       parentPath = parent.path
     }
     // The prefix comes from the parent row, not from `node.path`. A caller derives that path from
@@ -299,6 +323,8 @@ export class D1SqlStore implements SqlStore {
       await this.database.insert(nodes).values({
         id: node.id,
         season: node.season,
+        surfaceKind: node.surface.kind,
+        allianceId: node.surface.allianceId,
         parentId: node.parentId,
         path,
         name: node.name,
@@ -309,7 +335,7 @@ export class D1SqlStore implements SqlStore {
       // The named index, not the bare string: `nodes` has two unique constraints, and reporting a
       // primary-key collision as a path conflict sends the caller after the wrong recovery — and
       // gave a different answer than the memory store, which leaves an id collision untyped.
-      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
+      if (mentionsNodePathConflict(error)) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
       // The parent check above is a separate read, so a concurrent delete can remove the parent
@@ -338,11 +364,14 @@ export class D1SqlStore implements SqlStore {
     return row === undefined ? null : toNode(row)
   }
 
-  async listNodes(season: number): Promise<readonly NodeRecord[]> {
+  async listNodes(
+    season: number,
+    surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  ): Promise<readonly NodeRecord[]> {
     const rows = await this.database
       .select()
       .from(nodes)
-      .where(eq(nodes.season, season))
+      .where(nodeScopeWhere(season, surface))
       .orderBy(asc(nodes.id))
     return rows.map(toNode)
   }
@@ -352,7 +381,7 @@ export class D1SqlStore implements SqlStore {
     if (node === null) return null
 
     const oldPrefix = `${node.path}/`
-    const descendants = and(eq(nodes.season, node.season), pathStartsWith(oldPrefix))
+    const descendants = and(nodeScopeWhere(node.season, node.surface), pathStartsWith(oldPrefix))
 
     // Every descendant keeps its suffix, so its new length is its old one shifted by the change in
     // the prefix — one aggregate, no rows. `slug` keeps paths inside the BMP, so SQLite's character
@@ -409,13 +438,15 @@ export class D1SqlStore implements SqlStore {
       this.database
         .update(nodes)
         .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
-        .where(and(eq(nodes.season, node.season), pathStartsWith(sql`${oldPath} || '/'`))),
+        .where(
+          and(nodeScopeWhere(node.season, node.surface), pathStartsWith(sql`${oldPath} || '/'`)),
+        ),
       this.database.update(nodes).set({ name, path: destination }).where(eq(nodes.id, nodeId)),
     ] as const
     try {
       await this.database.batch([statements[0], statements[1]])
     } catch (error) {
-      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
+      if (mentionsNodePathConflict(error)) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
       // The guard above reads a snapshot, so a child inserted between it and this batch can be
@@ -458,6 +489,9 @@ export class D1SqlStore implements SqlStore {
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
+      if (!sameTemplateSurface(parent.surface, node.surface)) {
+        throw new InvalidNodeParentError('parent node belongs to a different surface')
+      }
       if (parent.id === node.id || parent.path.startsWith(`${node.path}/`)) {
         throw new InvalidNodeParentError(
           'parent node cannot be the node itself or one of its descendants',
@@ -473,7 +507,7 @@ export class D1SqlStore implements SqlStore {
         : proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
     const path = `${parent?.path ?? ''}/${segment}`
     const oldPrefix = `${node.path}/`
-    const descendants = and(eq(nodes.season, node.season), pathStartsWith(oldPrefix))
+    const descendants = and(nodeScopeWhere(node.season, node.surface), pathStartsWith(oldPrefix))
     const shift = path.length - node.path.length
     const [deepest] = await this.database
       .select({ length: sql<number>`coalesce(max(length(${nodes.path})), 0)` })
@@ -513,7 +547,7 @@ export class D1SqlStore implements SqlStore {
         .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
         .where(
           and(
-            eq(nodes.season, node.season),
+            nodeScopeWhere(node.season, node.surface),
             pathStartsWith(sql`${oldPath} || '/'`),
             parentIsStillValid,
             nodeIsStillCurrent,
@@ -531,7 +565,7 @@ export class D1SqlStore implements SqlStore {
     try {
       await this.database.batch([statements[0], statements[1]])
     } catch (error) {
-      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
+      if (mentionsNodePathConflict(error)) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
       if (mentions(error, 'CHECK constraint failed: nodes_path_check')) {
@@ -582,7 +616,7 @@ export class D1SqlStore implements SqlStore {
     if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
     const subtree = or(
       eq(nodes.id, nodeId),
-      and(eq(nodes.season, node.season), pathStartsWith(`${node.path}/`)),
+      and(nodeScopeWhere(node.season, node.surface), pathStartsWith(`${node.path}/`)),
     )
     const [nodeRows, templateRows] = await Promise.all([
       this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
@@ -604,7 +638,7 @@ export class D1SqlStore implements SqlStore {
     const rootPath = sql`(select path from nodes where id = ${nodeId})`
     const liveSubtree = or(
       eq(nodes.id, nodeId),
-      and(eq(nodes.season, node.season), pathStartsWith(sql`${rootPath} || '/'`)),
+      and(nodeScopeWhere(node.season, node.surface), pathStartsWith(sql`${rootPath} || '/'`)),
     )
     const liveNodeCount = sql`(select count(*) from ${nodes} where ${liveSubtree})`
     const liveTemplateCount = sql`(
@@ -678,6 +712,9 @@ export class D1SqlStore implements SqlStore {
       }
       if (destination.season !== version.season) {
         throw new InvalidNodeParentError('destination node belongs to a different season')
+      }
+      if (!sameTemplateSurface(destination.surface, version.surface)) {
+        throw new InvalidNodeParentError('destination node belongs to a different surface')
       }
     }
     // A version replaces content in place, so it has to keep the same dimensions. Name and parent
@@ -928,7 +965,12 @@ export class D1SqlStore implements SqlStore {
     let predicate = eq(templates.id, templateId)
     if (patch.nodeId !== undefined) {
       const [existing] = await this.database
-        .select({ nodeId: templates.nodeId, season: templates.season })
+        .select({
+          nodeId: templates.nodeId,
+          season: templates.season,
+          surfaceKind: templates.surfaceKind,
+          allianceId: templates.allianceId,
+        })
         .from(templates)
         .where(eq(templates.id, templateId))
         .limit(1)
@@ -938,6 +980,10 @@ export class D1SqlStore implements SqlStore {
         if (target === null) throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
         if (target.season !== existing.season) {
           throw new InvalidNodeParentError('destination node belongs to a different season')
+        }
+        const existingSurface = templateSurface(existing.surfaceKind, existing.allianceId)
+        if (existingSurface === null || !sameTemplateSurface(target.surface, existingSurface)) {
+          throw new InvalidNodeParentError('destination node belongs to a different surface')
         }
       }
       // If another administrator moves or deletes the template after the season check, this write
@@ -1760,6 +1806,7 @@ export class D1SqlStore implements SqlStore {
             INNER JOIN version_tiles
               ON version_tiles.version_id = template_versions.id
             WHERE templates.season = history.season
+              AND templates.surface_kind = 'world'
               AND templates.timelapse_frozen_at_ms IS NOT NULL
               AND ${targetStart} * 1000 <= templates.timelapse_frozen_at_ms
               AND ${ringX} <= 1

@@ -14,6 +14,11 @@ const harness = vi.hoisted(() => ({
     serverUrl?: string
     serverTemplateId?: string
     opaque?: number
+    surface?:
+      | { kind: 'world' }
+      | { kind: 'alliance-headquarters'; allianceId: number }
+      | { kind: 'alliance-picture'; allianceId: number }
+      | { kind: 'alliance-banner'; allianceId: number }
   } | null,
   colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
   paintOpen: true,
@@ -264,5 +269,17 @@ describe('Wplace paint palette progress', () => {
       'local',
       first,
     )
+  })
+
+  it('does not route alliance colour navigation through the world map', async () => {
+    const { navigateFocusedSelectedColour } = await import('./paint-palette.js')
+    harness.focused = {
+      id: 'alliance',
+      surface: { kind: 'alliance-headquarters', allianceId: 535245 },
+    }
+
+    await expect(navigateFocusedSelectedColour()).resolves.toBe(false)
+    expect(harness.nearestColourTarget).not.toHaveBeenCalled()
+    expect(harness.navigateTo).not.toHaveBeenCalled()
   })
 })

@@ -27,6 +27,7 @@ const harness = async () => {
   const ports: Ports = { blobs, sql, counters }
   await sql.insertNode({
     id: NODE_ID,
+    surface: { kind: 'world', allianceId: null },
     season: 0,
     parentId: null,
     path: '/templates',

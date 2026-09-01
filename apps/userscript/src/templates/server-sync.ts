@@ -473,7 +473,7 @@ const syncServerTemplatesOnce = async (
     // rebuild. Names and folder membership still arrive through the manifest because neither
     // changes the pixel version.
     if (held !== undefined && held.serverVersion === template.version) {
-      await updateServerTemplateMetadata(key, template.name, template.nodeId)
+      await updateServerTemplateMetadata(key, template.name, template.nodeId, server)
       if (!current()) return
       continue
     }
@@ -531,6 +531,7 @@ const syncServerTemplatesOnce = async (
               serverTemplateId: template.id,
               serverNodeId: template.nodeId,
               serverVersion: template.version,
+              serverConnection: server,
               serverTileKeys: template.chunks.map((chunk) => chunk.tile),
               wrapX: surface.kind === 'world' && template.bbox.minX > template.bbox.maxX,
             },

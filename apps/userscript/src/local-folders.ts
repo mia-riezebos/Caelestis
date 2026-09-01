@@ -1,4 +1,9 @@
 import {
+  sameTemplateSurface,
+  type TemplateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
+import {
   commitState,
   getState,
   isScopeVisible,
@@ -9,13 +14,28 @@ import {
 const folderId = (): string =>
   `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
 
-export const createLocalFolder = (parentId: string | null, name: string): LocalFolder | null => {
-  if (getState().localFolders.length >= MAX_LOCAL_FOLDERS) return null
+export const createLocalFolder = (
+  parentId: string | null,
+  name: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): LocalFolder | null => {
+  const folders = getState().localFolders
+  if (folders.length >= MAX_LOCAL_FOLDERS) return null
+  if (parentId !== null) {
+    const parent = folders.find((candidate) => candidate.id === parentId)
+    if (
+      parent === undefined ||
+      !sameTemplateSurface(parent.surface ?? WORLD_TEMPLATE_SURFACE, surface)
+    ) {
+      return null
+    }
+  }
   const folder: LocalFolder = {
     id: folderId(),
     parentId,
     name,
     visible: true,
+    surface,
   }
   return commitState({ localFolders: [...getState().localFolders, folder] }) ? folder : null
 }
@@ -114,7 +134,20 @@ export const removeLocalFolders = (ids: ReadonlySet<string>): boolean => {
 export const moveLocalFolder = (id: string, parentId: string | null): boolean => {
   if (id === parentId) return false
   const folders = getState().localFolders
-  if (!folders.some((folder) => folder.id === id)) return false
+  const folder = folders.find((candidate) => candidate.id === id)
+  if (folder === undefined) return false
+  if (parentId !== null) {
+    const parent = folders.find((candidate) => candidate.id === parentId)
+    if (
+      parent === undefined ||
+      !sameTemplateSurface(
+        folder.surface ?? WORLD_TEMPLATE_SURFACE,
+        parent.surface ?? WORLD_TEMPLATE_SURFACE,
+      )
+    ) {
+      return false
+    }
+  }
   let walk = parentId
   for (let step = 0; walk !== null; step++) {
     if (walk === id || step > folders.length) return false

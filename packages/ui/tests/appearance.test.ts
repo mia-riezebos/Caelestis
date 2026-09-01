@@ -85,6 +85,22 @@ describe('appearance editor', () => {
     void unmount(component)
   })
 
+  it('omits marker controls on surfaces without paint accounting', () => {
+    const component = mount(AppearanceEditor, {
+      target: document.body,
+      props: { model: { ...model, showMarkers: false } },
+    })
+    flushSync()
+
+    expect(
+      Array.from(document.querySelectorAll('[data-caelestis-section-title]')).map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(['Appearance', 'Colours'])
+    expect(document.querySelector('[aria-label="Mark mismatched pixels"]')).toBeNull()
+    void unmount(component)
+  })
+
   it('emits previews during slider movement and one commit at the change seam', () => {
     const onIntent = vi.fn()
     const component = mount(AppearanceEditor, { target: document.body, props: { model, onIntent } })

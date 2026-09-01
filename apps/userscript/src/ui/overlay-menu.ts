@@ -1,6 +1,7 @@
 import {
   sameTemplateSurface,
   TRANSPARENT_INDEX,
+  templateSurfaceKey,
   WORLD_TEMPLATE_SURFACE,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
@@ -14,6 +15,8 @@ import type {
   RailControlIntent,
   RailControlModel,
 } from '@caelestis/ui/elements'
+import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
+import type { ActiveAllianceSurface } from '../alliance-surface.js'
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
@@ -151,7 +154,8 @@ const localControlsRightEdge = (): number => {
     wplaceControls !== undefined && wplaceControls.width > 0
       ? Math.min(fallbackRailEdge, wplaceControls.left - RAIL_GAP)
       : fallbackRailEdge
-  const panel = document.getElementById(PANEL_ID)
+  const panel =
+    document.getElementById('caelestis-alliance-panel') ?? document.getElementById(PANEL_ID)
   if (panel === null) return railEdge
   return Math.max(
     VIEWPORT_EDGE + MENU_BUTTON_SIZE,
@@ -318,6 +322,8 @@ interface PlacementRail {
 }
 
 const placementRails = new Map<string, PlacementRail>()
+/** Surface whose controls currently occupy the shared floating-control host. */
+let controlSurface: string | null = null
 
 const overlayRailControl = (
   model: RailControlModel,
@@ -465,9 +471,12 @@ const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | n
     (candidate) => candidate.url === template.serverUrl && candidate.isAdmin,
   )
   if (server === undefined) return null
-  const remote = admittedServerContentsFor(server)?.templates.find(
-    (candidate) => candidate.id === template.serverTemplateId,
-  )
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  const manifest =
+    surface.kind === 'world'
+      ? admittedServerContentsFor(server)
+      : allianceManifestFor(server, surface)
+  const remote = manifest?.templates.find((candidate) => candidate.id === template.serverTemplateId)
   return remote === undefined
     ? null
     : {
@@ -485,12 +494,14 @@ const serverLifecycleFor = (
 ): { readonly finished: boolean; readonly frozen: boolean } | null => {
   if (!isServerTemplate(template) || template.serverTemplateId === undefined) return null
   const server = getState().servers.find((candidate) => candidate.url === template.serverUrl)
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
   const remote =
     server === undefined
       ? undefined
-      : admittedServerContentsFor(server)?.templates.find(
-          (candidate) => candidate.id === template.serverTemplateId,
-        )
+      : (surface.kind === 'world'
+          ? admittedServerContentsFor(server)
+          : allianceManifestFor(server, surface)
+        )?.templates.find((candidate) => candidate.id === template.serverTemplateId)
   return remote === undefined
     ? null
     : { finished: remote.finished === true, frozen: remote.timelapseFrozen === true }
@@ -504,6 +515,12 @@ const currentServerActionTargetFor = (id: string): ServerActionTarget | null => 
 const serverDraftIsEditable = (id: string): boolean => {
   const target = currentServerActionTargetFor(id)
   return target !== null && !target.published
+}
+
+const refreshServerTemplateSurface = (server: ConnectedServer, template: PlacedTemplate): void => {
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  if (surface.kind === 'world') void listServerContents(server)
+  else void refreshAllianceManifest(server, surface)
 }
 
 /** The template's name as it is *now* — a name captured at build time goes stale on a rename. */
@@ -833,6 +850,7 @@ const overlayAppearanceModel = (template: PlacedTemplate): AppearanceEditorModel
     ),
     onlySelectedColour: false,
     showOnlySelectedColour: false,
+    showMarkers: (template.surface ?? WORLD_TEMPLATE_SURFACE).kind === 'world',
     paintOpen: isPaintOpen(),
     groups: {
       pixels: { owned: ownsGroup(template, 'pixels') },
@@ -1017,7 +1035,7 @@ const moveServerDraft = async (id: string, originX: number, originY: number): Pr
   clearFailure(id, 'move')
   // The manifest coordinator updates both the tree and the rendered server copy. The placement
   // engine accepts its local preview immediately; this read supplies the new immutable version.
-  void listServerContents(currentTarget.server)
+  refreshServerTemplateSurface(currentTarget.server, current)
   return true
 }
 
@@ -1209,7 +1227,7 @@ const confirmDelete = (id: string, rerender: () => void): void => {
             return false
           }
           await forgetServerTemplate(id)
-          void listServerContents(serverTarget.server)
+          if (current !== undefined) refreshServerTemplateSurface(serverTarget.server, current)
           return true
         })
   void removal.then(
@@ -1449,9 +1467,12 @@ const removeRailActions = (): void => {
   railActions = []
 }
 
-const placementRailFor = (id: string): PlacementRail => {
+const placementRailFor = (id: string, host: HTMLElement): PlacementRail => {
   const existing = placementRails.get(id)
-  if (existing !== undefined && onPage(existing.apply) && onPage(existing.cancel)) return existing
+  if (existing !== undefined && onPage(existing.apply) && onPage(existing.cancel)) {
+    if (existing.apply.parentElement !== host) host.append(existing.apply, existing.cancel)
+    return existing
+  }
   removePlacementRail(id)
 
   const apply = overlayRailControl(
@@ -1477,7 +1498,7 @@ const placementRailFor = (id: string): PlacementRail => {
   cancel.setAttribute('data-caelestis-placement-action', '')
   const rail = { apply, cancel }
   placementRails.set(id, rail)
-  document.body.append(apply, cancel)
+  host.append(apply, cancel)
   return rail
 }
 
@@ -1535,6 +1556,9 @@ const detachControls = (): void => {
   menuOwner = null
   removeRailActions()
 }
+
+/** Remove the shared floating controls while their current rendering host is unavailable. */
+export const detachOverlayControls = (): void => detachControls()
 
 /**
  * Drop the controls of every template not in `live`, and everything remembered about it.
@@ -1611,6 +1635,7 @@ const expireMoveFailure = (id: string): void => {
 const cornerOnScreen = (
   template: PlacedTemplate,
   projection: ScreenProjection | null,
+  viewport: ControlViewport | null,
 ): { x: number; y: number } | null => {
   // Hidden templates are managed from the main menu. This must use effective visibility because a
   // template can keep its own switch on while a server or folder above it hides the whole branch.
@@ -1621,7 +1646,7 @@ const cornerOnScreen = (
   const preview = previewOriginFor(template.id)
   const originX = preview?.x ?? template.originX
   const originY = preview?.y ?? template.originY
-  if (projection === null) return null
+  if (projection === null || viewport === null) return null
   const topLeft = projection.pointFor(originX, originY)
   // One projection, then the size in CSS pixels. Projecting the far corner separately lets the two
   // calls resolve to different wrapped copies of the world for a template near the seam, which
@@ -1632,8 +1657,8 @@ const cornerOnScreen = (
   // Projection never fails for a coordinate that is merely off-screen, so without this every
   // template in the store — including ones on the far side of the world — would clamp a button
   // into the viewport and pile them all onto the same corner, where only the last is clickable.
-  if (right < 0 || topLeft.x > window.innerWidth) return null
-  if (bottom < 0 || topLeft.y > window.innerHeight) return null
+  if (right < viewport.clipLeft || topLeft.x > viewport.clipRight) return null
+  if (bottom < viewport.clipTop || topLeft.y > viewport.clipBottom) return null
   // Top-right of the overlay, just outside it, so template pixels are never covered.
   return { x: right, y: topLeft.y }
 }
@@ -1651,11 +1676,108 @@ const cornerOnScreen = (
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   lastRerender = rerender
-  const templates = localTemplates().filter((template) =>
+  const catalog = localTemplates()
+  const templates = catalog.filter((template) =>
     sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
   )
   withFrameTemplates(templates, (templates) => {
-    renderControls(rerender, mapCanvas, templates)
+    renderControls(
+      rerender,
+      mapCanvas,
+      templates,
+      screenProjection(),
+      document.body,
+      templateSurfaceKey(WORLD_TEMPLATE_SURFACE),
+      new Set(catalog.map((template) => template.id)),
+    )
+  })
+}
+
+interface AllianceControlGeometry {
+  readonly originX: number
+  readonly originY: number
+  readonly width: number
+  readonly height: number
+}
+
+interface ControlViewport {
+  readonly clipLeft: number
+  readonly clipTop: number
+  readonly clipRight: number
+  readonly clipBottom: number
+  readonly left: number
+  readonly top: number
+  readonly right: number
+  readonly bottom: number
+}
+
+const worldControlViewport = (): ControlViewport => ({
+  clipLeft: 0,
+  clipTop: 0,
+  clipRight: window.innerWidth,
+  clipBottom: window.innerHeight,
+  left: 4,
+  top: VIEWPORT_EDGE,
+  right: localControlsRightEdge(),
+  bottom: window.innerHeight - VIEWPORT_EDGE,
+})
+
+const allianceControlViewport = (stage: HTMLElement): ControlViewport | null => {
+  const box = stage.getBoundingClientRect()
+  const viewport = {
+    clipLeft: Math.max(0, box.left),
+    clipTop: Math.max(0, box.top),
+    clipRight: Math.min(window.innerWidth, box.right),
+    clipBottom: Math.min(window.innerHeight, box.bottom),
+    left: Math.max(4, box.left + 4),
+    top: Math.max(VIEWPORT_EDGE, box.top + VIEWPORT_EDGE),
+    right: Math.min(localControlsRightEdge(), box.right - 4),
+    bottom: Math.min(window.innerHeight - VIEWPORT_EDGE, box.bottom - VIEWPORT_EDGE),
+  }
+  return viewport.right - viewport.left >= MENU_BUTTON_SIZE &&
+    viewport.bottom - viewport.top >= MENU_BUTTON_SIZE
+    ? viewport
+    : null
+}
+
+/** Reuse the world template controls with the active artboard's screen projection. */
+export const renderAllianceOverlayControls = (
+  rerender: () => void,
+  active: ActiveAllianceSurface,
+  geometry: AllianceControlGeometry,
+  canvas: HTMLCanvasElement,
+): void => {
+  const frame = active.frame.getBoundingClientRect()
+  const projection: ScreenProjection | null =
+    frame.width <= 0 || frame.height <= 0 || geometry.width <= 0 || geometry.height <= 0
+      ? null
+      : {
+          pointFor: (x, y) => ({
+            x: frame.left + ((x - geometry.originX) / geometry.width) * frame.width,
+            y: frame.top + ((y - geometry.originY) / geometry.height) * frame.height,
+          }),
+          pixelsPerCanvasPixel: {
+            x: frame.width / geometry.width,
+            y: frame.height / geometry.height,
+          },
+        }
+  lastRerender = rerender
+  const catalog = localTemplates()
+  const templates = catalog.filter((template) =>
+    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, active.surface),
+  )
+  const host = active.stage.closest<HTMLElement>('dialog[open]') ?? active.stage
+  withFrameTemplates(templates, (templates) => {
+    renderControls(
+      rerender,
+      canvas,
+      templates,
+      projection,
+      host,
+      templateSurfaceKey(active.surface),
+      new Set(catalog.map((template) => template.id)),
+      allianceControlViewport(active.stage),
+    )
   })
 }
 
@@ -1663,12 +1785,20 @@ const renderControls = (
   rerender: () => void,
   mapCanvas: HTMLCanvasElement,
   templates: readonly PlacedTemplate[],
+  projection: ScreenProjection | null,
+  host: HTMLElement,
+  surface: string,
+  catalogLive: ReadonlySet<string>,
+  viewport: ControlViewport | null = worldControlViewport(),
 ): void => {
-  const live = new Set(templates.map((template) => template.id))
+  if (controlSurface !== surface) {
+    detachControls()
+    controlSurface = surface
+  }
   // Forget what has genuinely gone even on a frame with no map: returning early leaves a deleted
   // template's delete question and failures behind, ready to be handed to the next record that
   // takes its durable id.
-  sweepControls(live)
+  sweepControls(catalogLive)
   const openTemplate = openFor === null ? undefined : templateFor(openFor)
   if (openTemplate !== undefined && !isTemplateVisible(openTemplate)) closeOverlayMenu()
   if (mapCanvas.parentElement === null) {
@@ -1774,11 +1904,9 @@ const renderControls = (
   // Sample every frame-wide geometry input before writing any control positions. Interleaving the
   // panel rectangle read with each template's left/top writes forces one layout per visible
   // template while the main panel is open.
-  const projection = screenProjection()
-  const controlsRightEdge = localControlsRightEdge()
   const placements = templates.map((template) => ({
     template,
-    corner: cornerOnScreen(template, projection),
+    corner: cornerOnScreen(template, projection, viewport),
   }))
 
   for (const { template, corner } of placements) {
@@ -1786,17 +1914,24 @@ const renderControls = (
     if (placing === template.id) {
       button?.remove()
       buttons.delete(template.id)
-      if (corner === null) {
+      if (corner === null || viewport === null) {
         removePlacementRail(template.id)
         continue
       }
-      const rail = placementRailFor(template.id)
+      const rail = placementRailFor(template.id, host)
       const railHeight = MENU_BUTTON_SIZE * 2 + RAIL_GAP
+      if (viewport.bottom - viewport.top < railHeight) {
+        removePlacementRail(template.id)
+        continue
+      }
       const railTop = Math.min(
-        Math.max(corner.y, VIEWPORT_EDGE),
-        Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
+        Math.max(corner.y, viewport.top),
+        Math.max(viewport.top, viewport.bottom - railHeight),
       )
-      const railLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
+      const railLeft = Math.min(
+        Math.max(corner.x + 6, viewport.left),
+        viewport.right - MENU_BUTTON_SIZE,
+      )
       const finishing = isFinishing()
       rail.apply.model = {
         id: 'placement-apply',
@@ -1823,14 +1958,34 @@ const renderControls = (
       button = undefined
     }
 
-    if (corner === null) {
+    if (corner === null || viewport === null) {
       // The same teardown the map disappearing gets: the overlay leaving the viewport is the
       // ordinary way to look at the map while its menu is open, so it must not cost a drag its
       // value — and a rebuild is still refused under a held slider.
       if (openFor === template.id && menuNode !== null) {
         if (rangeGestures.isHeldWithin(menuNode)) continue
         endGestures()
-        menuNode.remove()
+        // Flushing a draft can synchronously rerender and perform this same teardown first.
+        menuNode?.remove()
+        menuNode = null
+        menuOwner = null
+        removeRailActions()
+      }
+      button?.remove()
+      buttons.delete(template.id)
+      continue
+    }
+    const actionCount =
+      openFor === template.id
+        ? isServerTemplate(template) && serverActionTargetFor(template) === null
+          ? 1
+          : 3
+        : 0
+    const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
+    if (viewport.bottom - viewport.top < railHeight) {
+      if (openFor === template.id && menuNode !== null) {
+        endGestures()
+        menuNode?.remove()
         menuNode = null
         menuOwner = null
         removeRailActions()
@@ -1867,8 +2022,10 @@ const renderControls = (
       gear.addEventListener('focus', () => {
         if (isMoving()) gear.blur()
       })
-      document.body.appendChild(button)
+      host.appendChild(button)
       buttons.set(template.id, button)
+    } else if (button.parentElement !== host) {
+      host.appendChild(button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
     const title = `${template.name} — display options (T)`
@@ -1885,18 +2042,14 @@ const renderControls = (
     }
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
-    const actionCount =
-      openFor === template.id
-        ? isServerTemplate(template) && serverActionTargetFor(template) === null
-          ? 1
-          : 3
-        : 0
-    const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
     const buttonTop = Math.min(
-      Math.max(corner.y, VIEWPORT_EDGE),
-      Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
+      Math.max(corner.y, viewport.top),
+      Math.max(viewport.top, viewport.bottom - railHeight),
     )
-    const buttonLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
+    const buttonLeft = Math.min(
+      Math.max(corner.x + 6, viewport.left),
+      viewport.right - MENU_BUTTON_SIZE,
+    )
     positionFloatingControl(button, buttonLeft, buttonTop)
 
     if (openFor !== template.id) continue
@@ -1956,7 +2109,7 @@ const renderControls = (
       // Stamped from what was just built, not from what was sampled.
       menuNode.dataset.caelestisSignature = menuSignature(template)
       menuOwner = template.id
-      document.body.append(menuNode, ...railActions)
+      host.append(menuNode, ...railActions)
       // Svelte custom elements finish their first render after connection. The same-task geometry
       // pass can therefore see a zero-height host and cache that collapsed size for the viewport.
       // Measure once more after connection so a static map does not leave the menu invisible.
@@ -2010,8 +2163,9 @@ const renderControls = (
       menuBox = { width: box.width, height: box.height }
       measuredFor = { width: window.innerWidth, height: window.innerHeight }
     }
-    const rightSpace = controlsRightEdge - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
-    const leftSpace = buttonLeft - RAIL_GAP - VIEWPORT_EDGE
+    const menuLeftEdge = Math.max(VIEWPORT_EDGE, viewport.left)
+    const rightSpace = viewport.right - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
+    const leftSpace = buttonLeft - RAIL_GAP - menuLeftEdge
     const openRight = menuBox.width <= rightSpace || rightSpace >= leftSpace
     const sideRoom = Math.max(0, openRight ? rightSpace : leftSpace)
     const appliedWidth = Math.min(menuBox.width, sideRoom)
@@ -2019,11 +2173,11 @@ const renderControls = (
     menuNode.style.left = openRight
       ? `${buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP}px`
       : `${buttonLeft - RAIL_GAP - appliedWidth}px`
-    const appliedHeight = Math.min(menuBox.height, window.innerHeight - VIEWPORT_EDGE * 2)
+    const appliedHeight = Math.min(menuBox.height, viewport.bottom - viewport.top)
     menuNode.style.maxHeight = `${appliedHeight}px`
     menuNode.style.top = `${Math.min(
-      Math.max(buttonTop, VIEWPORT_EDGE),
-      window.innerHeight - appliedHeight - VIEWPORT_EDGE,
+      Math.max(buttonTop, viewport.top),
+      viewport.bottom - appliedHeight,
     )}px`
   }
 }

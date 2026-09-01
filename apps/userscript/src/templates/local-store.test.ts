@@ -98,6 +98,35 @@ afterEach(() => {
 })
 
 describe('local template lifecycle', () => {
+  it('persists alliance scope and rejects a folder from another surface', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    const { setState } = await import('../state.js')
+    setState({
+      localFolders: [
+        { id: 'hq', parentId: null, name: 'HQ', visible: true, surface },
+        {
+          id: 'world',
+          parentId: null,
+          name: 'World',
+          visible: true,
+          surface: { kind: 'world', allianceId: null },
+        },
+      ],
+    })
+    const store = await import('./local-store.js')
+
+    const added = await store.addLocalTemplate(template({ originX: -10, originY: -20 }), surface)
+
+    expect(added.surface).toEqual(surface)
+    expect(added.tiles.size).toBe(0)
+    expect(persistence.saveTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ surface }),
+      null,
+    )
+    await expect(store.setTemplateFolder(added.id, 'world')).resolves.toBe(false)
+    await expect(store.setTemplateFolder(added.id, 'hq')).resolves.toBe(true)
+  })
+
   it('includes concurrent reservations when admitting a larger reconciliation winner', async () => {
     const { indexIncreaseWithinBudget } = await import('./local-store.js')
 
@@ -1145,6 +1174,64 @@ describe('local template lifecycle', () => {
     expect(after?.indices).toBe(before?.indices)
     expect(after?.tiles).toBe(before?.tiles)
     expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
+  it('hides a server overlay as soon as its connection lifetime is replaced', async () => {
+    const { setState } = await import('../state.js')
+    const server = {
+      url: 'https://example.test',
+      info: {
+        id: '019fed50-87a1-7523-a88c-bdeafad49681',
+        name: 'Example',
+        auth: 'none' as const,
+      },
+      token: 'old-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+    const store = await import('./local-store.js')
+    await store.putServerTemplate({
+      ...template({ id: 'srv:https://example.test:template-1' }),
+      serverUrl: server.url,
+      serverTemplateId: 'template-1',
+      serverNodeId: null,
+      serverVersion: 'version-1',
+      serverConnection: server,
+    })
+    const installed = store.localTemplates()[0]
+    if (installed === undefined) throw new Error('expected installed server template')
+    expect(store.isTemplateVisible(installed)).toBe(true)
+
+    setState({ servers: [{ ...server, token: 'new-token' }] })
+
+    expect(store.isTemplateVisible(installed)).toBe(false)
+  })
+
+  it('forgets one server drawing surface without removing its other overlays', async () => {
+    const store = await import('./local-store.js')
+    const common = {
+      serverUrl: 'https://example.test',
+      serverNodeId: null,
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate({
+      ...template({ id: 'srv:https://example.test:world', name: 'World' }),
+      ...common,
+      serverTemplateId: 'world',
+    })
+    const surface = { kind: 'alliance-banner', allianceId: 535_245 } as const
+    await store.putServerTemplate({
+      ...template({ id: 'srv:https://example.test:alliance', name: 'Alliance' }),
+      ...common,
+      surface,
+      serverTemplateId: 'alliance',
+    })
+
+    await store.forgetServerSurfaceTemplates(common.serverUrl, surface)
+
+    expect(store.localTemplates().map(({ name }) => name)).toEqual(['World'])
   })
 
   it('admits server overlays by pixel budget without prebuilding source bitmaps', async () => {

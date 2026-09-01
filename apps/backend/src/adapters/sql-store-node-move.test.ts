@@ -1,4 +1,4 @@
-import { millis } from '@caelestis/shared'
+import { millis, type TemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { NodeRecord, SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { InvalidNodeParentError, NodePathConflictError } from '../ports/index.js'
@@ -6,8 +6,15 @@ import { D1SqlStore } from './cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
 import { MemorySqlStore } from './memory/memory-sql-store.js'
 
-const node = (id: string, path: string, parentId: string | null, season = 1): NodeRecord => ({
+const node = (
+  id: string,
+  path: string,
+  parentId: string | null,
+  season = 1,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): NodeRecord => ({
   id,
+  surface,
   season,
   parentId,
   path,
@@ -135,6 +142,18 @@ describe.each(adapters)('$name node move contract', ({ make }) => {
       parentId: null,
       path: '/source',
     })
+  })
+
+  it('keeps equal paths independent across surfaces and refuses cross-surface parents', async () => {
+    const headquarters = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    await store.insertNode(node('world', '/shared', null))
+    await store.insertNode(node('headquarters', '/shared', null, 1, headquarters))
+
+    await expect(store.listNodes(1)).resolves.toMatchObject([{ id: 'world' }])
+    await expect(store.listNodes(1, headquarters)).resolves.toMatchObject([{ id: 'headquarters' }])
+    await expect(store.moveNode('headquarters', 'world', '/shared/headquarters')).rejects.toThrow(
+      'parent node belongs to a different surface',
+    )
   })
 
   it('refuses a path occupied by a sibling at the destination', async () => {

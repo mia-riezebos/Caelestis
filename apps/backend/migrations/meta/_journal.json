@@ -64,6 +64,13 @@
       "when": 1788067170619,
       "tag": "0008_magenta_hemingway",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788134106241,
+      "tag": "0009_careful_steel_serpent",
+      "breakpoints": true
     }
   ]
 }

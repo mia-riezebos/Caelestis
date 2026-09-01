@@ -1,4 +1,10 @@
-import { PALETTE_SIZE } from '@caelestis/shared'
+import {
+  PALETTE_SIZE,
+  type TemplateSurface,
+  templateSurface,
+  templateSurfaceKey,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
 import type { ServerTemplate } from './server-cache.js'
@@ -121,6 +127,8 @@ export interface LocalFolder {
   readonly parentId: string | null
   readonly name: string
   readonly visible: boolean
+  /** Exact drawing surface. Records written before alliance support are world-scoped. */
+  readonly surface?: TemplateSurface
 }
 
 /** Browser-owned drawing preferences for an overlay whose pixels remain server-owned. */
@@ -128,6 +136,12 @@ export interface ServerTemplatePreference {
   readonly id: string
   readonly appearance: Appearance | null
   readonly owns: readonly AppearanceGroup[]
+}
+
+/** Browser-owned defaults for one alliance artboard, isolated from the world and other assets. */
+export interface AllianceSurfaceAppearance {
+  readonly surface: Exclude<TemplateSurface, { readonly kind: 'world' }>
+  readonly appearance: Appearance
 }
 
 export type ColourPreset = 'all' | 'free' | 'premium' | 'owned'
@@ -152,6 +166,7 @@ export interface State {
   readonly localFolders: readonly LocalFolder[]
   readonly hiddenScopes: readonly string[]
   readonly serverTemplatePreferences: readonly ServerTemplatePreference[]
+  readonly allianceSurfaceAppearances: readonly AllianceSurfaceAppearance[]
   readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
@@ -170,6 +185,7 @@ const DEFAULT_STATE: State = {
   localFolders: [],
   hiddenScopes: [],
   serverTemplatePreferences: [],
+  allianceSurfaceAppearances: [],
   appearance: DEFAULT_APPEARANCE,
   reportPaints: true,
   shareTiles: true,
@@ -180,6 +196,7 @@ const MAX_CUSTOM_ORDER = 200_000
 export const MAX_CONNECTED_SERVERS = 32
 /** At most every admitted overlay for every configured server may retain a local preference. */
 export const MAX_SERVER_TEMPLATE_PREFERENCES = MAX_CONNECTED_SERVERS * 64
+export const MAX_ALLIANCE_SURFACE_APPEARANCES = MAX_CONNECTED_SERVERS * 3
 /** As many browser-local folders as a reload will restore. Written past, the rest is dropped. */
 export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
@@ -349,6 +366,13 @@ export const loadState = (): State => {
           (candidate.parentId !== null && typeof candidate.parentId !== 'string')
         )
           continue
+        const surface =
+          candidate.surface === undefined
+            ? WORLD_TEMPLATE_SURFACE
+            : isRecord(candidate.surface)
+              ? templateSurface(candidate.surface.kind, candidate.surface.allianceId)
+              : null
+        if (surface === null) continue
         folderIds.add(candidate.id)
         localFolders.push({
           id: candidate.id,
@@ -356,6 +380,7 @@ export const loadState = (): State => {
           name: candidate.name,
           // Records written before folder visibility existed were visible.
           visible: candidate.visible !== false,
+          surface,
         })
         if (localFolders.length >= MAX_LOCAL_FOLDERS) break
       }
@@ -424,6 +449,22 @@ export const loadState = (): State => {
         if (serverTemplatePreferences.length >= MAX_SERVER_TEMPLATE_PREFERENCES) break
       }
     }
+    const allianceSurfaceAppearances: AllianceSurfaceAppearance[] = []
+    const appearanceSurfaces = new Set<string>()
+    if (Array.isArray(stored.allianceSurfaceAppearances)) {
+      for (const candidate of stored.allianceSurfaceAppearances) {
+        if (!isRecord(candidate) || !isRecord(candidate.surface)) continue
+        const surface = templateSurface(candidate.surface.kind, candidate.surface.allianceId)
+        if (surface === null || surface.kind === 'world') continue
+        const key = templateSurfaceKey(surface)
+        if (appearanceSurfaces.has(key)) continue
+        const appearance = normaliseAppearance(candidate.appearance)
+        if (appearance === null) continue
+        appearanceSurfaces.add(key)
+        allianceSurfaceAppearances.push({ surface, appearance })
+        if (allianceSurfaceAppearances.length >= MAX_ALLIANCE_SURFACE_APPEARANCES) break
+      }
+    }
     state = {
       ...DEFAULT_STATE,
       servers,
@@ -441,6 +482,7 @@ export const loadState = (): State => {
       localFolders,
       hiddenScopes,
       serverTemplatePreferences,
+      allianceSurfaceAppearances,
       appearance:
         normaliseAppearance(
           storedRaw.legacyPalette
@@ -465,6 +507,7 @@ export const getState = (): State => state
 
 /** The global appearance currently shown on the map, including an uncommitted slider gesture. */
 let globalAppearancePreview: Appearance | null = null
+const allianceAppearancePreviews = new Map<string, Appearance>()
 
 export const getGlobalAppearance = (): Appearance => globalAppearancePreview ?? state.appearance
 
@@ -473,8 +516,56 @@ export const previewGlobalAppearance = (appearance: Appearance | null): void => 
   globalAppearancePreview = appearance
 }
 
+/** The defaults inherited by templates on this exact canvas. */
+export const getSurfaceAppearance = (surface: TemplateSurface): Appearance => {
+  if (surface.kind === 'world') {
+    return { ...getGlobalAppearance(), hiddenColours: state.hiddenColours }
+  }
+  const key = templateSurfaceKey(surface)
+  return (
+    allianceAppearancePreviews.get(key) ??
+    state.allianceSurfaceAppearances.find(
+      (candidate) => templateSurfaceKey(candidate.surface) === key,
+    )?.appearance ??
+    DEFAULT_APPEARANCE
+  )
+}
+
+/** Preview one canvas's inherited appearance without leaking it into the world renderer. */
+export const previewSurfaceAppearance = (
+  surface: TemplateSurface,
+  appearance: Appearance | null,
+): void => {
+  if (surface.kind === 'world') {
+    previewGlobalAppearance(appearance)
+    return
+  }
+  const key = templateSurfaceKey(surface)
+  if (appearance === null) allianceAppearancePreviews.delete(key)
+  else allianceAppearancePreviews.set(key, appearance)
+}
+
+/** Persist one alliance canvas's inherited appearance independently of every other canvas. */
+export const setSurfaceAppearance = (
+  surface: Exclude<TemplateSurface, { readonly kind: 'world' }>,
+  appearance: Appearance,
+): boolean => {
+  const key = templateSurfaceKey(surface)
+  const preferences = state.allianceSurfaceAppearances
+  const index = preferences.findIndex((candidate) => templateSurfaceKey(candidate.surface) === key)
+  if (index === -1 && preferences.length >= MAX_ALLIANCE_SURFACE_APPEARANCES) return false
+  allianceAppearancePreviews.delete(key)
+  return commitState({
+    allianceSurfaceAppearances:
+      index === -1
+        ? [...preferences, { surface, appearance }]
+        : preferences.map((candidate, at) => (at === index ? { surface, appearance } : candidate)),
+  })
+}
+
 export const setState = (patch: Partial<State>): State => {
   if (patch.appearance !== undefined) globalAppearancePreview = null
+  if (patch.allianceSurfaceAppearances !== undefined) allianceAppearancePreviews.clear()
   state = { ...state, ...patch }
   writeRaw(JSON.stringify(state))
   notifyStateListeners()
@@ -613,12 +704,17 @@ const fetchNodes = async (
   base: string,
   token: string | null,
   season: number,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  signal?: AbortSignal,
 ): Promise<NodeListResult> => {
   try {
+    const query = new URLSearchParams({ season: String(season), surface: surface.kind })
+    if (surface.allianceId !== null) query.set('allianceId', String(surface.allianceId))
     const { response, body } = await requestServerTree(
-      serverEndpoint(base, `/admin/nodes?season=${season}`),
+      serverEndpoint(base, `/admin/nodes?${query}`),
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        ...(signal === undefined ? {} : { signal }),
       },
     )
     if (!response.ok)
@@ -893,6 +989,7 @@ export const createNode = async (
   name: string,
   parentId: string | null,
   description?: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
@@ -909,6 +1006,8 @@ export const createNode = async (
         },
         body: JSON.stringify({
           season: server.season,
+          surfaceKind: surface.kind,
+          ...(surface.allianceId === null ? {} : { allianceId: surface.allianceId }),
           parentId,
           name,
           ...(description === undefined ? {} : { description }),
@@ -1098,7 +1197,12 @@ export const deleteNode = async (
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
 export const listNodes = async (server: ConnectedServer): Promise<NodeListResult> => {
   if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
-  const result = await fetchNodes(server.url, activeServerToken(server), server.season)
+  const result = await fetchNodes(
+    server.url,
+    activeServerToken(server),
+    server.season,
+    WORLD_TEMPLATE_SURFACE,
+  )
   if (!result.ok && (result.status === 401 || result.status === 403)) {
     noteAuthFailure(server, result.status)
   }
@@ -1120,6 +1224,7 @@ export const uploadTemplate = async (
     originX: number
     originY: number
     png: Blob
+    surface?: TemplateSurface
   },
 ): Promise<{ ok: true; id: string; version: string } | UploadFailure> => {
   const begun = beginUpload(server)
@@ -1133,6 +1238,10 @@ export const uploadTemplate = async (
     form.set('name', input.name)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
+    if (input.surface?.kind !== undefined && input.surface.kind !== 'world') {
+      form.set('surfaceKind', input.surface.kind)
+      form.set('allianceId', String(input.surface.allianceId))
+    }
     const { response, body } = await requestServerUpload(
       serverEndpoint(server.url, '/admin/templates'),
       {
@@ -1377,7 +1486,22 @@ export type ServerNodesResult =
 export const listServerNodes = async (
   server: ConnectedServer,
   signal?: AbortSignal,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<ServerNodesResult> => {
+  if (server.season === null || !isCurrentServerConnection(server)) return { status: 'unreachable' }
+  if (surface.kind !== 'world') {
+    const listed = await fetchNodes(
+      server.url,
+      activeServerToken(server),
+      server.season,
+      surface,
+      signal,
+    )
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (!listed.ok || current === undefined || !isCurrentServerConnection(server))
+      return { status: 'unreachable' }
+    return { status: 'ok', nodes: listed.nodes }
+  }
   const contents = await listServerContents(server, signal)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (contents === null || current === undefined || !isCurrentServerConnection(server))

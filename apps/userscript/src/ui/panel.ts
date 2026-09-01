@@ -69,16 +69,18 @@ import {
   forgetAdmittedServerContents,
   forgetScopes,
   getState,
+  getSurfaceAppearance,
   installServerConnectionRetry,
   isCurrentServerConnection,
   loadState,
   MAX_CONNECTED_SERVERS,
   onStateChange,
-  previewGlobalAppearance,
+  previewSurfaceAppearance,
   probeServer,
   refreshStoredServers,
   removeServer,
   setState,
+  setSurfaceAppearance,
   upsertServer,
 } from '../state.js'
 import { onServerAlarmChange, onServerStatusChange } from '../telemetry.js'
@@ -99,6 +101,15 @@ import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colo
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { panelWidthAfterMount } from './panel-geometry.js'
+import {
+  AllianceDrawerInset,
+  alliancePanelTitle,
+  allianceRailTop,
+  bindRailActivation,
+  type PanelScope,
+  PanelSessions,
+  type PanelView,
+} from './panel-scope.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
@@ -149,6 +160,7 @@ import { findWplaceRail } from './wplace-rail.js'
 const BUTTON_ID = 'caelestis-rail-button'
 const ALLIANCE_BUTTON_WRAPPER_ID = 'caelestis-alliance-rail'
 const ALLIANCE_BUTTON_ID = 'caelestis-alliance-rail-button'
+const ALLIANCE_PANEL_ID = 'caelestis-alliance-panel'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
 const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
@@ -167,36 +179,41 @@ const APP_NAME = 'Caelestis'
 const PANEL_TITLE = APP_NAME
 const BUTTON_TOOLTIP = `${APP_NAME} — shared templates (C)`
 
-type View = 'tree' | 'settings' | 'appearance'
-
-let currentView: View = 'tree'
-let open = false
+const panelSessions = new PanelSessions()
 let alarmBadge = 0
 let searchQuery = ''
 let panelSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE
 let panelHost: HTMLElement | null = null
+let allianceStage: HTMLElement | null = null
+const allianceDrawerInset = new AllianceDrawerInset()
+let allianceRailObserver: MutationObserver | null = null
 const panelOpenListeners = new Set<() => void>()
-const treeVisibleListeners = new Set<() => void>()
+const worldTreeVisibleListeners = new Set<() => void>()
+
+const currentView = (): PanelView => panelSessions.view()
+const panelOpen = (): boolean => panelSessions.isOpen()
+const currentPanelId = (): string =>
+  panelSessions.scope() === 'alliance' ? ALLIANCE_PANEL_ID : PANEL_ID
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
  * the class list. Using the same class rather than a colour of our own means our button lights up
  * in whatever their theme calls primary, now and after any theme change.
  */
-const panelRailModel = (): RailControlModel => ({
-  id: 'panel',
+const panelRailModel = (scope: PanelScope): RailControlModel => ({
+  id: scope === 'alliance' ? 'alliance-panel' : 'panel',
   label: BUTTON_TOOLTIP,
-  pressed: open,
-  expanded: open,
-  controls: PANEL_ID,
-  ...(alarmBadge > 0 ? { badge: alarmBadge } : {}),
+  pressed: panelSessions.isOpen(scope),
+  expanded: panelSessions.isOpen(scope),
+  controls: scope === 'alliance' ? ALLIANCE_PANEL_ID : PANEL_ID,
+  ...(scope === 'world' && alarmBadge > 0 ? { badge: alarmBadge } : {}),
 })
 
 const syncRailButtonState = (): void => {
-  for (const id of [BUTTON_ID, ALLIANCE_BUTTON_ID]) {
-    const button = document.getElementById(id) as CaelestisRailControl | null
-    if (button !== null) button.model = panelRailModel()
-  }
+  const main = document.getElementById(BUTTON_ID) as CaelestisRailControl | null
+  if (main !== null) main.model = panelRailModel('world')
+  const alliance = document.getElementById(ALLIANCE_BUTTON_ID) as CaelestisRailControl | null
+  if (alliance !== null) alliance.model = panelRailModel('alliance')
 }
 
 const railButton = (): CaelestisRailControl => {
@@ -204,45 +221,65 @@ const railButton = (): CaelestisRailControl => {
   if (existing !== null) return existing as CaelestisRailControl
   const button = document.createElement('caelestis-rail-control')
   button.id = BUTTON_ID
-  button.model = panelRailModel()
+  button.model = panelRailModel('world')
   applyWplaceTheme(button)
-  button.addEventListener('caelestis-rail-intent', (event) => {
-    const intent = (event as CustomEvent<RailControlIntent>).detail
-    if (intent.id === 'panel') togglePanel()
-  })
+  bindRailActivation(button, 'panel', () => togglePanelFor('world'))
   return button
 }
 
 const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl => {
-  const existing = active.stage.querySelector(`#${ALLIANCE_BUTTON_ID}`)
+  const existing = active.stage.ownerDocument.getElementById(ALLIANCE_BUTTON_ID)
   if (existing !== null) return existing as CaelestisRailControl
   const button = active.stage.ownerDocument.createElement(
     'caelestis-rail-control',
   ) as CaelestisRailControl
   button.id = ALLIANCE_BUTTON_ID
-  button.model = panelRailModel()
+  button.model = panelRailModel('alliance')
   applyWplaceTheme(button)
-  button.addEventListener('caelestis-rail-intent', (event) => {
-    const intent = (event as CustomEvent<RailControlIntent>).detail
-    if (intent.id === 'panel') togglePanel()
-  })
+  bindRailActivation(
+    button,
+    'alliance-panel',
+    () => {
+      selectAlliancePanelSurface(active)
+      togglePanelFor('alliance')
+    },
+    { isolatePointerDown: true },
+  )
   return button
 }
 
+const positionAllianceRail = (active: ActiveAllianceSurface): void => {
+  const wrapper = active.stage.ownerDocument.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)
+  if (wrapper === null) return
+  const parent = wrapper.parentElement
+  if (parent === null) return
+  wrapper.style.top = `${active.stage.offsetTop + allianceRailTop(active.stage, GAP, GAP)}px`
+  wrapper.style.right = `${Math.max(
+    0,
+    parent.clientWidth - active.stage.offsetLeft - active.stage.offsetWidth + GAP,
+  )}px`
+}
+
 const mountAllianceRail = (active: ActiveAllianceSurface): void => {
+  allianceRailObserver?.disconnect()
+  allianceRailObserver = null
   document.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)?.remove()
   const wrapper = active.stage.ownerDocument.createElement('div')
   wrapper.id = ALLIANCE_BUTTON_WRAPPER_ID
-  wrapper.className = 'tooltip tooltip-right'
+  wrapper.className = 'tooltip tooltip-left'
   wrapper.dataset.tip = 'Caelestis — alliance templates'
   Object.assign(wrapper.style, {
     position: 'absolute',
-    left: '12px',
-    top: '80px',
-    zIndex: '20',
+    zIndex: '40',
   } satisfies Partial<CSSStyleDeclaration>)
   wrapper.appendChild(allianceRailButton(active))
-  active.stage.appendChild(wrapper)
+  ;(active.stage.parentElement ?? active.stage).appendChild(wrapper)
+  positionAllianceRail(active)
+  const realm = active.stage.ownerDocument.defaultView
+  if (realm !== null) {
+    allianceRailObserver = new realm.MutationObserver(() => positionAllianceRail(active))
+    allianceRailObserver.observe(active.stage, { attributes: true, attributeFilter: ['class'] })
+  }
 }
 
 /**
@@ -278,8 +315,8 @@ let owedRefresh = false
 const heldPanelPointers = new Set<number>()
 
 const refreshView = (): void => {
-  if (!open) return
-  const root = document.getElementById(PANEL_ID)
+  if (!panelOpen()) return
+  const root = document.getElementById(currentPanelId())
   if (root === null) return
   const held =
     (root.shadowRoot?.querySelector('[data-caelestis-colour-picker]') ?? null) !== null ||
@@ -291,7 +328,7 @@ const refreshView = (): void => {
     return
   }
   owedRefresh = false
-  showView(currentView)
+  showView(currentView())
 }
 
 let manifestTreeRefreshQueued = false
@@ -300,7 +337,7 @@ const queueManifestTreeRefresh = (): void => {
   manifestTreeRefreshQueued = true
   queueMicrotask(() => {
     manifestTreeRefreshQueued = false
-    if (!open || currentView !== 'tree') return
+    if (!panelOpen() || currentView() !== 'tree') return
     if (isTreeDragActive()) {
       owedRefresh = true
       return
@@ -513,12 +550,12 @@ const settingsModel = (): SettingsModel => {
 }
 
 const refreshSettings = (): void => {
-  if (open && currentView === 'settings') showView('settings')
+  if (panelOpen() && currentView() === 'settings') showView('settings')
 }
 
 let profileTimer: number | null = null
 const syncProfileTimer = (): void => {
-  const wanted = open && currentView === 'settings' && isProfileEnabled()
+  const wanted = panelOpen() && currentView() === 'settings' && isProfileEnabled()
   if (wanted && profileTimer === null) {
     profileTimer = window.setInterval(refreshSettings, 1_000)
   } else if (!wanted && profileTimer !== null) {
@@ -675,17 +712,20 @@ const handleSettingsIntent = (intent: SettingsIntent): void => {
 
 const appearanceModel = (): AppearanceEditorModel => {
   const state = getState()
-  const effectiveHidden = new Set(globalHiddenColours())
-  const activePixelPreset = pixelStylePresetOf(state.appearance)
-  const activePreset = activeColourPreset(state.hiddenColours)
+  const values = getSurfaceAppearance(panelSurface)
+  const effectiveHidden = new Set(
+    panelSurface.kind === 'world' ? globalHiddenColours() : values.hiddenColours,
+  )
+  const activePixelPreset = pixelStylePresetOf(values)
+  const activePreset = activeColourPreset(values.hiddenColours)
   const selected = selectedColour()
   const selectedColourName = selected === null ? undefined : WPLACE_PALETTE[selected]?.name
   return {
-    values: state.appearance,
+    values,
     sliders: APPEARANCE_CONTROLS.map((control) => ({
       key: control.key,
       label: control.label,
-      value: state.appearance[control.key],
+      value: values[control.key],
       defaultValue: DEFAULT_APPEARANCE[control.key],
       min: control.min,
       max: control.max,
@@ -696,7 +736,7 @@ const appearanceModel = (): AppearanceEditorModel => {
           : control.key === 'contrastOutlineSize'
             ? 'decimal-pixels'
             : 'percent',
-      ...(control.key === 'contrastOutlineSize' && !state.appearance.contrastOutline
+      ...(control.key === 'contrastOutlineSize' && !values.contrastOutline
         ? { disabled: true }
         : {}),
     })),
@@ -727,66 +767,89 @@ const appearanceModel = (): AppearanceEditorModel => {
         visible: !effectiveHidden.has(colour.index),
       }),
     ),
-    onlySelectedColour: state.onlySelectedColour,
-    paintOpen: isPaintOpen(),
+    onlySelectedColour: panelSurface.kind === 'world' && state.onlySelectedColour,
+    showOnlySelectedColour: panelSurface.kind === 'world',
+    showMarkers: panelSurface.kind === 'world',
+    paintOpen: panelSurface.kind === 'world' && isPaintOpen(),
     ...(selectedColourName === undefined ? {} : { selectedColourName }),
-    markerBudget: state.markerBudget,
-    markerBudgetOptions: MARKER_BUDGET_OPTIONS,
+    ...(panelSurface.kind === 'world'
+      ? { markerBudget: state.markerBudget, markerBudgetOptions: MARKER_BUDGET_OPTIONS }
+      : {}),
   }
 }
 
+const commitPanelAppearance = (appearance: typeof DEFAULT_APPEARANCE): void => {
+  if (panelSurface.kind === 'world') setState({ appearance })
+  else setSurfaceAppearance(panelSurface, appearance)
+}
+
 const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
+  const values = getSurfaceAppearance(panelSurface)
   switch (intent.type) {
     case 'layout':
       break
     case 'preview-number':
     case 'preview-colour':
-      previewGlobalAppearance({ ...getState().appearance, [intent.key]: intent.value })
+      previewSurfaceAppearance(panelSurface, { ...values, [intent.key]: intent.value })
       redraw()
       break
     case 'commit-number':
     case 'commit-colour':
-      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      commitPanelAppearance({ ...values, [intent.key]: intent.value })
       redraw()
       break
     case 'set-boolean':
-      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      commitPanelAppearance({ ...values, [intent.key]: intent.value })
       redraw()
       break
     case 'set-colour':
-      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      commitPanelAppearance({ ...values, [intent.key]: intent.value })
       redraw()
       break
     case 'pixel-preset': {
       const preset = PIXEL_STYLE_PRESETS.find((candidate) => candidate.id === intent.id)
       if (preset === undefined) break
-      setState({ appearance: { ...getState().appearance, ...preset.values } })
+      commitPanelAppearance({ ...values, ...preset.values })
       redraw()
       break
     }
     case 'colour-preset':
       if (!['all', 'free', 'premium', 'owned'].includes(intent.id)) break
-      setState({ hiddenColours: hiddenForPreset(intent.id as ColourPresetId) })
+      if (panelSurface.kind === 'world') {
+        setState({ hiddenColours: hiddenForPreset(intent.id as ColourPresetId) })
+      } else {
+        commitPanelAppearance({
+          ...values,
+          hiddenColours: hiddenForPreset(intent.id as ColourPresetId),
+        })
+      }
       redraw()
       break
     case 'toggle-colour': {
       const base =
-        getState().onlySelectedColour && isPaintOpen()
+        panelSurface.kind === 'world' && getState().onlySelectedColour && isPaintOpen()
           ? globalHiddenColours()
-          : getState().hiddenColours
+          : values.hiddenColours
       const hidden = new Set(base)
       if (intent.visible) hidden.delete(intent.index)
       else hidden.add(intent.index)
-      setState({ hiddenColours: [...hidden], onlySelectedColour: false })
+      if (panelSurface.kind === 'world') {
+        setState({ hiddenColours: [...hidden], onlySelectedColour: false })
+      } else {
+        commitPanelAppearance({ ...values, hiddenColours: [...hidden] })
+      }
       redraw()
       break
     }
     case 'only-selected-colour':
-      setState({ onlySelectedColour: intent.value })
+      if (panelSurface.kind === 'world') setState({ onlySelectedColour: intent.value })
       redraw()
       break
     case 'marker-budget':
-      if (MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)) {
+      if (
+        panelSurface.kind === 'world' &&
+        MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)
+      ) {
         setState({ markerBudget: intent.value })
       }
       break
@@ -794,10 +857,12 @@ const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
 }
 
 const treeCallbacks = (): TreeCallbacks => ({
-  onAddServer: () => showView('settings'),
-  onCreateFolder: (target) => void createFolder(target, rerenderTree),
-  onImportTemplate: (target) => void importTemplate(target, rerenderTree),
-  onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
+  onAddServer: () => {
+    if (panelSurface.kind === 'world') showView('settings')
+  },
+  onCreateFolder: (target) => void createFolder(target, rerenderTree, panelSurface),
+  onImportTemplate: (target) => void importTemplate(target, rerenderTree, panelSurface),
+  onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree, panelSurface),
   onCopyToServer: (id) => void copyToServer(id, rerenderTree),
   onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
     dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
@@ -813,15 +878,19 @@ const treeCallbacks = (): TreeCallbacks => ({
 })
 
 const panelModel = (width = panelWidthForViewport(getState().panelWidth)): PanelModel => ({
-  view: currentView,
+  view: currentView(),
+  title: alliancePanelTitle(panelSurface),
+  showSettings: panelSurface.kind === 'world',
   width,
   minWidth: minimumPanelWidth(),
   maxWidth: maximumPanelWidth(),
-  ...(currentView === 'tree' && activeTreeAdapter !== null
+  ...(currentView() === 'tree' && activeTreeAdapter !== null
     ? { tree: { ...activeTreeAdapter.model, ...treeActionPresentation() } }
     : {}),
-  ...(currentView === 'appearance' ? { appearance: appearanceModel() } : {}),
-  ...(currentView === 'settings' ? { settings: settingsModel() } : {}),
+  ...(currentView() === 'appearance' ? { appearance: appearanceModel() } : {}),
+  ...(currentView() === 'settings' && panelSurface.kind === 'world'
+    ? { settings: settingsModel() }
+    : {}),
 })
 
 const currentPanelWidth = (panel: CaelestisPanel): number =>
@@ -830,13 +899,14 @@ const currentPanelWidth = (panel: CaelestisPanel): number =>
 /** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
 const buildSveltePanel = (): CaelestisPanel => {
   const panel = (panelHost?.ownerDocument ?? document).createElement('caelestis-panel')
-  panel.id = PANEL_ID
-  panel.setAttribute('aria-label', PANEL_TITLE)
+  const alliance = panelSessions.scope() === 'alliance'
+  panel.id = currentPanelId()
+  panel.setAttribute('aria-label', alliance ? alliancePanelTitle(panelSurface) : PANEL_TITLE)
   Object.assign(panel.style, {
-    position: 'fixed',
-    right: `${CLEAR_OF_RAIL}px`,
-    top: `${EDGE}px`,
-    bottom: `${EDGE}px`,
+    position: alliance ? 'absolute' : 'fixed',
+    right: alliance ? '0' : `${CLEAR_OF_RAIL}px`,
+    top: alliance ? `${allianceStage?.offsetTop ?? 0}px` : `${EDGE}px`,
+    bottom: alliance ? '0' : `${EDGE}px`,
     zIndex: '30',
     display: 'block',
     minHeight: '0',
@@ -849,16 +919,27 @@ const buildSveltePanel = (): CaelestisPanel => {
     const intent = (event as CustomEvent<PanelIntent>).detail
     switch (intent.type) {
       case 'navigate':
+        if (panelSurface.kind !== 'world' && intent.view === 'settings') break
         showView(intent.view)
         break
       case 'close':
         setOpen(false)
         break
       case 'resize-preview':
+        if (allianceStage !== null) {
+          allianceDrawerInset.apply(allianceStage, intent.width, GAP)
+          const active = activeAllianceSurface()
+          if (active !== null) positionAllianceRail(active)
+        }
         redraw()
         break
       case 'resize-commit':
         setState({ panelWidth: intent.width })
+        if (allianceStage !== null) {
+          allianceDrawerInset.apply(allianceStage, intent.width, GAP)
+          const active = activeAllianceSurface()
+          if (active !== null) positionAllianceRail(active)
+        }
         break
       case 'tree':
         if (handleTreeActionPresentationIntent(intent.intent)) {
@@ -878,7 +959,7 @@ const buildSveltePanel = (): CaelestisPanel => {
         handleAppearanceIntent(intent.intent)
         break
       case 'settings':
-        handleSettingsIntent(intent.intent)
+        if (panelSurface.kind === 'world') handleSettingsIntent(intent.intent)
         break
     }
   })
@@ -920,8 +1001,8 @@ const stillConnected = (server: ConnectedServer): boolean => isCurrentServerConn
  * live tree instead of a detached one.
  */
 const rerenderTree = (): void => {
-  if (!open || currentView !== 'tree') return
-  const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
+  if (!panelOpen() || currentView() !== 'tree') return
+  const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
   if (panel === null) return
   activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery, panelSurface)
   panel.model = panelModel(currentPanelWidth(panel))
@@ -934,9 +1015,10 @@ const rerenderTree = (): void => {
  * handler lives outside the builder that made the handle.
  */
 
-const showView = (view: View): void => {
-  currentView = view
-  const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
+const showView = (view: PanelView): void => {
+  if (panelSurface.kind !== 'world' && view === 'settings') return
+  panelSessions.setView(view)
+  const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
   if (panel === null) return
 
   if (view === 'settings') settingsModel()
@@ -954,73 +1036,111 @@ const showView = (view: View): void => {
   }
   panel.model = panelModel(currentPanelWidth(panel))
   syncProfileTimer()
-  if (open && view === 'tree') {
-    for (const listener of treeVisibleListeners) listener()
+  if (panelSessions.isWorldTreeVisible()) {
+    for (const listener of worldTreeVisibleListeners) listener()
   }
   log('install', `panel view: ${view}`)
 }
 
 const setOpen = (next: boolean): void => {
-  open = next
+  panelSessions.setOpen(next)
   syncRailButtonState()
-  const existing = document.getElementById(PANEL_ID)
-  if (!open) {
+  const existing = document.getElementById(currentPanelId())
+  if (!panelOpen()) {
     cancelTreeActionSetup(new Error('panel closed'))
     existing?.remove()
+    if (panelSessions.scope() === 'alliance') {
+      allianceDrawerInset.clear()
+      const active = activeAllianceSurface()
+      if (active !== null) positionAllianceRail(active)
+    }
     syncProfileTimer()
     // Give map-anchored controls the reclaimed width immediately, even while the map is still.
     redraw()
     return
   }
   if (existing !== null) return
+  if (allianceStage !== null) {
+    allianceDrawerInset.apply(allianceStage, panelWidthForViewport(getState().panelWidth), GAP)
+    const active = activeAllianceSurface()
+    if (active !== null) positionAllianceRail(active)
+  }
   const host = panelHost ?? document.body
   host.appendChild(buildSveltePanel())
-  showView(currentView)
+  showView(currentView())
   for (const listener of panelOpenListeners) listener()
   // The panel's measured left edge is now the map controls' right edge.
   redraw()
 }
 
-/** Open or close the main Caelestis panel through the same path as its rail button. */
-export const togglePanel = (): void => setOpen(!open)
+/** Open or close the panel for the canvas currently in front of the user. */
+export const togglePanel = (): void => setOpen(!panelOpen())
+
+const togglePanelFor = (scope: PanelScope): void => {
+  const next = !panelSessions.isOpen(scope)
+  if (scope !== panelSessions.scope()) {
+    panelSessions.setOpen(next, scope)
+    syncRailButtonState()
+    return
+  }
+  setOpen(next)
+}
+
+const unmountSelectedPanel = (): void => {
+  document.getElementById(currentPanelId())?.remove()
+  if (panelSessions.scope() === 'alliance') allianceDrawerInset.clear()
+  activeTreeAdapter = null
+  syncProfileTimer()
+}
 
 const selectAlliancePanelSurface = (active: ActiveAllianceSurface | null): void => {
+  allianceRailObserver?.disconnect()
+  allianceRailObserver = null
   document.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)?.remove()
   if (active === null) {
-    if (panelSurface.kind !== 'world' && open) setOpen(false)
+    if (panelSessions.scope() === 'alliance') unmountSelectedPanel()
+    panelSessions.select('world')
     panelSurface = WORLD_TEMPLATE_SURFACE
     panelHost = document.body
+    allianceStage = null
+    if (panelSessions.isOpen()) setOpen(true)
+    else syncRailButtonState()
     return
   }
 
   mountAllianceRail(active)
-  const nextHost = active.stage.closest('dialog') ?? active.stage
-  const changed = !sameTemplateSurface(panelSurface, active.surface) || panelHost !== nextHost
+  const nextHost = active.stage.parentElement ?? active.stage
+  const changed =
+    panelSessions.scope() !== 'alliance' ||
+    !sameTemplateSurface(panelSurface, active.surface) ||
+    panelHost !== nextHost ||
+    allianceStage !== active.stage
   if (!changed) {
     syncRailButtonState()
     return
   }
 
-  const reopen = open
-  if (reopen) setOpen(false)
+  unmountSelectedPanel()
+  panelSessions.select('alliance')
   panelSurface = active.surface
   panelHost = nextHost as HTMLElement
-  if (reopen) setOpen(true)
-  syncRailButtonState()
+  allianceStage = active.stage
+  if (panelSessions.isOpen()) setOpen(true)
+  else syncRailButtonState()
 }
 
-export const isPanelOpen = (): boolean => open
+export const isPanelOpen = (): boolean => panelOpen()
 
-export const isTemplateTreeVisible = (): boolean => open && currentView === 'tree'
+export const isWorldTemplateTreeVisible = (): boolean => panelSessions.isWorldTreeVisible()
 
 export const onPanelOpen = (listener: () => void): (() => void) => {
   panelOpenListeners.add(listener)
   return () => panelOpenListeners.delete(listener)
 }
 
-export const onTemplateTreeVisible = (listener: () => void): (() => void) => {
-  treeVisibleListeners.add(listener)
-  return () => treeVisibleListeners.delete(listener)
+export const onWorldTemplateTreeVisible = (listener: () => void): (() => void) => {
+  worldTreeVisibleListeners.add(listener)
+  return () => worldTreeVisibleListeners.delete(listener)
 }
 
 const RAIL_ID = 'caelestis-rail'
@@ -1120,6 +1240,7 @@ export const syncColourModeState = (): void => {
  */
 export const installPanel = (): void => {
   loadState()
+  panelSessions.select('world')
   panelHost = document.body
   void refreshStoredServers(refreshView)
   installServerConnectionRetry(refreshView)
@@ -1156,10 +1277,14 @@ export const installPanel = (): void => {
   })
   window.addEventListener('resize', () => {
     positionRail()
-    const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
-    if (panel === null) return
-    const width = panelWidthForViewport(getState().panelWidth)
-    panel.model = panelModel(width)
+    const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
+    if (panel !== null) {
+      const width = panelWidthForViewport(getState().panelWidth)
+      panel.model = panelModel(width)
+      if (allianceStage !== null) allianceDrawerInset.apply(allianceStage, width, GAP)
+    }
+    const active = activeAllianceSurface()
+    if (active !== null) positionAllianceRail(active)
     redraw()
   })
   onStateChange(syncColourModeState)
@@ -1173,12 +1298,12 @@ export const installPanel = (): void => {
   selectAlliancePanelSurface(activeAllianceSurface())
   onLocalChange(
     frameQueue(() => {
-      if (currentView === 'tree') refreshView()
+      if (currentView() === 'tree') refreshView()
     }),
   )
   pixelAccounting.onChange(
     frameQueue(() => {
-      if (currentView !== 'tree') return
+      if (currentView() !== 'tree') return
       if (progressChangesCanReorder(getState().sort)) {
         refreshView()
         return
@@ -1187,17 +1312,17 @@ export const installPanel = (): void => {
     }),
   )
   onServerStatusChange(() => {
-    if (currentView === 'tree') refreshView()
+    if (currentView() === 'tree') refreshView()
   })
   onServerAlarmChange(() => {
-    if (currentView === 'tree') refreshView()
+    if (currentView() === 'tree') refreshView()
   })
   for (const ending of ['dragend', 'focusout'])
     document.addEventListener(ending, repayRefresh, true)
   document.addEventListener(
     'pointerdown',
     (event) => {
-      const panel = document.getElementById(PANEL_ID)
+      const panel = document.getElementById(currentPanelId())
       if (panel !== null && event.composedPath().includes(panel)) {
         heldPanelPointers.add(event.pointerId)
       }
@@ -1224,6 +1349,6 @@ export const installPanel = (): void => {
   // click while painting would rebuild it every time.
   onPaintSelectionChange(() => {
     syncColourModeState()
-    if (currentView === 'appearance') refreshView()
+    if (currentView() === 'appearance') refreshView()
   })
 }

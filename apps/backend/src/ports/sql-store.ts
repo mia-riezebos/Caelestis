@@ -547,6 +547,7 @@ export interface TemplateDeletePrecondition {
 
 export interface NodeRecord {
   readonly id: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly parentId: string | null
   readonly path: string
@@ -828,7 +829,7 @@ export interface SqlStore {
 
   readNode(nodeId: string): Promise<NodeRecord | null>
 
-  listNodes(season: number): Promise<readonly NodeRecord[]>
+  listNodes(season: number, surface?: TemplateSurface): Promise<readonly NodeRecord[]>
 
   /**
    * Rename a node and rewrite the paths of everything beneath it.

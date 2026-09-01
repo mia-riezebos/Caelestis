@@ -4,6 +4,7 @@ import {
   type TemplateSurface,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  templateSurface,
   templateSurfaceBounds,
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
@@ -14,8 +15,9 @@ import { leaseLocalFolder, localFolderChainVisible } from '../local-folders.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
 import {
   type ConnectedServer,
-  getGlobalAppearance,
   getState,
+  getSurfaceAppearance,
+  isCurrentServerConnection,
   isScopeVisible,
   type LocalFolder,
   serverTemplatePreference,
@@ -59,6 +61,8 @@ import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './serv
 export interface PlacedTemplate extends ImportedTemplate {
   /** Drawing surface this placement belongs to. Legacy browser-owned templates are world-scoped. */
   readonly surface?: TemplateSurface
+  /** Runtime owner for server rows; absent on Local and legacy restored records. */
+  readonly serverConnection?: ConnectedServer
   /** Painted world-tile keys (`x/y`) used to bound mismatch and navigation work. */
   readonly tiles: ReadonlySet<string>
   readonly visible: boolean
@@ -473,8 +477,17 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
   // folders had no chain here at all, so their switches fell through to a set the renderer never
   // read: the box moved, and nothing else did.
   if (template.serverUrl !== undefined) {
+    if (
+      template.serverConnection !== undefined &&
+      !isCurrentServerConnection(template.serverConnection)
+    )
+      return false
     if (!isScopeVisible(`server:${template.serverUrl}`)) return false
-    return nodeChainVisible(template.serverUrl, template.serverNodeId ?? null)
+    return nodeChainVisible(
+      template.serverUrl,
+      template.serverNodeId ?? null,
+      template.surface ?? WORLD_TEMPLATE_SURFACE,
+    )
   }
   return localFolderChainVisible(template.folderId)
 }
@@ -489,8 +502,7 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
  * turning every hidden colour back on at the moment of detaching.
  */
 export const appearanceOf = (template: PlacedTemplate): Appearance => {
-  const state = getState()
-  const global: Appearance = { ...getGlobalAppearance(), hiddenColours: state.hiddenColours }
+  const global = getSurfaceAppearance(template.surface ?? WORLD_TEMPLATE_SURFACE)
   const own = template.appearance
   if (own === null || template.owns.length === 0) return global
 
@@ -648,6 +660,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     opaque,
     visible,
     everPlaced,
+    surface: storedSurface,
     appearance,
     owns,
     revision,
@@ -679,6 +692,13 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   if (typeof visible !== 'boolean' || typeof everPlaced !== 'boolean') {
     throw new RangeError('template state is invalid')
   }
+  const surface =
+    storedSurface === undefined
+      ? WORLD_TEMPLATE_SURFACE
+      : isRecord(storedSurface)
+        ? templateSurface(storedSurface.kind, storedSurface.allianceId)
+        : null
+  if (surface === null) throw new RangeError('template surface is invalid')
   if (
     revision !== undefined &&
     (!Number.isSafeInteger(revision) ||
@@ -711,6 +731,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     opaque: opaque as number,
     visible,
     everPlaced,
+    surface,
     revision: revision === undefined ? 0 : (revision as number),
     folderId: typeof folderId === 'string' ? folderId : null,
     appearance: normaliseAppearance(appearance),
@@ -725,13 +746,17 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
         : (owns as AppearanceGroup[]),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
-  validatePlacement({ ...normalised, surface: WORLD_TEMPLATE_SURFACE })
+  validatePlacement(normalised)
   return normalised
 }
 
 /** Validate indexed pixels and retain only the painted world-tile keys downstream work needs. */
 const paintedTileKeys = async (
-  template: ImportedTemplate & { readonly wrapX?: boolean; readonly serverUrl?: string },
+  template: ImportedTemplate & {
+    readonly surface?: TemplateSurface
+    readonly wrapX?: boolean
+    readonly serverUrl?: string
+  },
 ): Promise<ReadonlySet<string>> => {
   validatePlacement(template)
   await yieldToBrowser()
@@ -746,14 +771,16 @@ const paintedTileKeys = async (
     if (index !== TRANSPARENT_INDEX) {
       if (index >= WPLACE_PALETTE.length) throw new RangeError('template palette index is invalid')
       opaque++
-      const unwrappedX = template.originX + sourceX
-      const worldX = unwrappedX >= WORLD_PIXELS ? unwrappedX - WORLD_PIXELS : unwrappedX
-      const tileX = Math.floor(worldX / TILE_SIZE)
-      const tileY = Math.floor((template.originY + sourceY) / TILE_SIZE)
-      const tile = tileY * worldTilesWide + tileX
-      if (tile !== lastPaintedTile) {
-        lastPaintedTile = tile
-        tiles.add(`${tileX}/${tileY}`)
+      if ((template.surface ?? WORLD_TEMPLATE_SURFACE).kind === 'world') {
+        const unwrappedX = template.originX + sourceX
+        const worldX = unwrappedX >= WORLD_PIXELS ? unwrappedX - WORLD_PIXELS : unwrappedX
+        const tileX = Math.floor(worldX / TILE_SIZE)
+        const tileY = Math.floor((template.originY + sourceY) / TILE_SIZE)
+        const tile = tileY * worldTilesWide + tileX
+        if (tile !== lastPaintedTile) {
+          lastPaintedTile = tile
+          tiles.add(`${tileX}/${tileY}`)
+        }
       }
     }
     sourceX++
@@ -914,7 +941,7 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       previewOrigins.delete(id)
       templates.set(id, {
         ...winner,
-        surface: WORLD_TEMPLATE_SURFACE,
+        surface: winner.surface ?? WORLD_TEMPLATE_SURFACE,
         appearance: winner.appearance ?? null,
         owns: winner.owns ?? (winner.appearance != null ? APPEARANCE_GROUPS : []),
         folderId: winner.folderId ?? null,
@@ -984,6 +1011,7 @@ export const putServerTemplate = async (
     serverTemplateId: string
     serverNodeId: string | null
     serverVersion: string
+    serverConnection?: ConnectedServer
     serverTileKeys?: readonly string[]
     wrapX?: boolean
   },
@@ -1031,13 +1059,24 @@ export const updateServerTemplateMetadata = async (
   id: string,
   name: string,
   serverNodeId: string | null,
+  serverConnection?: ConnectedServer,
 ): Promise<boolean> =>
   await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || !isServerTemplate(existing)) return false
     if (name.length === 0 || name.length > MAX_TEMPLATE_NAME_LENGTH) return false
-    if (existing.name === name && existing.serverNodeId === serverNodeId) return true
-    templates.set(id, { ...existing, name, serverNodeId })
+    if (
+      existing.name === name &&
+      existing.serverNodeId === serverNodeId &&
+      (serverConnection === undefined || existing.serverConnection === serverConnection)
+    )
+      return true
+    templates.set(id, {
+      ...existing,
+      name,
+      serverNodeId,
+      ...(serverConnection === undefined ? {} : { serverConnection }),
+    })
     notify()
     return true
   })
@@ -1080,10 +1119,29 @@ export const forgetServerTemplates = async (serverUrl: string): Promise<void> =>
   })
 }
 
-export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
+/** Forget one server's rows on one drawing surface while preserving its other canvases. */
+export const forgetServerSurfaceTemplates = async (
+  serverUrl: string,
+  surface: TemplateSurface,
+): Promise<void> => {
+  const ids = [...templates.values()]
+    .filter(
+      (template) =>
+        template.serverUrl === serverUrl &&
+        sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+    )
+    .map(({ id }) => id)
+  await Promise.all(ids.map(async (id) => await forgetServerTemplate(id)))
+}
+
+export const addLocalTemplate = async (
+  template: ImportedTemplate,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): Promise<PlacedTemplate> => {
   const restoring = restoreInFlight
   if (restoring !== null) await restoring
-  validatePlacement(template)
+  const scoped = { ...template, surface }
+  validatePlacement(scoped)
   if (
     typeof template.id !== 'string' ||
     typeof template.name !== 'string' ||
@@ -1109,10 +1167,10 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
   pendingAdds.add(template.id)
   pendingIndexPixels += template.indices.length
   try {
-    const tiles = await paintedTileKeys(template)
+    const tiles = await paintedTileKeys(scoped)
     const placed: PlacedTemplate = {
       ...template,
-      surface: WORLD_TEMPLATE_SURFACE,
+      surface,
       tiles,
       visible: true,
       everPlaced: false,
@@ -1178,7 +1236,8 @@ export const copyAsLocalTemplate = async (
     opaque: template.opaque,
   }
   if (isServerTemplate(template)) {
-    validatePlacement(imported)
+    const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+    validatePlacement({ ...imported, surface })
     if (
       id.length === 0 ||
       id.length > MAX_TEMPLATE_ID_LENGTH ||
@@ -1206,10 +1265,10 @@ export const copyAsLocalTemplate = async (
 
     pendingAdds.add(id)
     try {
-      const tiles = await paintedTileKeys(imported)
+      const tiles = await paintedTileKeys({ ...imported, surface })
       const placed: PlacedTemplate = {
         ...imported,
-        surface: WORLD_TEMPLATE_SURFACE,
+        surface,
         tiles,
         visible: true,
         everPlaced: true,
@@ -1238,7 +1297,7 @@ export const copyAsLocalTemplate = async (
     }
   }
 
-  const copied = await addLocalTemplate(imported)
+  const copied = await addLocalTemplate(imported, template.surface ?? WORLD_TEMPLATE_SURFACE)
   if (await markPlaced(copied.id)) {
     return templates.get(copied.id) ?? copied
   }
@@ -1343,7 +1402,14 @@ const restoreStoredTemplates = async (): Promise<void> => {
         let template = normaliseStoredTemplate(rawTemplate)
         if (
           template.folderId !== null &&
-          !getState().localFolders.some((folder) => folder.id === template.folderId)
+          !getState().localFolders.some(
+            (folder) =>
+              folder.id === template.folderId &&
+              sameTemplateSurface(
+                folder.surface ?? WORLD_TEMPLATE_SURFACE,
+                template.surface ?? WORLD_TEMPLATE_SURFACE,
+              ),
+          )
         ) {
           // Folder state and template records live in different stores. Another tab can delete the
           // folder while this record's assignment commits, so no process-local lease can make the two
@@ -1393,7 +1459,7 @@ const restoreStoredTemplates = async (): Promise<void> => {
         reserved = template
         templates.set(template.id, {
           ...template,
-          surface: WORLD_TEMPLATE_SURFACE,
+          surface: template.surface ?? WORLD_TEMPLATE_SURFACE,
           appearance: template.appearance ?? null,
           owns: template.owns ?? (template.appearance != null ? APPEARANCE_GROUPS : []),
           folderId: template.folderId ?? null,
@@ -1637,6 +1703,18 @@ export const setTemplateFolder = async (id: string, folderId: string | null): Pr
     return await writeInOrder(id, async () => {
       const existing = templates.get(id)
       if (existing === undefined || deleting.has(id)) return false
+      if (folderId !== null) {
+        const folder = getState().localFolders.find((candidate) => candidate.id === folderId)
+        if (
+          folder === undefined ||
+          !sameTemplateSurface(
+            existing.surface ?? WORLD_TEMPLATE_SURFACE,
+            folder.surface ?? WORLD_TEMPLATE_SURFACE,
+          )
+        ) {
+          return false
+        }
+      }
       if (existing.folderId === folderId) return true
       const next = { ...existing, folderId }
       let revision = existing.revision
@@ -1675,6 +1753,21 @@ export const setTemplatesFolder = async (
         return false
       }
       const present = existing as PlacedTemplate[]
+      if (folderId !== null) {
+        const folder = getState().localFolders.find((candidate) => candidate.id === folderId)
+        if (
+          folder === undefined ||
+          present.some(
+            (template) =>
+              !sameTemplateSurface(
+                template.surface ?? WORLD_TEMPLATE_SURFACE,
+                folder.surface ?? WORLD_TEMPLATE_SURFACE,
+              ),
+          )
+        ) {
+          return false
+        }
+      }
       const changed = present.filter((template) => template.folderId !== folderId)
       if (changed.length === 0) return true
       const durable = changed.filter((template) => !isPendingImage(template))

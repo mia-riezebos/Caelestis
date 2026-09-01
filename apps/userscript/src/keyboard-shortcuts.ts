@@ -1,8 +1,9 @@
+import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
 import { currentShortcutPlatform, type ShortcutPlatform, shortcutFor } from './shortcuts.js'
-import { getState, setState } from './state.js'
+import { getState, getSurfaceAppearance, setState, setSurfaceAppearance } from './state.js'
 import {
   ownsGroup,
   setAppearance,
@@ -10,6 +11,7 @@ import {
   setOwnsGroup,
   toggleAppearanceBoolean,
 } from './templates/local-store.js'
+import { isMoving } from './templates/move.js'
 import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
 import { togglePanel } from './ui/panel.js'
@@ -27,6 +29,15 @@ const triggerMapRepaint = (): void => {
   map?.triggerRepaint?.()
 }
 
+/** Claim a handled shortcut inside an alliance editor so it cannot reach the world behind it. */
+const claimShortcut = (
+  event: KeyboardEvent,
+  allianceEditorWasActive = activeAllianceEditorStage() !== null,
+): void => {
+  event.preventDefault()
+  if (allianceEditorWasActive) event.stopImmediatePropagation()
+}
+
 const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void => {
   const focused = focusedTemplate()
   if (focused !== null && ownsGroup(focused, 'markers')) {
@@ -39,13 +50,23 @@ const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void
   setState({ appearance: { ...appearance, [property]: !appearance[property] } })
 }
 
-const toggleRings = (): void => {
+const toggleRings = (
+  allianceSurface: NonNullable<ReturnType<typeof activeAllianceSurface>>['surface'] | null,
+): void => {
   const focused = focusedTemplate()
   if (focused !== null && ownsGroup(focused, 'pixels')) {
     void toggleAppearanceBoolean(focused.id, 'contrastOutline').then((changed) => {
       if (!changed) return
       refreshOverlayMenu()
-      triggerMapRepaint()
+      if (allianceSurface === null) triggerMapRepaint()
+    })
+    return
+  }
+  if (allianceSurface !== null) {
+    const appearance = getSurfaceAppearance(allianceSurface)
+    setSurfaceAppearance(allianceSurface, {
+      ...appearance,
+      contrastOutline: !appearance.contrastOutline,
     })
     return
   }
@@ -97,110 +118,159 @@ export const installKeyboardShortcuts = (
 
   const onKeyup = (event: KeyboardEvent): void => {
     if (!peeking || event.key.toLowerCase() !== 'g') return
-    event.preventDefault()
+    claimShortcut(event)
     endPeek()
   }
   const onVisibility = (): void => {
     if (document.hidden) endPeek()
   }
   const onKeydown = (event: KeyboardEvent): void => {
+    // Placement owns its confirm/cancel keys. This listener runs in capture so Wplace's alliance
+    // modal cannot swallow shortcuts before they reach the shared key map.
+    if (isMoving() && (event.key === 'Escape' || event.key === 'Enter')) return
     const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
+    const alliance = activeAllianceSurface()
+    const allianceEditorStage = activeAllianceEditorStage()
+    const allianceSurface = alliance?.surface ?? null
+    const nativeRoot = allianceEditorStage?.closest('dialog[open]') ?? document
+    const claim = (): void => claimShortcut(event, allianceEditorStage !== null)
+
+    // An asset editor intentionally has no resolved surface while Wplace's draft metadata is
+    // pending or invalid. Native paint controls remain safely scoped to its dialog; every action
+    // that needs template or appearance state must wait rather than falling through to the world.
+    if (
+      allianceEditorStage !== null &&
+      alliance === null &&
+      shortcut !== 'show-shortcut-help' &&
+      shortcut !== 'undo-paint' &&
+      shortcut !== 'redo-paint' &&
+      shortcut !== 'paint-action' &&
+      shortcut !== 'cancel-paint'
+    ) {
+      claim()
+      return
+    }
+
+    // These depend on world paint accounting or world-only appearance state. Claim them while an
+    // alliance editor is active, but never let them mutate the world behind it.
+    if (
+      allianceEditorStage !== null &&
+      (shortcut === 'toggle-colour' ||
+        shortcut === 'toggle-markers' ||
+        shortcut === 'toggle-selected-colour-markers' ||
+        shortcut === 'fly-to-colour' ||
+        shortcut === 'cycle-colour-previous' ||
+        shortcut === 'cycle-colour-next' ||
+        shortcut === 'toggle-theme')
+    ) {
+      claim()
+      return
+    }
 
     if (shortcut === 'show-shortcut-help') {
-      event.preventDefault()
+      claim()
       toggleShortcutHelp(platform)
       return
     }
     if (shortcut === 'undo-paint' || shortcut === 'redo-paint') {
-      const moved = shortcut === 'undo-paint' ? undoPaintDraft() : redoPaintDraft()
-      if (moved) event.preventDefault()
+      const moved =
+        shortcut === 'undo-paint' ? undoPaintDraft(nativeRoot) : redoPaintDraft(nativeRoot)
+      if (allianceEditorStage !== null || moved) claim()
       return
     }
     if (shortcut === 'toggle-panel') {
-      event.preventDefault()
+      claim()
       togglePanel()
       return
     }
     if (shortcut === 'toggle-template-menu') {
       const focused = focusedTemplate()
-      if (focused === null) return
-      event.preventDefault()
+      if (focused === null) {
+        if (allianceEditorStage !== null) claim()
+        return
+      }
+      claim()
       toggleOverlayMenu(focused.id, redraw)
       return
     }
     if (shortcut === 'toggle-colour') {
-      event.preventDefault()
+      claim()
       setState({ onlySelectedColour: !getState().onlySelectedColour })
       return
     }
     if (shortcut === 'toggle-visibility') {
-      event.preventDefault()
+      claim()
       const focused = focusedTemplate({ restoreHiddenAtCentre: true })
       if (focused !== null) void setLocalVisible(focused.id, !focused.visible)
       return
     }
     if (shortcut === 'toggle-markers') {
-      event.preventDefault()
+      claim()
       toggleMarkerKind('markMismatch')
       return
     }
     if (shortcut === 'toggle-rings') {
-      event.preventDefault()
-      toggleRings()
+      claim()
+      toggleRings(allianceSurface)
       return
     }
     if (shortcut === 'toggle-selected-colour-markers') {
-      event.preventDefault()
+      claim()
       toggleMarkerKind('markSelectedColour')
       return
     }
     if (shortcut === 'fly-to-colour') {
-      event.preventDefault()
+      claim()
       void navigateFocusedSelectedColour()
       return
     }
     if (shortcut === 'peek-overlays') {
-      event.preventDefault()
+      claim()
       peeking = true
       repaintPeek(true)
       return
     }
     if (shortcut === 'cycle-colour-previous' || shortcut === 'cycle-colour-next') {
-      event.preventDefault()
+      claim()
       cycleFocusedColour(shortcut === 'cycle-colour-previous' ? -1 : 1)
       return
     }
     if (shortcut === 'paint-action') {
-      if (performPaintAction()) event.preventDefault()
+      const handled = performPaintAction(nativeRoot)
+      if (allianceEditorStage !== null || handled) claim()
       return
     }
     if (shortcut === 'cancel-paint') {
-      if (cancelPaintDraft()) event.preventDefault()
+      const handled = cancelPaintDraft(nativeRoot)
+      if (allianceEditorStage !== null || handled) claim()
       return
     }
     if (shortcut === 'toggle-theme') {
-      if (toggleWplaceTheme()) event.preventDefault()
+      if (toggleWplaceTheme()) claim()
       return
     }
 
     const opacity = opacityFor(shortcut)
     if (opacity === null) return
     const focused = focusedTemplate()
-    if (focused === null) return
-    event.preventDefault()
+    if (focused === null) {
+      if (allianceEditorStage !== null) claim()
+      return
+    }
+    claim()
     void setOwnsGroup(focused.id, 'pixels', true).then((owned) => {
       if (owned) void setAppearance(focused.id, { opacity })
     })
   }
 
-  window.addEventListener('keydown', onKeydown)
-  window.addEventListener('keyup', onKeyup)
+  window.addEventListener('keydown', onKeydown, true)
+  window.addEventListener('keyup', onKeyup, true)
   window.addEventListener('blur', endPeek)
   document.addEventListener('visibilitychange', onVisibility)
   return () => {
-    window.removeEventListener('keydown', onKeydown)
-    window.removeEventListener('keyup', onKeyup)
+    window.removeEventListener('keydown', onKeydown, true)
+    window.removeEventListener('keyup', onKeyup, true)
     window.removeEventListener('blur', endPeek)
     document.removeEventListener('visibilitychange', onVisibility)
     endPeek()

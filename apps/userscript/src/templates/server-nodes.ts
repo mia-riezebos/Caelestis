@@ -1,3 +1,4 @@
+import { type TemplateSurface, templateSurfaceKey, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { isScopeVisible } from '../state.js'
 
 /**
@@ -17,24 +18,32 @@ import { isScopeVisible } from '../state.js'
  * disagree. What *is* persisted is the switch, keyed by node id, exactly as a Local folder's is.
  */
 
-/** Parent of each node, per server. Null means the server's top level. */
+/** Parent of each node, per server and drawing surface. Null means the surface's top level. */
 const parents = new Map<string, Map<string, string | null>>()
 let revision = 0
+
+const parentMapKey = (serverUrl: string, surface: TemplateSurface): string =>
+  `${serverUrl}\n${templateSurfaceKey(surface)}`
 
 export const serverNodesRevision = (): number => revision
 
 /** Parent rows in manifest order, for consumers that need to reproduce the server tree. */
 export const serverNodeParents = (
   serverUrl: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): readonly (readonly [id: string, parentId: string | null])[] => [
-  ...(parents.get(serverUrl)?.entries() ?? []),
+  ...(parents.get(parentMapKey(serverUrl, surface))?.entries() ?? []),
 ]
 
 export const rememberNodes = (
   serverUrl: string,
   nodes: readonly { id: string; parentId: string | null }[],
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): void => {
-  parents.set(serverUrl, new Map(nodes.map((node) => [node.id, node.parentId])))
+  parents.set(
+    parentMapKey(serverUrl, surface),
+    new Map(nodes.map((node) => [node.id, node.parentId])),
+  )
   revision++
 }
 
@@ -52,8 +61,12 @@ export const nodeScopeKey = (serverUrl: string, nodeId: string): string =>
  * Bounded by the number of nodes rather than trusting the tree to be one: a manifest is data from
  * somewhere else, and a parent cycle in it would otherwise be an infinite loop in the render path.
  */
-export const nodeChainVisible = (serverUrl: string, nodeId: string | null): boolean => {
-  const byId = parents.get(serverUrl)
+export const nodeChainVisible = (
+  serverUrl: string,
+  nodeId: string | null,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): boolean => {
+  const byId = parents.get(parentMapKey(serverUrl, surface))
   if (byId === undefined) return true
   let at = nodeId
   for (let depth = 0; at !== null && depth <= byId.size; depth++) {
@@ -63,6 +76,18 @@ export const nodeChainVisible = (serverUrl: string, nodeId: string | null): bool
   return true
 }
 
+/** Drop one exact surface's parent map when its owning connection lifetime ends. */
+export const forgetSurfaceNodes = (
+  serverUrl: string,
+  surface: TemplateSurface,
+): readonly string[] => {
+  const key = parentMapKey(serverUrl, surface)
+  const byId = parents.get(key)
+  parents.delete(key)
+  revision++
+  return byId === undefined ? [] : [...byId.keys()]
+}
+
 /**
  * Drop one server's folders, and report which they were.
  *
@@ -70,8 +95,12 @@ export const nodeChainVisible = (serverUrl: string, nodeId: string | null): bool
  * gone there is nothing left that could work out which stored keys belonged to this server.
  */
 export const forgetNodes = (serverUrl: string): readonly string[] => {
-  const byId = parents.get(serverUrl)
-  parents.delete(serverUrl)
+  const ids = new Set<string>()
+  for (const [key, byId] of parents) {
+    if (!key.startsWith(`${serverUrl}\n`)) continue
+    parents.delete(key)
+    for (const id of byId.keys()) ids.add(id)
+  }
   revision++
-  return byId === undefined ? [] : [...byId.keys()]
+  return [...ids]
 }

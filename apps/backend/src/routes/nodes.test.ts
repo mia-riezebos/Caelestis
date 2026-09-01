@@ -31,7 +31,14 @@ type NodeResponse = {
 
 const createNode = async (
   app: ReturnType<typeof harness>['app'],
-  body: { season: number; parentId: string | null; name: string; description?: string },
+  body: {
+    season: number
+    parentId: string | null
+    name: string
+    description?: string
+    surfaceKind?: string
+    allianceId?: number
+  },
 ) => {
   const response = await app.request('/admin/nodes', {
     method: 'POST',
@@ -259,6 +266,50 @@ describe('node routes', () => {
     expect(
       (await createNode(app, { season: 2, parentId: null, name: 'Canada' })).response.status,
     ).toBe(201)
+  })
+
+  it('creates and lists the same path independently on each alliance surface', async () => {
+    const { app } = harness()
+    const world = await createNode(app, { season: 1, parentId: null, name: 'Shared' })
+    const headquarters = await createNode(app, {
+      season: 1,
+      surfaceKind: 'alliance-headquarters',
+      allianceId: 535_245,
+      parentId: null,
+      name: 'Shared',
+    })
+    const picture = await createNode(app, {
+      season: 1,
+      surfaceKind: 'alliance-picture',
+      allianceId: 535_245,
+      parentId: null,
+      name: 'Shared',
+    })
+
+    expect([world.response.status, headquarters.response.status, picture.response.status]).toEqual([
+      201, 201, 201,
+    ])
+    const listed = await app.request(
+      '/admin/nodes?season=1&surface=alliance-headquarters&allianceId=535245',
+      { headers: bearer },
+    )
+    await expect(listed.json()).resolves.toEqual([
+      expect.objectContaining({ id: headquarters.body.id, path: '/shared' }),
+    ])
+  })
+
+  it('rejects a parent from another surface', async () => {
+    const { app } = harness()
+    const world = await createNode(app, { season: 1, parentId: null, name: 'World' })
+    const child = await createNode(app, {
+      season: 1,
+      surfaceKind: 'alliance-banner',
+      allianceId: 535_245,
+      parentId: world.body.id,
+      name: 'Child',
+    })
+
+    expect(child.response.status).toBe(400)
   })
 
   it('rejects missing and cross-season parents', async () => {

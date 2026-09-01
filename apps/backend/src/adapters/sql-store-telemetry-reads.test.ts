@@ -558,4 +558,32 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
       }),
     ).resolves.toEqual([{ bucketStart: old.reportedAt, hash: old.hash, reporters: 1 }])
   })
+
+  it('does not let a frozen alliance template preserve world tile history', async () => {
+    const now = seconds(1_800_000_000)
+    const templateId = 'frozen-alliance-template'
+    await store.insertTemplateVersion({
+      ...version(templateId),
+      surface: { kind: 'alliance-banner', allianceId: 535_245 },
+    })
+    await store.updateTemplate(templateId, { timelapseFrozenAt: millis(now * 1_000) }, millis(1))
+    const old = observation({
+      tile: { x: 0, y: 0 },
+      reportedAt: seconds(now - 90_000),
+      hash: 'e'.repeat(64),
+    })
+    await store.recordTileObservation(old, [])
+
+    await store.foldTileHistory(1, old.tile, now)
+
+    await expect(
+      store.readTileHistory({
+        season: 1,
+        tile: old.tile,
+        resolution: 0,
+        fromSeconds: seconds(now - 100_000),
+        toSeconds: now,
+      }),
+    ).resolves.toEqual([])
+  })
 })

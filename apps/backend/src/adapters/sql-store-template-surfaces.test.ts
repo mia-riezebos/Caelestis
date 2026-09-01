@@ -1,7 +1,7 @@
 import { millis, type TemplateSurface } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { SqlStore, TemplateVersionRecord } from '../ports/index.js'
-import { TemplateIdentityError } from '../ports/index.js'
+import type { NodeRecord, SqlStore, TemplateVersionRecord } from '../ports/index.js'
+import { InvalidNodeParentError, TemplateIdentityError } from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
 import { MemorySqlStore } from './memory/memory-sql-store.js'
@@ -76,5 +76,42 @@ describe.each(adapters)('$name template surface contract', ({ make }) => {
         { requireExisting: true },
       ),
     ).rejects.toBeInstanceOf(TemplateIdentityError)
+  })
+
+  it('does not let templates attach to a folder from another surface', async () => {
+    const worldNode: NodeRecord = {
+      id: 'world-node',
+      surface: { kind: 'world', allianceId: null },
+      season: 1,
+      parentId: null,
+      path: '/shared',
+      name: 'World',
+      description: null,
+      createdAt: millis(1_000),
+    }
+    const allianceNode: NodeRecord = {
+      ...worldNode,
+      id: 'alliance-node',
+      surface: { kind: 'alliance-picture', allianceId: 535_245 },
+      name: 'Alliance',
+    }
+    await store.insertNode(worldNode)
+    await store.insertNode(allianceNode)
+    const allianceVersion = {
+      ...version(allianceNode.surface),
+      nodeId: allianceNode.id,
+    }
+    await store.insertTemplateVersion(allianceVersion)
+
+    await expect(
+      store.updateTemplate('template-1', { nodeId: worldNode.id }, millis(2_000)),
+    ).rejects.toBeInstanceOf(InvalidNodeParentError)
+    await expect(
+      store.insertTemplateVersion({
+        ...version(allianceNode.surface, 'version-2'),
+        templateId: 'template-2',
+        nodeId: worldNode.id,
+      }),
+    ).rejects.toBeInstanceOf(InvalidNodeParentError)
   })
 })

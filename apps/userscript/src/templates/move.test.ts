@@ -13,8 +13,22 @@ const harness = vi.hoisted(() => ({
   previewLocalTemplate: vi.fn(() => true),
   reconciliationObservers: new Map<string, Set<() => void>>(),
   removeLocalTemplate: vi.fn(async () => true),
+  activeAlliance: null as null | {
+    surface: { kind: 'alliance-headquarters'; allianceId: number }
+    stage: { contains: ReturnType<typeof vi.fn> }
+    frame: {
+      contains: ReturnType<typeof vi.fn>
+      getBoundingClientRect: ReturnType<typeof vi.fn>
+      style: Record<string, string>
+    }
+    draftId: null
+    bounds: { minX: number; minY: number; maxX: number; maxY: number }
+  },
 }))
 
+vi.mock('../alliance-surface.js', () => ({
+  activeAllianceSurface: () => harness.activeAlliance,
+}))
 vi.mock('../main.js', () => ({
   canvasPixelAt: harness.canvasPixelAt,
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
@@ -47,6 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   listeners.clear()
   harness.reconciliationObservers.clear()
+  harness.activeAlliance = null
   harness.canvasPixelAt.mockReturnValue({ x: 2, y: 3 })
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
   harness.isMapInteractionTarget.mockReturnValue(true)
@@ -310,6 +325,132 @@ describe('template placement controls', () => {
     await vi.waitFor(() => expect(harness.previewLocalTemplate).toHaveBeenCalled())
 
     expect(harness.previewLocalTemplate).toHaveBeenCalledWith('test', 0, 0)
+  })
+
+  it('places and confirms an image inside the active alliance artboard', async () => {
+    const target = { tagName: 'CANVAS', closest: vi.fn(() => null) }
+    const frame = {
+      contains: vi.fn(() => true),
+      getBoundingClientRect: vi.fn(() => ({
+        left: 100,
+        top: 200,
+        right: 600,
+        bottom: 700,
+        width: 500,
+        height: 500,
+      })),
+      style: {},
+    }
+    harness.activeAlliance = {
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      stage: { contains: vi.fn(() => true) },
+      frame,
+      draftId: null,
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+    }
+    harness.localTemplates.mockReturnValue([
+      {
+        ...harness.localTemplates()[0],
+        originX: -10,
+        originY: -10,
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      },
+    ])
+    const moves = await import('./move.js')
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+    const pointerdown = listeners.get('pointerdown')
+    const pointermove = listeners.get('pointermove')
+    const keydown = listeners.get('keydown')
+    if (pointerdown === undefined || pointermove === undefined || keydown === undefined) {
+      throw new Error('expected placement listeners')
+    }
+
+    pointerdown({
+      button: 0,
+      pointerId: 7,
+      target,
+      clientX: 330,
+      clientY: 430,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    pointermove({
+      pointerId: 7,
+      target,
+      clientX: 350,
+      clientY: 450,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 0, 0)
+
+    keydown({
+      key: 'Enter',
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      composedPath: () => [],
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    await vi.waitFor(() => expect(harness.placeLocalTemplate).toHaveBeenCalledWith('test', 0, 0))
+  })
+
+  it('cancels an alliance placement only after its drawing surface disappears or changes', async () => {
+    const hq = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([{ ...harness.localTemplates()[0], surface: hq }])
+    const moves = await import('./move.js')
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+
+    await moves.abortMoveOutsideSurface(hq)
+    expect(moves.movingId()).toBe('test')
+    expect(harness.clearLocalPreview).not.toHaveBeenCalled()
+
+    await moves.abortMoveOutsideSurface({ kind: 'alliance-picture', allianceId: 535_245 })
+    expect(moves.movingId()).toBeNull()
+    expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
+  })
+
+  it('clamps alliance middle-click placement to signed HQ bounds', async () => {
+    const target = { tagName: 'CANVAS', closest: vi.fn(() => null) }
+    harness.activeAlliance = {
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      stage: { contains: vi.fn(() => true) },
+      frame: {
+        contains: vi.fn(() => true),
+        getBoundingClientRect: vi.fn(() => ({
+          left: 100,
+          top: 200,
+          right: 600,
+          bottom: 700,
+          width: 500,
+          height: 500,
+        })),
+        style: {},
+      },
+      draftId: null,
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+    }
+    harness.localTemplates.mockReturnValue([
+      {
+        ...harness.localTemplates()[0],
+        surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      },
+    ])
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    if (pointerdown === undefined) throw new Error('expected pointerdown listener')
+
+    pointerdown({
+      button: 1,
+      pointerId: 1,
+      target,
+      clientX: 100,
+      clientY: 200,
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenCalledWith('test', -125, -125)
   })
 
   it('uses CSS pixel scale for modifier drags on high-DPI canvases', async () => {

@@ -339,6 +339,7 @@ describe('server template sync', () => {
       held.id,
       template.name,
       template.nodeId,
+      connected,
     )
   })
 
@@ -408,6 +409,7 @@ describe('server template sync', () => {
       held.id,
       template.name,
       template.nodeId,
+      connected,
     )
   })
 
