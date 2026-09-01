@@ -110,6 +110,54 @@ describe('the Drizzle schema and migration history agree', () => {
     expect(statements(committed).length).toBeGreaterThan(10)
   })
 
+  it('applies the rebased stack after the published PRD migrations', () => {
+    const database = new DatabaseSync(':memory:')
+    const lastSharedIndex = migrations.findIndex(
+      ({ name }) => name === '0008_magenta_hemingway.sql',
+    )
+    expect(lastSharedIndex).toBeGreaterThan(0)
+    const shared = migrations.slice(0, lastSharedIndex + 1)
+    database.exec(
+      shared
+        .map(({ sql }) => sql)
+        .join('\n')
+        .replaceAll('--> statement-breakpoint', ''),
+    )
+
+    const statusRevision = migrations.find(({ sql }) =>
+      sql.includes('CREATE TABLE `status_read_model_revisions`'),
+    )
+    const dirtyFingerprints = migrations.find(({ sql }) =>
+      sql.includes('CREATE TABLE `__new_status_read_model_revisions`'),
+    )
+    expect(statusRevision).toBeDefined()
+    expect(dirtyFingerprints).toBeDefined()
+    database.exec(
+      `${statusRevision?.sql ?? ''}\n${dirtyFingerprints?.sql ?? ''}`.replaceAll(
+        '--> statement-breakpoint',
+        '',
+      ),
+    )
+
+    const applied = new Set([
+      ...shared.map(({ name }) => name),
+      '0009_breezy_red_skull.sql',
+      '0010_charming_photon.sql',
+    ])
+    for (const migration of migrations) {
+      if (applied.has(migration.name)) continue
+      database.exec(migration.sql.replaceAll('--> statement-breakpoint', ''))
+    }
+
+    expect(
+      database.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').all('canvas_tiles'),
+    ).toContainEqual({ name: 'commit_order' })
+    expect(
+      database.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').all('nodes'),
+    ).toContainEqual({ name: 'surface_kind' })
+    database.close()
+  })
+
   it('upgrades the historical schema needed by server-backed progress', () => {
     const database = new DatabaseSync(':memory:')
     const repairIndex = migrations.findIndex(
