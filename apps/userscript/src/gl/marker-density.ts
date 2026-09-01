@@ -60,9 +60,9 @@ export const markerVisibilityBudget = (): MarkerVisibilityBudget => ({
  * Count visible packed marker coordinates without source-sized work or allocations.
  *
  * Mismatch marks are ordered by tile-local y then x. A clipped rectangle is therefore a pair of
- * binary searches per visible row, capped by the fixed 1,000-row tile size. Fully visible and fully
- * clipped tiles return without searching. A shared frame allowance falls back to the conservative
- * full source count before aggregate search work can become a stall.
+ * binary searches per visible row. Fully visible and fully clipped regions return without
+ * searching. A shared frame allowance falls back to the conservative full source count before
+ * aggregate search work can become a stall.
  */
 export const visibleMarkerPoints = (
   marks: Uint32Array,
@@ -70,9 +70,11 @@ export const visibleMarkerPoints = (
   bufferWidth: number,
   bufferHeight: number,
   budget: MarkerVisibilityBudget,
+  sourceWidth = TILE_SIZE,
+  sourceHeight = TILE_SIZE,
 ): number => {
   if (marks.length === 0 || bufferWidth <= 0 || bufferHeight <= 0) return 0
-  if (tile.width <= 0 || tile.height <= 0) return 0
+  if (tile.width <= 0 || tile.height <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return 0
   if (
     tile.x >= bufferWidth ||
     tile.y >= bufferHeight ||
@@ -88,11 +90,17 @@ export const visibleMarkerPoints = (
   )
     return marks.length
 
-  const clampPixel = (value: number): number => Math.max(0, Math.min(TILE_SIZE, value))
-  const startX = clampPixel(Math.ceil((-tile.x * TILE_SIZE) / tile.width - 0.5))
-  const endX = clampPixel(Math.ceil(((bufferWidth - tile.x) * TILE_SIZE) / tile.width - 0.5))
-  const startY = clampPixel(Math.ceil((-tile.y * TILE_SIZE) / tile.height - 0.5))
-  const endY = clampPixel(Math.ceil(((bufferHeight - tile.y) * TILE_SIZE) / tile.height - 0.5))
+  const clampPixel = (value: number, size: number): number => Math.max(0, Math.min(size, value))
+  const startX = clampPixel(Math.ceil((-tile.x * sourceWidth) / tile.width - 0.5), sourceWidth)
+  const endX = clampPixel(
+    Math.ceil(((bufferWidth - tile.x) * sourceWidth) / tile.width - 0.5),
+    sourceWidth,
+  )
+  const startY = clampPixel(Math.ceil((-tile.y * sourceHeight) / tile.height - 0.5), sourceHeight)
+  const endY = clampPixel(
+    Math.ceil(((bufferHeight - tile.y) * sourceHeight) / tile.height - 0.5),
+    sourceHeight,
+  )
   if (startX >= endX || startY >= endY) return 0
 
   const comparisonsPerSearch = Math.ceil(Math.log2(marks.length + 1))

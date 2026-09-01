@@ -38,12 +38,23 @@ const claimShortcut = (
   if (allianceEditorWasActive) event.stopImmediatePropagation()
 }
 
-const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void => {
+const toggleMarkerKind = (
+  property: 'markMismatch' | 'markSelectedColour',
+  allianceSurface: NonNullable<ReturnType<typeof activeAllianceSurface>>['surface'] | null,
+): void => {
   const focused = focusedTemplate()
   if (focused !== null && ownsGroup(focused, 'markers')) {
     void toggleAppearanceBoolean(focused.id, property)
     // Its menu may be open on the switch this moved, and it does not rebuild on a redraw.
     refreshOverlayMenu()
+    return
+  }
+  if (allianceSurface !== null) {
+    const appearance = getSurfaceAppearance(allianceSurface)
+    setSurfaceAppearance(allianceSurface, {
+      ...appearance,
+      [property]: !appearance[property],
+    })
     return
   }
   const appearance = getState().appearance
@@ -152,22 +163,6 @@ export const installKeyboardShortcuts = (
       return
     }
 
-    // These depend on world paint accounting or world-only appearance state. Claim them while an
-    // alliance editor is active, but never let them mutate the world behind it.
-    if (
-      allianceEditorStage !== null &&
-      (shortcut === 'toggle-colour' ||
-        shortcut === 'toggle-markers' ||
-        shortcut === 'toggle-selected-colour-markers' ||
-        shortcut === 'fly-to-colour' ||
-        shortcut === 'cycle-colour-previous' ||
-        shortcut === 'cycle-colour-next' ||
-        shortcut === 'toggle-theme')
-    ) {
-      claim()
-      return
-    }
-
     if (shortcut === 'show-shortcut-help') {
       claim()
       toggleShortcutHelp(platform)
@@ -207,7 +202,7 @@ export const installKeyboardShortcuts = (
     }
     if (shortcut === 'toggle-markers') {
       claim()
-      toggleMarkerKind('markMismatch')
+      toggleMarkerKind('markMismatch', allianceSurface)
       return
     }
     if (shortcut === 'toggle-rings') {
@@ -217,7 +212,7 @@ export const installKeyboardShortcuts = (
     }
     if (shortcut === 'toggle-selected-colour-markers') {
       claim()
-      toggleMarkerKind('markSelectedColour')
+      toggleMarkerKind('markSelectedColour', allianceSurface)
       return
     }
     if (shortcut === 'fly-to-colour') {

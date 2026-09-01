@@ -1,12 +1,19 @@
-import { sameTemplateSurface, TRANSPARENT_INDEX, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { type TemplateSurface, TRANSPARENT_INDEX, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { allianceBounds, alliancePointAt } from './alliance-coordinates.js'
+import { type ActiveAllianceSurface, activeAllianceSurface } from './alliance-surface.js'
 import { log } from './debug.js'
+import { artboardPixelIndexAt, readArtboardPixels } from './gl/artboard-pixels.js'
 import { canvasPixelAt } from './main.js'
 import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
-import { appearanceOf, displayTemplates, isTemplateVisible } from './templates/local-store.js'
+import {
+  appearanceOf,
+  displayTemplatesForSurface,
+  isTemplateVisible,
+} from './templates/local-store.js'
 import { sourceXAt } from './templates/placement.js'
 import { ensureTilePixels, tilePixels } from './tile-transform.js'
-import { isPaintOpen } from './wplace-paint.js'
+import { isPaintOpen, selectPaintColour } from './wplace-paint.js'
 
 /**
  * Colour picking, answered from source pixels rather than from the composited canvas.
@@ -51,13 +58,11 @@ import { isPaintOpen } from './wplace-paint.js'
 const MAP_SURFACE = '.maplibregl-canvas-container, canvas.maplibregl-canvas'
 
 /** The palette index our overlay claims at a logical canvas pixel, or null if it claims none. */
-const overlayIndexAt = (x: number, y: number): number | null => {
+const overlayIndexAt = (surface: TemplateSurface, x: number, y: number): number | null => {
   // Last match wins: the layer draws templates in this order, so the last one drawn is the one on
   // top, and the one on top is the one being pointed at.
   let found: number | null = null
-  for (const template of displayTemplates().filter((candidate) =>
-    sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
-  )) {
+  for (const template of displayTemplatesForSurface(surface)) {
     if (!isTemplateVisible(template)) continue
     const localX = sourceXAt(template, x)
     const localY = y - template.originY
@@ -80,22 +85,36 @@ const placedIndexAt = (x: number, y: number): number | null =>
   })
 
 /** The colour the picker is allowed to offer at one canvas pixel. */
-const pickedIndexAt = (x: number, y: number): number | null =>
-  pickerIndex({ template: overlayIndexAt(x, y), pixelArt: placedIndexAt(x, y) })
+interface PickerPoint {
+  readonly surface: TemplateSurface
+  readonly x: number
+  readonly y: number
+  readonly alliance: ActiveAllianceSurface | null
+}
 
-/**
- * Hand the colour to wplace by pressing its own swatch.
- *
- * Their selection lives in a Svelte store we have no handle on, but every colour has a
- * `<button id="color-N">` that sets it, and clicking one goes through their handler — so the
- * drawer, the brush and anything else watching that store all update the way they would have if the
- * click had been ours. `color-N` is our index plus one, since their array starts at Transparent.
- */
-const selectColour = (index: number): boolean => {
-  const swatch = document.getElementById(`color-${index + 1}`)
-  if (!(swatch instanceof HTMLElement)) return false
-  swatch.click()
-  return true
+const pickerPointAt = (target: Element, clientX: number, clientY: number): PickerPoint | null => {
+  const alliance = activeAllianceSurface()
+  if (alliance?.frame.contains(target)) {
+    const point = alliancePointAt(alliance, clientX, clientY)
+    return point === null ? null : { surface: alliance.surface, ...point, alliance }
+  }
+  if (target.closest(MAP_SURFACE) === null) return null
+  const point = canvasPixelAt(clientX, clientY)
+  return point === null ? null : { surface: WORLD_TEMPLATE_SURFACE, ...point, alliance: null }
+}
+
+const pickedIndexAt = ({ surface, x, y, alliance }: PickerPoint): number | null => {
+  const template = overlayIndexAt(surface, x, y)
+  if (alliance === null) return pickerIndex({ template, pixelArt: placedIndexAt(x, y) })
+  const bounds = allianceBounds(alliance)
+  if (bounds === null) return template
+  const regions = readArtboardPixels(alliance, {
+    originX: bounds.minX,
+    originY: bounds.minY,
+    width: bounds.maxX - bounds.minX,
+    height: bounds.maxY - bounds.minY,
+  })
+  return pickerIndex({ template, pixelArt: artboardPixelIndexAt(regions, x, y) })
 }
 
 /**
@@ -106,6 +125,8 @@ const selectColour = (index: number): boolean => {
 const PICKER_ICON_PREFIX = 'M120-120v-190'
 
 const nativePickerButton = (): HTMLButtonElement | null => {
+  const labelled = document.querySelector<HTMLButtonElement>('button[aria-label="Color Picker"]')
+  if (labelled !== null) return labelled
   for (const tooltip of document.querySelectorAll('.tooltip')) {
     const label = tooltip.querySelector('.tooltip-content')?.textContent ?? ''
     if (!label.includes('Color Picker')) continue
@@ -147,16 +168,16 @@ export const installColourPicker = (): void => {
     (event) => {
       if (event.button !== 0 || !isPaintOpen() || !nativePickerIsActive()) return
       const target = event.target
-      if (!(target instanceof Element) || target.closest(MAP_SURFACE) === null) return
+      if (!(target instanceof Element)) return
+      const point = pickerPointAt(target, event.clientX, event.clientY)
+      if (point === null) return
 
       event.preventDefault()
       event.stopImmediatePropagation()
 
-      const point = canvasPixelAt(event.clientX, event.clientY)
-      if (point === null) return
       const { x, y } = point
-      const index = pickedIndexAt(x, y)
-      if (index === null || !selectColour(index)) {
+      const index = pickedIndexAt(point)
+      if (index === null || !selectPaintColour(index)) {
         log('install', 'picker source pixel is not ready', { x, y })
         return
       }
@@ -181,18 +202,17 @@ export const installColourPicker = (): void => {
     'pointerdown',
     (event) => {
       if (event.button !== 1) return
-      // Only over their canvas. A middle click on our own panel or menu is not a pick.
       const target = event.target
-      if (!(target instanceof Element) || target.closest(MAP_SURFACE) === null) return
+      if (!(target instanceof Element)) return
+      const point = pickerPointAt(target, event.clientX, event.clientY)
+      if (point === null) return
       // Their picker only exists inside a painting session, and the swatch we would press only
       // exists while the drawer is open. With it closed there is nothing to hand a colour to.
       if (!isPaintOpen()) return
 
-      const point = canvasPixelAt(event.clientX, event.clientY)
-      if (point === null) return
-      const index = overlayIndexAt(point.x, point.y)
+      const index = overlayIndexAt(point.surface, point.x, point.y)
       if (index === null) return
-      if (!selectColour(index)) return
+      if (!selectPaintColour(index)) return
 
       // Only now, once the colour is actually set. Stopping the event on a pick we then failed to
       // answer would leave the middle click doing nothing at all, which is worse than their answer.
@@ -210,7 +230,10 @@ export const installColourPicker = (): void => {
     (event) => {
       if (event.button !== 1) return
       const target = event.target
-      if (target instanceof Element && target.closest(MAP_SURFACE) !== null) {
+      if (
+        target instanceof Element &&
+        pickerPointAt(target, event.clientX, event.clientY) !== null
+      ) {
         event.preventDefault()
       }
     },

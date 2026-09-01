@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   draftListeners: [] as Array<() => void>,
   statusListeners: [] as Array<() => void>,
   paintListeners: [] as Array<() => void>,
+  canvasWriteListeners: [] as Array<(canvas: object) => void>,
   acceptedPaintListeners: [] as Array<
     (paint: {
       submission?: { identity: object }
@@ -28,6 +29,11 @@ const harness = vi.hoisted(() => ({
     serverTemplateId?: string
     serverVersion?: string
     opaque?: number
+    originX?: number
+    originY?: number
+    width?: number
+    height?: number
+    indices?: Uint8Array
     surface?:
       | { kind: 'world' }
       | { kind: 'alliance-headquarters'; allianceId: number }
@@ -38,6 +44,19 @@ const harness = vi.hoisted(() => ({
   colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
   paintOpen: true,
   selectedColour: 0 as number | null,
+  activeAlliance: null as null | {
+    surface: { kind: 'alliance-headquarters'; allianceId: number }
+    bounds: { minX: number; minY: number; maxX: number; maxY: number }
+    stage: HTMLElement
+    frame: HTMLElement
+  },
+  artboardPixels: [] as Array<{
+    x: number
+    y: number
+    width: number
+    height: number
+    pixels: Uint8Array
+  }>,
   draftPixelDeltas: [] as Array<{
     key: string
     basis: string
@@ -57,6 +76,7 @@ const harness = vi.hoisted(() => ({
     mismatched: null as { templateId: string; x: number; y: number; kind: 'mismatched' } | null,
   },
   navigateTo: vi.fn(),
+  navigateAlliance: vi.fn(() => true),
   nearestColourTarget: vi.fn(
     async (
       _index: number,
@@ -84,6 +104,21 @@ const remote = {
   opaque: 3,
 }
 vi.mock('./debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
+vi.mock('./alliance-surface.js', () => ({
+  activeAllianceSurface: () => harness.activeAlliance,
+}))
+vi.mock('./alliance-navigation.js', () => ({
+  navigateAllianceArtboardTo: harness.navigateAlliance,
+}))
+vi.mock('./canvas-write.js', () => ({
+  onCanvasWrite: (listener: (canvas: object) => void) => {
+    harness.canvasWriteListeners.push(listener)
+    return vi.fn()
+  },
+}))
+vi.mock('./gl/artboard-pixels.js', () => ({
+  readArtboardPixels: () => harness.artboardPixels,
+}))
 vi.mock('./map-handle.js', () => ({
   getMap: () => ({ getCenter: () => ({ lat: 0, lng: 0 }) }),
 }))
@@ -159,6 +194,17 @@ vi.mock('./templates/nearest.js', () => ({ focusedTemplate: () => harness.focuse
 vi.mock('./wplace-paint.js', () => ({
   isPaintOpen: () => harness.paintOpen,
   onPaintSelectionChange: (listener: () => void) => harness.paintListeners.push(listener),
+  paintPaletteIndexOf: (element: Element) => {
+    const raw = Number(element.id.slice('color-'.length))
+    if (Number.isInteger(raw) && raw > 0) return raw - 1
+    const names = ['Black', 'Dark Gray', 'Gray', 'Light Gray', 'White', 'Deep Red']
+    const index = names.indexOf(element.getAttribute('aria-label')?.split('. ', 1)[0] ?? '')
+    return index < 0 ? null : index
+  },
+  paintPaletteSwatches: (root: ParentNode = document) => [
+    ...root.querySelectorAll<HTMLElement>('[id^="color-"]'),
+    ...root.querySelectorAll<HTMLElement>('button[aria-label][aria-pressed]'),
+  ],
   selectPaintColour: harness.selectPaintColour,
   selectedColour: () => harness.selectedColour,
 }))
@@ -176,6 +222,8 @@ beforeEach(() => {
   harness.colourNavigationOrder = 'unpainted-first'
   harness.paintOpen = true
   harness.selectedColour = 0
+  harness.activeAlliance = null
+  harness.artboardPixels = []
   harness.draftPixelDeltas = []
   harness.serverIdentity = {}
   harness.navigationTargets.unpainted = {
@@ -333,6 +381,72 @@ describe('Wplace paint palette progress', () => {
     expect(harness.selectPaintColour).toHaveBeenLastCalledWith(2)
     expect(cycleFocusedColour(-1)).toBe(true)
     expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+  })
+
+  it("cycles Wplace's alliance palette in rendered order without reading progress", async () => {
+    harness.focused = null
+    harness.activeAlliance = {
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+      stage: document.createElement('div'),
+      frame: document.createElement('div'),
+    }
+    for (const name of ['Black', 'Gray', 'Deep Red']) {
+      const swatch = document.createElement('button')
+      swatch.setAttribute('aria-label', name)
+      swatch.setAttribute('aria-pressed', 'false')
+      document.body.appendChild(swatch)
+    }
+    const { cycleFocusedColour } = await import('./paint-palette.js')
+
+    harness.selectedColour = 2
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+
+    harness.selectedColour = 5
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(0)
+
+    harness.selectedColour = 0
+    expect(cycleFocusedColour(-1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+  })
+
+  it('refreshes alliance palette progress when Wplace writes its artboard canvas', async () => {
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    frame.append(canvas)
+    harness.focused = {
+      id: 'alliance-progress',
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      originX: 0,
+      originY: 0,
+      width: 1,
+      height: 1,
+      indices: new Uint8Array([0]),
+    }
+    harness.activeAlliance = {
+      surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+      stage: document.createElement('div'),
+      frame,
+    }
+    harness.artboardPixels = [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([63]) }]
+    const swatch = document.createElement('button')
+    swatch.setAttribute('aria-label', 'Black')
+    swatch.setAttribute('aria-pressed', 'true')
+    document.body.appendChild(swatch)
+    const { installPaintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    harness.paintListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(swatch.querySelector('caelestis-palette-progress')).not.toBeNull()
+
+    harness.artboardPixels = [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([0]) }]
+    harness.canvasWriteListeners.at(-1)?.(canvas)
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
   })
 
   it('keeps an accepted draft correction until stale server status catches up', async () => {
@@ -705,15 +819,36 @@ describe('Wplace paint palette progress', () => {
     )
   })
 
-  it('does not route alliance colour navigation through the world map', async () => {
+  it('routes alliance colour navigation through the active artboard', async () => {
     const { navigateFocusedSelectedColour } = await import('./paint-palette.js')
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+    frame.getBoundingClientRect = stage.getBoundingClientRect
     harness.focused = {
       id: 'alliance',
       surface: { kind: 'alliance-headquarters', allianceId: 535245 },
+      originX: -1,
+      originY: -1,
+      width: 1,
+      height: 1,
+      indices: new Uint8Array([0]),
     }
+    harness.activeAlliance = {
+      surface: { kind: 'alliance-headquarters', allianceId: 535245 },
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+      stage,
+      frame,
+    }
+    harness.artboardPixels = [{ x: -1, y: -1, width: 1, height: 1, pixels: new Uint8Array([63]) }]
 
-    await expect(navigateFocusedSelectedColour()).resolves.toBe(false)
+    await expect(navigateFocusedSelectedColour()).resolves.toBe(true)
     expect(harness.nearestColourTarget).not.toHaveBeenCalled()
     expect(harness.navigateTo).not.toHaveBeenCalled()
+    expect(harness.navigateAlliance).toHaveBeenCalledWith(harness.activeAlliance, {
+      x: -0.5,
+      y: -0.5,
+    })
   })
 })

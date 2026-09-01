@@ -10,10 +10,11 @@ import {
   activeAllianceSurface,
   onActiveAllianceSurfaceChange,
 } from '../alliance-surface.js'
+import { onCanvasWrite } from '../canvas-write.js'
 import { warn } from '../debug.js'
 import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
-import { onStateChange } from '../state.js'
-import { isPlain } from '../templates/appearance.js'
+import { getState, onStateChange } from '../state.js'
+import { isPlain, toRgbUnit } from '../templates/appearance.js'
 import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
@@ -26,9 +27,23 @@ import {
 } from '../templates/local-store.js'
 import { abortMoveOutsideSurface } from '../templates/move.js'
 import { detachOverlayControls, renderAllianceOverlayControls } from '../ui/overlay-menu.js'
+import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { appearanceTransitionSet, prefersReducedMotion } from './appearance-transition.js'
+import {
+  type ArtboardMarkerBatch,
+  type ArtboardMarkerWork,
+  artboardMarkerWork,
+} from './artboard-markers.js'
+import { readArtboardPixels } from './artboard-pixels.js'
 import { isDarkMapTheme } from './contrast-outline.js'
 import { ramps } from './fade.js'
+import {
+  type MarkerVisibilityBudget,
+  markerSampleRate,
+  markerVisibilityBudget,
+  visibleMarkerPoints,
+} from './marker-density.js'
+import { MarkerRenderer, type MarkerStyle } from './marker-renderer.js'
 import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
 import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE } from './shaders.js'
 
@@ -107,6 +122,29 @@ export const artboardDevicePlacement = (
   }
 }
 
+/** Count marker points inside the current alliance artboard viewport. */
+export const visibleArtboardMarkerPoints = (
+  batch: ArtboardMarkerBatch,
+  geometry: ArtboardGeometry,
+  viewport: ArtboardViewport,
+  budget: MarkerVisibilityBudget,
+): number => {
+  const box = artboardDevicePlacement(
+    { originX: batch.x, originY: batch.y, width: batch.width, height: batch.height },
+    geometry,
+    viewport,
+  )
+  return visibleMarkerPoints(
+    batch.marks,
+    { x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top },
+    viewport.bufferWidth,
+    viewport.bufferHeight,
+    budget,
+    batch.width,
+    batch.height,
+  )
+}
+
 const isCaelestisCanvas = (element: Element): boolean =>
   element.hasAttribute(OVERLAY_ATTRIBUTE) || element.hasAttribute(OUTLINE_ATTRIBUTE)
 
@@ -147,6 +185,13 @@ interface RenderTemplate {
   readonly palette: Uint8Array
 }
 
+interface RenderMarker {
+  readonly batch: ArtboardMarkerBatch
+  readonly style: MarkerStyle
+  readonly fade: number
+  readonly sampleRate: number
+}
+
 const vertices = new Float32Array(4 * 6)
 
 class ArtboardPass {
@@ -160,6 +205,7 @@ class ArtboardPass {
     private readonly program: WebGLProgram,
     private readonly quad: WebGLBuffer,
     private readonly vao: WebGLVertexArrayObject,
+    private readonly markers: MarkerRenderer | null,
   ) {}
 
   static create(document: Document, kind: 'outline' | 'overlay'): ArtboardPass | null {
@@ -202,7 +248,15 @@ class ArtboardPass {
     gl.enableVertexAttribArray(uv)
     gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 24, 16)
     gl.bindVertexArray(null)
-    return new ArtboardPass(canvas, kind, gl, program, quad, vao)
+    return new ArtboardPass(
+      canvas,
+      kind,
+      gl,
+      program,
+      quad,
+      vao,
+      kind === 'overlay' ? new MarkerRenderer(gl) : null,
+    )
   }
 
   private uniform(name: string): WebGLUniformLocation | null {
@@ -317,6 +371,7 @@ class ArtboardPass {
 
   draw(
     templates: readonly RenderTemplate[],
+    markers: readonly RenderMarker[],
     geometry: ArtboardGeometry,
     viewport: ArtboardViewport,
   ): void {
@@ -401,6 +456,31 @@ class ArtboardPass {
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     }
     gl.bindVertexArray(null)
+    if (this.markers !== null) {
+      const scaleX = viewport.frameWidth / geometry.width
+      const scaleY = viewport.frameHeight / geometry.height
+      this.markers.beginFrame()
+      for (const marker of markers) {
+        const { batch } = marker
+        this.markers.draw(
+          {
+            x: viewport.frameLeft + (batch.x - geometry.originX) * scaleX,
+            y: viewport.frameTop + (batch.y - geometry.originY) * scaleY,
+            width: batch.width * scaleX,
+            height: batch.height * scaleY,
+            pixelWidth: batch.width,
+            pixelHeight: batch.height,
+            seedX: Math.floor(batch.x / batch.width),
+            seedY: Math.floor(batch.y / batch.height),
+          },
+          batch.marks,
+          marker.style,
+          marker.fade,
+          marker.sampleRate,
+        )
+      }
+      this.markers.endFrame()
+    }
     gl.disable(gl.SCISSOR_TEST)
   }
 
@@ -409,6 +489,7 @@ class ArtboardPass {
     this.gl.deleteBuffer(this.quad)
     this.gl.deleteVertexArray(this.vao)
     this.gl.deleteProgram(this.program)
+    this.markers?.dispose()
     this.canvas.remove()
   }
 }
@@ -421,6 +502,8 @@ class ArtboardRenderer {
   private readonly observer: MutationObserver
   private readonly resizeObserver: ResizeObserver | null
   private framePending = false
+  private markerPixelsDirty = true
+  private readonly markerWork = new Map<string, ArtboardMarkerWork>()
   private disposed = false
 
   private constructor(
@@ -521,6 +604,19 @@ class ArtboardRenderer {
     })
   }
 
+  invalidatePixels(): void {
+    this.markerPixelsDirty = true
+    this.requestRender()
+  }
+
+  nativeCanvasWritten(canvas: object): void {
+    try {
+      if (this.active.frame.contains(canvas as Node)) this.invalidatePixels()
+    } catch {
+      // Offscreen and foreign-realm canvases cannot belong to this DOM artboard.
+    }
+  }
+
   private draw(): void {
     const viewport = this.syncViewport()
     if (
@@ -579,8 +675,70 @@ class ArtboardRenderer {
         palette: palette.data,
       })
     }
-    this.outline.draw(templates, this.geometry, viewport)
-    this.overlay.draw(templates, this.geometry, viewport)
+    const selected = isPaintOpen() ? selectedColour() : null
+    if (this.markerPixelsDirty) {
+      const regions = readArtboardPixels(this.active, this.geometry)
+      this.markerWork.clear()
+      for (const template of all) {
+        this.markerWork.set(
+          template.id,
+          artboardMarkerWork(
+            template,
+            regions,
+            appearanceWithPreview(template.id, appearanceOf(template)),
+            selected,
+          ),
+        )
+      }
+      this.markerPixelsDirty = false
+    }
+    const selectedLayers: Omit<RenderMarker, 'sampleRate'>[] = []
+    const mismatchLayers: Omit<RenderMarker, 'sampleRate'>[] = []
+    const state = getState()
+    for (const rendered of templates) {
+      const appearance = rendered.appearance
+      const work = this.markerWork.get(rendered.template.id)
+      if (work === undefined) continue
+      const mismatchStyle: MarkerStyle = {
+        size: appearance.markerSize,
+        thickness: 2,
+        colour: toRgbUnit(appearance.markerColour),
+        otherColour:
+          !appearance.dimOthers || appearance.otherColour === null
+            ? null
+            : toRgbUnit(appearance.otherColour),
+        otherOpacity: appearance.dimOthers ? appearance.otherOpacity : 1,
+        selected: state.onlySelectedColour && selected !== null ? selected : -1,
+      }
+      const selectedStyle: MarkerStyle = {
+        size: appearance.selectedMarkerSize,
+        thickness: 2,
+        colour: toRgbUnit(appearance.selectedMarkerColour),
+        otherColour: null,
+        otherOpacity: 1,
+        selected: -1,
+      }
+      for (const batch of work.selected)
+        selectedLayers.push({ batch, style: selectedStyle, fade: rendered.fade })
+      for (const batch of work.mismatch)
+        mismatchLayers.push({ batch, style: mismatchStyle, fade: rendered.fade })
+    }
+    const visibilityBudget = markerVisibilityBudget()
+    const visiblePoints = (layers: readonly Omit<RenderMarker, 'sampleRate'>[]) =>
+      layers.reduce(
+        (total, layer) =>
+          total +
+          visibleArtboardMarkerPoints(layer.batch, this.geometry, viewport, visibilityBudget),
+        0,
+      )
+    const selectedSampleRate = markerSampleRate(visiblePoints(selectedLayers), state.markerBudget)
+    const mismatchSampleRate = markerSampleRate(visiblePoints(mismatchLayers), state.markerBudget)
+    const markerLayers: RenderMarker[] = [
+      ...selectedLayers.map((layer) => ({ ...layer, sampleRate: selectedSampleRate })),
+      ...mismatchLayers.map((layer) => ({ ...layer, sampleRate: mismatchSampleRate })),
+    ]
+    this.outline.draw(templates, [], this.geometry, viewport)
+    this.overlay.draw(templates, markerLayers, this.geometry, viewport)
     if (animating) this.requestRender()
   }
 
@@ -609,7 +767,7 @@ const reconcileRenderer = (): void => {
   renderer?.requestRender()
 }
 
-export const repaintAllianceOverlayLayer = (): void => renderer?.requestRender()
+export const repaintAllianceOverlayLayer = (): void => renderer?.invalidatePixels()
 
 /** Attach viewport-resolution WebGL passes inside whichever Wplace alliance artboard is open. */
 export const installAllianceOverlayLayer = (): void => {
@@ -618,5 +776,6 @@ export const installAllianceOverlayLayer = (): void => {
   onLocalPreviewChange(repaintAllianceOverlayLayer)
   onOverlayPeekChange(repaintAllianceOverlayLayer)
   onStateChange(repaintAllianceOverlayLayer)
+  onCanvasWrite((canvas) => renderer?.nativeCanvasWritten(canvas))
   reconcileRenderer()
 }

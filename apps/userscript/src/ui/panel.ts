@@ -100,6 +100,7 @@ import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-p
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
+import { refreshOverlayMenu } from './overlay-menu.js'
 import { panelWidthAfterMount } from './panel-geometry.js'
 import {
   AllianceDrawerInset,
@@ -160,6 +161,8 @@ import { findWplaceRail } from './wplace-rail.js'
 const BUTTON_ID = 'caelestis-rail-button'
 const ALLIANCE_BUTTON_WRAPPER_ID = 'caelestis-alliance-rail'
 const ALLIANCE_BUTTON_ID = 'caelestis-alliance-rail-button'
+const ALLIANCE_COLOUR_MODE_ID = 'caelestis-alliance-colour-mode'
+const ALLIANCE_MISMATCH_MODE_ID = 'caelestis-alliance-mismatch-mode'
 const ALLIANCE_PANEL_ID = 'caelestis-alliance-panel'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
@@ -216,6 +219,19 @@ const syncRailButtonState = (): void => {
   if (alliance !== null) alliance.model = panelRailModel('alliance')
 }
 
+const syncAllianceModeState = (active = activeAllianceSurface()): void => {
+  const colour = document.getElementById(ALLIANCE_COLOUR_MODE_ID) as CaelestisRailControl | null
+  if (colour !== null) colour.model = colourRailModel()
+  const mismatch = document.getElementById(ALLIANCE_MISMATCH_MODE_ID) as CaelestisRailControl | null
+  if (mismatch === null || active === null) return
+  const on = getSurfaceAppearance(active.surface).markMismatch
+  mismatch.model = {
+    id: 'mismatch',
+    label: `${on ? 'Hide' : 'Show'} mismatch markers on this canvas (W)`,
+    pressed: on,
+  }
+}
+
 const railButton = (): CaelestisRailControl => {
   const existing = document.getElementById(BUTTON_ID)
   if (existing !== null) return existing as CaelestisRailControl
@@ -248,6 +264,39 @@ const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl
   return button
 }
 
+const allianceColourModeButton = (): CaelestisRailControl => {
+  const existing = document.getElementById(ALLIANCE_COLOUR_MODE_ID)
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
+  button.id = ALLIANCE_COLOUR_MODE_ID
+  button.model = colourRailModel()
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id !== 'colour') return
+    setState({ onlySelectedColour: !getState().onlySelectedColour })
+  })
+  return button
+}
+
+const allianceMismatchModeButton = (active: ActiveAllianceSurface): CaelestisRailControl => {
+  const existing = document.getElementById(ALLIANCE_MISMATCH_MODE_ID)
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
+  button.id = ALLIANCE_MISMATCH_MODE_ID
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id !== 'mismatch') return
+    const appearance = getSurfaceAppearance(active.surface)
+    setSurfaceAppearance(active.surface, {
+      ...appearance,
+      markMismatch: !appearance.markMismatch,
+    })
+  })
+  return button
+}
+
 const positionAllianceRail = (active: ActiveAllianceSurface): void => {
   const wrapper = active.stage.ownerDocument.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)
   if (wrapper === null) return
@@ -266,17 +315,24 @@ const mountAllianceRail = (active: ActiveAllianceSurface): void => {
   document.getElementById(ALLIANCE_BUTTON_WRAPPER_ID)?.remove()
   const wrapper = active.stage.ownerDocument.createElement('div')
   wrapper.id = ALLIANCE_BUTTON_WRAPPER_ID
-  wrapper.className = 'tooltip tooltip-left'
-  wrapper.dataset.tip = 'Caelestis — alliance templates'
   Object.assign(wrapper.style, {
     position: 'absolute',
     zIndex: '40',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: `${GAP}px`,
   } satisfies Partial<CSSStyleDeclaration>)
-  wrapper.appendChild(allianceRailButton(active))
+  wrapper.append(
+    allianceRailButton(active),
+    allianceColourModeButton(),
+    allianceMismatchModeButton(active),
+  )
   ;(active.stage.parentElement ?? active.stage).appendChild(wrapper)
   positionAllianceRail(active)
+  syncAllianceModeState(active)
   const realm = active.stage.ownerDocument.defaultView
   if (realm !== null) {
+    realm.requestAnimationFrame(() => refreshOverlayMenu())
     allianceRailObserver = new realm.MutationObserver(() => positionAllianceRail(active))
     allianceRailObserver.observe(active.stage, { attributes: true, attributeFilter: ['class'] })
   }
@@ -767,14 +823,13 @@ const appearanceModel = (): AppearanceEditorModel => {
         visible: !effectiveHidden.has(colour.index),
       }),
     ),
-    onlySelectedColour: panelSurface.kind === 'world' && state.onlySelectedColour,
-    showOnlySelectedColour: panelSurface.kind === 'world',
-    showMarkers: panelSurface.kind === 'world',
-    paintOpen: panelSurface.kind === 'world' && isPaintOpen(),
+    onlySelectedColour: state.onlySelectedColour,
+    showOnlySelectedColour: true,
+    showMarkers: true,
+    paintOpen: isPaintOpen(),
     ...(selectedColourName === undefined ? {} : { selectedColourName }),
-    ...(panelSurface.kind === 'world'
-      ? { markerBudget: state.markerBudget, markerBudgetOptions: MARKER_BUDGET_OPTIONS }
-      : {}),
+    markerBudget: state.markerBudget,
+    markerBudgetOptions: MARKER_BUDGET_OPTIONS,
   }
 }
 
@@ -1289,6 +1344,7 @@ export const installPanel = (): void => {
   })
   onStateChange(syncColourModeState)
   onStateChange(syncMismatchModeState)
+  onStateChange(() => syncAllianceModeState())
   // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a
   // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per
   // change.
