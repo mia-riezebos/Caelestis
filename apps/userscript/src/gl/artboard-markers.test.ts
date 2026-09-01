@@ -50,6 +50,30 @@ describe('alliance artboard marker work', () => {
     ).toEqual([])
   })
 
+  it('measures the unpainted marker threshold from loaded pixels only', () => {
+    const work = artboardMarkerWork(
+      template,
+      [
+        {
+          x: -1,
+          y: -1,
+          width: 2,
+          height: 1,
+          pixels: new Uint8Array([4, TRANSPARENT_INDEX]),
+        },
+      ],
+      {
+        ...DEFAULT_APPEARANCE,
+        markMismatch: true,
+        markUnpainted: true,
+        unpaintedLimit: 0.4,
+      },
+      null,
+    )
+
+    expect(work.mismatch).toEqual([])
+  })
+
   it('finds known mismatched and unpainted targets for alliance colour navigation', () => {
     expect(
       artboardColourTargets(

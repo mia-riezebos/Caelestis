@@ -3,6 +3,7 @@ import type { CaelestisPaletteProgress } from '@caelestis/ui/elements'
 import { allianceBounds, alliancePointAt } from './alliance-coordinates.js'
 import { navigateAllianceArtboardTo } from './alliance-navigation.js'
 import { activeAllianceSurface } from './alliance-surface.js'
+import { onCanvasWrite } from './canvas-write.js'
 import { count, warn } from './debug.js'
 import { artboardColourProgress, artboardColourTargets } from './gl/artboard-markers.js'
 import { readArtboardPixels } from './gl/artboard-pixels.js'
@@ -647,6 +648,14 @@ export const installPaintPaletteProgress = (): void => {
   })
   onStateChange(queueRender)
   onLocalChange(queueRender)
+  onCanvasWrite((canvas) => {
+    const active = activeAllianceSurface()
+    try {
+      if (active?.frame.contains(canvas as Node)) queueRender()
+    } catch {
+      // An offscreen or foreign-realm canvas cannot belong to the active DOM artboard.
+    }
+  })
   // This watcher already crosses the userscript/page realm reliably and fires when Wplace mounts
   // or replaces its drawer. Keep the local observer as a second line for same-selection remounts.
   onPaintSelectionChange(discoverPalette)

@@ -651,10 +651,15 @@ class ArtboardRenderer {
     if (this.markerPixelsDirty) {
       const regions = readArtboardPixels(this.active, this.geometry)
       this.markerWork.clear()
-      for (const rendered of templates) {
+      for (const template of all) {
         this.markerWork.set(
-          rendered.template.id,
-          artboardMarkerWork(rendered.template, regions, rendered.appearance, selected),
+          template.id,
+          artboardMarkerWork(
+            template,
+            regions,
+            appearanceWithPreview(template.id, appearanceOf(template)),
+            selected,
+          ),
         )
       }
       this.markerPixelsDirty = false

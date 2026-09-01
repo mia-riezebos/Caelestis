@@ -184,8 +184,8 @@ export const artboardMarkerWork = (
       const at = localY * template.width + localX
       const wanted = template.indices[at]
       if (wanted === undefined || wanted === TRANSPARENT_INDEX || hidden.has(wanted)) continue
-      asserted++
       if (actual.known[at] !== 1) continue
+      asserted++
       const placed = actual.pixels[at]
       if (placed === wanted) continue
       const mark = { x: template.originX + localX, y: template.originY + localY, wanted }

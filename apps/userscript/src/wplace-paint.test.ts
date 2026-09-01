@@ -54,6 +54,16 @@ describe('Wplace paint controls', () => {
   })
 
   it('reads and selects Wplace alliance palette buttons after progress decorates their labels', async () => {
+    const world = document.createElement('button')
+    world.id = 'color-2'
+    world.className = 'ring-primary'
+    const worldClick = vi.fn()
+    world.addEventListener('click', worldClick)
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    const stage = document.createElement('div')
+    stage.setAttribute('role', 'application')
+    stage.setAttribute('aria-label', 'Alliance asset canvas')
     const grid = document.createElement('div')
     const blackWrapper = document.createElement('div')
     const black = document.createElement('button')
@@ -68,7 +78,9 @@ describe('Wplace paint controls', () => {
     blackWrapper.appendChild(black)
     redWrapper.appendChild(red)
     grid.append(blackWrapper, redWrapper)
-    document.body.appendChild(grid)
+    stage.appendChild(grid)
+    dialog.appendChild(stage)
+    document.body.append(world, dialog)
     const {
       isPaintOpen,
       paintPaletteIndexOf,
@@ -84,6 +96,7 @@ describe('Wplace paint controls', () => {
     expect(selectedColour()).toBe(0)
     expect(selectPaintColour(6)).toBe(true)
     expect(redClick).toHaveBeenCalledOnce()
+    expect(worldClick).not.toHaveBeenCalled()
   })
 
   it('clicks only an exact accessible paint-mode label', async () => {

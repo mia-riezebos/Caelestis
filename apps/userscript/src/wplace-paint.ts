@@ -1,4 +1,5 @@
 import { PALETTE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import { activeAllianceEditorStage } from './alliance-surface.js'
 import { log } from './debug.js'
 
 /**
@@ -27,9 +28,10 @@ export const isPaintOpen = (): boolean => open
 /** Select one of Wplace's own paint swatches without owning a second palette state. */
 export const selectPaintColour = (index: number): boolean => {
   if (!Number.isInteger(index) || index < 0 || index >= TRANSPARENT_INDEX) return false
+  const root = activePaintRoot()
   const swatch =
-    document.getElementById(`color-${index + 1}`) ??
-    alliancePaletteSwatches(document).find((candidate) => paintPaletteIndexOf(candidate) === index)
+    root.querySelector<HTMLElement>(`#color-${index + 1}`) ??
+    alliancePaletteSwatches(root).find((candidate) => paintPaletteIndexOf(candidate) === index)
   if (!(swatch instanceof HTMLElement)) return false
   swatch.click()
   return true
@@ -221,8 +223,11 @@ const alliancePaletteSwatches = (root: ParentNode): HTMLButtonElement[] =>
       paintPaletteIndexOf(button) !== null || button.getAttribute('aria-label') === 'Transparent',
   )
 
+const activePaintRoot = (): ParentNode =>
+  activeAllianceEditorStage()?.closest('dialog[open]') ?? document
+
 /** Wplace's mounted world or alliance paint swatches, in their rendered order. */
-export const paintPaletteSwatches = (root: ParentNode = document): HTMLElement[] => [
+export const paintPaletteSwatches = (root: ParentNode = activePaintRoot()): HTMLElement[] => [
   ...root.querySelectorAll<HTMLElement>('[id^="color-"]'),
   ...alliancePaletteSwatches(root),
 ]
@@ -233,7 +238,7 @@ const alliancePaintPanel = (root: ParentNode): HTMLElement | null => {
 }
 
 const read = (): void => {
-  const swatches = paintPaletteSwatches(document)
+  const swatches = paintPaletteSwatches()
   const nextOpen = swatches.length > 0
   let nextSelected: number | null = null
   for (const swatch of swatches) {
