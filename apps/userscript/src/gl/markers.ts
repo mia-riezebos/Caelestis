@@ -35,256 +35,24 @@ import {
   markerVisibilityBudget,
   visibleMarkerPoints,
 } from './marker-density.js'
+import { MarkerRenderer, type MarkerStyle } from './marker-renderer.js'
 
+export { deviceScale, MarkerRenderer, type MarkerStyle } from './marker-renderer.js'
 export { markerBatchMemoryBytes, markerDensityMemoryBytes }
 
 const selectedMarkerColours = new Set<number>()
 let latestSelectedMarkerColour: number | null = null
 
-/**
- * Mismatch markers, drawn one point per marked pixel.
- *
- * The first version asked this question in the fragment shader: for every fragment, walk outwards
- * looking for a marked cell whose arms reach it. That is O(fragments on screen) with a texture fetch
- * per step, and a marker sized in device pixels means the walk gets *longer* the further out you
- * zoom. It killed the GPU — not the tab, the whole compositor.
- *
- * The shape of the problem is the fix. There are a handful of mismatched pixels and millions of
- * fragments, so the work belongs where the handful is: find them once on the CPU, per tile, and draw
- * one point each. Cost becomes O(mismatches), which is what it always should have been.
- *
- * Points rather than quads because `gl_PointSize` is specified in device pixels, which is exactly
- * the property being asked for — a marker the same size at every zoom — with no per-instance
- * geometry to build and no matrix to get wrong.
- */
+let worldMarkerRenderer: MarkerRenderer | null = null
 
-const VERTEX = `#version 300 es
-precision highp int;
-/** Tile-local x, y and wanted palette index packed into one uint. */
-in uint a_mark;
-
-/** Where this tile landed on screen this frame. */
-uniform vec2 u_tileScreen;
-/** Device pixels per canvas pixel, from the tile's own on-screen size. */
-uniform vec2 u_tileScale;
-uniform vec2 u_buffer;
-uniform float u_size;
-uniform float u_sampleRate;
-uniform uint u_sampleSeed;
-
-flat out float v_wanted;
-
-uint markerHash(uint value) {
-  value = (value ^ (value >> 16u)) * 0x7feb352du;
-  value = (value ^ (value >> 15u)) * 0x846ca68bu;
-  return value ^ (value >> 16u);
-}
-
-void main() {
-  v_wanted = float(a_mark >> 20u);
-  if (u_sampleRate < 1.0) {
-    // Hash uint ordinals before converting to float. Converting a large vertex ID first collapses
-    // the fractional bins and badly exceeds low budgets on million-point buffers.
-    float random = float(markerHash(uint(gl_VertexID) ^ u_sampleSeed) >> 8u) / 16777216.0;
-    if (random >= u_sampleRate) {
-      gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
-      gl_PointSize = 0.0;
-      return;
-    }
-  }
-  vec2 pixel = vec2(float(a_mark & 1023u), float((a_mark >> 10u) & 1023u));
-  // The centre of the pixel, not its corner, so the crosshair sits on the thing it marks.
-  vec2 device = u_tileScreen + (pixel + 0.5) * u_tileScale;
-  gl_Position = vec4((2.0 * device.x) / u_buffer.x - 1.0, 1.0 - (2.0 * device.y) / u_buffer.y, 0.0, 1.0);
-  gl_PointSize = u_size;
-}
-`
-
-const FRAGMENT = `#version 300 es
-precision highp float;
-
-uniform float u_size;
-uniform float u_thickness;
-uniform vec3 u_colour;
-uniform vec3 u_otherColour;
-uniform float u_otherOpacity;
-uniform float u_selected;
-uniform float u_fade;
-
-flat in float v_wanted;
-
-out vec4 fragColor;
-
-void main() {
-  // Device pixels from the centre of the point, which is where the marked pixel is.
-  vec2 offset = (gl_PointCoord - 0.5) * u_size;
-  float half_ = u_thickness * 0.5;
-  // A cross, not a box: it has to be findable against dense art without hiding the pixel it marks.
-  if (abs(offset.x) > half_ && abs(offset.y) > half_) discard;
-  bool other = u_selected >= 0.0 && round(v_wanted) != round(u_selected);
-  vec3 colour = other ? u_otherColour : u_colour;
-  float alpha = u_fade * (other ? u_otherOpacity : 1.0);
-  fragColor = vec4(colour * alpha, alpha);
-}
-`
-
-/** The context these handles belong to; see the same guard in `layer.ts`. */
-let owner: WebGL2RenderingContext | null = null
-let program: WebGLProgram | null = null
-let vao: WebGLVertexArrayObject | null = null
-let markAttribute = -1
-let markerBufferBytes = 0
-const markerBuffers = new Map<MismatchMarks, WebGLBuffer>()
-const usedMarkerBuffers = new Set<MismatchMarks>()
-
-export const markerGpuMemoryBytes = (): number => markerBufferBytes
-const uniforms = new Map<string, WebGLUniformLocation | null>()
-
-const compile = (gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null => {
-  const shader = gl.createShader(type)
-  if (shader === null) return null
-  gl.shaderSource(shader, source)
-  gl.compileShader(shader)
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    warn('install', 'marker shader failed to compile', gl.getShaderInfoLog(shader))
-    gl.deleteShader(shader)
-    return null
-  }
-  return shader
-}
-
-const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation | null => {
-  if (!uniforms.has(name)) {
-    uniforms.set(name, program === null ? null : gl.getUniformLocation(program, name))
-  }
-  return uniforms.get(name) ?? null
-}
-
+export const markerGpuMemoryBytes = (): number => worldMarkerRenderer?.memoryBytes() ?? 0
 export const initMarkers = (gl: WebGL2RenderingContext): void => {
-  // Forget the old context's handles before claiming this one, exactly as `layer.ts` does. Claiming
-  // first and overwriting them only on the success path meant a compile or link that failed — which
-  // is what every `create*` returns on a context lost to a GPU-process crash, and precisely when
-  // MapLibre re-runs this lifecycle — left `owner` naming the new context while the handles still
-  // belonged to the old one. Every frame then bound foreign objects, and the old context's objects
-  // could never be freed because the guard in `releaseMarkers` no longer recognised them.
-  program = null
-  markerBuffers.clear()
-  usedMarkerBuffers.clear()
-  markerBufferBytes = 0
-  markAttribute = -1
-  vao = null
-  uniforms.clear()
-  owner = gl
-  const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX)
-  const fragment = compile(gl, gl.FRAGMENT_SHADER, FRAGMENT)
-  if (vertex === null || fragment === null) return
-  const created = gl.createProgram()
-  if (created === null) return
-  gl.attachShader(created, vertex)
-  gl.attachShader(created, fragment)
-  gl.linkProgram(created)
-  gl.deleteShader(vertex)
-  gl.deleteShader(fragment)
-  if (!gl.getProgramParameter(created, gl.LINK_STATUS)) {
-    warn('install', 'marker program failed to link', gl.getProgramInfoLog(created))
-    return
-  }
-  program = created
-  uniforms.clear()
-  vao = gl.createVertexArray()
-  gl.bindVertexArray(vao)
-  markAttribute = gl.getAttribLocation(program, 'a_mark')
-  gl.enableVertexAttribArray(markAttribute)
-  gl.bindVertexArray(null)
+  worldMarkerRenderer = new MarkerRenderer(gl)
 }
-
 export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
-  // A replacement map's `initMarkers` may already have claimed this state; see `layer.ts`.
-  if (owner !== gl) return
-  owner = null
-  for (const held of markerBuffers.values()) gl.deleteBuffer(held)
-  markerBuffers.clear()
-  usedMarkerBuffers.clear()
-  if (vao !== null) gl.deleteVertexArray(vao)
-  if (program !== null) gl.deleteProgram(program)
-  markerBufferBytes = 0
-  markAttribute = -1
-  vao = null
-  program = null
-  uniforms.clear()
-}
-
-export interface MarkerStyle {
-  /** CSS pixels; scaled to the device inside `drawMarkers`, as size already is. */
-  readonly size: number
-  readonly thickness: number
-  /** The marker colour, as 0..1 RGB. */
-  readonly colour: readonly [number, number, number]
-  /**
-   * Drawn instead of `colour` for a mark whose wanted colour is not the selected one, when
-   * `dimColour` is on. Null means use `colour` for everything.
-   */
-  readonly otherColour: readonly [number, number, number] | null
-  /** Opacity multiplier for those same marks, 0..1. 1 means do not dim. */
-  readonly otherOpacity: number
-  /**
-   * The palette index currently selected in wplace, or -1 when nothing is selected or the mode that
-   * makes this meaningful is off. -1 must draw every mark at full strength in `colour`.
-   */
-  readonly selected: number
-}
-
-const applyMarkerStyle = (gl: WebGL2RenderingContext, style: MarkerStyle, fade: number): void => {
-  const scale = deviceScale(gl)
-  gl.uniform1f(uniform(gl, 'u_size'), style.size * scale)
-  gl.uniform1f(uniform(gl, 'u_thickness'), Math.max(1, Math.round(style.thickness * scale)))
-  gl.uniform3f(uniform(gl, 'u_colour'), ...style.colour)
-  gl.uniform3f(uniform(gl, 'u_otherColour'), ...(style.otherColour ?? style.colour))
-  gl.uniform1f(uniform(gl, 'u_otherOpacity'), style.otherOpacity)
-  gl.uniform1f(uniform(gl, 'u_selected'), style.selected)
-  gl.uniform1f(uniform(gl, 'u_fade'), fade)
-}
-
-/**
- * How many device pixels one CSS pixel is, right now.
- *
- * Never captured once and kept: dragging a window between a laptop's own display and an external
- * monitor changes it without reloading the page, and a marker that stayed the size it was on the
- * other screen is exactly the bug this is here to avoid.
- *
- * Falls back to the drawing buffer against the canvas's CSS width, because that is what MapLibre
- * itself sized the buffer by — on a page that has overridden `devicePixelRatio`, the buffer is the
- * honest answer and `window.devicePixelRatio` is not.
- *
- * That fallback is a layout read, and this is called once per tile per frame — twelve hundred
- * forced reflows a second on a full screen of tiles. So the answer is held against the buffer size
- * and browser DPR it was measured at. Browser zoom can change CSS width and DPR while leaving the
- * backing buffer unchanged, so the DPR is the cheap witness that invalidates that otherwise-stale
- * entry without putting a layout read back on every tile.
- */
-let cachedScale: {
-  canvas: unknown
-  buffer: number
-  dpr: number
-  scale: number
-} | null = null
-
-/** @internal Exported so the zoom-without-buffer-resize invariant can be exercised directly. */
-export const deviceScale = (gl: WebGL2RenderingContext): number => {
-  const canvas = gl.canvas
-  const buffer = gl.drawingBufferWidth
-  const dpr = window.devicePixelRatio || 1
-  if (
-    cachedScale !== null &&
-    cachedScale.canvas === canvas &&
-    cachedScale.buffer === buffer &&
-    cachedScale.dpr === dpr
-  )
-    return cachedScale.scale
-  const measured = canvas instanceof HTMLCanvasElement ? canvas.getBoundingClientRect().width : 0
-  const scale = measured > 0 ? buffer / measured : dpr
-  cachedScale = { canvas, buffer, dpr, scale }
-  return scale
+  if (worldMarkerRenderer?.gl !== gl) return
+  worldMarkerRenderer.dispose()
+  worldMarkerRenderer = null
 }
 
 /**
@@ -302,34 +70,23 @@ export const drawMarkers = (
   fade: number,
   sampleRate = 1,
 ): void => {
-  if (program === null || vao === null || pixels.length === 0) return
-
-  gl.useProgram(program)
-  gl.bindVertexArray(vao)
-  let held = markerBuffers.get(pixels)
-  if (held === undefined) {
-    held = gl.createBuffer()
-    if (held === null) return
-    markerBuffers.set(pixels, held)
-    markerBufferBytes += pixels.byteLength
-    gl.bindBuffer(gl.ARRAY_BUFFER, held)
-    gl.bufferData(gl.ARRAY_BUFFER, pixels, gl.STATIC_DRAW)
-  } else gl.bindBuffer(gl.ARRAY_BUFFER, held)
-  usedMarkerBuffers.add(pixels)
-  gl.vertexAttribIPointer(markAttribute, 1, gl.UNSIGNED_INT, Uint32Array.BYTES_PER_ELEMENT, 0)
-
-  gl.uniform2f(uniform(gl, 'u_tileScreen'), tile.x, tile.y)
-  gl.uniform2f(uniform(gl, 'u_tileScale'), tile.width / TILE_SIZE, tile.height / TILE_SIZE)
-  gl.uniform2f(uniform(gl, 'u_buffer'), gl.drawingBufferWidth, gl.drawingBufferHeight)
-  gl.uniform1f(uniform(gl, 'u_sampleRate'), sampleRate)
-  const sampleSeed = (Math.imul(tile.tile.x, 73_856_093) ^ Math.imul(tile.tile.y, 19_349_663)) >>> 0
-  gl.uniform1ui(uniform(gl, 'u_sampleSeed'), sampleSeed)
-  // `gl_PointSize` is in device pixels, so a size fixed there is half as big on a 2x display and a
-  // quarter on 3x — the markers shrank exactly where the screen has more room to show them.
-  applyMarkerStyle(gl, style, fade)
-
-  gl.drawArrays(gl.POINTS, 0, pixels.length)
-  gl.bindVertexArray(null)
+  if (worldMarkerRenderer?.gl !== gl) return
+  worldMarkerRenderer.draw(
+    {
+      x: tile.x,
+      y: tile.y,
+      width: tile.width,
+      height: tile.height,
+      pixelWidth: TILE_SIZE,
+      pixelHeight: TILE_SIZE,
+      seedX: tile.tile.x,
+      seedY: tile.tile.y,
+    },
+    pixels,
+    style,
+    fade,
+    sampleRate,
+  )
 }
 
 export const MARKER_LAYER_ID = 'caelestis-markers'
@@ -698,18 +455,13 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 }
 
 const drawAll = (gl: WebGL2RenderingContext): void => {
-  usedMarkerBuffers.clear()
+  worldMarkerRenderer?.beginFrame()
   beginMarkerBatchFrame()
   try {
     pixelAccounting.frame(() => drawVisible(gl))
   } finally {
     endMarkerBatchFrame()
-    for (const [pixels, held] of markerBuffers) {
-      if (usedMarkerBuffers.has(pixels)) continue
-      gl.deleteBuffer(held)
-      markerBuffers.delete(pixels)
-      markerBufferBytes -= pixels.byteLength
-    }
+    worldMarkerRenderer?.endFrame()
   }
 }
 

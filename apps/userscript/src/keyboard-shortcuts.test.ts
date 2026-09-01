@@ -170,8 +170,9 @@ describe('keyboard shortcut actions', () => {
     expect(wplaceHandler).not.toHaveBeenCalled()
   })
 
-  it('scopes native paint actions to the alliance dialog and blocks world-only shortcuts', () => {
+  it('routes alliance appearance shortcuts to the active canvas and native paint to its dialog', () => {
     harness.allianceActive = true
+    harness.focused.owns = []
     const dialog = document.createElement('dialog')
     dialog.setAttribute('open', '')
     const stage = document.createElement('div')
@@ -189,11 +190,22 @@ describe('keyboard shortcut actions', () => {
     expect(harness.paintAction).toHaveBeenCalledWith(dialog)
     expect(harness.cancelPaint).toHaveBeenCalledWith(dialog)
     expect(harness.undoPaint).toHaveBeenCalledWith(dialog)
-    expect(harness.cycleColour).not.toHaveBeenCalled()
-    expect(harness.navigateColour).not.toHaveBeenCalled()
+    expect(harness.cycleColour).toHaveBeenNthCalledWith(1, -1)
+    expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)
+    expect(harness.navigateColour).toHaveBeenCalledOnce()
     expect(harness.toggleAppearanceBoolean).not.toHaveBeenCalled()
-    expect(harness.setState).not.toHaveBeenCalled()
-    expect(harness.toggleTheme).not.toHaveBeenCalled()
+    expect(harness.setState).toHaveBeenCalledWith({ onlySelectedColour: true })
+    expect(harness.setSurfaceAppearance).toHaveBeenNthCalledWith(
+      1,
+      { kind: 'alliance-headquarters', allianceId: 535_245 },
+      expect.objectContaining({ markMismatch: true }),
+    )
+    expect(harness.setSurfaceAppearance).toHaveBeenNthCalledWith(
+      2,
+      { kind: 'alliance-headquarters', allianceId: 535_245 },
+      expect.objectContaining({ markSelectedColour: true }),
+    )
+    expect(harness.toggleTheme).toHaveBeenCalledOnce()
   })
 
   it('isolates every surface action while alliance asset metadata is unresolved', () => {

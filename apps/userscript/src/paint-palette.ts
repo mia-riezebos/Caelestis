@@ -1,6 +1,11 @@
-import { latLngToCanvasPixel, PALETTE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { latLngToCanvasPixel, sameTemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import type { CaelestisPaletteProgress } from '@caelestis/ui/elements'
+import { allianceBounds, alliancePointAt } from './alliance-coordinates.js'
+import { navigateAllianceArtboardTo } from './alliance-navigation.js'
+import { activeAllianceSurface } from './alliance-surface.js'
 import { count, warn } from './debug.js'
+import { artboardColourProgress, artboardColourTargets } from './gl/artboard-markers.js'
+import { readArtboardPixels } from './gl/artboard-pixels.js'
 import { getMap } from './map-handle.js'
 import { type ConnectedServer, getState, onStateChange, serverConnectionIdentity } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
@@ -26,6 +31,8 @@ import { applyColourProgressDelta } from './ui/progress.js'
 import {
   isPaintOpen,
   onPaintSelectionChange,
+  paintPaletteIndexOf,
+  paintPaletteSwatches,
   selectedColour,
   selectPaintColour,
 } from './wplace-paint.js'
@@ -338,25 +345,34 @@ const snapshotSubmittedDraft = (submission: PaintSubmission): void => {
   })
 }
 
-/** The colour counts decorating Wplace's palette belong only to what the viewport is focused on. */
-export const paintPaletteProgress = (): readonly TemplateColourProgress[] =>
-  progressForTemplate(focusedTemplate())
-
-const paletteIndexOf = (element: Element): number | null => {
-  const raw = Number(element.id.slice('color-'.length))
-  const index = raw - 1
-  return Number.isInteger(raw) && raw > 0 && index < PALETTE_SIZE ? index : null
+/** The colour counts decorating Wplace's palette belong only to the focused active surface. */
+export const paintPaletteProgress = (): readonly TemplateColourProgress[] => {
+  const template = focusedTemplate()
+  if (template === null) return []
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  if (surface.kind === 'world') return progressForTemplate(template)
+  const active = activeAllianceSurface()
+  const bounds = active === null ? null : allianceBounds(active)
+  if (active === null || bounds === null || !sameTemplateSurface(active.surface, surface)) return []
+  return artboardColourProgress(
+    template,
+    readArtboardPixels(active, {
+      originX: bounds.minX,
+      originY: bounds.minY,
+      width: bounds.maxX - bounds.minX,
+      height: bounds.maxY - bounds.minY,
+    }),
+  )
 }
 
 const originalLabels = new WeakMap<HTMLElement, string>()
 const wired = new WeakSet<HTMLElement>()
-const PALETTE_SWATCH = '[id^="color-"]'
 
 const renderedPaletteOrder = (): readonly number[] => {
   const seen = new Set<number>()
   const order: number[] = []
-  for (const element of document.querySelectorAll<HTMLElement>(PALETTE_SWATCH)) {
-    const index = paletteIndexOf(element)
+  for (const element of paintPaletteSwatches()) {
+    const index = paintPaletteIndexOf(element)
     if (index === null || seen.has(index)) continue
     seen.add(index)
     order.push(index)
@@ -371,9 +387,56 @@ let lastNavigation: { readonly index: number; readonly target: ColourNavigationT
 export const navigateFocusedColour = async (index: number, cycle = false): Promise<boolean> => {
   const template = focusedTemplate()
   if (template === null) return false
-  // Alliance surfaces do not use the world MapLibre camera. Until their paint-accounting adapter
-  // supplies an artboard navigation target, never let F move the world beneath the active editor.
-  if ((template.surface ?? WORLD_TEMPLATE_SURFACE).kind !== 'world') return false
+  const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
+  if (surface.kind !== 'world') {
+    const active = activeAllianceSurface()
+    const bounds = active === null ? null : allianceBounds(active)
+    if (active === null || bounds === null || !sameTemplateSurface(active.surface, surface))
+      return false
+    const stage = active.stage.getBoundingClientRect()
+    const reference = alliancePointAt(
+      active,
+      stage.left + stage.width / 2,
+      stage.top + stage.height / 2,
+    )
+    if (reference === null) return false
+    const targets = artboardColourTargets(
+      template,
+      readArtboardPixels(active, {
+        originX: bounds.minX,
+        originY: bounds.minY,
+        width: bounds.maxX - bounds.minX,
+        height: bounds.maxY - bounds.minY,
+      }),
+      index,
+    )
+    const order: readonly ColourTargetKind[] =
+      getState().colourNavigationOrder === 'mismatched-first'
+        ? ['mismatched', 'unpainted']
+        : ['unpainted', 'mismatched']
+    for (const kind of order) {
+      const candidates = targets.filter((target) => target.kind === kind)
+      if (candidates.length === 0) continue
+      const previous =
+        cycle && lastNavigation?.index === index && lastNavigation.target.templateId === template.id
+          ? lastNavigation.target
+          : null
+      const available = candidates.filter(
+        (target) => previous === null || target.x !== previous.x || target.y !== previous.y,
+      )
+      const pool = available.length > 0 ? available : candidates
+      const target = pool.reduce((nearest, candidate) => {
+        const distance = (candidate.x - reference.x) ** 2 + (candidate.y - reference.y) ** 2
+        const nearestDistance = (nearest.x - reference.x) ** 2 + (nearest.y - reference.y) ** 2
+        return distance < nearestDistance ? candidate : nearest
+      })
+      const navigationTarget: ColourNavigationTarget = { ...target, templateId: template.id }
+      lastNavigation = { index, target: navigationTarget }
+      return navigateAllianceArtboardTo(active, { x: target.x + 0.5, y: target.y + 0.5 })
+    }
+    warn('install', `no remaining pixel for palette colour ${index} in template ${template.id}`)
+    return false
+  }
   const map = getMap()
   if (map === null) return false
   const reference = latLngToCanvasPixel(map.getCenter())
@@ -410,15 +473,17 @@ export const navigateFocusedSelectedColour = async (): Promise<boolean> => {
   return index === null ? false : await navigateFocusedColour(index, true)
 }
 
-/** Select the previous or next unfinished colour in the focused template, wrapping at either end. */
+/** Select the previous or next palette colour, wrapping at either end. */
 export const cycleFocusedColour = (direction: -1 | 1): boolean => {
   if (!isPaintOpen()) return false
-  const remaining = new Set(
-    paintPaletteProgress()
-      .filter((entry) => entry.completed < entry.total)
-      .map((entry) => entry.index),
-  )
   const order = renderedPaletteOrder()
+  const remaining = new Set(
+    activeAllianceSurface() === null
+      ? paintPaletteProgress()
+          .filter((entry) => entry.completed < entry.total)
+          .map((entry) => entry.index)
+      : order,
+  )
   if (remaining.size === 0 || order.length === 0) return false
 
   const selected = selectedColour()
@@ -447,7 +512,7 @@ const wire = (swatch: HTMLElement, index: number): void => {
 }
 
 const render = (): void => {
-  const swatches = document.querySelectorAll<HTMLElement>(PALETTE_SWATCH)
+  const swatches = paintPaletteSwatches()
   count('paint:palette renders')
   count('paint:palette swatches', swatches.length)
   // Mismatch and telemetry updates also arrive while Wplace's paint drawer is closed. Do not walk
@@ -460,7 +525,7 @@ const render = (): void => {
       : 'unpainted, then mismatched'
   count('paint:palette progress colours', progress.size)
   for (const element of swatches) {
-    const index = paletteIndexOf(element)
+    const index = paintPaletteIndexOf(element)
     if (index === null) continue
     wire(element, index)
     const entry = progress.get(index)
@@ -518,11 +583,15 @@ const queueRender = (): void => {
 
 const containsPaletteSwatch = (node: Node): boolean =>
   node instanceof Element &&
-  (node.matches(PALETTE_SWATCH) || node.querySelector(PALETTE_SWATCH) !== null)
+  (paintPaletteIndexOf(node) !== null || paintPaletteSwatches(node).length > 0)
 
 const touchesPalette = (records: readonly MutationRecord[]): boolean => {
   for (const record of records) {
-    if (record.target instanceof Element && record.target.closest(PALETTE_SWATCH) !== null)
+    if (
+      record.target instanceof Element &&
+      (paintPaletteIndexOf(record.target) !== null ||
+        paintPaletteSwatches(record.target).length > 0)
+    )
       return true
     for (const node of record.addedNodes) if (containsPaletteSwatch(node)) return true
     for (const node of record.removedNodes) if (containsPaletteSwatch(node)) return true
@@ -531,7 +600,7 @@ const touchesPalette = (records: readonly MutationRecord[]): boolean => {
 }
 
 const discoverPalette = (): void => {
-  paletteMounted = document.querySelector(PALETTE_SWATCH) !== null
+  paletteMounted = paintPaletteSwatches().length > 0
   queueRender()
 }
 
@@ -547,7 +616,7 @@ export const refreshPaintPaletteFocus = (): void => {
 let installed = false
 
 const observe = (): void => {
-  paletteMounted = document.querySelector(PALETTE_SWATCH) !== null
+  paletteMounted = paintPaletteSwatches().length > 0
   if (paletteMounted) render()
   new MutationObserver((records) => {
     if (touchesPalette(records)) discoverPalette()

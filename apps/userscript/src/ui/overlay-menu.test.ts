@@ -317,6 +317,49 @@ afterEach(() => {
 })
 
 describe('the open menu tracks intended state, not a snapshot and not a lagging store', () => {
+  it('shows marker controls for alliance templates', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([template({ surface })])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 1_000, bottom: 700, width: 1_000, height: 700 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 200, top: 100, right: 700, bottom: 600, width: 500, height: 500 }) as DOMRect
+    const active: ActiveAllianceSurface = {
+      surface,
+      stage,
+      frame,
+      draftId: null,
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+    }
+    const allianceRender = (await import('./overlay-menu.js')).renderAllianceOverlayControls
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+    gear('a').click()
+    allianceRender(
+      vi.fn(),
+      active,
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+
+    const root = await menuRoot()
+    expect(root.textContent).toContain('Markers')
+    expect(root.querySelector('input[aria-label="Mark mismatched pixels"]')).not.toBeNull()
+  })
+
   it('uses the same placement rail and follows an alliance artboard pan', async () => {
     const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
     harness.localTemplates.mockReturnValue([
@@ -1053,6 +1096,52 @@ describe('placement and geometry', () => {
     expect(menuPosition.x + 240).toBeLessThanOrEqual(viewport.right)
     expect(menuPosition.y).toBeGreaterThanOrEqual(viewport.top)
     expect(menuPosition.y + 200).toBeLessThanOrEqual(viewport.bottom)
+  })
+
+  it('keeps alliance template controls clear of the Caelestis button', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ surface, originX: 100, originY: -123, width: 25 }),
+    ])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    const dialog = document.createElement('dialog')
+    const caelestis = document.createElement('div')
+    const caelestisButton = document.createElement('button')
+    dialog.setAttribute('open', '')
+    caelestis.id = 'caelestis-alliance-rail'
+    caelestisButton.id = 'caelestis-alliance-rail-button'
+    caelestis.append(caelestisButton)
+    frame.append(canvas)
+    stage.append(frame)
+    dialog.append(stage, caelestis)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 100, top: 150, right: 700, bottom: 650, width: 600, height: 500 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 100, top: 150, right: 700, bottom: 750, width: 600, height: 600 }) as DOMRect
+    caelestis.getBoundingClientRect = () =>
+      ({ left: 640, top: 158, right: 688, bottom: 206, width: 48, height: 48 }) as DOMRect
+    caelestisButton.getBoundingClientRect = () =>
+      ({ left: 648, top: 162, right: 688, bottom: 202, width: 40, height: 40 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+
+    overlayMenu.renderAllianceOverlayControls(
+      vi.fn(),
+      {
+        surface,
+        stage,
+        frame,
+        draftId: null,
+        bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+      },
+      { originX: -125, originY: -125, width: 250, height: 250 },
+      canvas,
+    )
+
+    expect(floatingPosition(gear('a')).x + RAIL_BUTTON).toBeLessThanOrEqual(640 - GAP)
+    expect(floatingPosition(gear('a')).y).toBe(162)
   })
 
   it('hides alliance rails when the visible stage slice cannot fit them', async () => {

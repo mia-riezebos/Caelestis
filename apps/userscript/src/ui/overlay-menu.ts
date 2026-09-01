@@ -150,10 +150,14 @@ const CONTROL = 'caelestisControl'
 const localControlsRightEdge = (): number => {
   const fallbackRailEdge = window.innerWidth - CLEAR_OF_RAIL
   const wplaceControls = findWplaceRightControls()?.getBoundingClientRect()
-  const railEdge =
+  let railEdge =
     wplaceControls !== undefined && wplaceControls.width > 0
       ? Math.min(fallbackRailEdge, wplaceControls.left - RAIL_GAP)
       : fallbackRailEdge
+  const allianceRail = document.getElementById('caelestis-alliance-rail')?.getBoundingClientRect()
+  if (allianceRail !== undefined && allianceRail.width > 0) {
+    railEdge = Math.min(railEdge, allianceRail.left - RAIL_GAP)
+  }
   const panel =
     document.getElementById('caelestis-alliance-panel') ?? document.getElementById(PANEL_ID)
   if (panel === null) return railEdge
@@ -161,6 +165,12 @@ const localControlsRightEdge = (): number => {
     VIEWPORT_EDGE + MENU_BUTTON_SIZE,
     Math.min(railEdge, panel.getBoundingClientRect().left - RAIL_GAP),
   )
+}
+
+const alignWithAlliancePanelButton = (top: number): number => {
+  const button = document.getElementById('caelestis-alliance-rail-button')?.getBoundingClientRect()
+  if (button === undefined || button.height <= 0) return top
+  return top < button.bottom && top + MENU_BUTTON_SIZE > button.top ? button.top : top
 }
 
 /**
@@ -850,7 +860,7 @@ const overlayAppearanceModel = (template: PlacedTemplate): AppearanceEditorModel
     ),
     onlySelectedColour: false,
     showOnlySelectedColour: false,
-    showMarkers: (template.surface ?? WORLD_TEMPLATE_SURFACE).kind === 'world',
+    showMarkers: true,
     paintOpen: isPaintOpen(),
     groups: {
       pixels: { owned: ownsGroup(template, 'pixels') },
@@ -2042,9 +2052,11 @@ const renderControls = (
     }
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
-    const buttonTop = Math.min(
-      Math.max(corner.y, viewport.top),
-      Math.max(viewport.top, viewport.bottom - railHeight),
+    const buttonTop = alignWithAlliancePanelButton(
+      Math.min(
+        Math.max(corner.y, viewport.top),
+        Math.max(viewport.top, viewport.bottom - railHeight),
+      ),
     )
     const buttonLeft = Math.min(
       Math.max(corner.x + 6, viewport.left),

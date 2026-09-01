@@ -6,6 +6,7 @@ import {
   tileKey,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
+import { announceCanvasWrite } from './canvas-write.js'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
@@ -1730,6 +1731,7 @@ const installPutImageDataTaps = (
         runObservedCall(
           () => Reflect.apply(nativePutImageData, this, args),
           () => {
+            announceCanvasWrite(this.canvas)
             const canvas = this.canvas as { width?: number; height?: number }
             if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
             const [image, dx, dy] = args
@@ -1759,6 +1761,7 @@ const installPutImageDataTaps = (
         runObservedCall(
           () => Reflect.apply(nativeClearRect, this, args),
           () => {
+            announceCanvasWrite(this.canvas)
             const canvas = this.canvas as { width?: number; height?: number }
             if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
             const [x, y, width, height] = args

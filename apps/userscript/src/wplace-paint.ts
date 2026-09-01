@@ -1,13 +1,11 @@
-import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@caelestis/shared'
+import { PALETTE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log } from './debug.js'
 
 /**
  * Which colour wplace currently has selected, and whether its paint drawer is open at all.
  *
- * Read from their rendered swatches rather than from any state of theirs: each one is a
- * `<button id="color-N">`, and the selected one carries `ring-primary`. `color-N` is our palette
- * index `N - 1` — their array puts Transparent at 0 and ours puts it last — which is exact now that
- * the palette is read from their own bundle rather than a copy of it.
+ * Read from their rendered swatches rather than from any state of theirs. World swatches use
+ * `color-N` and `ring-primary`. Alliance swatches use their colour name and `aria-pressed`.
  *
  * The drawer existing *is* the signal that painting has started. There is no separate flag to read,
  * and there does not need to be: the swatches are only in the document while it is open.
@@ -29,7 +27,9 @@ export const isPaintOpen = (): boolean => open
 /** Select one of Wplace's own paint swatches without owning a second palette state. */
 export const selectPaintColour = (index: number): boolean => {
   if (!Number.isInteger(index) || index < 0 || index >= TRANSPARENT_INDEX) return false
-  const swatch = document.getElementById(`color-${index + 1}`)
+  const swatch =
+    document.getElementById(`color-${index + 1}`) ??
+    alliancePaletteSwatches(document).find((candidate) => paintPaletteIndexOf(candidate) === index)
   if (!(swatch instanceof HTMLElement)) return false
   swatch.click()
   return true
@@ -88,10 +88,10 @@ const paintDrawerCommitButton = (swatch: Element): HTMLButtonElement | null => {
  */
 const movePaintHistory = (title: 'Undo' | 'Redo', root: ParentNode): boolean => {
   const swatch = root.querySelector('[id^="color-"]')
-  if (swatch === null) return false
-  const drawer = paintDrawerOf(swatch)
-  if (drawer === null) return false
-  const button = drawer.querySelector(`button[title="${title}"]`)
+  const drawer = swatch === null ? null : paintDrawerOf(swatch)
+  const button =
+    drawer?.querySelector(`button[title="${title}"]`) ??
+    alliancePaintPanel(root)?.querySelector(`button[aria-label="${title}"]`)
   if (!(button instanceof HTMLButtonElement) || button.disabled) return false
   button.click()
   return true
@@ -106,19 +106,30 @@ export const redoPaintDraft = (root: ParentNode = document): boolean =>
   movePaintHistory('Redo', root)
 
 const paintDockButton = (root: ParentNode): HTMLButtonElement | null => {
+  let visiblePaint: HTMLButtonElement | null = null
   for (const button of root.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {
     const dock = button.parentElement
     if (
       dock?.classList.contains('absolute') === true &&
-      dock.classList.contains('bottom-3') &&
       dock.classList.contains('left-1/2') &&
-      dock.classList.contains('z-30') &&
-      dock.classList.contains('-translate-x-1/2')
+      dock.classList.contains('-translate-x-1/2') &&
+      (dock.classList.contains('bottom-3') || dock.classList.contains('bottom-14')) &&
+      button.textContent?.trim().toLowerCase().startsWith('paint') === true
     ) {
       return button
     }
+    const rect = button.getBoundingClientRect()
+    if (
+      visiblePaint === null &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      button.classList.contains('btn-lg') &&
+      button.textContent?.trim().toLowerCase().startsWith('paint') === true
+    ) {
+      visiblePaint = button
+    }
   }
-  return null
+  return visiblePaint
 }
 
 /**
@@ -132,6 +143,12 @@ export const performPaintAction = (root: ParentNode = document): boolean => {
   const swatch = root.querySelector('[id^="color-"]')
   if (swatch !== null) {
     const commit = paintDrawerCommitButton(swatch)
+    if (commit === null || commit.disabled) return false
+    commit.click()
+    return true
+  }
+  if (alliancePaletteSwatches(root).length > 0) {
+    const commit = paintDockButton(alliancePaintPanel(root) ?? root)
     if (commit === null || commit.disabled) return false
     commit.click()
     return true
@@ -156,8 +173,11 @@ export const performPaintAction = (root: ParentNode = document): boolean => {
 /** Discard the current native Wplace draft, leaving unrelated Escape handling alone when closed. */
 export const cancelPaintDraft = (root: ParentNode = document): boolean => {
   const swatch = root.querySelector('[id^="color-"]')
-  if (swatch === null) return false
-  const close = paintDrawerCloseButton(swatch)
+  const close =
+    swatch === null
+      ? (alliancePaintPanel(root)?.querySelector<HTMLButtonElement>('button[aria-label="Close"]') ??
+        null)
+      : paintDrawerCloseButton(swatch)
   if (close === null || close.disabled) return false
   close.click()
   return true
@@ -184,21 +204,45 @@ export const onPaintSelectionChange = (listener: () => void): void => {
  * template colour it means "may be anything", so "show only the selected colour" has nothing to
  * show for it.
  */
-const paletteIndexOf = (element: Element): number | null => {
+export const paintPaletteIndexOf = (element: Element): number | null => {
   const raw = Number(element.id.slice('color-'.length))
-  if (!Number.isInteger(raw) || raw <= 0) return null
-  const index = raw - 1
+  const label = element.getAttribute('aria-label')?.split('. ', 1)[0]?.toLowerCase()
+  const index =
+    Number.isInteger(raw) && raw > 0
+      ? raw - 1
+      : (WPLACE_PALETTE.find((colour) => colour.name.toLowerCase() === label)?.index ?? -1)
   if (index < 0 || index >= PALETTE_SIZE || index === TRANSPARENT_INDEX) return null
   return index
 }
 
+const alliancePaletteSwatches = (root: ParentNode): HTMLButtonElement[] =>
+  [...root.querySelectorAll<HTMLButtonElement>('button[aria-label][aria-pressed]')].filter(
+    (button) =>
+      paintPaletteIndexOf(button) !== null || button.getAttribute('aria-label') === 'Transparent',
+  )
+
+/** Wplace's mounted world or alliance paint swatches, in their rendered order. */
+export const paintPaletteSwatches = (root: ParentNode = document): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>('[id^="color-"]'),
+  ...alliancePaletteSwatches(root),
+]
+
+const alliancePaintPanel = (root: ParentNode): HTMLElement | null => {
+  const swatch = alliancePaletteSwatches(root)[0]
+  return swatch?.parentElement?.parentElement?.parentElement ?? null
+}
+
 const read = (): void => {
-  const swatches = document.querySelectorAll('[id^="color-"]')
+  const swatches = paintPaletteSwatches(document)
   const nextOpen = swatches.length > 0
   let nextSelected: number | null = null
   for (const swatch of swatches) {
-    if (!swatch.className.includes('ring-primary')) continue
-    nextSelected = paletteIndexOf(swatch)
+    if (
+      !swatch.className.includes('ring-primary') &&
+      swatch.getAttribute('aria-pressed') !== 'true'
+    )
+      continue
+    nextSelected = paintPaletteIndexOf(swatch)
     break
   }
   if (nextOpen === open && nextSelected === selected) return
@@ -235,7 +279,7 @@ const observe = (): void => {
     subtree: true,
     childList: true,
     attributes: true,
-    attributeFilter: ['class'],
+    attributeFilter: ['class', 'aria-pressed'],
   })
 }
 

@@ -53,6 +53,39 @@ describe('Wplace paint controls', () => {
     expect(selectPaintColour(63)).toBe(false)
   })
 
+  it('reads and selects Wplace alliance palette buttons after progress decorates their labels', async () => {
+    const grid = document.createElement('div')
+    const blackWrapper = document.createElement('div')
+    const black = document.createElement('button')
+    black.setAttribute('aria-label', 'Black. Checking progress for the focused template.')
+    black.setAttribute('aria-pressed', 'true')
+    const redWrapper = document.createElement('div')
+    const red = document.createElement('button')
+    red.setAttribute('aria-label', 'Red')
+    red.setAttribute('aria-pressed', 'false')
+    const redClick = vi.fn()
+    red.addEventListener('click', redClick)
+    blackWrapper.appendChild(black)
+    redWrapper.appendChild(red)
+    grid.append(blackWrapper, redWrapper)
+    document.body.appendChild(grid)
+    const {
+      isPaintOpen,
+      paintPaletteIndexOf,
+      selectPaintColour,
+      selectedColour,
+      watchPaintSelection,
+    } = await import('./wplace-paint.js')
+
+    watchPaintSelection()
+
+    expect(isPaintOpen()).toBe(true)
+    expect(paintPaletteIndexOf(black)).toBe(0)
+    expect(selectedColour()).toBe(0)
+    expect(selectPaintColour(6)).toBe(true)
+    expect(redClick).toHaveBeenCalledOnce()
+  })
+
   it('clicks only an exact accessible paint-mode label', async () => {
     const unrelated = document.createElement('button')
     unrelated.setAttribute('aria-label', 'Paint template settings')
@@ -91,6 +124,89 @@ describe('Wplace paint controls', () => {
     expect(performPaintAction()).toBe(true)
     expect(paintClick).toHaveBeenCalledOnce()
     expect(unrelatedClick).not.toHaveBeenCalled()
+  })
+
+  it('clicks the alliance artboard Paint control', async () => {
+    const dialog = document.createElement('dialog')
+    const dock = document.createElement('div')
+    dock.className = 'absolute bottom-14 left-1/2 z-20 -translate-x-1/2 sm:bottom-3'
+    const paint = document.createElement('button')
+    paint.className = 'btn btn-lg sm:btn-xl relative btn-primary'
+    paint.textContent = 'Paint'
+    const paintClick = vi.fn()
+    paint.addEventListener('click', paintClick)
+    dock.appendChild(paint)
+    dialog.appendChild(dock)
+    document.body.appendChild(dialog)
+    const { performPaintAction } = await import('./wplace-paint.js')
+
+    expect(performPaintAction(dialog)).toBe(true)
+    expect(paintClick).toHaveBeenCalledOnce()
+  })
+
+  it('clicks the visible alliance Paint control after Wplace removes its dock classes', async () => {
+    const dialog = document.createElement('dialog')
+    const wrapper = document.createElement('div')
+    const paint = document.createElement('button')
+    paint.className = 'btn btn-lg sm:btn-xl relative btn-primary'
+    paint.textContent = 'Paint'
+    paint.getBoundingClientRect = () => ({ width: 200, height: 56 }) as DOMRect
+    const paintClick = vi.fn()
+    paint.addEventListener('click', paintClick)
+    wrapper.appendChild(paint)
+    dialog.appendChild(wrapper)
+    document.body.appendChild(dialog)
+    const { performPaintAction } = await import('./wplace-paint.js')
+
+    expect(performPaintAction(dialog)).toBe(true)
+    expect(paintClick).toHaveBeenCalledOnce()
+  })
+
+  it('uses the alliance palette section for commit, cancel, and history', async () => {
+    const section = document.createElement('div')
+    const tools = document.createElement('div')
+    const undo = document.createElement('button')
+    undo.setAttribute('aria-label', 'Undo')
+    const redo = document.createElement('button')
+    redo.setAttribute('aria-label', 'Redo')
+    const close = document.createElement('button')
+    close.setAttribute('aria-label', 'Close')
+    tools.append(undo, redo, close)
+    const grid = document.createElement('div')
+    const wrapper = document.createElement('div')
+    const swatch = document.createElement('button')
+    swatch.setAttribute('aria-label', 'Black')
+    swatch.setAttribute('aria-pressed', 'true')
+    wrapper.appendChild(swatch)
+    grid.appendChild(wrapper)
+    const commitWrapper = document.createElement('div')
+    const commit = document.createElement('button')
+    commit.className = 'btn btn-lg btn-primary'
+    commit.textContent = 'Paint'
+    commit.getBoundingClientRect = () => ({ width: 200, height: 56 }) as DOMRect
+    commitWrapper.appendChild(commit)
+    section.append(tools, grid, commitWrapper)
+    document.body.appendChild(section)
+    const undoClick = vi.fn()
+    const redoClick = vi.fn()
+    const closeClick = vi.fn()
+    const commitClick = vi.fn()
+    undo.addEventListener('click', undoClick)
+    redo.addEventListener('click', redoClick)
+    close.addEventListener('click', closeClick)
+    commit.addEventListener('click', commitClick)
+    const { cancelPaintDraft, performPaintAction, redoPaintDraft, undoPaintDraft } = await import(
+      './wplace-paint.js'
+    )
+
+    expect(undoPaintDraft(section)).toBe(true)
+    expect(redoPaintDraft(section)).toBe(true)
+    expect(cancelPaintDraft(section)).toBe(true)
+    expect(performPaintAction(section)).toBe(true)
+    expect(undoClick).toHaveBeenCalledOnce()
+    expect(redoClick).toHaveBeenCalledOnce()
+    expect(closeClick).toHaveBeenCalledOnce()
+    expect(commitClick).toHaveBeenCalledOnce()
   })
 
   it('commits through the native bottom-centre Paint control while the drawer is mounted', async () => {
