@@ -17,7 +17,9 @@ import {
   artboardPlacement,
   insertAllianceArtboardCanvases,
   reconcileAllianceControlsForViewport,
+  visibleArtboardMarkerPoints,
 } from './artboard-layer.js'
+import { markerVisibilityBudget } from './marker-density.js'
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -88,6 +90,25 @@ describe('alliance artboard projection', () => {
         },
       ),
     ).toEqual({ left: 3_300, top: 3_600, right: 3_380, bottom: 3_640 })
+  })
+
+  it('counts only markers inside the visible viewport for density budgeting', () => {
+    const marks = new Uint32Array([100 | (100 << 10), 900 | (900 << 10)])
+    expect(
+      visibleArtboardMarkerPoints(
+        { x: 0, y: 0, width: 1_024, height: 1_024, marks },
+        { originX: 0, originY: 0, width: 1_024, height: 1_024 },
+        {
+          bufferWidth: 512,
+          bufferHeight: 512,
+          frameLeft: 0,
+          frameTop: 0,
+          frameWidth: 1_024,
+          frameHeight: 1_024,
+        },
+        markerVisibilityBudget(),
+      ),
+    ).toBe(1)
   })
 })
 
