@@ -271,7 +271,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
           >
             {#if playing}<Pause class="size-4" />{:else}<Play class="size-4" />{/if}
           </button>
-          <div class="dropdown dropdown-top">
+          <div class="dropdown dropdown-top group">
             <button
               tabindex="0"
               class="btn btn-sm btn-ghost w-14 tabular-nums"
@@ -280,7 +280,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
               {speed.toFixed(2).replace(/0$/, '')}×
             </button>
             <div
-              class="dropdown-content z-20 mb-1 flex w-64 flex-col gap-3 rounded-xl border-[1.5px] border-base-300 bg-base-100 p-3 shadow-md"
+              class="dropdown-content pointer-events-none z-20 mb-1 flex w-64 flex-col gap-3 rounded-xl border-[1.5px] border-base-300 bg-base-100 p-3 shadow-md group-focus-within:pointer-events-auto"
             >
               <div class="flex items-center gap-2">
                 <Slider
