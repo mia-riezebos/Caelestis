@@ -4,6 +4,7 @@ import type { NativePixelSnapshot } from '../native-pixels.js'
 import { DEFAULT_APPEARANCE } from '../templates/appearance.js'
 import { markLocalX, markLocalY, markWanted } from '../templates/mismatch-marks.js'
 import {
+  ArtboardMarkerIndex,
   artboardColourProgress,
   artboardColourTargets,
   artboardMarkerWork,
@@ -231,5 +232,38 @@ describe('alliance artboard marker work', () => {
       selected: [],
     })
     expect(artboardColourTargets(template, pixels, 7)).toEqual([])
+  })
+
+  it('patches only the native rectangle changed by Wplace', () => {
+    const index = new ArtboardMarkerIndex()
+    const initial = index.update(
+      template,
+      committed([{ x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 3, 2, 1]) }]),
+      DEFAULT_APPEARANCE,
+      null,
+    )
+    expect(index.comparedPixels()).toBe(4)
+    expect(initial.mismatch.flatMap(points)).toEqual([
+      [0, -1, 7],
+      [-1, 0, 7],
+    ])
+    const styled = { ...DEFAULT_APPEARANCE, markerColour: '#00ff00' }
+    expect(index.isCurrent(template, styled)).toBe(true)
+    index.update(
+      template,
+      committed([{ x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 3, 2, 1]) }]),
+      styled,
+      [],
+    )
+    expect(index.comparedPixels()).toBe(0)
+
+    const patched = index.update(
+      template,
+      committed([{ x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 7, 2, 1]) }]),
+      DEFAULT_APPEARANCE,
+      [{ x: 0, y: -1, width: 1, height: 1 }],
+    )
+    expect(index.comparedPixels()).toBe(1)
+    expect(patched.mismatch.flatMap(points)).toEqual([[-1, 0, 7]])
   })
 })

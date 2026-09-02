@@ -22,8 +22,8 @@ import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-p
 import { prefersReducedMotion } from './appearance-transition.js'
 import {
   type ArtboardMarkerBatch,
+  ArtboardMarkerIndex,
   type ArtboardMarkerWork,
-  artboardMarkerWork,
 } from './artboard-markers.js'
 import {
   artboardCanvasWriteRect,
@@ -554,7 +554,10 @@ class ArtboardRenderer {
     readonly width: number
     readonly height: number
   }> = []
-  private readonly markerWork = new Map<string, ArtboardMarkerWork>()
+  private readonly markerWork = new Map<
+    string,
+    { readonly index: ArtboardMarkerIndex; readonly work: ArtboardMarkerWork }
+  >()
   private renderGeneration = 0
   private lastViewportKey = ''
   private settleFramePending = false
@@ -656,11 +659,6 @@ class ArtboardRenderer {
     })
   }
 
-  invalidatePixels(): void {
-    this.markerPixelsDirty = true
-    this.requestRender()
-  }
-
   private markerTile(batch: ArtboardMarkerBatch): object {
     const key = `${batch.x}/${batch.y}/${batch.width}/${batch.height}`
     const held = this.markerTiles.get(key)
@@ -713,9 +711,19 @@ class ArtboardRenderer {
     const selected = isPaintOpen() ? selectedColour() : null
     const markerScene = this.scene.advanceMarkers(templateScene.templates, selected, now)
     if (markerScene.animating) animating = true
-    if (this.markerPixelsDirty || this.markerDirtyRects.length > 0) {
+    let comparedMarkerPixels = 0
+    const staleMarkerIds = new Set(
+      templateScene.templates
+        .filter(({ template, appearance }) => {
+          const held = this.markerWork.get(template.id)
+          return held === undefined || !held.index.isCurrent(template, appearance)
+        })
+        .map(({ template }) => template.id),
+    )
+    if (this.markerPixelsDirty || this.markerDirtyRects.length > 0 || staleMarkerIds.size > 0) {
       const regions = readArtboardPixels(this.active, this.geometry)
       for (const { template, appearance } of templateScene.templates) {
+        const rebuild = this.markerPixelsDirty || staleMarkerIds.has(template.id)
         const intersectsDirty = this.markerDirtyRects.some(
           (dirty) =>
             dirty.x < template.originX + template.width &&
@@ -723,22 +731,31 @@ class ArtboardRenderer {
             dirty.y < template.originY + template.height &&
             dirty.y + dirty.height > template.originY,
         )
-        if (!this.markerPixelsDirty && this.markerWork.has(template.id) && !intersectsDirty)
-          continue
-        this.markerWork.set(template.id, artboardMarkerWork(template, regions, appearance))
+        if (!rebuild && !intersectsDirty) continue
+        const held = this.markerWork.get(template.id)
+        const index = held?.index ?? new ArtboardMarkerIndex()
+        const work = index.update(
+          template,
+          regions,
+          appearance,
+          rebuild ? null : this.markerDirtyRects,
+        )
+        comparedMarkerPixels += index.comparedPixels()
+        this.markerWork.set(template.id, { index, work })
       }
-      for (const id of this.markerWork.keys()) if (!ids.has(id)) this.markerWork.delete(id)
       this.markerPixelsDirty = false
       this.markerDirtyRects.length = 0
     }
+    for (const id of this.markerWork.keys()) if (!ids.has(id)) this.markerWork.delete(id)
     const selectedLayers: Omit<RenderMarker, 'sampleRate'>[] = []
     const mismatchLayers: Omit<RenderMarker, 'sampleRate'>[] = []
     const state = getState()
     for (const { rendered, mismatchFade, selectedFades } of markerScene.templates) {
       if (rendered.fade <= 0) continue
       const appearance = rendered.appearance
-      const work = this.markerWork.get(rendered.template.id)
-      if (work === undefined) continue
+      const indexed = this.markerWork.get(rendered.template.id)
+      if (indexed === undefined) continue
+      const { work } = indexed
       const mismatchStyle: MarkerStyle = {
         size: appearance.markerSize,
         thickness: 2,
@@ -857,6 +874,7 @@ class ArtboardRenderer {
         'Alliance marker source points',
         markerLayers.reduce((total, marker) => total + marker.marks.length, 0),
       )
+      recordProfileWorkload('Alliance marker compared pixels', comparedMarkerPixels)
       recordProfileWorkload(
         'Alliance marker draw batches saved',
         selectedLayers.length + mismatchLayers.length - markerLayers.length,
@@ -898,7 +916,7 @@ const reconcileRenderer = (): void => {
   renderer?.requestRender()
 }
 
-export const repaintAllianceOverlayLayer = (): void => renderer?.invalidatePixels()
+export const repaintAllianceOverlayLayer = (): void => renderer?.requestRender()
 
 /** Attach viewport-resolution WebGL passes inside whichever Wplace alliance artboard is open. */
 export const installAllianceOverlayLayer = (): void => {
