@@ -747,7 +747,9 @@ const menuSignature = (template: PlacedTemplate): string => {
     appearance.size,
     appearance.opacity,
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
-    [...hiddenColoursFor(appearance)].sort((a, b) => a - b).join('.'),
+    [...hiddenColoursFor(appearance, template.surface ?? WORLD_TEMPLATE_SURFACE)]
+      .sort((a, b) => a - b)
+      .join('.'),
     appearance.markMismatch,
     appearance.markUnpainted,
     appearance.unpaintedLimit,
@@ -814,7 +816,9 @@ const commitAppearance = (
 const overlayAppearanceModel = (template: PlacedTemplate): AppearanceEditorModel => {
   const appearance = draftedAppearanceFor(template.id)
   const disabled = isDoomed(template.id)
-  const hidden = new Set(hiddenColoursFor(appearanceFor(template.id)))
+  const hidden = new Set(
+    hiddenColoursFor(appearanceFor(template.id), template.surface ?? WORLD_TEMPLATE_SURFACE),
+  )
   const activePixelPreset = pixelStylePresetOf(appearance)
   const activePreset = activeColourPreset(appearance.hiddenColours)
   return {

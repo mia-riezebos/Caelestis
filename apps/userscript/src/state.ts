@@ -168,10 +168,11 @@ export interface ServerTemplatePreference {
   readonly owns: readonly AppearanceGroup[]
 }
 
-/** Browser-owned defaults for one alliance artboard, isolated from the world and other assets. */
+/** Browser-owned defaults and view mode for one alliance artboard. */
 export interface AllianceSurfaceAppearance {
   readonly surface: Exclude<TemplateSurface, { readonly kind: 'world' }>
   readonly appearance: Appearance
+  readonly onlySelectedColour: boolean
 }
 
 export type ColourPreset = 'all' | 'free' | 'premium' | 'owned'
@@ -188,6 +189,7 @@ export interface State {
   readonly sort: SortOrder
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
+  /** World-canvas selected-colour mode. Alliance canvases keep their own value. */
   readonly onlySelectedColour: boolean
   /** Which kind of remaining work a middle-clicked Wplace colour swatch visits first. */
   readonly colourNavigationOrder: ColourNavigationOrder
@@ -491,7 +493,11 @@ export const loadState = (): State => {
         const appearance = normaliseAppearance(candidate.appearance)
         if (appearance === null) continue
         appearanceSurfaces.add(key)
-        allianceSurfaceAppearances.push({ surface, appearance })
+        allianceSurfaceAppearances.push({
+          surface,
+          appearance,
+          onlySelectedColour: candidate.onlySelectedColour === true,
+        })
         if (allianceSurfaceAppearances.length >= MAX_ALLIANCE_SURFACE_APPEARANCES) break
       }
     }
@@ -561,6 +567,41 @@ export const getSurfaceAppearance = (surface: TemplateSurface): Appearance => {
   )
 }
 
+/** Whether this exact canvas follows Wplace's selected paint colour. */
+export const onlySelectedColourFor = (surface: TemplateSurface): boolean => {
+  if (surface.kind === 'world') return state.onlySelectedColour
+  const key = templateSurfaceKey(surface)
+  return (
+    state.allianceSurfaceAppearances.find(
+      (candidate) => templateSurfaceKey(candidate.surface) === key,
+    )?.onlySelectedColour ?? false
+  )
+}
+
+/** Change the selected-colour view mode without leaking it into another canvas. */
+export const setOnlySelectedColourFor = (
+  surface: TemplateSurface,
+  onlySelectedColour: boolean,
+): boolean => {
+  if (surface.kind === 'world') {
+    setState({ onlySelectedColour })
+    return true
+  }
+  const key = templateSurfaceKey(surface)
+  const preferences = state.allianceSurfaceAppearances
+  const index = preferences.findIndex((candidate) => templateSurfaceKey(candidate.surface) === key)
+  if (index === -1 && preferences.length >= MAX_ALLIANCE_SURFACE_APPEARANCES) return false
+  const preference = index === -1 ? null : preferences[index]
+  return commitState({
+    allianceSurfaceAppearances:
+      preference === null
+        ? [...preferences, { surface, appearance: DEFAULT_APPEARANCE, onlySelectedColour }]
+        : preferences.map((candidate, at) =>
+            at === index ? { ...candidate, onlySelectedColour } : candidate,
+          ),
+  })
+}
+
 /** Preview one canvas's inherited appearance without leaking it into the world renderer. */
 export const previewSurfaceAppearance = (
   surface: TemplateSurface,
@@ -588,8 +629,10 @@ export const setSurfaceAppearance = (
   return commitState({
     allianceSurfaceAppearances:
       index === -1
-        ? [...preferences, { surface, appearance }]
-        : preferences.map((candidate, at) => (at === index ? { surface, appearance } : candidate)),
+        ? [...preferences, { surface, appearance, onlySelectedColour: false }]
+        : preferences.map((candidate, at) =>
+            at === index ? { ...candidate, surface, appearance } : candidate,
+          ),
   })
 }
 

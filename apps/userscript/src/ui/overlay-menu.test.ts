@@ -95,6 +95,7 @@ vi.mock('../state.js', () => ({
     servers: harness.servers,
   }),
   getSurfaceAppearance: () => harness.surfaceAppearance,
+  onlySelectedColourFor: () => false,
   listServerContents: harness.listServerContents,
   removeTreeStateKeys: harness.removeTreeStateKeys,
   setState: vi.fn(),
@@ -1873,9 +1874,7 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
   it('resets an alliance slider to that canvas inherited value', async () => {
     const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
     harness.surfaceAppearance = { ...DEFAULT_APPEARANCE, size: 0.6 }
-    harness.localTemplates.mockReturnValue([
-      template({ surface, appearance: { size: 0.8 } }),
-    ])
+    harness.localTemplates.mockReturnValue([template({ surface, appearance: { size: 0.8 } })])
     const stage = document.createElement('div')
     const frame = document.createElement('div')
     const canvas = document.createElement('canvas')

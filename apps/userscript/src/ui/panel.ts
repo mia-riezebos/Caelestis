@@ -75,11 +75,13 @@ import {
   isCurrentServerConnection,
   loadState,
   MAX_CONNECTED_SERVERS,
+  onlySelectedColourFor,
   onStateChange,
   previewSurfaceAppearance,
   probeServer,
   refreshStoredServers,
   removeServer,
+  setOnlySelectedColourFor,
   setState,
   setSurfaceAppearance,
   upsertServer,
@@ -222,7 +224,7 @@ const syncRailButtonState = (): void => {
 
 const syncAllianceModeState = (active = activeAllianceSurface()): void => {
   const colour = document.getElementById(ALLIANCE_COLOUR_MODE_ID) as CaelestisRailControl | null
-  if (colour !== null) colour.model = colourRailModel()
+  if (colour !== null && active !== null) colour.model = colourRailModel(active.surface)
   const mismatch = document.getElementById(ALLIANCE_MISMATCH_MODE_ID) as CaelestisRailControl | null
   if (mismatch === null || active === null) return
   const on = getSurfaceAppearance(active.surface).markMismatch
@@ -265,17 +267,17 @@ const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl
   return button
 }
 
-const allianceColourModeButton = (): CaelestisRailControl => {
+const allianceColourModeButton = (active: ActiveAllianceSurface): CaelestisRailControl => {
   const existing = document.getElementById(ALLIANCE_COLOUR_MODE_ID)
   if (existing !== null) return existing as CaelestisRailControl
   const button = document.createElement('caelestis-rail-control')
   button.id = ALLIANCE_COLOUR_MODE_ID
-  button.model = colourRailModel()
+  button.model = colourRailModel(active.surface)
   applyWplaceTheme(button)
   button.addEventListener('caelestis-rail-intent', (event) => {
     const intent = (event as CustomEvent<RailControlIntent>).detail
     if (intent.id !== 'colour') return
-    setState({ onlySelectedColour: !getState().onlySelectedColour })
+    setOnlySelectedColourFor(active.surface, !onlySelectedColourFor(active.surface))
   })
   return button
 }
@@ -325,7 +327,7 @@ const mountAllianceRail = (active: ActiveAllianceSurface): void => {
   } satisfies Partial<CSSStyleDeclaration>)
   wrapper.append(
     allianceRailButton(active),
-    allianceColourModeButton(),
+    allianceColourModeButton(active),
     allianceMismatchModeButton(active),
   )
   ;(active.stage.parentElement ?? active.stage).appendChild(wrapper)
@@ -770,7 +772,7 @@ const handleSettingsIntent = (intent: SettingsIntent): void => {
 const appearanceModel = (): AppearanceEditorModel => {
   const state = getState()
   const values = getSurfaceAppearance(panelSurface)
-  const effectiveHidden = new Set(hiddenColoursFor(values))
+  const effectiveHidden = new Set(hiddenColoursFor(values, panelSurface))
   const activePixelPreset = pixelStylePresetOf(values)
   const activePreset = activeColourPreset(values.hiddenColours)
   const selected = selectedColour()
@@ -822,7 +824,7 @@ const appearanceModel = (): AppearanceEditorModel => {
         visible: !effectiveHidden.has(colour.index),
       }),
     ),
-    onlySelectedColour: state.onlySelectedColour,
+    onlySelectedColour: onlySelectedColourFor(panelSurface),
     showOnlySelectedColour: true,
     showMarkers: true,
     paintOpen: isPaintOpen(),
@@ -881,8 +883,8 @@ const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
       break
     case 'toggle-colour': {
       const base =
-        getState().onlySelectedColour && isPaintOpen()
-          ? hiddenColoursFor(values)
+        onlySelectedColourFor(panelSurface) && isPaintOpen()
+          ? hiddenColoursFor(values, panelSurface)
           : values.hiddenColours
       const hidden = new Set(base)
       if (intent.visible) hidden.delete(intent.index)
@@ -891,13 +893,13 @@ const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
         setState({ hiddenColours: [...hidden], onlySelectedColour: false })
       } else {
         commitPanelAppearance({ ...values, hiddenColours: [...hidden] })
-        setState({ onlySelectedColour: false })
+        setOnlySelectedColourFor(panelSurface, false)
       }
       redraw()
       break
     }
     case 'only-selected-colour':
-      setState({ onlySelectedColour: intent.value })
+      setOnlySelectedColourFor(panelSurface, intent.value)
       redraw()
       break
     case 'marker-budget':
@@ -1243,14 +1245,14 @@ const positionRail = (): void => {
 }
 
 /**
- * Follow the colour wplace has selected, for every overlay at once.
+ * Follow the colour wplace has selected, for every overlay on the current canvas.
  *
  * On the rail rather than only in the panel because it is toggled constantly while painting, and
  * opening a panel to reach it costs more than the mode saves. It says nothing while their drawer is
  * shut — there is no selected colour then — which the tooltip carries.
  */
-const colourRailModel = (): RailControlModel => {
-  const on = getState().onlySelectedColour
+const colourRailModel = (surface: TemplateSurface = WORLD_TEMPLATE_SURFACE): RailControlModel => {
+  const on = onlySelectedColourFor(surface)
   const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
   return {
     id: 'colour',
@@ -1269,7 +1271,7 @@ const colourModeButton = (): CaelestisRailControl => {
   button.addEventListener('caelestis-rail-intent', (event) => {
     const intent = (event as CustomEvent<RailControlIntent>).detail
     if (intent.id !== 'colour') return
-    setState({ onlySelectedColour: !getState().onlySelectedColour })
+    setOnlySelectedColourFor(WORLD_TEMPLATE_SURFACE, !onlySelectedColourFor(WORLD_TEMPLATE_SURFACE))
     syncColourModeState()
   })
   return button
