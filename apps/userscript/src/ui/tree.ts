@@ -414,7 +414,7 @@ const buildTree = <Result>(
             width: bounds.maxX - bounds.minX,
             height: bounds.maxY - bounds.minY,
           })
-        : []
+        : { committed: [], draft: [] }
     for (const template of drawnTemplates) {
       allianceProgress.set(template.id, {
         progress: artboardTemplateProgress(template, regions),

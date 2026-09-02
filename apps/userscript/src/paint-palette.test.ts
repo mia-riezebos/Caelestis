@@ -50,13 +50,24 @@ const harness = vi.hoisted(() => ({
     stage: HTMLElement
     frame: HTMLElement
   },
-  artboardPixels: [] as Array<{
-    x: number
-    y: number
-    width: number
-    height: number
-    pixels: Uint8Array
-  }>,
+  artboardPixels: {
+    committed: [] as Array<{
+      x: number
+      y: number
+      width: number
+      height: number
+      pixels: Uint8Array
+      emptyIndex: number
+    }>,
+    draft: [] as Array<{
+      x: number
+      y: number
+      width: number
+      height: number
+      pixels: Uint8Array
+      emptyIndex: number
+    }>,
+  },
   draftPixelDeltas: [] as Array<{
     key: string
     basis: string
@@ -223,7 +234,7 @@ beforeEach(() => {
   harness.paintOpen = true
   harness.selectedColour = 0
   harness.activeAlliance = null
-  harness.artboardPixels = []
+  harness.artboardPixels = { committed: [], draft: [] }
   harness.draftPixelDeltas = []
   harness.serverIdentity = {}
   harness.navigationTargets.unpainted = {
@@ -431,7 +442,12 @@ describe('Wplace paint palette progress', () => {
       stage: document.createElement('div'),
       frame,
     }
-    harness.artboardPixels = [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([63]) }]
+    harness.artboardPixels = {
+      committed: [
+        { x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([63]), emptyIndex: 63 },
+      ],
+      draft: [],
+    }
     const swatch = document.createElement('button')
     swatch.setAttribute('aria-label', 'Black')
     swatch.setAttribute('aria-pressed', 'true')
@@ -442,7 +458,10 @@ describe('Wplace paint palette progress', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(swatch.querySelector('caelestis-palette-progress')).not.toBeNull()
 
-    harness.artboardPixels = [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([0]) }]
+    harness.artboardPixels = {
+      committed: [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([0]), emptyIndex: 63 }],
+      draft: [],
+    }
     harness.canvasWriteListeners.at(-1)?.(canvas)
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -841,7 +860,12 @@ describe('Wplace paint palette progress', () => {
       stage,
       frame,
     }
-    harness.artboardPixels = [{ x: -1, y: -1, width: 1, height: 1, pixels: new Uint8Array([63]) }]
+    harness.artboardPixels = {
+      committed: [
+        { x: -1, y: -1, width: 1, height: 1, pixels: new Uint8Array([63]), emptyIndex: 63 },
+      ],
+      draft: [],
+    }
 
     await expect(navigateFocusedSelectedColour()).resolves.toBe(true)
     expect(harness.nearestColourTarget).not.toHaveBeenCalled()

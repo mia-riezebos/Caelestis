@@ -1,5 +1,6 @@
 import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
+import type { NativePixelSnapshot } from '../native-pixels.js'
 import { DEFAULT_APPEARANCE } from '../templates/appearance.js'
 import { markLocalX, markLocalY, markWanted } from '../templates/mismatch-marks.js'
 import {
@@ -29,31 +30,42 @@ const points = (batch: { x: number; y: number; marks: Uint32Array }) =>
     markWanted(mark),
   ])
 
+const committed = (
+  regions: readonly Omit<NativePixelSnapshot['committed'][number], 'emptyIndex'>[],
+): NativePixelSnapshot => ({
+  committed: regions.map((region) => ({ ...region, emptyIndex: TRANSPARENT_INDEX })),
+  draft: [],
+})
+
 describe('alliance artboard marker work', () => {
   it('reports the palette colours that still differ from native art', () => {
-    const remaining = artboardRemainingColours(template, [
-      { x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 3, 7, 1]) },
-    ])
+    const remaining = artboardRemainingColours(
+      template,
+      committed([{ x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 3, 7, 1]) }]),
+    )
 
     expect([...remaining]).toEqual([7])
   })
 
   it('reports overall alliance progress from native art', () => {
     expect(
-      artboardTemplateProgress(template, [
-        {
-          x: -1,
-          y: -1,
-          width: 2,
-          height: 2,
-          pixels: new Uint8Array([4, 3, TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
-        },
-      ]),
+      artboardTemplateProgress(
+        template,
+        committed([
+          {
+            x: -1,
+            y: -1,
+            width: 2,
+            height: 2,
+            pixels: new Uint8Array([4, 3, TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
+          },
+        ]),
+      ),
     ).toEqual({ completed: 1, mismatched: 1, unpainted: 1, known: 3, total: 3 })
   })
 
   it('keeps unloaded HQ pixels unknown instead of marking them unpainted', () => {
-    const regions = [{ x: -1, y: -1, width: 1, height: 1, pixels: new Uint8Array([4]) }]
+    const regions = committed([{ x: -1, y: -1, width: 1, height: 1, pixels: new Uint8Array([4]) }])
 
     expect(artboardColourProgress(template, regions)).toEqual([
       { index: 4, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
@@ -66,10 +78,10 @@ describe('alliance artboard marker work', () => {
   })
 
   it('ignores loaded HQ tiles outside the template bounds', () => {
-    const regions = [
+    const regions = committed([
       { x: -65, y: -64, width: 64, height: 64, pixels: new Uint8Array(64 * 64) },
       { x: 64, y: 64, width: 64, height: 64, pixels: new Uint8Array(64 * 64) },
-    ]
+    ])
 
     expect(artboardTemplateProgress(template, regions)).toEqual({
       completed: 0,
@@ -87,7 +99,7 @@ describe('alliance artboard marker work', () => {
   it('measures the unpainted marker threshold from loaded pixels only', () => {
     const work = artboardMarkerWork(
       template,
-      [
+      committed([
         {
           x: -1,
           y: -1,
@@ -95,7 +107,7 @@ describe('alliance artboard marker work', () => {
           height: 1,
           pixels: new Uint8Array([4, TRANSPARENT_INDEX]),
         },
-      ],
+      ]),
       {
         ...DEFAULT_APPEARANCE,
         markMismatch: true,
@@ -111,7 +123,7 @@ describe('alliance artboard marker work', () => {
     expect(
       artboardColourTargets(
         template,
-        [
+        committed([
           {
             x: -1,
             y: -1,
@@ -119,7 +131,7 @@ describe('alliance artboard marker work', () => {
             height: 2,
             pixels: new Uint8Array([4, TRANSPARENT_INDEX, 2, TRANSPARENT_INDEX]),
           },
-        ],
+        ]),
         7,
       ),
     ).toEqual([
@@ -131,7 +143,7 @@ describe('alliance artboard marker work', () => {
   it('builds mismatch markers from the native art pixels', () => {
     const work = artboardMarkerWork(
       template,
-      [{ x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 3, 2, 1]) }],
+      committed([{ x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 3, 2, 1]) }]),
       { ...DEFAULT_APPEARANCE, markMismatch: true },
     )
 
@@ -144,7 +156,7 @@ describe('alliance artboard marker work', () => {
   it('builds selected-colour markers only for unpainted pixels of that colour', () => {
     const work = artboardMarkerWork(
       template,
-      [
+      committed([
         {
           x: -1,
           y: -1,
@@ -152,7 +164,7 @@ describe('alliance artboard marker work', () => {
           height: 2,
           pixels: new Uint8Array([4, TRANSPARENT_INDEX, TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
         },
-      ],
+      ]),
       { ...DEFAULT_APPEARANCE, markSelectedColour: true },
     )
 
@@ -167,7 +179,7 @@ describe('alliance artboard marker work', () => {
   it('retains marker data while its visibility toggle is off', () => {
     const work = artboardMarkerWork(
       template,
-      [
+      committed([
         {
           x: -1,
           y: -1,
@@ -175,11 +187,49 @@ describe('alliance artboard marker work', () => {
           height: 2,
           pixels: new Uint8Array([4, 3, TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
         },
-      ],
+      ]),
       { ...DEFAULT_APPEARANCE, markMismatch: false, markSelectedColour: false },
     )
 
     expect(work.mismatch.flatMap(points)).toEqual([[0, -1, 7]])
     expect(work.selected[0]?.batches.flatMap(points)).toEqual([[-1, 0, 7]])
+  })
+
+  it('uses native draft pixels for progress, markers, and navigation', () => {
+    const pixels: NativePixelSnapshot = {
+      committed: [
+        {
+          x: -1,
+          y: -1,
+          width: 2,
+          height: 2,
+          pixels: new Uint8Array([4, 3, TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
+          emptyIndex: TRANSPARENT_INDEX,
+        },
+      ],
+      draft: [
+        {
+          x: -1,
+          y: -1,
+          width: 2,
+          height: 2,
+          pixels: new Uint8Array([255, 7, 7, 255]),
+          emptyIndex: 255,
+        },
+      ],
+    }
+
+    expect(artboardTemplateProgress(template, pixels)).toEqual({
+      completed: 3,
+      mismatched: 0,
+      unpainted: 0,
+      known: 3,
+      total: 3,
+    })
+    expect(artboardMarkerWork(template, pixels, DEFAULT_APPEARANCE)).toEqual({
+      mismatch: [],
+      selected: [],
+    })
+    expect(artboardColourTargets(template, pixels, 7)).toEqual([])
   })
 })

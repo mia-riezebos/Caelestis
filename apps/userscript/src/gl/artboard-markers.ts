@@ -1,8 +1,8 @@
 import { TRANSPARENT_INDEX } from '@caelestis/shared'
+import { type NativePixelSnapshot, nativePixelWindow } from '../native-pixels.js'
 import type { Appearance } from '../templates/appearance.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
 import { packMismatchMark } from '../templates/mismatch-marks.js'
-import type { ArtboardPixelRegion } from './artboard-pixels.js'
 
 const MARKER_CHUNK_SIZE = 1_024
 
@@ -28,32 +28,16 @@ interface MutableBatch {
   readonly marks: number[]
 }
 
-interface ArtboardActualPixels {
-  readonly pixels: Uint8Array
-  readonly known: Uint8Array
-}
-
 const artboardActualPixels = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height'>,
-  regions: readonly ArtboardPixelRegion[],
-): ArtboardActualPixels => {
-  const pixels = new Uint8Array(template.width * template.height).fill(TRANSPARENT_INDEX)
-  const known = new Uint8Array(template.width * template.height)
-  for (const region of regions) {
-    const left = Math.max(template.originX, region.x)
-    const top = Math.max(template.originY, region.y)
-    const right = Math.min(template.originX + template.width, region.x + region.width)
-    const bottom = Math.min(template.originY + template.height, region.y + region.height)
-    if (right <= left || bottom <= top) continue
-    for (let y = top; y < bottom; y++) {
-      const sourceAt = (y - region.y) * region.width + (left - region.x)
-      const targetAt = (y - template.originY) * template.width + (left - template.originX)
-      pixels.set(region.pixels.subarray(sourceAt, sourceAt + right - left), targetAt)
-      known.fill(1, targetAt, targetAt + right - left)
-    }
-  }
-  return { pixels, known }
-}
+  pixels: NativePixelSnapshot,
+) =>
+  nativePixelWindow(pixels, {
+    x: template.originX,
+    y: template.originY,
+    width: template.width,
+    height: template.height,
+  })
 
 export interface ArtboardColourProgress {
   readonly index: number
@@ -73,18 +57,18 @@ export interface ArtboardColourTarget {
 /** Known native artboard pixels that still need one palette colour. */
 export const artboardColourTargets = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
-  regions: readonly ArtboardPixelRegion[],
+  pixels: NativePixelSnapshot,
   index: number,
 ): readonly ArtboardColourTarget[] => {
-  const actual = artboardActualPixels(template, regions)
+  const actual = artboardActualPixels(template, pixels)
   const targets: ArtboardColourTarget[] = []
   for (let at = 0; at < template.indices.length; at++) {
-    if (template.indices[at] !== index || actual.known[at] !== 1 || actual.pixels[at] === index)
+    if (template.indices[at] !== index || actual.known[at] !== 1 || actual.indices[at] === index)
       continue
     targets.push({
       x: template.originX + (at % template.width),
       y: template.originY + Math.floor(at / template.width),
-      kind: actual.pixels[at] === TRANSPARENT_INDEX ? 'unpainted' : 'mismatched',
+      kind: actual.indices[at] === TRANSPARENT_INDEX ? 'unpainted' : 'mismatched',
     })
   }
   return targets
@@ -93,9 +77,9 @@ export const artboardColourTargets = (
 /** Per-colour progress from the native artboard pixels Wplace has loaded. */
 export const artboardColourProgress = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
-  regions: readonly ArtboardPixelRegion[],
+  pixels: NativePixelSnapshot,
 ): readonly ArtboardColourProgress[] => {
-  const actual = artboardActualPixels(template, regions)
+  const actual = artboardActualPixels(template, pixels)
   const progress = new Map<number, ArtboardColourProgress>()
   for (let at = 0; at < template.indices.length; at++) {
     const wanted = template.indices[at]
@@ -109,7 +93,7 @@ export const artboardColourProgress = (
       total: 0,
     }
     const known = actual.known[at] === 1
-    const placed = actual.pixels[at]
+    const placed = actual.indices[at]
     progress.set(wanted, {
       ...previous,
       total: previous.total + 1,
@@ -126,9 +110,9 @@ export const artboardColourProgress = (
 /** Overall progress for one artboard template, derived from the same per-colour counts. */
 export const artboardTemplateProgress = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
-  regions: readonly ArtboardPixelRegion[],
+  pixels: NativePixelSnapshot,
 ) => {
-  const colours = artboardColourProgress(template, regions)
+  const colours = artboardColourProgress(template, pixels)
   return colours.reduce(
     (total, colour) => ({
       completed: total.completed + colour.completed,
@@ -144,9 +128,9 @@ export const artboardTemplateProgress = (
 /** Palette colours with at least one artboard pixel that still differs from the template. */
 export const artboardRemainingColours = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
-  regions: readonly ArtboardPixelRegion[],
+  pixels: NativePixelSnapshot,
 ): ReadonlySet<number> => {
-  const actual = artboardActualPixels(template, regions)
+  const actual = artboardActualPixels(template, pixels)
   const remaining = new Set<number>()
   for (let at = 0; at < template.indices.length; at++) {
     const wanted = template.indices[at]
@@ -154,7 +138,7 @@ export const artboardRemainingColours = (
       wanted === undefined ||
       wanted === TRANSPARENT_INDEX ||
       actual.known[at] !== 1 ||
-      wanted === actual.pixels[at]
+      wanted === actual.indices[at]
     )
       continue
     remaining.add(wanted)
@@ -191,10 +175,10 @@ const freezeBatches = (batches: Map<string, MutableBatch>): ArtboardMarkerBatch[
 /** Compare one alliance template with Wplace's native art, using the world marker semantics. */
 export const artboardMarkerWork = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
-  regions: readonly ArtboardPixelRegion[],
+  pixels: NativePixelSnapshot,
   appearance: Appearance,
 ): ArtboardMarkerWork => {
-  const actual = artboardActualPixels(template, regions)
+  const actual = artboardActualPixels(template, pixels)
 
   const hidden = new Set(appearance.hiddenColours)
   const wrong: Array<{ x: number; y: number; wanted: number }> = []
@@ -207,7 +191,7 @@ export const artboardMarkerWork = (
       if (wanted === undefined || wanted === TRANSPARENT_INDEX || hidden.has(wanted)) continue
       if (actual.known[at] !== 1) continue
       asserted++
-      const placed = actual.pixels[at]
+      const placed = actual.indices[at]
       if (placed === wanted) continue
       const mark = { x: template.originX + localX, y: template.originY + localY, wanted }
       if (placed === TRANSPARENT_INDEX) unpainted.push(mark)

@@ -41,7 +41,73 @@ it('reads signed HQ tile canvases back into palette indices', () => {
     bounds: { minX: -2, minY: -1, maxX: 2, maxY: 1 },
   }
 
-  expect(readArtboardPixels(active, { originX: -2, originY: -1, width: 4, height: 2 })).toEqual([
-    { x: -2, y: -1, width: 2, height: 1, pixels: new Uint8Array([4, 7]) },
+  expect(readArtboardPixels(active, { originX: -2, originY: -1, width: 4, height: 2 })).toEqual({
+    committed: [
+      {
+        x: -2,
+        y: -1,
+        width: 2,
+        height: 1,
+        pixels: new Uint8Array([4, 7]),
+        emptyIndex: TRANSPARENT_INDEX,
+      },
+    ],
+    draft: [],
+  })
+})
+
+it('keeps the HQ draft canvas separate from committed tiles', () => {
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const layer = document.createElement('div')
+  layer.className = 'hq-tile-layer'
+  const committed = document.createElement('canvas')
+  committed.width = 2
+  committed.height = 1
+  committed.style.left = '0px'
+  committed.style.top = '0px'
+  committed.style.width = '2px'
+  committed.style.height = '1px'
+  committed.getContext = (() => ({
+    getImageData: () => image([4, 7]),
+  })) as unknown as typeof committed.getContext
+  layer.append(committed)
+  const draft = document.createElement('canvas')
+  draft.width = 4
+  draft.height = 2
+  draft.getContext = (() => ({
+    getImageData: () =>
+      image([
+        TRANSPARENT_INDEX,
+        2,
+        TRANSPARENT_INDEX,
+        TRANSPARENT_INDEX,
+        TRANSPARENT_INDEX,
+        TRANSPARENT_INDEX,
+        TRANSPARENT_INDEX,
+        TRANSPARENT_INDEX,
+      ]),
+  })) as unknown as typeof draft.getContext
+  frame.append(layer, draft)
+  stage.append(frame)
+  const active: ActiveAllianceSurface = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: -2, minY: -1, maxX: 2, maxY: 1 },
+  }
+
+  const pixels = readArtboardPixels(active, { originX: -2, originY: -1, width: 4, height: 2 })
+  expect(pixels.committed).toHaveLength(1)
+  expect(pixels.draft).toEqual([
+    {
+      x: -2,
+      y: -1,
+      width: 4,
+      height: 2,
+      pixels: new Uint8Array([255, 2, 255, 255, 255, 255, 255, 255]),
+      emptyIndex: 255,
+    },
   ])
 })

@@ -58,8 +58,10 @@ vi.mock('./templates/placement.js', () => ({
   sourceXAt: (template: { originX: number }, x: number) => x - template.originX,
 }))
 vi.mock('./tile-transform.js', () => ({
+  draftPixels: () => null,
   ensureTilePixels: vi.fn(),
   tilePixels: () => harness.basePixels,
+  UNPAINTED: 255,
 }))
 vi.mock('./wplace-paint.js', () => ({
   isPaintOpen: () => true,
