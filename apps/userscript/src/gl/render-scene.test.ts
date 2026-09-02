@@ -113,6 +113,42 @@ describe('shared render scene', () => {
     expect(end.templates[0]?.appearance.size).toBe(full.values.size)
   })
 
+  it('uses the shared curve for outline and marker toggle fades', () => {
+    const scene = new RenderScene()
+    scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 0, false)
+    const primed = scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 300, false)
+    scene.advanceMarkers(primed.templates, 1, 300)
+    scene.advanceMarkers(primed.templates, 1, 600)
+
+    fixture.appearance = {
+      ...DEFAULT_APPEARANCE,
+      contrastOutline: false,
+      markMismatch: true,
+      markSelectedColour: true,
+    }
+    const leavingOutline = scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 601, false)
+    expect(leavingOutline.templates[0]?.outlineFade).toBe(1)
+    const markerStart = scene.advanceMarkers(leavingOutline.templates, 1, 601)
+    expect(markerStart.templates[0]?.mismatchFade).toBe(0)
+    expect(markerStart.templates[0]?.selectedFades).toEqual([{ index: 1, fade: 0 }])
+    const middle = scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 751, false)
+    expect(middle.templates[0]?.outlineFade).toBeCloseTo(0.5, 1)
+    const entering = scene.advanceMarkers(middle.templates, 1, 751)
+    expect(entering.templates[0]?.mismatchFade).toBeCloseTo(0.5, 1)
+    expect(entering.templates[0]?.selectedFades[0]?.fade).toBeCloseTo(0.5, 1)
+    const entered = scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 901, false)
+    expect(entered.templates[0]?.outlineFade).toBe(0)
+    expect(scene.advanceMarkers(entered.templates, 1, 901).templates[0]?.mismatchFade).toBe(1)
+
+    fixture.appearance = { ...fixture.appearance, markMismatch: false, markSelectedColour: false }
+    const disabled = scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 902, false)
+    scene.advanceMarkers(disabled.templates, 1, 902)
+    const leaving = scene.advanceMarkers(disabled.templates, 1, 1_052)
+    expect(leaving.templates[0]?.mismatchFade).toBeCloseTo(0.5, 1)
+    expect(leaving.templates[0]?.selectedFades[0]?.fade).toBeCloseTo(0.5, 1)
+    expect(scene.advanceMarkers(disabled.templates, 1, 1_202).templates[0]?.mismatchFade).toBe(0)
+  })
+
   it('cross-fades selected-colour markers and keeps mismatch fades independent', () => {
     const scene = new RenderScene()
     fixture.appearance = {
