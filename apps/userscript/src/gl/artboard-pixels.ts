@@ -25,6 +25,15 @@ interface CachedCanvasPixels {
 }
 
 const canvasPixels = new WeakMap<HTMLCanvasElement, CachedCanvasPixels>()
+const CROSSHAIR_CELL_PIXELS = 10
+interface CachedCrosshairPixels {
+  readonly width: number
+  readonly height: number
+  readonly logicalWidth: number
+  readonly pixels: Uint8Array
+}
+
+const crosshairPixels = new WeakMap<HTMLCanvasElement, CachedCrosshairPixels>()
 const isCaelestisCanvas = (canvas: HTMLCanvasElement): boolean =>
   canvas.hasAttribute('data-caelestis-alliance-overlay') ||
   canvas.hasAttribute('data-caelestis-alliance-outline') ||
@@ -85,11 +94,107 @@ const palettePixels = (canvas: HTMLCanvasElement, emptyIndex: number): Uint8Arra
   }
 }
 
+const writeCrosshairPixels = (
+  target: CachedCrosshairPixels,
+  image: ImageData,
+  logicalX: number,
+  logicalY: number,
+): void => {
+  const logicalWidth = image.width / CROSSHAIR_CELL_PIXELS
+  const logicalHeight = image.height / CROSSHAIR_CELL_PIXELS
+  for (let y = 0; y < logicalHeight; y++) {
+    for (let x = 0; x < logicalWidth; x++) {
+      const imageX = x * CROSSHAIR_CELL_PIXELS
+      const imageY = y * CROSSHAIR_CELL_PIXELS
+      target.pixels[(logicalY + y) * target.logicalWidth + logicalX + x] =
+        (image.data[(imageY * image.width + imageX) * 4 + 3] ?? 0) === 0 ? 0 : 1
+    }
+  }
+}
+
+const crosshairPresence = (canvas: HTMLCanvasElement): Uint8Array | null => {
+  const held = crosshairPixels.get(canvas)
+  if (held !== undefined && held.width === canvas.width && held.height === canvas.height)
+    return held.pixels
+  if (
+    canvas.width <= 0 ||
+    canvas.height <= 0 ||
+    canvas.width % CROSSHAIR_CELL_PIXELS !== 0 ||
+    canvas.height % CROSSHAIR_CELL_PIXELS !== 0
+  )
+    return null
+  try {
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (context === null) return null
+    const cached: CachedCrosshairPixels = {
+      width: canvas.width,
+      height: canvas.height,
+      logicalWidth: canvas.width / CROSSHAIR_CELL_PIXELS,
+      pixels: new Uint8Array(
+        (canvas.width / CROSSHAIR_CELL_PIXELS) * (canvas.height / CROSSHAIR_CELL_PIXELS),
+      ),
+    }
+    writeCrosshairPixels(cached, context.getImageData(0, 0, canvas.width, canvas.height), 0, 0)
+    crosshairPixels.set(canvas, cached)
+    return cached.pixels
+  } catch {
+    return null
+  }
+}
+
+const patchCrosshairPixels = (canvas: HTMLCanvasElement, dirty: CanvasWriteRect | null): void => {
+  const held = crosshairPixels.get(canvas)
+  if (held === undefined) return
+  if (held.width !== canvas.width || held.height !== canvas.height || dirty === null) {
+    crosshairPixels.delete(canvas)
+    return
+  }
+  const logicalX = Math.max(
+    0,
+    Math.floor(Math.min(dirty.x, dirty.x + dirty.width) / CROSSHAIR_CELL_PIXELS),
+  )
+  const logicalY = Math.max(
+    0,
+    Math.floor(Math.min(dirty.y, dirty.y + dirty.height) / CROSSHAIR_CELL_PIXELS),
+  )
+  const farX = Math.min(
+    held.logicalWidth,
+    Math.ceil(Math.max(dirty.x, dirty.x + dirty.width) / CROSSHAIR_CELL_PIXELS),
+  )
+  const logicalHeight = held.height / CROSSHAIR_CELL_PIXELS
+  const farY = Math.min(
+    logicalHeight,
+    Math.ceil(Math.max(dirty.y, dirty.y + dirty.height) / CROSSHAIR_CELL_PIXELS),
+  )
+  if (farX <= logicalX || farY <= logicalY) return
+  try {
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (context === null) return
+    writeCrosshairPixels(
+      held,
+      context.getImageData(
+        logicalX * CROSSHAIR_CELL_PIXELS,
+        logicalY * CROSSHAIR_CELL_PIXELS,
+        (farX - logicalX) * CROSSHAIR_CELL_PIXELS,
+        (farY - logicalY) * CROSSHAIR_CELL_PIXELS,
+      ),
+      logicalX,
+      logicalY,
+    )
+  } catch {
+    crosshairPixels.delete(canvas)
+  }
+}
+
 /** Patch a retained native canvas snapshot after Wplace changes a bounded rectangle. */
 export const patchArtboardPixels = (
   canvas: HTMLCanvasElement,
   dirty: CanvasWriteRect | null,
 ): void => {
+  if (canvas.classList.contains('paint-crosshair-tile')) {
+    patchCrosshairPixels(canvas, dirty)
+    return
+  }
   const held = canvasPixels.get(canvas)
   if (held === undefined) return
   if (held.width !== canvas.width || held.height !== canvas.height || dirty === null) {
@@ -181,8 +286,6 @@ const directNativeCanvases = (active: ActiveAllianceSurface): HTMLCanvasElement[
       child instanceof HTMLCanvasElement && !isCaelestisCanvas(child),
   )
 
-const CROSSHAIR_CELL_PIXELS = 10
-
 interface CrosshairLayout extends NativePixelRect {
   readonly cellWidth: number
   readonly cellHeight: number
@@ -241,46 +344,34 @@ const crosshairDraftRegions = (
     if (!(canvas instanceof HTMLCanvasElement)) continue
     const layout = crosshairLayout(active, geometry, canvas)
     if (layout === null) continue
-    try {
-      const context = canvas.getContext('2d', { willReadFrequently: true })
-      if (context === null) continue
-      const image = context.getImageData(0, 0, canvas.width, canvas.height)
-      const present = new Uint8Array(layout.width * layout.height)
-      const pixels = new Uint8Array(present.length).fill(NO_NATIVE_DRAFT)
-      let count = 0
-      for (let y = 0; y < layout.height; y++) {
-        for (let x = 0; x < layout.width; x++) {
-          const firstX = Math.floor(x * layout.cellWidth)
-          const firstY = Math.floor(y * layout.cellHeight)
-          // Wplace's 10x10 crosshair stamp always paints its top-left pixel. One alpha lookup per
-          // logical cell avoids scanning every transparent backing pixel after each draft write.
-          if ((image.data[(firstY * image.width + firstX) * 4 + 3] ?? 0) === 0) continue
-          const at = y * layout.width + x
-          const draftX = layout.x + x - draft.x
-          const draftY = layout.y + y - draft.y
-          const draftAt = draftY * draft.width + draftX
-          const index =
-            draftX < 0 || draftY < 0 || draftX >= draft.width || draftY >= draft.height
-              ? NO_NATIVE_DRAFT
-              : (draft.pixels[draftAt] ?? NO_NATIVE_DRAFT)
-          present[at] = 1
-          pixels[at] = index
-          count++
-        }
+    const present = crosshairPresence(canvas)
+    if (present === null) continue
+    const pixels = new Uint8Array(present.length).fill(NO_NATIVE_DRAFT)
+    let count = 0
+    for (let y = 0; y < layout.height; y++) {
+      for (let x = 0; x < layout.width; x++) {
+        const at = y * layout.width + x
+        if (present[at] !== 1) continue
+        const draftX = layout.x + x - draft.x
+        const draftY = layout.y + y - draft.y
+        const draftAt = draftY * draft.width + draftX
+        pixels[at] =
+          draftX < 0 || draftY < 0 || draftX >= draft.width || draftY >= draft.height
+            ? NO_NATIVE_DRAFT
+            : (draft.pixels[draftAt] ?? NO_NATIVE_DRAFT)
+        count++
       }
-      if (count > 0)
-        regions.push({
-          x: layout.x,
-          y: layout.y,
-          width: layout.width,
-          height: layout.height,
-          pixels,
-          present,
-          emptyIndex: NO_NATIVE_DRAFT,
-        })
-    } catch {
-      // Wplace can replace a crosshair canvas between discovery and readback.
     }
+    if (count > 0)
+      regions.push({
+        x: layout.x,
+        y: layout.y,
+        width: layout.width,
+        height: layout.height,
+        pixels,
+        present,
+        emptyIndex: NO_NATIVE_DRAFT,
+      })
   }
   return regions
 }

@@ -174,6 +174,62 @@ it('uses alliance crosshairs to preserve an explicit transparent draft', () => {
   })
 })
 
+it('patches only the crosshair cells Wplace changed', () => {
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const draft = document.createElement('canvas')
+  draft.width = 2
+  draft.height = 1
+  draft.getContext = (() => ({
+    getImageData: () => image([TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
+  })) as unknown as typeof draft.getContext
+  frame.append(draft)
+
+  const crosshairLayer = document.createElement('div')
+  crosshairLayer.className = 'paint-crosshair-layer'
+  const crosshair = document.createElement('canvas')
+  crosshair.className = 'paint-crosshair-tile'
+  crosshair.width = 20
+  crosshair.height = 10
+  crosshair.style.left = '0px'
+  crosshair.style.top = '0px'
+  crosshair.style.width = '2px'
+  crosshair.style.height = '1px'
+  const reads: number[][] = []
+  crosshair.getContext = (() => ({
+    getImageData: (x: number, y: number, width: number, height: number) => {
+      reads.push([x, y, width, height])
+      return crosshairImage(width, height, width === 20 ? 1 : 0, 0)
+    },
+  })) as unknown as typeof crosshair.getContext
+  crosshairLayer.append(crosshair)
+  stage.append(frame, crosshairLayer)
+
+  const active: ActiveAllianceSurface = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: -1, minY: 0, maxX: 1, maxY: 1 },
+  }
+  const geometry = { originX: -1, originY: 0, width: 2, height: 1 }
+
+  expect(nativePixelAt(readArtboardPixels(active, geometry), -1, 0)).toBeNull()
+  expect(nativePixelAt(readArtboardPixels(active, geometry), 0, 0)).toEqual({
+    index: TRANSPARENT_INDEX,
+    source: 'draft',
+  })
+  patchArtboardPixels(crosshair, { x: 0, y: 0, width: 10, height: 10 })
+  expect(nativePixelAt(readArtboardPixels(active, geometry), -1, 0)).toEqual({
+    index: TRANSPARENT_INDEX,
+    source: 'draft',
+  })
+  expect(reads).toEqual([
+    [0, 0, 20, 10],
+    [0, 0, 10, 10],
+  ])
+})
+
 it('patches only the native canvas rectangle Wplace changed', () => {
   const stage = document.createElement('div')
   const frame = document.createElement('div')
