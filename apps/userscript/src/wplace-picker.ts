@@ -163,8 +163,13 @@ const exitNativePicker = (): void => {
 }
 
 export const installColourPicker = (): void => {
-  let pendingLeftPick: { readonly x: number; readonly y: number; readonly until: number } | null =
-    null
+  let pendingLeftPick: {
+    readonly pointerId: number
+    readonly target: EventTarget | null
+    readonly x: number
+    readonly y: number
+    readonly until: number
+  } | null = null
 
   /**
    * Replace Wplace's left-click pipette before Wplace handles the pointer sequence.
@@ -177,6 +182,8 @@ export const installColourPicker = (): void => {
   window.addEventListener(
     'pointerdown',
     (event) => {
+      // A new pointer sequence supersedes any pick that never produced its click.
+      pendingLeftPick = null
       if (event.button !== 0 || !isPaintOpen() || !nativePickerIsActive()) return
       const target = event.target
       if (!(target instanceof Element)) return
@@ -185,7 +192,13 @@ export const installColourPicker = (): void => {
 
       event.preventDefault()
       event.stopImmediatePropagation()
-      pendingLeftPick = { x: event.clientX, y: event.clientY, until: performance.now() + 1_000 }
+      pendingLeftPick = {
+        pointerId: event.pointerId,
+        target: event.target,
+        x: event.clientX,
+        y: event.clientY,
+        until: performance.now() + 1_000,
+      }
 
       const { x, y } = point
       const index = pickedIndexAt(point)
@@ -203,6 +216,28 @@ export const installColourPicker = (): void => {
   )
 
   window.addEventListener(
+    'pointercancel',
+    (event) => {
+      if (pendingLeftPick?.pointerId === event.pointerId) pendingLeftPick = null
+    },
+    { capture: true },
+  )
+
+  window.addEventListener(
+    'pointerup',
+    (event) => {
+      const pending = pendingLeftPick
+      if (pending?.pointerId !== event.pointerId) return
+      // A browser dispatches the synthetic click before the next task. If it does not, this
+      // gesture has ended and must not affect later input on the same canvas.
+      setTimeout(() => {
+        if (pendingLeftPick === pending) pendingLeftPick = null
+      }, 0)
+    },
+    { capture: true },
+  )
+
+  window.addEventListener(
     'click',
     (event) => {
       const pending = pendingLeftPick
@@ -210,6 +245,7 @@ export const installColourPicker = (): void => {
       if (
         pending === null ||
         event.button !== 0 ||
+        event.target !== pending.target ||
         performance.now() > pending.until ||
         Math.abs(event.clientX - pending.x) > 4 ||
         Math.abs(event.clientY - pending.y) > 4

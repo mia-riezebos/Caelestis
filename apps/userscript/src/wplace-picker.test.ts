@@ -211,6 +211,57 @@ it("swallows Wplace's matching click after an alliance source pick", async () =>
   expect(nativePick).not.toHaveBeenCalled()
 })
 
+it('does not swallow a click after the intercepted pointer is cancelled', async () => {
+  vi.stubGlobal('requestAnimationFrame', vi.fn())
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const art = document.createElement('canvas')
+  frame.append(art)
+  stage.append(frame)
+  frame.getBoundingClientRect = () =>
+    ({ left: 100, top: 200, right: 350, bottom: 450, width: 250, height: 250 }) as DOMRect
+  harness.activeAlliance = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+  }
+  harness.template.surface = harness.activeAlliance.surface
+  harness.template.originX = -125
+  harness.template.originY = -125
+  pickerDom(stage)
+  const nativePick = vi.fn()
+  art.addEventListener('click', nativePick)
+
+  const { installColourPicker } = await import('./wplace-picker.js')
+  installColourPicker()
+  art.dispatchEvent(
+    new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: 7,
+      clientX: 100.5,
+      clientY: 200.5,
+    }),
+  )
+  art.dispatchEvent(
+    new PointerEvent('pointercancel', { bubbles: true, cancelable: true, pointerId: 7 }),
+  )
+  art.dispatchEvent(
+    new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 100.5,
+      clientY: 200.5,
+    }),
+  )
+
+  expect(nativePick).toHaveBeenCalledOnce()
+})
+
 it('returns an alliance source pick to the neutral brush tool', async () => {
   vi.stubGlobal(
     'requestAnimationFrame',
