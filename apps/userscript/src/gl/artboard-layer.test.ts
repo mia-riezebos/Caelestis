@@ -69,6 +69,29 @@ describe('alliance artboard projection', () => {
     })
   })
 
+  it.each([250, 500, 1_000, 2_000])(
+    'keeps stored coordinates stable on a centred %i-pixel HQ',
+    (size) => {
+      const half = size / 2
+      const geometry = artboardGeometry(
+        active('alliance-headquarters', {
+          minX: -half,
+          minY: -half,
+          maxX: half,
+          maxY: half,
+        }),
+      )
+      expect(geometry).toEqual({ originX: -half, originY: -half, width: size, height: size })
+      if (geometry === null) throw new Error('expected HQ geometry')
+      expect(artboardPlacement({ originX: 0, originY: 0, width: 1, height: 1 }, geometry)).toEqual({
+        left: half,
+        top: half,
+        right: half + 1,
+        bottom: half + 1,
+      })
+    },
+  )
+
   it.each([
     ['alliance-picture', 64, 64],
     ['alliance-banner', 384, 128],
