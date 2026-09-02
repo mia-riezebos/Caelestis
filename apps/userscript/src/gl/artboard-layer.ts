@@ -14,7 +14,7 @@ import { onCanvasWrite } from '../canvas-write.js'
 import { warn } from '../debug.js'
 import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
 import { getState, onStateChange } from '../state.js'
-import { isPlain, toRgbUnit } from '../templates/appearance.js'
+import { isColourHidden, isPlain, toRgbUnit } from '../templates/appearance.js'
 import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
@@ -27,7 +27,7 @@ import {
 } from '../templates/local-store.js'
 import { abortMoveOutsideSurface } from '../templates/move.js'
 import { detachOverlayControls, renderAllianceOverlayControls } from '../ui/overlay-menu.js'
-import { isPaintOpen, selectedColour } from '../wplace-paint.js'
+import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
 import { appearanceTransitionSet, prefersReducedMotion } from './appearance-transition.js'
 import {
   type ArtboardMarkerBatch,
@@ -498,6 +498,10 @@ class ArtboardRenderer {
   private readonly templateFades = ramps()
   private readonly colourFades = ramps({ startAt: 'target' })
   private readonly outlineFades = ramps({ startAt: 'target' })
+  private readonly markerFades = ramps({ startAt: 'target' })
+  private readonly selectedColourMarkerFades = ramps()
+  private readonly selectedMarkerColours = new Set<number>()
+  private latestSelectedMarkerColour: number | null = null
   private readonly appearanceTransitions = appearanceTransitionSet()
   private readonly observer: MutationObserver
   private readonly resizeObserver: ResizeObserver | null
@@ -676,6 +680,22 @@ class ArtboardRenderer {
       })
     }
     const selected = isPaintOpen() ? selectedColour() : null
+    if (selected !== null && selected !== this.latestSelectedMarkerColour) {
+      this.selectedMarkerColours.add(selected)
+      this.latestSelectedMarkerColour = selected
+    }
+    const selectedColourKeys = new Set<string>()
+    const selectedColourFades: { index: number; fade: number }[] = []
+    for (const index of [...this.selectedMarkerColours]) {
+      const key = String(index)
+      const target = index === this.latestSelectedMarkerColour ? 1 : 0
+      const fade = this.selectedColourMarkerFades.advance(key, target, now)
+      if (!fade.done) animating = true
+      if (target > 0 || fade.value > 0 || !fade.done) selectedColourKeys.add(key)
+      if (fade.value > 0) selectedColourFades.push({ index, fade: fade.value })
+      if (target === 0 && fade.done) this.selectedMarkerColours.delete(index)
+    }
+    this.selectedColourMarkerFades.prune(selectedColourKeys)
     if (this.markerPixelsDirty) {
       const regions = readArtboardPixels(this.active, this.geometry)
       this.markerWork.clear()
@@ -686,7 +706,6 @@ class ArtboardRenderer {
             template,
             regions,
             appearanceWithPreview(template.id, appearanceOf(template)),
-            selected,
           ),
         )
       }
@@ -694,11 +713,31 @@ class ArtboardRenderer {
     }
     const selectedLayers: Omit<RenderMarker, 'sampleRate'>[] = []
     const mismatchLayers: Omit<RenderMarker, 'sampleRate'>[] = []
+    const markerKeys = new Set<string>()
     const state = getState()
     for (const rendered of templates) {
       const appearance = rendered.appearance
       const work = this.markerWork.get(rendered.template.id)
       if (work === undefined) continue
+      const mismatchKey = `mismatch:${rendered.template.id}`
+      const selectedKey = `selected:${rendered.template.id}`
+      markerKeys.add(mismatchKey)
+      markerKeys.add(selectedKey)
+      const mismatchFade = this.markerFades.advance(
+        mismatchKey,
+        appearance.markMismatch ? 1 : 0,
+        now,
+      )
+      const selectedMarkerFade = this.markerFades.advance(
+        selectedKey,
+        appearance.markSelectedColour &&
+          selected !== null &&
+          !isColourHidden(appearance, selected)
+          ? 1
+          : 0,
+        now,
+      )
+      if (!mismatchFade.done || !selectedMarkerFade.done) animating = true
       const mismatchStyle: MarkerStyle = {
         size: appearance.markerSize,
         thickness: 2,
@@ -718,11 +757,26 @@ class ArtboardRenderer {
         otherOpacity: 1,
         selected: -1,
       }
-      for (const batch of work.selected)
-        selectedLayers.push({ batch, style: selectedStyle, fade: rendered.fade })
+      for (const selectedColourFade of selectedColourFades) {
+        if (isColourHidden(appearance, selectedColourFade.index)) continue
+        const selectedWork = work.selected.find(({ index }) => index === selectedColourFade.index)
+        if (selectedWork === undefined) continue
+        for (const batch of selectedWork.batches) {
+          selectedLayers.push({
+            batch,
+            style: selectedStyle,
+            fade: rendered.fade * selectedMarkerFade.value * selectedColourFade.fade,
+          })
+        }
+      }
       for (const batch of work.mismatch)
-        mismatchLayers.push({ batch, style: mismatchStyle, fade: rendered.fade })
+        mismatchLayers.push({
+          batch,
+          style: mismatchStyle,
+          fade: rendered.fade * mismatchFade.value,
+        })
     }
+    this.markerFades.prune(markerKeys)
     const visibilityBudget = markerVisibilityBudget()
     const visiblePoints = (layers: readonly Omit<RenderMarker, 'sampleRate'>[]) =>
       layers.reduce(
@@ -776,6 +830,7 @@ export const installAllianceOverlayLayer = (): void => {
   onLocalPreviewChange(repaintAllianceOverlayLayer)
   onOverlayPeekChange(repaintAllianceOverlayLayer)
   onStateChange(repaintAllianceOverlayLayer)
+  onPaintSelectionChange(() => renderer?.requestRender())
   onCanvasWrite((canvas) => renderer?.nativeCanvasWritten(canvas))
   reconcileRenderer()
 }

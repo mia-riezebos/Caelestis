@@ -45,7 +45,7 @@ describe('alliance artboard marker work', () => {
       { index: 7, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 2 },
     ])
     expect(
-      artboardMarkerWork(template, regions, { ...DEFAULT_APPEARANCE, markSelectedColour: true }, 7)
+      artboardMarkerWork(template, regions, { ...DEFAULT_APPEARANCE, markSelectedColour: true })
         .selected,
     ).toEqual([])
   })
@@ -68,7 +68,6 @@ describe('alliance artboard marker work', () => {
         markUnpainted: true,
         unpaintedLimit: 0.4,
       },
-      null,
     )
 
     expect(work.mismatch).toEqual([])
@@ -100,7 +99,6 @@ describe('alliance artboard marker work', () => {
       template,
       [{ x: -1, y: -1, width: 2, height: 2, pixels: new Uint8Array([4, 3, 2, 1]) }],
       { ...DEFAULT_APPEARANCE, markMismatch: true },
-      null,
     )
 
     expect(work.mismatch.flatMap(points)).toEqual([
@@ -122,12 +120,32 @@ describe('alliance artboard marker work', () => {
         },
       ],
       { ...DEFAULT_APPEARANCE, markSelectedColour: true },
-      7,
     )
 
-    expect(work.selected.flatMap(points)).toEqual([
+    expect(work.selected).toHaveLength(1)
+    expect(work.selected[0]?.index).toBe(7)
+    expect(work.selected[0]?.batches.flatMap(points)).toEqual([
       [0, -1, 7],
       [-1, 0, 7],
     ])
+  })
+
+  it('retains marker data while its visibility toggle is off', () => {
+    const work = artboardMarkerWork(
+      template,
+      [
+        {
+          x: -1,
+          y: -1,
+          width: 2,
+          height: 2,
+          pixels: new Uint8Array([4, 3, TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
+        },
+      ],
+      { ...DEFAULT_APPEARANCE, markMismatch: false, markSelectedColour: false },
+    )
+
+    expect(work.mismatch.flatMap(points)).toEqual([[0, -1, 7]])
+    expect(work.selected[0]?.batches.flatMap(points)).toEqual([[-1, 0, 7]])
   })
 })
