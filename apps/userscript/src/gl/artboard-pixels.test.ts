@@ -3,6 +3,7 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { expect, it } from 'vitest'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
+import { nativePixelAt } from '../native-pixels.js'
 import {
   artboardCanvasWriteRect,
   patchArtboardPixels,
@@ -17,6 +18,14 @@ const image = (indices: readonly number[]): ImageData => {
     data.set([...colour.rgb, 255], at * 4)
   }
   return { data, width: indices.length, height: 1, colorSpace: 'srgb' } as ImageData
+}
+
+const crosshairImage = (width: number, height: number, cellX: number, cellY: number): ImageData => {
+  const data = new Uint8ClampedArray(width * height * 4)
+  for (let y = cellY * 10; y < (cellY + 1) * 10; y++) {
+    for (let x = cellX * 10; x < (cellX + 1) * 10; x++) data[(y * width + x) * 4 + 3] = 255
+  }
+  return { data, width, height, colorSpace: 'srgb' } as ImageData
 }
 
 it('reads signed HQ tile canvases back into palette indices', () => {
@@ -114,6 +123,55 @@ it('keeps the HQ draft canvas separate from committed tiles', () => {
       emptyIndex: 255,
     },
   ])
+})
+
+it('uses alliance crosshairs to preserve an explicit transparent draft', () => {
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const draft = document.createElement('canvas')
+  draft.width = 2
+  draft.height = 1
+  draft.getContext = (() => ({
+    getImageData: () => image([TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
+  })) as unknown as typeof draft.getContext
+  frame.append(draft)
+
+  const crosshairLayer = document.createElement('div')
+  crosshairLayer.className = 'paint-crosshair-layer'
+  const crosshair = document.createElement('canvas')
+  crosshair.className = 'paint-crosshair-tile'
+  crosshair.width = 20
+  crosshair.height = 10
+  crosshair.style.left = '0px'
+  crosshair.style.top = '0px'
+  crosshair.style.width = '2px'
+  crosshair.style.height = '1px'
+  crosshair.getContext = (() => ({
+    getImageData: () => crosshairImage(20, 10, 1, 0),
+  })) as unknown as typeof crosshair.getContext
+  crosshairLayer.append(crosshair)
+  stage.append(frame, crosshairLayer)
+
+  const active: ActiveAllianceSurface = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: -1, minY: 0, maxX: 1, maxY: 1 },
+  }
+  const geometry = { originX: -1, originY: 0, width: 2, height: 1 }
+  const pixels = readArtboardPixels(active, geometry)
+
+  expect(nativePixelAt(pixels, -1, 0)).toBeNull()
+  expect(nativePixelAt(pixels, 0, 0)).toEqual({ index: TRANSPARENT_INDEX, source: 'draft' })
+  expect(
+    artboardCanvasWriteRect(active, geometry, crosshair, { x: 10, y: 0, width: 10, height: 10 }),
+  ).toEqual({
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+  })
 })
 
 it('patches only the native canvas rectangle Wplace changed', () => {

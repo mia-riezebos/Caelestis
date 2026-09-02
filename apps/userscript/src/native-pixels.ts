@@ -51,6 +51,9 @@ const regionPixel = (region: NativePixelRegion, x: number, y: number): number | 
 const draftPresent = (region: NativePixelRegion, at: number, index: number): boolean =>
   region.present?.[at] === 1 || index !== region.emptyIndex
 
+const draftIndex = (region: NativePixelRegion, at: number, index: number): number =>
+  region.present?.[at] === 1 && index === region.emptyIndex ? TRANSPARENT_INDEX : index
+
 /** Resolve one native pixel. Drafts win, including an explicit transparent draft. */
 export const nativePixelAt = (
   snapshot: NativePixelSnapshot,
@@ -74,7 +77,7 @@ export const nativePixelAt = (
       const offset = (row - region.y) * region.width + (column - region.x)
       const index = region.pixels[offset]
       if (index === undefined || !draftPresent(region, offset, index)) continue
-      return { index, source: 'draft' }
+      return { index: draftIndex(region, offset, index), source: 'draft' }
     }
   }
   for (let at = snapshot.committed.length - 1; at >= 0; at--) {
@@ -134,7 +137,7 @@ export const nativePixelWindow = (
       for (let x = 0; x < overlap.width; x++, sourceAt++, targetAt++) {
         const index = region.pixels[sourceAt]
         if (index === undefined || !draftPresent(region, sourceAt, index)) continue
-        indices[targetAt] = index
+        indices[targetAt] = draftIndex(region, sourceAt, index)
         known[targetAt] = 1
         drafted[targetAt] = 1
       }

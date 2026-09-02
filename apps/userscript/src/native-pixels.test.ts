@@ -19,7 +19,7 @@ const snapshot: NativePixelSnapshot = {
       y: 2,
       width: 3,
       height: 1,
-      pixels: new Uint8Array([255, 2, TRANSPARENT_INDEX]),
+      pixels: new Uint8Array([255, 2, 255]),
       emptyIndex: 255,
       present: new Uint8Array([0, 1, 1]),
     },

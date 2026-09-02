@@ -181,6 +181,110 @@ const directNativeCanvases = (active: ActiveAllianceSurface): HTMLCanvasElement[
       child instanceof HTMLCanvasElement && !isCaelestisCanvas(child),
   )
 
+const CROSSHAIR_CELL_PIXELS = 10
+
+interface CrosshairLayout extends NativePixelRect {
+  readonly cellWidth: number
+  readonly cellHeight: number
+}
+
+/** Wplace keeps drafted-pixel presence outside the transparent draft canvas. */
+export const isArtboardCrosshairCanvas = (
+  active: ActiveAllianceSurface,
+  canvas: HTMLCanvasElement,
+): boolean =>
+  active.stage.contains(canvas) &&
+  canvas.classList.contains('paint-crosshair-tile') &&
+  canvas.parentElement?.classList.contains('paint-crosshair-layer') === true
+
+const crosshairLayout = (
+  active: ActiveAllianceSurface,
+  geometry: ArtboardPixelGeometry,
+  canvas: HTMLCanvasElement,
+): CrosshairLayout | null => {
+  if (!isArtboardCrosshairCanvas(active, canvas)) return null
+  const left = Number.parseFloat(canvas.style.left)
+  const top = Number.parseFloat(canvas.style.top)
+  const drawnWidth = Number.parseFloat(canvas.style.width)
+  const drawnHeight = Number.parseFloat(canvas.style.height)
+  const width = canvas.width / CROSSHAIR_CELL_PIXELS
+  const height = canvas.height / CROSSHAIR_CELL_PIXELS
+  if (
+    ![left, top, drawnWidth, drawnHeight, width, height].every(Number.isFinite) ||
+    drawnWidth <= 0 ||
+    drawnHeight <= 0 ||
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isInteger(width) ||
+    !Number.isInteger(height)
+  )
+    return null
+  const scaleX = drawnWidth / width
+  const scaleY = drawnHeight / height
+  return {
+    x: geometry.originX + Math.round(left / scaleX),
+    y: geometry.originY + Math.round(top / scaleY),
+    width,
+    height,
+    cellWidth: canvas.width / width,
+    cellHeight: canvas.height / height,
+  }
+}
+
+const crosshairDraftRegions = (
+  active: ActiveAllianceSurface,
+  geometry: ArtboardPixelGeometry,
+  draft: NativePixelRegion,
+): NativePixelRegion[] => {
+  const regions: NativePixelRegion[] = []
+  for (const canvas of active.stage.querySelectorAll('canvas.paint-crosshair-tile')) {
+    if (!(canvas instanceof HTMLCanvasElement)) continue
+    const layout = crosshairLayout(active, geometry, canvas)
+    if (layout === null) continue
+    try {
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (context === null) continue
+      const image = context.getImageData(0, 0, canvas.width, canvas.height)
+      const present = new Uint8Array(layout.width * layout.height)
+      const pixels = new Uint8Array(present.length).fill(NO_NATIVE_DRAFT)
+      let count = 0
+      for (let y = 0; y < layout.height; y++) {
+        for (let x = 0; x < layout.width; x++) {
+          const firstX = Math.floor(x * layout.cellWidth)
+          const firstY = Math.floor(y * layout.cellHeight)
+          // Wplace's 10x10 crosshair stamp always paints its top-left pixel. One alpha lookup per
+          // logical cell avoids scanning every transparent backing pixel after each draft write.
+          if ((image.data[(firstY * image.width + firstX) * 4 + 3] ?? 0) === 0) continue
+          const at = y * layout.width + x
+          const draftX = layout.x + x - draft.x
+          const draftY = layout.y + y - draft.y
+          const draftAt = draftY * draft.width + draftX
+          const index =
+            draftX < 0 || draftY < 0 || draftX >= draft.width || draftY >= draft.height
+              ? NO_NATIVE_DRAFT
+              : (draft.pixels[draftAt] ?? NO_NATIVE_DRAFT)
+          present[at] = 1
+          pixels[at] = index
+          count++
+        }
+      }
+      if (count > 0)
+        regions.push({
+          x: layout.x,
+          y: layout.y,
+          width: layout.width,
+          height: layout.height,
+          pixels,
+          present,
+          emptyIndex: NO_NATIVE_DRAFT,
+        })
+    } catch {
+      // Wplace can replace a crosshair canvas between discovery and readback.
+    }
+  }
+  return regions
+}
+
 /** Map one native canvas write into logical artboard pixels for retained marker accounting. */
 export const artboardCanvasWriteRect = (
   active: ActiveAllianceSurface,
@@ -189,6 +293,40 @@ export const artboardCanvasWriteRect = (
   dirty: CanvasWriteRect | null,
 ): NativePixelRect | null => {
   if (isCaelestisCanvas(canvas)) return null
+  const crosshair = crosshairLayout(active, geometry, canvas)
+  if (crosshair !== null) {
+    if (dirty === null)
+      return {
+        x: crosshair.x,
+        y: crosshair.y,
+        width: crosshair.width,
+        height: crosshair.height,
+      }
+    const localX = Math.max(
+      0,
+      Math.floor(Math.min(dirty.x, dirty.x + dirty.width) / crosshair.cellWidth),
+    )
+    const localY = Math.max(
+      0,
+      Math.floor(Math.min(dirty.y, dirty.y + dirty.height) / crosshair.cellHeight),
+    )
+    const farX = Math.min(
+      crosshair.width,
+      Math.ceil(Math.max(dirty.x, dirty.x + dirty.width) / crosshair.cellWidth),
+    )
+    const farY = Math.min(
+      crosshair.height,
+      Math.ceil(Math.max(dirty.y, dirty.y + dirty.height) / crosshair.cellHeight),
+    )
+    return farX <= localX || farY <= localY
+      ? null
+      : {
+          x: crosshair.x + localX,
+          y: crosshair.y + localY,
+          width: farX - localX,
+          height: farY - localY,
+        }
+  }
   let x = geometry.originX
   let y = geometry.originY
   if (canvas.parentElement?.classList.contains('hq-tile-layer')) {
@@ -228,18 +366,16 @@ const draftPixels = (
   if (canvas === undefined || canvas.width !== geometry.width || canvas.height !== geometry.height)
     return []
   const pixels = palettePixels(canvas, NO_NATIVE_DRAFT)
-  return pixels === null
-    ? []
-    : [
-        {
-          x: geometry.originX,
-          y: geometry.originY,
-          width: canvas.width,
-          height: canvas.height,
-          pixels,
-          emptyIndex: NO_NATIVE_DRAFT,
-        },
-      ]
+  if (pixels === null) return []
+  const draft = {
+    x: geometry.originX,
+    y: geometry.originY,
+    width: canvas.width,
+    height: canvas.height,
+    pixels,
+    emptyIndex: NO_NATIVE_DRAFT,
+  } satisfies NativePixelRegion
+  return [draft, ...crosshairDraftRegions(active, geometry, draft)]
 }
 
 /** Read Wplace's committed and draft art canvases without compositing Caelestis or feedback. */

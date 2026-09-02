@@ -27,6 +27,7 @@ import {
 } from './artboard-markers.js'
 import {
   artboardCanvasWriteRect,
+  isArtboardCrosshairCanvas,
   patchArtboardPixels,
   readArtboardPixels,
 } from './artboard-pixels.js'
@@ -671,7 +672,11 @@ class ArtboardRenderer {
 
   nativeCanvasWritten(canvas: object, dirty: CanvasWriteRect | null): void {
     try {
-      if (!(canvas instanceof HTMLCanvasElement) || !this.active.frame.contains(canvas)) return
+      if (
+        !(canvas instanceof HTMLCanvasElement) ||
+        (!this.active.frame.contains(canvas) && !isArtboardCrosshairCanvas(this.active, canvas))
+      )
+        return
       patchArtboardPixels(canvas, dirty)
       const rect = artboardCanvasWriteRect(this.active, this.geometry, canvas, dirty)
       if (rect === null) this.markerPixelsDirty = true
