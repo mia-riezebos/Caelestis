@@ -105,7 +105,7 @@ import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { refreshOverlayMenu } from './overlay-menu.js'
 import { panelWidthAfterMount } from './panel-geometry.js'
-import { canvasWritesTouchFrame } from './panel-progress.js'
+import { canvasWritesTouchArtboard } from './panel-progress.js'
 import {
   AllianceDrawerInset,
   alliancePanelTitle,
@@ -1365,7 +1365,7 @@ export const installPanel = (): void => {
     if (currentView() !== 'tree' || panelSurface.kind === 'world') return
     const active = activeAllianceSurface()
     if (active === null || !sameTemplateSurface(active.surface, panelSurface)) return
-    if (canvasWritesTouchFrame(active.frame, writes)) refreshView()
+    if (canvasWritesTouchArtboard(active, writes)) refreshView()
   })
   onCanvasWrite((canvas) => {
     pendingCanvasWrites.add(canvas)

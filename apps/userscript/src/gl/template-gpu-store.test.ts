@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { TemplateGpuStore } from './template-gpu-store.js'
 
-const context = (maximumTextureSize = 4) => {
+const context = (maximumTextureSize = 4, failTextureAllocation = false) => {
   let nextTexture = 0
   return {
     TEXTURE_2D: 1,
@@ -18,7 +18,7 @@ const context = (maximumTextureSize = 4) => {
     RGBA: 12,
     MAX_TEXTURE_SIZE: 13,
     getParameter: vi.fn(() => maximumTextureSize),
-    createTexture: vi.fn(() => ({ id: nextTexture++ })),
+    createTexture: vi.fn(() => (failTextureAllocation ? null : { id: nextTexture++ })),
     deleteTexture: vi.fn(),
     bindTexture: vi.fn(),
     pixelStorei: vi.fn(),
@@ -84,5 +84,17 @@ describe('template GPU store', () => {
     store.collect(new Set(), new Set())
     expect(store.entry('template')).toBeNull()
     expect(gl.deleteTexture).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports texture allocation failure without retaining partial resources', () => {
+    const gl = context(16, true)
+    const store = new TemplateGpuStore(gl)
+
+    expect(store.advance(template(), 100, 1)).toEqual({
+      entry: null,
+      status: 'failed',
+      uploadedPixels: 0,
+    })
+    expect(store.memoryBytes()).toBe(0)
   })
 })

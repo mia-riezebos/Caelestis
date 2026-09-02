@@ -291,7 +291,7 @@ export class ArtboardMarkerIndex {
     }
   }
 
-  private matches(
+  private matchesPixels(
     entry: MarkerIndexEntry,
     template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
     appearance: Appearance,
@@ -310,7 +310,19 @@ export class ArtboardMarkerIndex {
     template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
     appearance: Appearance,
   ): boolean {
-    return this.entry !== null && this.matches(this.entry, template, appearance)
+    if (this.entry === null || !this.matchesPixels(this.entry, template, appearance)) return false
+    const includeUnpainted =
+      appearance.markUnpainted &&
+      this.entry.asserted > 0 &&
+      this.entry.unpaintedCount / this.entry.asserted <= appearance.unpaintedLimit
+    return this.entry.cached !== null && this.entry.cachedIncludeUnpainted === includeUnpainted
+  }
+
+  hasCurrentPixels(
+    template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
+    appearance: Appearance,
+  ): boolean {
+    return this.entry !== null && this.matchesPixels(this.entry, template, appearance)
   }
 
   private patch(
@@ -367,7 +379,7 @@ export class ArtboardMarkerIndex {
     dirty: readonly NativePixelRect[] | null,
   ): ArtboardMarkerWork {
     this.compared = 0
-    if (this.entry === null || !this.matches(this.entry, template, appearance)) {
+    if (this.entry === null || !this.matchesPixels(this.entry, template, appearance)) {
       this.entry = this.create(template, appearance)
       this.patch(this.entry, template, pixels, {
         x: template.originX,

@@ -28,6 +28,7 @@ import {
   onTilePixelsEvicted,
   type PaintSubmission,
 } from './tile-transform.js'
+import { canvasWriteTouchesArtboard } from './ui/panel-progress.js'
 import { applyColourProgressDelta } from './ui/progress.js'
 import {
   isPaintOpen,
@@ -650,11 +651,7 @@ export const installPaintPaletteProgress = (): void => {
   onLocalChange(queueRender)
   onCanvasWrite((canvas) => {
     const active = activeAllianceSurface()
-    try {
-      if (active?.frame.contains(canvas as Node)) queueRender()
-    } catch {
-      // An offscreen or foreign-realm canvas cannot belong to the active DOM artboard.
-    }
+    if (active !== null && canvasWriteTouchesArtboard(active, canvas)) queueRender()
   })
   // This watcher already crosses the userscript/page realm reliably and fires when Wplace mounts
   // or replaces its drawer. Keep the local observer as a second line for same-selection remounts.

@@ -425,7 +425,8 @@ class ArtboardPass {
         const advanced = this.gpu.advance(template, allowance, generation)
         uploadPixelsLeft -= advanced.uploadedPixels
         uploadedPixels += advanced.uploadedPixels
-        if (advanced.status !== 'complete') {
+        if (advanced.status === 'failed') continue
+        if (advanced.status === 'pending') {
           animating = true
           continue
         }
@@ -723,7 +724,12 @@ class ArtboardRenderer {
     if (this.markerPixelsDirty || this.markerDirtyRects.length > 0 || staleMarkerIds.size > 0) {
       const regions = readArtboardPixels(this.active, this.geometry)
       for (const { template, appearance } of templateScene.templates) {
-        const rebuild = this.markerPixelsDirty || staleMarkerIds.has(template.id)
+        const held = this.markerWork.get(template.id)
+        const stale = staleMarkerIds.has(template.id)
+        const rebuild =
+          this.markerPixelsDirty ||
+          held === undefined ||
+          !held.index.hasCurrentPixels(template, appearance)
         const intersectsDirty = this.markerDirtyRects.some(
           (dirty) =>
             dirty.x < template.originX + template.width &&
@@ -731,8 +737,7 @@ class ArtboardRenderer {
             dirty.y < template.originY + template.height &&
             dirty.y + dirty.height > template.originY,
         )
-        if (!rebuild && !intersectsDirty) continue
-        const held = this.markerWork.get(template.id)
+        if (!rebuild && !intersectsDirty && !stale) continue
         const index = held?.index ?? new ArtboardMarkerIndex()
         const work = index.update(
           template,

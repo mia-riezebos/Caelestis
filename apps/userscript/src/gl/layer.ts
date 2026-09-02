@@ -386,10 +386,7 @@ export const overlayLayer = {
           const advanced = store.advance(template, uploadAllowance, renderGeneration)
           uploadPixelsLeft -= advanced.uploadedPixels
           uploadedIndexPixels += advanced.uploadedPixels
-          if (advanced.status === 'failed') {
-            animating = true
-            continue
-          }
+          if (advanced.status === 'failed') continue
           if (advanced.status === 'pending') {
             animating = true
             continue

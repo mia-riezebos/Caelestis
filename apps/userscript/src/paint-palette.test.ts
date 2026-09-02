@@ -423,10 +423,15 @@ describe('Wplace paint palette progress', () => {
     expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
   })
 
-  it('refreshes alliance palette progress when Wplace writes its artboard canvas', async () => {
+  it('refreshes alliance palette progress when Wplace writes a transparent-draft crosshair', async () => {
+    const stage = document.createElement('div')
     const frame = document.createElement('div')
+    const crosshairLayer = document.createElement('div')
+    crosshairLayer.className = 'paint-crosshair-layer'
     const canvas = document.createElement('canvas')
-    frame.append(canvas)
+    canvas.className = 'paint-crosshair-tile'
+    crosshairLayer.append(canvas)
+    stage.append(frame, crosshairLayer)
     harness.focused = {
       id: 'alliance-progress',
       surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
@@ -439,7 +444,7 @@ describe('Wplace paint palette progress', () => {
     harness.activeAlliance = {
       surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
       bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
-      stage: document.createElement('div'),
+      stage,
       frame,
     }
     harness.artboardPixels = {

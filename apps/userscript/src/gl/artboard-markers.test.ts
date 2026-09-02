@@ -266,4 +266,30 @@ describe('alliance artboard marker work', () => {
     expect(index.comparedPixels()).toBe(1)
     expect(patched.mismatch.flatMap(points)).toEqual([[-1, 0, 7]])
   })
+
+  it('rebuilds marker batches without rescanning pixels when the unpainted policy changes', () => {
+    const index = new ArtboardMarkerIndex()
+    const pixels = committed([
+      {
+        x: -1,
+        y: -1,
+        width: 2,
+        height: 2,
+        pixels: new Uint8Array([4, TRANSPARENT_INDEX, 7, TRANSPARENT_INDEX]),
+      },
+    ])
+    const hidden = {
+      ...DEFAULT_APPEARANCE,
+      markUnpainted: false,
+      unpaintedLimit: 1,
+    }
+    expect(index.update(template, pixels, hidden, null).mismatch).toEqual([])
+    expect(index.isCurrent(template, hidden)).toBe(true)
+
+    const shown = { ...hidden, markUnpainted: true }
+    expect(index.isCurrent(template, shown)).toBe(false)
+    expect(index.hasCurrentPixels(template, shown)).toBe(true)
+    expect(index.update(template, pixels, shown, []).mismatch.flatMap(points)).toEqual([[0, -1, 7]])
+    expect(index.comparedPixels()).toBe(0)
+  })
 })
