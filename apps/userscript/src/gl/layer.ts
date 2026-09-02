@@ -1,10 +1,4 @@
-import {
-  PALETTE_SIZE,
-  TILE_SIZE,
-  TRANSPARENT_INDEX,
-  WORLD_TEMPLATE_SURFACE,
-  WPLACE_PALETTE,
-} from '@caelestis/shared'
+import { TILE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { isOverlayPeekActive } from '../overlay-peek.js'
@@ -16,21 +10,14 @@ import {
   recordProfileWorkload,
 } from '../profile.js'
 import { isPlain } from '../templates/appearance.js'
-import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
-import { hiddenColoursFor } from '../templates/colour-filter.js'
-import {
-  appearanceOf,
-  displayTemplatesForSurface,
-  isTemplateVisible,
-  type PlacedTemplate,
-} from '../templates/local-store.js'
+import { displayTemplatesForSurface, type PlacedTemplate } from '../templates/local-store.js'
 import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles, type TileQuad, underlayQuads } from '../tile-transform.js'
-import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
+import { prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
-import { colourFades, outlineFades, templateFades } from './fade.js'
 import { markerLayer } from './markers.js'
 import { movingOverlayTapCap } from './minify-quality.js'
+import { type SceneTemplate, worldRenderScene } from './render-scene.js'
 import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
 import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE } from './shaders.js'
 import {
@@ -70,12 +57,6 @@ const BEFORE_LAYER = 'pixel-hover'
 const DRAFT_LAYER_ID = /^paint-preview-/
 
 export const OVERLAY_UPLOAD_PIXELS_PER_FRAME = TEMPLATE_UPLOAD_PIXELS_PER_FRAME
-
-/** Every palette index, for pruning ramps — one per template per colour. */
-const paletteKeys = Array.from({ length: PALETTE_SIZE }, (_, index) => index)
-
-/** Which templates existed last frame, so the colour ramps are only swept when that changes. */
-let lastTemplateSet = ''
 
 /** Four vertices of clip xyzw + uv, rewritten per template per frame. */
 const corners = new Float32Array(4 * 6)
@@ -133,85 +114,6 @@ const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation
     uniforms.set(name, program === null ? null : gl.getUniformLocation(program, name))
   }
   return uniforms.get(name) ?? null
-}
-
-/**
- * The palette as a 64x1 RGBA texture, with alpha standing in for "shown".
- *
- * Filtering a colour is then a 256-byte upload instead of a rebuilt bitmap — which is also what
- * makes fading one affordable: alpha is a number rather than a switch, so a colour leaving the
- * drawing is the same upload as a colour that has left. The wildcard index is always alpha 0, which
- * is also how a template pixel that requires nothing draws nothing.
- *
- * Filled from ramps rather than from the hidden set directly, and the ramps are advanced here
- * because this is the only place that knows every index needs one — a colour switched off has to
- * keep being asked about until it has finished leaving.
- */
-const buildPalette = (
-  templateId: string,
-  hidden: readonly number[],
-  now: number,
-): { data: Uint8Array; animating: boolean } => {
-  const off = new Set(hidden)
-  const data = new Uint8Array(PALETTE_SIZE * 4)
-  let animating = false
-  for (let index = 0; index < PALETTE_SIZE; index++) {
-    const colour = WPLACE_PALETTE[index]
-    const shown = colour !== undefined && index !== TRANSPARENT_INDEX && !off.has(index)
-    const { value, done } = colourFades.advance(`${templateId}:${index}`, shown ? 1 : 0, now)
-    if (!done) animating = true
-    data[index * 4] = colour?.rgb[0] ?? 0
-    data[index * 4 + 1] = colour?.rgb[1] ?? 0
-    data[index * 4 + 2] = colour?.rgb[2] ?? 0
-    data[index * 4 + 3] = Math.round(value * 255)
-  }
-  return { data, animating }
-}
-
-const uploadPalette = (
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Uint8Array,
-): void => {
-  gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, PALETTE_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-}
-
-/**
- * Bring the one palette texture shared by the outline and overlay to the requested visibility.
- *
- * The outline sits earlier in MapLibre's layer stack, so it must prepare the texture first. The
- * overlay then consumes that exact preparation instead of advancing the same colour ramps again a
- * few milliseconds later. Besides keeping both passes on the same pixels and alpha, this matters
- * on the final fade frame: if the overlay were the first pass to upload alpha zero, MapLibre could
- * retain the stale outline drawn immediately before it without scheduling another repaint.
- */
-const preparePalette = (
-  gl: WebGL2RenderingContext,
-  entry: TemplateGpuEntry,
-  templateId: string,
-  hidden: readonly number[],
-  now: number,
-  pass: 'outline' | 'overlay',
-): boolean => {
-  if (pass === 'overlay' && entry.palettePreparedForOverlay) {
-    entry.palettePreparedForOverlay = false
-    return entry.paletteMoving
-  }
-
-  const paletteKey = hidden.join(',')
-  if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
-    const built = buildPalette(templateId, hidden, now)
-    uploadPalette(gl, entry.palette, built.data)
-    entry.paletteKey = paletteKey
-    entry.paletteMoving = built.animating
-  }
-  entry.palettePreparedForOverlay = pass === 'outline'
-  return entry.paletteMoving
 }
 
 /** Whether any source pixel can reach one of the tile quads wplace is drawing this frame. */
@@ -392,48 +294,28 @@ export const overlayLayer = {
     // template made a dense viewport repeat the same native query dozens of times per frame.
     const reducedMotion = prefersReducedMotion()
     const profiling = isProfileEnabled()
-    let animating = false
+    const scene = worldRenderScene.advanceTemplates(all, WORLD_TEMPLATE_SURFACE, now, reducedMotion)
+    let animating = scene.animating
     let visibleSourcePixels = 0
     const visible: {
-      template: (typeof all)[number]
-      fade: number
+      rendered: SceneTemplate
       spans: readonly HorizontalSpan[]
     }[] = []
-    for (const template of all) {
-      const { value, done } = templateFades.advance(
-        template.id,
-        isTemplateVisible(template) ? 1 : 0,
-        now,
-      )
-      if (!done) animating = true
-      if (value > 0) {
-        const spans = horizontalSpans(template)
-        if (intersectsTiles(template, spans, tiles)) {
-          visible.push({ template, fade: value, spans })
+    for (const rendered of scene.templates) {
+      const { template } = rendered
+      if (rendered.fade > 0 && rendered.palette !== null) {
+        const spans = horizontalSpans(rendered.template)
+        if (intersectsTiles(rendered.template, spans, tiles)) {
+          visible.push({ rendered, spans })
           if (profiling) visibleSourcePixels += template.width * template.height
         }
       }
     }
     const ids = new Set(all.map((template) => template.id))
-    templateFades.prune(ids)
-    outlineFades.prune(ids)
-    appearanceTransitions.prune(ids)
     // Offscreen textures can be large. Keep only the templates this frame could actually draw;
     // panning back uploads them lazily again.
-    const visibleIds = new Set(visible.map(({ template }) => template.id))
+    const visibleIds = new Set(visible.map(({ rendered }) => rendered.template.id))
     store.collect(ids, visibleIds)
-    /**
-     * The colour ramps are keyed per template *per palette entry*, so their keep-set is sixty-four
-     * strings per template — built only when the set of templates has actually changed, rather than
-     * on every frame. This runs inside a render callback at whatever rate MapLibre draws at, and a
-     * few hundred strings a frame is garbage collected for nothing: templates come and go on human
-     * timescales.
-     */
-    const fingerprint = [...ids].join(' ')
-    if (fingerprint !== lastTemplateSet) {
-      lastTemplateSet = fingerprint
-      colourFades.prune(new Set(all.flatMap((t) => paletteKeys.map((i) => `${t.id}:${i}`))))
-    }
     /**
      * MapLibre renders on demand, so a frame nobody asked for is a frame that never happens.
      * Without this a ramp would advance only as far as the next pan.
@@ -481,7 +363,8 @@ export const overlayLayer = {
     let uploadPixelsLeft = OVERLAY_UPLOAD_PIXELS_PER_FRAME
     let uploadedIndexPixels = 0
     let drawIntersections = 0
-    let uploadsLeft = visible.reduce((total, { template }) => {
+    let uploadsLeft = visible.reduce((total, { rendered }) => {
+      const { template } = rendered
       const entry = store.entry(template.id)
       const complete =
         entry !== null &&
@@ -492,7 +375,8 @@ export const overlayLayer = {
     }, 0)
 
     try {
-      for (const { template, fade, spans } of visible) {
+      for (const { rendered, spans } of visible) {
+        const { template, appearance, fade, palette } = rendered
         let entry = store.hasCurrent(template) ? store.entry(template.id) : null
         if (entry === null) {
           const uploadAllowance =
@@ -515,21 +399,8 @@ export const overlayLayer = {
         }
         if (entry === null) continue
         entry.lastUsed = renderGeneration
-
-        const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
-        const transitioned = appearanceTransitions.advance(
-          template.id,
-          targetAppearance,
-          now,
-          reducedMotion,
-          hasAppearancePreview(template.id),
-        )
-        const appearance = transitioned.appearance
-        if (!transitioned.done) animating = true
-        const hidden = hiddenColoursFor(appearance)
-        // Re-uploaded while anything in it is still moving, not only when the filter changes: the
-        // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
-        if (preparePalette(gl, entry, template.id, hidden, now, 'overlay')) animating = true
+        if (palette === null) continue
+        store.uploadPalette(entry, palette)
 
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, entry.palette)
@@ -660,9 +531,6 @@ export const outlineLayer = {
     if (outlineProgram === null || outlineVao === null || outlineQuad === null || gpu === null)
       return
     const store = gpu
-    // This pass is always before the overlay. Clear any preparation the overlay did not consume in
-    // an earlier partial frame, then mark only entries actually prepared below.
-    store.beginPaletteFrame()
     if (isOverlayPeekActive() || !isDrawingTiles()) return
     const map = getMap() as { triggerRepaint?: () => void } | null
     // MapLibre exposes the same current tile matrices its raster layer will upload later in this
@@ -696,37 +564,27 @@ export const outlineLayer = {
     const reducedMotion = prefersReducedMotion()
     let drawIntersections = 0
     let visibleTemplates = 0
-    let animating = false
-    for (const template of displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE)) {
+    const scene = worldRenderScene.advanceTemplates(
+      displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE),
+      WORLD_TEMPLATE_SURFACE,
+      now,
+      reducedMotion,
+    )
+    for (const rendered of scene.templates) {
+      const { template, appearance, fade, outlineFade, palette } = rendered
       const entry = store.entry(template.id)
       if (entry === null) continue
-      const fade = templateFades.advance(
-        template.id,
-        isTemplateVisible(template) ? 1 : 0,
-        now,
-      ).value
-      if (fade <= 0) continue
-      const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
-      const appearance = appearanceTransitions.advance(
-        template.id,
-        targetAppearance,
-        now,
-        reducedMotion,
-        hasAppearancePreview(template.id),
-      ).appearance
-      const outlineFade = outlineFades.advance(template.id, appearance.contrastOutline ? 1 : 0, now)
-      if (!outlineFade.done) animating = true
-      if (outlineFade.value <= 0) continue
+      if (fade <= 0 || outlineFade <= 0 || palette === null) continue
       const spans = horizontalSpans(template)
       if (!intersectsTiles(template, spans, tiles)) continue
       visibleTemplates++
 
-      preparePalette(gl, entry, template.id, hiddenColoursFor(appearance), now, 'outline')
+      store.uploadPalette(entry, palette)
 
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(outlineUniform(gl, 'u_palette'), 1)
-      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity * outlineFade.value)
+      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity * outlineFade)
       // Keep the persisted control scale, but render it as 3.125%..25% of a canvas pixel. Unlike a
       // device-pixel width, this grows and shrinks with Wplace's pixels as the map zooms.
       gl.uniform1f(outlineUniform(gl, 'u_outlineWidth'), appearance.contrastOutlineSize / 8)
@@ -762,7 +620,7 @@ export const outlineLayer = {
       recordProfileWorkload('Outline visible templates', visibleTemplates)
       recordProfileWorkload('Outline draw intersections', drawIntersections)
     }
-    if (animating) map?.triggerRepaint?.()
+    if (scene.animating) map?.triggerRepaint?.()
   },
 }
 

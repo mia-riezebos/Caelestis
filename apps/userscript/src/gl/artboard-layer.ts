@@ -1,10 +1,4 @@
-import {
-  PALETTE_SIZE,
-  type TemplateSurface,
-  TRANSPARENT_INDEX,
-  templateSurfaceBounds,
-  WPLACE_PALETTE,
-} from '@caelestis/shared'
+import { type TemplateSurface, templateSurfaceBounds } from '@caelestis/shared'
 import {
   type ActiveAllianceSurface,
   activeAllianceSurface,
@@ -15,13 +9,9 @@ import { warn } from '../debug.js'
 import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
 import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
 import { getState, onlySelectedColourFor, onStateChange } from '../state.js'
-import { isColourHidden, isPlain, toRgbUnit } from '../templates/appearance.js'
-import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
-import { hiddenColoursFor } from '../templates/colour-filter.js'
+import { isPlain, toRgbUnit } from '../templates/appearance.js'
 import {
-  appearanceOf,
   displayTemplatesForSurface,
-  isTemplateVisible,
   onLocalChange,
   onLocalPreviewChange,
   type PlacedTemplate,
@@ -29,7 +19,7 @@ import {
 import { abortMoveOutsideSurface } from '../templates/move.js'
 import { detachOverlayControls, renderAllianceOverlayControls } from '../ui/overlay-menu.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
-import { appearanceTransitionSet, prefersReducedMotion } from './appearance-transition.js'
+import { prefersReducedMotion } from './appearance-transition.js'
 import {
   type ArtboardMarkerBatch,
   type ArtboardMarkerWork,
@@ -37,7 +27,6 @@ import {
 } from './artboard-markers.js'
 import { readArtboardPixels } from './artboard-pixels.js'
 import { isDarkMapTheme } from './contrast-outline.js'
-import { ramps } from './fade.js'
 import {
   type MarkerVisibilityBudget,
   markerSampleRate,
@@ -46,6 +35,7 @@ import {
 } from './marker-density.js'
 import { MarkerRenderer, type MarkerStyle } from './marker-renderer.js'
 import { movingOverlayTapCap } from './minify-quality.js'
+import { RenderScene, type SceneTemplate } from './render-scene.js'
 import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
 import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE } from './shaders.js'
 import {
@@ -219,14 +209,6 @@ export const insertAllianceArtboardCanvases = (
   frame.insertBefore(markers, nativeDraft?.nextSibling ?? null)
 }
 
-interface RenderTemplate {
-  readonly template: PlacedTemplate
-  readonly appearance: ReturnType<typeof appearanceOf>
-  readonly fade: number
-  readonly outlineFade: number
-  readonly palette: Uint8Array
-}
-
 interface RenderMarker {
   readonly batch: ArtboardMarkerBatch
   readonly style: MarkerStyle
@@ -361,7 +343,7 @@ class ArtboardPass {
   }
 
   private draw(
-    templates: readonly RenderTemplate[],
+    templates: readonly SceneTemplate[],
     markers: readonly RenderMarker[],
     allIds: ReadonlySet<string>,
     geometry: ArtboardGeometry,
@@ -442,6 +424,7 @@ class ArtboardPass {
         entry = advanced.entry
       }
       if (entry === null) continue
+      if (rendered.palette === null) continue
       this.gpu?.uploadPalette(entry, rendered.palette)
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
@@ -504,7 +487,7 @@ class ArtboardPass {
   }
 
   render(
-    templates: readonly RenderTemplate[],
+    templates: readonly SceneTemplate[],
     markers: readonly RenderMarker[],
     allIds: ReadonlySet<string>,
     geometry: ArtboardGeometry,
@@ -550,14 +533,7 @@ class ArtboardPass {
 }
 
 class ArtboardRenderer {
-  private readonly templateFades = ramps()
-  private readonly colourFades = ramps({ startAt: 'target' })
-  private readonly outlineFades = ramps({ startAt: 'target' })
-  private readonly markerFades = ramps({ startAt: 'target' })
-  private readonly selectedColourMarkerFades = ramps()
-  private readonly selectedMarkerColours = new Set<number>()
-  private latestSelectedMarkerColour: number | null = null
-  private readonly appearanceTransitions = appearanceTransitionSet()
+  private readonly scene = new RenderScene()
   private readonly observer: MutationObserver
   private readonly resizeObserver: ResizeObserver | null
   private framePending = false
@@ -648,25 +624,6 @@ class ArtboardRenderer {
     return moving
   }
 
-  private paletteFor(template: PlacedTemplate, now: number): { data: Uint8Array; done: boolean } {
-    const hidden = new Set(
-      hiddenColoursFor(appearanceWithPreview(template.id, appearanceOf(template)), this.surface),
-    )
-    const data = new Uint8Array(PALETTE_SIZE * 4)
-    let done = true
-    for (let index = 0; index < PALETTE_SIZE; index++) {
-      const colour = WPLACE_PALETTE[index]
-      const shown = colour !== undefined && index !== TRANSPARENT_INDEX && !hidden.has(index)
-      const fade = this.colourFades.advance(`${template.id}:${index}`, shown ? 1 : 0, now)
-      if (!fade.done) done = false
-      data[index * 4] = colour?.rgb[0] ?? 0
-      data[index * 4 + 1] = colour?.rgb[1] ?? 0
-      data[index * 4 + 2] = colour?.rgb[2] ?? 0
-      data[index * 4 + 3] = Math.round(fade.value * 255)
-    }
-    return { data, done }
-  }
-
   requestRender(): void {
     if (this.disposed || this.framePending) return
     this.framePending = true
@@ -712,106 +669,32 @@ class ArtboardRenderer {
     const all = displayTemplatesForSurface(this.surface)
     this.renderGeneration++
     const ids = new Set(all.map(({ id }) => id))
-    this.templateFades.prune(ids)
-    this.outlineFades.prune(ids)
-    this.appearanceTransitions.prune(ids)
-    this.colourFades.prune(
-      new Set(
-        all.flatMap((template) =>
-          Array.from({ length: PALETTE_SIZE }, (_, index) => `${template.id}:${index}`),
-        ),
-      ),
-    )
     const now = performance.now()
     const reducedMotion = prefersReducedMotion()
-    let animating = false
-    const templates: RenderTemplate[] = []
-    for (const template of all) {
-      const fade = this.templateFades.advance(template.id, isTemplateVisible(template) ? 1 : 0, now)
-      if (!fade.done) animating = true
-      if (fade.value <= 0) continue
-      const target = appearanceWithPreview(template.id, appearanceOf(template))
-      const transitioned = this.appearanceTransitions.advance(
-        template.id,
-        target,
-        now,
-        reducedMotion,
-        hasAppearancePreview(template.id),
-      )
-      if (!transitioned.done) animating = true
-      const outline = this.outlineFades.advance(
-        template.id,
-        transitioned.appearance.contrastOutline ? 1 : 0,
-        now,
-      )
-      if (!outline.done) animating = true
-      const palette = this.paletteFor(template, now)
-      if (!palette.done) animating = true
-      templates.push({
-        template,
-        appearance: transitioned.appearance,
-        fade: fade.value,
-        outlineFade: outline.value,
-        palette: palette.data,
-      })
-    }
+    const templateScene = this.scene.advanceTemplates(all, this.surface, now, reducedMotion)
+    const templates = templateScene.templates.filter(
+      ({ fade, palette }) => fade > 0 && palette !== null,
+    )
+    let animating = templateScene.animating
     const selected = isPaintOpen() ? selectedColour() : null
-    if (selected !== null && selected !== this.latestSelectedMarkerColour) {
-      this.selectedMarkerColours.add(selected)
-      this.latestSelectedMarkerColour = selected
-    }
-    const selectedColourKeys = new Set<string>()
-    const selectedColourFades: { index: number; fade: number }[] = []
-    for (const index of [...this.selectedMarkerColours]) {
-      const key = String(index)
-      const target = index === this.latestSelectedMarkerColour ? 1 : 0
-      const fade = this.selectedColourMarkerFades.advance(key, target, now)
-      if (!fade.done) animating = true
-      if (target > 0 || fade.value > 0 || !fade.done) selectedColourKeys.add(key)
-      if (fade.value > 0) selectedColourFades.push({ index, fade: fade.value })
-      if (target === 0 && fade.done) this.selectedMarkerColours.delete(index)
-    }
-    this.selectedColourMarkerFades.prune(selectedColourKeys)
+    const markerScene = this.scene.advanceMarkers(templateScene.templates, selected, now)
+    if (markerScene.animating) animating = true
     if (this.markerPixelsDirty) {
       const regions = readArtboardPixels(this.active, this.geometry)
       this.markerWork.clear()
-      for (const template of all) {
-        this.markerWork.set(
-          template.id,
-          artboardMarkerWork(
-            template,
-            regions,
-            appearanceWithPreview(template.id, appearanceOf(template)),
-          ),
-        )
+      for (const { template, appearance } of templateScene.templates) {
+        this.markerWork.set(template.id, artboardMarkerWork(template, regions, appearance))
       }
       this.markerPixelsDirty = false
     }
     const selectedLayers: Omit<RenderMarker, 'sampleRate'>[] = []
     const mismatchLayers: Omit<RenderMarker, 'sampleRate'>[] = []
-    const markerKeys = new Set<string>()
     const state = getState()
-    for (const rendered of templates) {
+    for (const { rendered, mismatchFade, selectedFades } of markerScene.templates) {
+      if (rendered.fade <= 0) continue
       const appearance = rendered.appearance
       const work = this.markerWork.get(rendered.template.id)
       if (work === undefined) continue
-      const mismatchKey = `mismatch:${rendered.template.id}`
-      const selectedKey = `selected:${rendered.template.id}`
-      markerKeys.add(mismatchKey)
-      markerKeys.add(selectedKey)
-      const mismatchFade = this.markerFades.advance(
-        mismatchKey,
-        appearance.markMismatch ? 1 : 0,
-        now,
-      )
-      const selectedMarkerFade = this.markerFades.advance(
-        selectedKey,
-        appearance.markSelectedColour && selected !== null && !isColourHidden(appearance, selected)
-          ? 1
-          : 0,
-        now,
-      )
-      if (!mismatchFade.done || !selectedMarkerFade.done) animating = true
       const mismatchStyle: MarkerStyle = {
         size: appearance.markerSize,
         thickness: 2,
@@ -831,15 +714,14 @@ class ArtboardRenderer {
         otherOpacity: 1,
         selected: -1,
       }
-      for (const selectedColourFade of selectedColourFades) {
-        if (isColourHidden(appearance, selectedColourFade.index)) continue
-        const selectedWork = work.selected.find(({ index }) => index === selectedColourFade.index)
+      for (const selectedFade of selectedFades) {
+        const selectedWork = work.selected.find(({ index }) => index === selectedFade.index)
         if (selectedWork === undefined) continue
         for (const batch of selectedWork.batches) {
           selectedLayers.push({
             batch,
             style: selectedStyle,
-            fade: rendered.fade * selectedMarkerFade.value * selectedColourFade.fade,
+            fade: selectedFade.fade,
           })
         }
       }
@@ -847,10 +729,9 @@ class ArtboardRenderer {
         mismatchLayers.push({
           batch,
           style: mismatchStyle,
-          fade: rendered.fade * mismatchFade.value,
+          fade: mismatchFade,
         })
     }
-    this.markerFades.prune(markerKeys)
     const visibilityBudget = markerVisibilityBudget()
     const visiblePoints = (layers: readonly Omit<RenderMarker, 'sampleRate'>[]) =>
       layers.reduce(

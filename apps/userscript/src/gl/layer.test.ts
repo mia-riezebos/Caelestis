@@ -103,6 +103,36 @@ vi.mock('./shaders.js', () => ({
   OUTLINE_FRAGMENT_SOURCE: '',
   VERTEX_SOURCE: '',
 }))
+vi.mock('./render-scene.js', () => ({
+  worldRenderScene: {
+    advanceTemplates: (templates: readonly Record<string, unknown>[]) => {
+      const palette = new Uint8Array(256)
+      for (let index = 0; index < 64; index++) {
+        palette[index * 4 + 3] = harness.hiddenColours.includes(index) ? 0 : 255
+      }
+      return {
+        animating: !harness.fade.done || !harness.outlineFade.done,
+        templates: templates.map((template) => ({
+          template,
+          appearance: {
+            size: harness.transitionedSize ?? harness.size,
+            radius: 0,
+            translateX: 0,
+            translateY: 0,
+            rotation: 0,
+            opacity: harness.opacity,
+            contrastOutline: harness.contrastOutline,
+            contrastOutlineSize: harness.contrastOutlineSize,
+            hiddenColours: harness.hiddenColours,
+          },
+          fade: harness.fade.value,
+          outlineFade: harness.outlineFade.value,
+          palette,
+        })),
+      }
+    },
+  },
+}))
 
 const gl = () =>
   ({

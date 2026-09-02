@@ -46,9 +46,6 @@ export interface TemplateGpuEntry {
   readonly height: number
   readonly source: Uint8Array
   lastUsed: number
-  paletteKey: string | null
-  paletteMoving: boolean
-  palettePreparedForOverlay: boolean
   paletteData: Uint8Array | null
 }
 
@@ -125,11 +122,6 @@ export class TemplateGpuStore {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     entry.paletteData = data.slice()
-  }
-
-  /** Start an outline/overlay pair without leaking palette preparation from an earlier frame. */
-  beginPaletteFrame(): void {
-    for (const entry of this.complete.values()) entry.palettePreparedForOverlay = false
   }
 
   private textureLimit(width: number, height: number): number {
@@ -284,9 +276,6 @@ export class TemplateGpuStore {
       height: pending.height,
       source: pending.source,
       lastUsed: pending.lastUsed,
-      paletteKey: null,
-      paletteMoving: false,
-      palettePreparedForOverlay: false,
       paletteData: null,
     }
     return { entry, status: 'complete', uploadedPixels }
