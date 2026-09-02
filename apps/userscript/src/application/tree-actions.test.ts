@@ -55,6 +55,7 @@ import {
   copyToServer,
   dropOnServerNode,
   handleTreeActionPresentationIntent,
+  importTemplate,
   openContextMenu,
   treeActionPresentation,
 } from './tree-actions.js'
@@ -226,6 +227,45 @@ describe('copy local template to a server', () => {
         operationId: operation.id,
       })
     }
+  })
+})
+
+describe('alliance surface actions', () => {
+  const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+
+  it('offers alliance templates the same Go to context action', () => {
+    copyStore.templateById.mockReturnValue({
+      id: 'local-alliance-template',
+      name: 'Alliance guide',
+      surface,
+    })
+
+    openContextMenu(
+      {
+        server: null,
+        nodeId: null,
+        key: 'local:local-alliance-template',
+        name: 'Alliance guide',
+        surface,
+      },
+      new MouseEvent('contextmenu'),
+      vi.fn(),
+      surface,
+    )
+
+    expect(menuText()).toContain('Go to')
+  })
+
+  it('limits alliance imports to image formats', async () => {
+    await importTemplate(
+      { server: null, nodeId: null, key: 'local', name: 'Local', surface },
+      vi.fn(),
+      surface,
+    )
+    const picker = document.querySelector<HTMLInputElement>('input[type="file"]')
+
+    expect(picker?.accept).toBe('image/png,image/*')
+    picker?.remove()
   })
 })
 

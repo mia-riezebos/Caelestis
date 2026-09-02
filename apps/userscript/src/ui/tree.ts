@@ -951,7 +951,7 @@ const buildTree = <Result>(
         'local-import',
         1,
         'Import a template',
-        'A .wplace file, a Blue Marble export, or an image',
+        surface.kind === 'world' ? 'A .wplace file, a Blue Marble export, or an image' : 'An image',
         () =>
           callbacks.onImportTemplate({
             server: null,
