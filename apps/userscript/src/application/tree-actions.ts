@@ -628,7 +628,7 @@ export const copyServerTemplateToLocal = async (
   const templateId = found.template.id
   const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
   if (source === undefined) return null
-  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId))
+  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId, surface))
   if (drawn === undefined || drawn.serverVersion !== found.template.version) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
@@ -738,7 +738,7 @@ export const dropOnServerNode = async (
 
   // The pixels come from the copy already on the canvas, which is the assembled result of that
   // server's own chunks — so a cross-server move needs no second download.
-  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId))
+  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId, surface))
   if (drawn === undefined) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
