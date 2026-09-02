@@ -105,6 +105,7 @@ import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { refreshOverlayMenu } from './overlay-menu.js'
 import { panelWidthAfterMount } from './panel-geometry.js'
+import { canvasWritesTouchFrame } from './panel-progress.js'
 import {
   AllianceDrawerInset,
   alliancePanelTitle,
@@ -125,21 +126,6 @@ import {
   templateTreeAdapter,
 } from './tree.js'
 import { findWplaceRail } from './wplace-rail.js'
-
-/** Whether any coalesced native write belongs to the active artboard. */
-export const canvasWritesTouchFrame = (
-  frame: HTMLElement,
-  writes: ReadonlySet<object>,
-): boolean => {
-  for (const canvas of writes) {
-    try {
-      if (frame.contains(canvas as Node)) return true
-    } catch {
-      // Foreign-realm and offscreen canvases do not belong to this artboard.
-    }
-  }
-  return false
-}
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
