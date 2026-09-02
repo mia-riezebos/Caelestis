@@ -9,12 +9,15 @@ vi.mock('../alliance-server-sync.js', () => ({
   refreshAllianceManifest: vi.fn(),
 }))
 
+import { nodeTreeKey, serverTemplateTreeKey } from '../application/tree-server-state.js'
 import type { ConnectedServer } from '../state.js'
 import { setState } from '../state.js'
 import { templateTreeAdapter } from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const TEMPLATE_ID = '019fed50-87a1-7523-a88c-bdeafad49683'
+const SOURCE_NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49685'
+const DESTINATION_NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49686'
 const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
 const serverInfo = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
 const server: ConnectedServer = {
@@ -32,8 +35,8 @@ const callbacks = {
   onImportTemplate: vi.fn(),
   onContextMenu: vi.fn(),
   onCopyToServer: vi.fn(),
-  onDropInLocal: vi.fn(),
-  onDropInServer: vi.fn(),
+  onDropInLocal: vi.fn(async () => null),
+  onDropInServer: vi.fn(async () => null),
 }
 
 afterEach(() => {
@@ -49,11 +52,26 @@ describe('surface-scoped template tree', () => {
       season: 0,
       surface,
       server: serverInfo,
-      nodes: [],
+      nodes: [
+        {
+          id: SOURCE_NODE_ID,
+          parentId: null,
+          path: '/source',
+          name: 'Source',
+          createdAt: 1,
+        },
+        {
+          id: DESTINATION_NODE_ID,
+          parentId: null,
+          path: '/destination',
+          name: 'Destination',
+          createdAt: 1,
+        },
+      ],
       templates: [
         {
           id: TEMPLATE_ID,
-          nodeId: null,
+          nodeId: SOURCE_NODE_ID,
           name: 'HQ guide',
           version: '019fed50-87a1-7523-a88c-bdeafad49684',
           totalPixels: 4,
@@ -134,6 +152,12 @@ describe('surface-scoped template tree', () => {
     adapter.handle({ type: 'action', key: 'local', actionId: 'row-0' })
     adapter.handle({ type: 'action', key: `server:${server.url}`, actionId: 'row-1' })
     adapter.handle({ type: 'action', key: 'local-import', actionId: 'run' })
+    adapter.handle({
+      type: 'drop',
+      draggedKey: serverTemplateTreeKey(server, TEMPLATE_ID),
+      targetKey: nodeTreeKey(server, DESTINATION_NODE_ID),
+      position: 'inside',
+    })
 
     expect(callbacks.onCreateFolder).toHaveBeenCalledWith(expect.objectContaining({ key: 'local' }))
     expect(callbacks.onImportTemplate).toHaveBeenCalledWith(
@@ -141,6 +165,12 @@ describe('surface-scoped template tree', () => {
     )
     expect(callbacks.onImportTemplate).toHaveBeenCalledWith(
       expect.objectContaining({ key: 'local' }),
+    )
+    expect(callbacks.onDropInServer).toHaveBeenCalledWith(
+      server,
+      DESTINATION_NODE_ID,
+      serverTemplateTreeKey(server, TEMPLATE_ID),
+      null,
     )
   })
 })

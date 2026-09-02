@@ -1,4 +1,4 @@
-import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { type TemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import {
   addLocalFolders,
   leaseLocalFolder,
@@ -83,12 +83,44 @@ export const cancelDestinationAdmissions = (serverUrl: string): void => {
 const destinationIsAdmitted = async (
   server: ConnectedServer,
   expected: DestinationAdmission,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  currentTemplate?: CurrentServerTemplate,
 ): Promise<boolean> => {
   const controller = new AbortController()
   const controllers = destinationAdmissionControllers.get(server.url) ?? new Set<AbortController>()
   controllers.add(controller)
   destinationAdmissionControllers.set(server.url, controllers)
   try {
+    if (surface.kind !== 'world') {
+      const listed = await listServerNodes(server, controller.signal, surface)
+      if (listed.status !== 'ok') return false
+      const nodes = new Map(listed.nodes.map((node) => [node.id, node]))
+      for (const expectedNode of expected.nodes) {
+        const node = nodes.get(expectedNode.id)
+        if (
+          node === undefined ||
+          node.parentId !== expectedNode.parentId ||
+          node.path !== expectedNode.path ||
+          node.name !== expectedNode.name ||
+          node.description !== expectedNode.description ||
+          node.createdAt !== expectedNode.createdAt
+        )
+          return false
+      }
+      if (currentTemplate === undefined) return expected.templates.length === 0
+      for (const expectedTemplate of expected.templates) {
+        const template = currentTemplate(server, expectedTemplate.id)
+        if (
+          template === null ||
+          template.nodeId !== expectedTemplate.nodeId ||
+          template.name !== expectedTemplate.name ||
+          template.version !== expectedTemplate.version ||
+          template.published !== expectedTemplate.published
+        )
+          return false
+      }
+      return true
+    }
     if ((await listServerContents(server, controller.signal)) === null) return false
     const admitted = admittedServerContentsFor(server)
     if (admitted === null) return false
@@ -476,19 +508,26 @@ export const moveServerTemplateToServer = async (
       copied,
     )
   }
+  const surface = drawn.surface ?? WORLD_TEMPLATE_SURFACE
+  if (surface.kind !== 'world') await reconcileServer(destination)
   if (
-    !(await destinationIsAdmitted(destination, {
-      nodes: [],
-      templates: [
-        {
-          id: copied,
-          nodeId,
-          name: ready.name,
-          version: uploaded.version,
-          published: beforePublish.published,
-        },
-      ],
-    }))
+    !(await destinationIsAdmitted(
+      destination,
+      {
+        nodes: [],
+        templates: [
+          {
+            id: copied,
+            nodeId,
+            name: ready.name,
+            version: uploaded.version,
+            published: beforePublish.published,
+          },
+        ],
+      },
+      surface,
+      currentServerTemplate,
+    ))
   ) {
     void reconcileServer(destination)
     return partial(
@@ -541,8 +580,9 @@ const serverBranch = async (
   rootId: string,
   templatesOf: (nodeId: string) => readonly PublishedTemplate[],
   templatesForServer?: () => readonly LocatedPublishedTemplate[],
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<Branch | BranchReadFailure | null> => {
-  const listed = await listServerNodes(server)
+  const listed = await listServerNodes(server, undefined, surface)
   if (listed.status !== 'ok') {
     return {
       error:
@@ -701,6 +741,8 @@ const transplantWhileDestinationHeld = async (
     | undefined,
   destinationLeases: Array<() => void>,
   destinationTemplateLeases: Array<() => void>,
+  reconcileServer: ReconcileServer | undefined,
+  surface: TemplateSurface,
 ): Promise<TransplantResult> => {
   const branch =
     source.kind === 'local'
@@ -710,6 +752,7 @@ const transplantWhileDestinationHeld = async (
           source.nodeId,
           (nodeId) => templatesOf(source.server, nodeId),
           templatesForServer === undefined ? undefined : () => templatesForServer(source.server),
+          surface,
         )
   if (branch !== null && 'error' in branch) {
     return { ok: false, nodes: 0, templates: 0, message: branch.error }
@@ -864,14 +907,20 @@ const transplantWhileDestinationHeld = async (
 
     if (destination.kind === 'server') {
       if (!connectionsAreCurrent()) return connectionChanged()
-      const created = await createNode(destination.server, folder.name, parent, folder.description)
+      const created = await createNode(
+        destination.server,
+        folder.name,
+        parent,
+        folder.description,
+        surface,
+      )
       if (!created.ok) return { ok: false, nodes, templates, message: created.message }
       if (!sourceBranchIsCurrent()) return sourceBranchChanged()
       mapped.set(folder.id, created.node.id)
       createdNodes.push(created.node)
     } else {
       const id = nextLocalFolderId()
-      madeLocally.push({ id, parentId: parent, name: folder.name, visible: true })
+      madeLocally.push({ id, parentId: parent, name: folder.name, visible: true, surface })
       mapped.set(folder.id, id)
     }
     nodes++
@@ -996,10 +1045,19 @@ const transplantWhileDestinationHeld = async (
 
   if (destination.kind === 'server') {
     if (!connectionsAreCurrent()) return connectionChanged()
-    const admitted = await destinationIsAdmitted(destination.server, {
-      nodes: createdNodes,
-      templates: uploadedTemplates,
-    })
+    await reconcileServer?.(destination.server)
+    const admitted = await destinationIsAdmitted(
+      destination.server,
+      {
+        nodes: createdNodes,
+        templates: uploadedTemplates,
+      },
+      surface,
+      templatesForServer === undefined
+        ? undefined
+        : (server, templateId) =>
+            templatesForServer(server).find((template) => template.id === templateId) ?? null,
+    )
     if (!admitted) {
       return {
         ok: false,
@@ -1124,6 +1182,7 @@ export const transplant = async (
   templatesOf: (server: ConnectedServer, nodeId: string) => readonly PublishedTemplate[],
   templatesForServer?: (server: ConnectedServer) => readonly LocatedPublishedTemplate[],
   reconcileServer?: ReconcileServer,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<TransplantResult> => {
   const activeSource = sourceKey(source)
   if (activeSources.has(activeSource)) {
@@ -1162,6 +1221,8 @@ export const transplant = async (
       templatesForServer,
       destinationLeases,
       destinationTemplateLeases,
+      reconcileServer,
+      surface,
     )
     if (reconcileServer !== undefined) {
       const servers = new Map<string, ConnectedServer>()

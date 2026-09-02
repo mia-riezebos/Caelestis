@@ -105,6 +105,8 @@ export const isTreeDragActive = (): boolean => modelTreeDragActive
 
 export interface TreeTarget {
   readonly server: ConnectedServer | null
+  /** Canvas whose manifest or local catalog produced this row. */
+  readonly surface?: TemplateSurface
   readonly nodeId: string | null
   readonly key: string
   readonly name: string
@@ -506,6 +508,7 @@ const buildTree = <Result>(
 
     const target: TreeTarget = {
       server: server ?? null,
+      surface,
       nodeId: null,
       key,
       name: isLocal ? 'Local' : (server?.info?.name ?? server?.url ?? ''),
@@ -677,6 +680,7 @@ const buildTree = <Result>(
           const nodeKey = nodeTreeKey(server, node.id)
           const nodeTarget: TreeTarget = {
             server,
+            surface,
             nodeId: node.id,
             key: nodeKey,
             name: node.name,
@@ -734,6 +738,7 @@ const buildTree = <Result>(
           const alarm = serverAlarmFor(server, template)
           const templateTarget: TreeTarget = {
             server,
+            surface,
             nodeId: template.nodeId,
             key: templateKey,
             name: template.name,
@@ -843,6 +848,7 @@ const buildTree = <Result>(
       )) {
         const folderTarget: TreeTarget = {
           server: null,
+          surface,
           nodeId: null,
           key: `lf:${folder.id}`,
           name: folder.name,
@@ -878,6 +884,7 @@ const buildTree = <Result>(
       for (const template of mine) {
         const templateTarget: TreeTarget = {
           server: null,
+          surface,
           nodeId: null,
           key: `local:${template.id}`,
           name: template.name,
@@ -1171,7 +1178,7 @@ export const templateTreeAdapter = (
       destination.level.all(),
       dragged.key,
       destination.beforeKey,
-      reparenting && isSameServerPlacement(dragged.key, destination.parentKey),
+      reparenting && isSameServerPlacement(dragged.key, destination.parentKey, surface),
     )
     if (result === 'too-many') {
       target.onError(
@@ -1179,7 +1186,7 @@ export const templateTreeAdapter = (
           ? 'The row was moved, but this level has too many rows to save a custom order safely.'
           : 'This level has too many rows to save a custom order safely.',
       )
-    } else if (reparenting && isSameServerPlacement(dragged.key, destination.parentKey)) {
+    } else if (reparenting && isSameServerPlacement(dragged.key, destination.parentKey, surface)) {
       optimisticOrder = getState().customOrder
     }
     if (!reparenting) {

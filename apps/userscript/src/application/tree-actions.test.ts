@@ -7,6 +7,7 @@ import { currentRenamingKey, finishRenaming } from '../ui/tree-state.js'
 
 const serverRows = vi.hoisted(() => ({
   rowsFor: vi.fn(),
+  serverTemplateAt: vi.fn(),
 }))
 const copyState = vi.hoisted(() => ({
   getState: vi.fn(),
@@ -29,6 +30,8 @@ vi.mock('../templates/local-store.js', async (importOriginal) => ({
 vi.mock('./tree-server-state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./tree-server-state.js')>()),
   rowsFor: serverRows.rowsFor,
+  rowsForSurface: serverRows.rowsFor,
+  serverTemplateAt: serverRows.serverTemplateAt,
 }))
 
 import {
@@ -54,6 +57,10 @@ afterEach(() => {
   finishRenaming()
   vi.clearAllMocks()
 })
+
+serverRows.serverTemplateAt.mockImplementation((_serverUrl: string, id: string) =>
+  serverRows.rowsFor()?.templates.find((candidate: ServerTemplate) => candidate.id === id),
+)
 
 const menuText = (): string =>
   treeActionPresentation()
@@ -150,6 +157,21 @@ describe('server template context menu', () => {
 
     openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
 
+    expect(menuText()).toContain('Reopen template')
+    expect(menuText()).toContain('Thaw timelapse')
+  })
+
+  it('reads lifecycle state from the alliance surface that produced the row', () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    serverRows.rowsFor.mockReturnValue({
+      nodes: [{ id: 'root', parentId: null }],
+      templates: [{ ...template(true), finished: true, timelapseFrozen: true }],
+    })
+
+    openContextMenu({ ...templateTarget, surface }, new MouseEvent('contextmenu'), vi.fn(), surface)
+
+    expect(serverRows.serverTemplateAt).toHaveBeenCalledWith(server.url, 'template', surface)
+    expect(menuText()).toContain('Unpublish')
     expect(menuText()).toContain('Reopen template')
     expect(menuText()).toContain('Thaw timelapse')
   })
