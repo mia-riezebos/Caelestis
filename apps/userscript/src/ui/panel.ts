@@ -126,6 +126,21 @@ import {
 } from './tree.js'
 import { findWplaceRail } from './wplace-rail.js'
 
+/** Whether any coalesced native write belongs to the active artboard. */
+export const canvasWritesTouchFrame = (
+  frame: HTMLElement,
+  writes: ReadonlySet<object>,
+): boolean => {
+  for (const canvas of writes) {
+    try {
+      if (frame.contains(canvas as Node)) return true
+    } catch {
+      // Foreign-realm and offscreen canvases do not belong to this artboard.
+    }
+  }
+  return false
+}
+
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
  *
@@ -919,13 +934,13 @@ const treeCallbacks = (): TreeCallbacks => ({
   onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree, panelSurface),
   onCopyToServer: (id) => void copyToServer(id, rerenderTree),
   onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
-    dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
+    dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree, panelSurface),
   onDropInLocal: async (draggedKey, folderId) => {
     if (draggedKey.startsWith('node:')) {
-      return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree)
+      return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree, panelSurface)
     }
     if (draggedKey.startsWith('st:')) {
-      return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree)
+      return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree, panelSurface)
     }
     return null
   },
@@ -1356,22 +1371,18 @@ export const installPanel = (): void => {
       if (currentView() === 'tree') refreshView()
     }),
   )
-  let latestCanvasWrite: object | null = null
+  let pendingCanvasWrites = new Set<object>()
   const refreshAllianceProgress = frameQueue(() => {
-    const canvas = latestCanvasWrite
-    latestCanvasWrite = null
-    if (canvas === null) return
+    const writes = pendingCanvasWrites
+    pendingCanvasWrites = new Set()
+    if (writes.size === 0) return
     if (currentView() !== 'tree' || panelSurface.kind === 'world') return
     const active = activeAllianceSurface()
     if (active === null || !sameTemplateSurface(active.surface, panelSurface)) return
-    try {
-      if (active.frame.contains(canvas as Node)) refreshView()
-    } catch {
-      // A foreign-realm or offscreen canvas cannot update this artboard's progress.
-    }
+    if (canvasWritesTouchFrame(active.frame, writes)) refreshView()
   })
   onCanvasWrite((canvas) => {
-    latestCanvasWrite = canvas
+    pendingCanvasWrites.add(canvas)
     refreshAllianceProgress()
   })
   pixelAccounting.onChange(
