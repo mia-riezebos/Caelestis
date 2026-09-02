@@ -13,7 +13,7 @@ import {
 import { onCanvasWrite } from '../canvas-write.js'
 import { warn } from '../debug.js'
 import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
-import { getState, onStateChange } from '../state.js'
+import { getState, onlySelectedColourFor, onStateChange } from '../state.js'
 import { isColourHidden, isPlain, toRgbUnit } from '../templates/appearance.js'
 import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
@@ -49,6 +49,7 @@ import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE } from './shaders.js'
 
 const OVERLAY_ATTRIBUTE = 'data-caelestis-alliance-overlay'
 const OUTLINE_ATTRIBUTE = 'data-caelestis-alliance-outline'
+const MARKERS_ATTRIBUTE = 'data-caelestis-alliance-markers'
 
 export interface ArtboardGeometry {
   readonly originX: number
@@ -146,16 +147,20 @@ export const visibleArtboardMarkerPoints = (
 }
 
 const isCaelestisCanvas = (element: Element): boolean =>
-  element.hasAttribute(OVERLAY_ATTRIBUTE) || element.hasAttribute(OUTLINE_ATTRIBUTE)
+  element.hasAttribute(OVERLAY_ATTRIBUTE) ||
+  element.hasAttribute(OUTLINE_ATTRIBUTE) ||
+  element.hasAttribute(MARKERS_ATTRIBUTE)
 
-/** Keep the outline below Wplace art, and the coloured overlay below Wplace feedback. */
+/** Match the world pass order: outline, native art, overlay, native draft, then markers. */
 export const insertAllianceArtboardCanvases = (
   frame: HTMLElement,
   outline: HTMLCanvasElement,
   overlay: HTMLCanvasElement,
+  markers: HTMLCanvasElement,
 ): void => {
   outline.style.imageRendering = 'pixelated'
   overlay.style.imageRendering = 'pixelated'
+  markers.style.imageRendering = 'pixelated'
   frame.insertBefore(outline, frame.firstChild)
   const directCanvases = [...frame.children].filter(
     (child): child is HTMLCanvasElement => child.tagName === 'CANVAS' && !isCaelestisCanvas(child),
@@ -167,6 +172,7 @@ export const insertAllianceArtboardCanvases = (
       ? (directCanvases.at(-1) ?? null)
       : null
   frame.insertBefore(overlay, nativeOverlay)
+  frame.insertBefore(markers, nativeOverlay?.nextSibling ?? null)
 }
 
 interface GpuTemplate {
@@ -200,7 +206,7 @@ class ArtboardPass {
 
   private constructor(
     readonly canvas: HTMLCanvasElement,
-    private readonly kind: 'outline' | 'overlay',
+    private readonly kind: 'outline' | 'overlay' | 'markers',
     private readonly gl: WebGL2RenderingContext,
     private readonly program: WebGLProgram,
     private readonly quad: WebGLBuffer,
@@ -208,9 +214,16 @@ class ArtboardPass {
     private readonly markers: MarkerRenderer | null,
   ) {}
 
-  static create(document: Document, kind: 'outline' | 'overlay'): ArtboardPass | null {
+  static create(document: Document, kind: 'outline' | 'overlay' | 'markers'): ArtboardPass | null {
     const canvas = document.createElement('canvas')
-    canvas.setAttribute(kind === 'outline' ? OUTLINE_ATTRIBUTE : OVERLAY_ATTRIBUTE, '')
+    canvas.setAttribute(
+      kind === 'outline'
+        ? OUTLINE_ATTRIBUTE
+        : kind === 'overlay'
+          ? OVERLAY_ATTRIBUTE
+          : MARKERS_ATTRIBUTE,
+      '',
+    )
     canvas.setAttribute('aria-hidden', 'true')
     Object.assign(canvas.style, {
       position: 'absolute',
@@ -255,7 +268,7 @@ class ArtboardPass {
       program,
       quad,
       vao,
-      kind === 'overlay' ? new MarkerRenderer(gl) : null,
+      kind === 'markers' ? new MarkerRenderer(gl) : null,
     )
   }
 
@@ -409,7 +422,7 @@ class ArtboardPass {
     gl.disable(gl.DEPTH_TEST)
     if (this.kind === 'outline') {
       gl.uniform1i(this.uniform('u_darkTheme'), isDarkMapTheme() ? 1 : 0)
-    } else {
+    } else if (this.kind === 'overlay') {
       gl.uniform1i(this.uniform('u_maxMinifyTaps'), 4)
     }
     for (const rendered of templates) {
@@ -516,6 +529,7 @@ class ArtboardRenderer {
     readonly geometry: ArtboardGeometry,
     private readonly outline: ArtboardPass,
     private readonly overlay: ArtboardPass,
+    private readonly markers: ArtboardPass,
   ) {
     this.observer = new MutationObserver(() => this.requestRender())
     this.observer.observe(active.frame, { attributes: true, attributeFilter: ['class', 'style'] })
@@ -532,13 +546,15 @@ class ArtboardRenderer {
   ): ArtboardRenderer | null {
     const outline = ArtboardPass.create(active.frame.ownerDocument, 'outline')
     const overlay = ArtboardPass.create(active.frame.ownerDocument, 'overlay')
-    if (outline === null || overlay === null) {
+    const markers = ArtboardPass.create(active.frame.ownerDocument, 'markers')
+    if (outline === null || overlay === null || markers === null) {
       outline?.dispose()
       overlay?.dispose()
+      markers?.dispose()
       return null
     }
-    insertAllianceArtboardCanvases(active.frame, outline.canvas, overlay.canvas)
-    return new ArtboardRenderer(active, active.surface, geometry, outline, overlay)
+    insertAllianceArtboardCanvases(active.frame, outline.canvas, overlay.canvas, markers.canvas)
+    return new ArtboardRenderer(active, active.surface, geometry, outline, overlay, markers)
   }
 
   private syncViewport(): ArtboardViewport | null {
@@ -548,7 +564,7 @@ class ArtboardRenderer {
     const dpr = this.active.stage.ownerDocument.defaultView?.devicePixelRatio || 1
     const bufferWidth = Math.max(1, Math.round(stage.width * dpr))
     const bufferHeight = Math.max(1, Math.round(stage.height * dpr))
-    for (const pass of [this.outline, this.overlay]) {
+    for (const pass of [this.outline, this.overlay, this.markers]) {
       const canvas = pass.canvas
       const left = `${stage.left - frame.left}px`
       const top = `${stage.top - frame.top}px`
@@ -575,7 +591,7 @@ class ArtboardRenderer {
 
   private paletteFor(template: PlacedTemplate, now: number): { data: Uint8Array; done: boolean } {
     const hidden = new Set(
-      hiddenColoursFor(appearanceWithPreview(template.id, appearanceOf(template))),
+      hiddenColoursFor(appearanceWithPreview(template.id, appearanceOf(template)), this.surface),
     )
     const data = new Uint8Array(PALETTE_SIZE * 4)
     let done = true
@@ -730,9 +746,7 @@ class ArtboardRenderer {
       )
       const selectedMarkerFade = this.markerFades.advance(
         selectedKey,
-        appearance.markSelectedColour &&
-          selected !== null &&
-          !isColourHidden(appearance, selected)
+        appearance.markSelectedColour && selected !== null && !isColourHidden(appearance, selected)
           ? 1
           : 0,
         now,
@@ -747,7 +761,7 @@ class ArtboardRenderer {
             ? null
             : toRgbUnit(appearance.otherColour),
         otherOpacity: appearance.dimOthers ? appearance.otherOpacity : 1,
-        selected: state.onlySelectedColour && selected !== null ? selected : -1,
+        selected: onlySelectedColourFor(this.surface) && selected !== null ? selected : -1,
       }
       const selectedStyle: MarkerStyle = {
         size: appearance.selectedMarkerSize,
@@ -792,7 +806,8 @@ class ArtboardRenderer {
       ...mismatchLayers.map((layer) => ({ ...layer, sampleRate: mismatchSampleRate })),
     ]
     this.outline.draw(templates, [], this.geometry, viewport)
-    this.overlay.draw(templates, markerLayers, this.geometry, viewport)
+    this.overlay.draw(templates, [], this.geometry, viewport)
+    this.markers.draw([], markerLayers, this.geometry, viewport)
     if (animating) this.requestRender()
   }
 
@@ -804,6 +819,7 @@ class ArtboardRenderer {
     detachOverlayControls()
     this.outline.dispose()
     this.overlay.dispose()
+    this.markers.dispose()
   }
 }
 

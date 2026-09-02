@@ -123,12 +123,15 @@ describe('alliance artboard stacking', () => {
     outline.setAttribute('data-caelestis-alliance-outline', '')
     const overlay = document.createElement('canvas')
     overlay.setAttribute('data-caelestis-alliance-overlay', '')
+    const markers = document.createElement('canvas')
+    markers.setAttribute('data-caelestis-alliance-markers', '')
 
-    insertAllianceArtboardCanvases(frame, outline, overlay)
+    insertAllianceArtboardCanvases(frame, outline, overlay, markers)
 
-    expect([...frame.children]).toEqual([outline, tiles, overlay, nativeOverlay])
+    expect([...frame.children]).toEqual([outline, tiles, overlay, nativeOverlay, markers])
     expect(outline.style.imageRendering).toBe('pixelated')
     expect(overlay.style.imageRendering).toBe('pixelated')
+    expect(markers.style.imageRendering).toBe('pixelated')
   })
 
   it('keeps the asset art below and its native overlay above', () => {
@@ -140,10 +143,12 @@ describe('alliance artboard stacking', () => {
     outline.setAttribute('data-caelestis-alliance-outline', '')
     const overlay = document.createElement('canvas')
     overlay.setAttribute('data-caelestis-alliance-overlay', '')
+    const markers = document.createElement('canvas')
+    markers.setAttribute('data-caelestis-alliance-markers', '')
 
-    insertAllianceArtboardCanvases(frame, outline, overlay)
+    insertAllianceArtboardCanvases(frame, outline, overlay, markers)
 
-    expect([...frame.children]).toEqual([outline, art, overlay, nativeOverlay])
+    expect([...frame.children]).toEqual([outline, art, overlay, nativeOverlay, markers])
     expect(outline.style.imageRendering).toBe('pixelated')
     expect(overlay.style.imageRendering).toBe('pixelated')
   })
