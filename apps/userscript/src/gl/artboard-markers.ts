@@ -122,6 +122,24 @@ export const artboardColourProgress = (
   return [...progress.values()].sort((left, right) => left.index - right.index)
 }
 
+/** Overall progress for one artboard template, derived from the same per-colour counts. */
+export const artboardTemplateProgress = (
+  template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
+  regions: readonly ArtboardPixelRegion[],
+) => {
+  const colours = artboardColourProgress(template, regions)
+  return colours.reduce(
+    (total, colour) => ({
+      completed: total.completed + colour.completed,
+      mismatched: total.mismatched + colour.mismatched,
+      unpainted: total.unpainted + colour.unpainted,
+      known: total.known + colour.known,
+      total: total.total + colour.total,
+    }),
+    { completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 0 },
+  )
+}
+
 /** Palette colours with at least one artboard pixel that still differs from the template. */
 export const artboardRemainingColours = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,

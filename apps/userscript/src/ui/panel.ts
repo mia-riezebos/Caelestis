@@ -51,6 +51,7 @@ import {
   onServerSnapshot,
   primeFromCache,
 } from '../application/tree-server-state.js'
+import { onCanvasWrite } from '../canvas-write.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
@@ -1353,6 +1354,24 @@ export const installPanel = (): void => {
       if (currentView() === 'tree') refreshView()
     }),
   )
+  let latestCanvasWrite: object | null = null
+  const refreshAllianceProgress = frameQueue(() => {
+    const canvas = latestCanvasWrite
+    latestCanvasWrite = null
+    if (canvas === null) return
+    if (currentView() !== 'tree' || panelSurface.kind === 'world') return
+    const active = activeAllianceSurface()
+    if (active === null || !sameTemplateSurface(active.surface, panelSurface)) return
+    try {
+      if (active.frame.contains(canvas as Node)) refreshView()
+    } catch {
+      // A foreign-realm or offscreen canvas cannot update this artboard's progress.
+    }
+  })
+  onCanvasWrite((canvas) => {
+    latestCanvasWrite = canvas
+    refreshAllianceProgress()
+  })
   pixelAccounting.onChange(
     frameQueue(() => {
       if (currentView() !== 'tree') return

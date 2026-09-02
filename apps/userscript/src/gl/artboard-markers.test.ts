@@ -7,6 +7,7 @@ import {
   artboardColourTargets,
   artboardMarkerWork,
   artboardRemainingColours,
+  artboardTemplateProgress,
 } from './artboard-markers.js'
 
 const template = {
@@ -35,6 +36,20 @@ describe('alliance artboard marker work', () => {
     ])
 
     expect([...remaining]).toEqual([7])
+  })
+
+  it('reports overall alliance progress from native art', () => {
+    expect(
+      artboardTemplateProgress(template, [
+        {
+          x: -1,
+          y: -1,
+          width: 2,
+          height: 2,
+          pixels: new Uint8Array([4, 3, TRANSPARENT_INDEX, TRANSPARENT_INDEX]),
+        },
+      ]),
+    ).toEqual({ completed: 1, mismatched: 1, unpainted: 1, known: 3, total: 3 })
   })
 
   it('keeps unloaded HQ pixels unknown instead of marking them unpainted', () => {

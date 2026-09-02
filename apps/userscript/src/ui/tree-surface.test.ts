@@ -95,9 +95,15 @@ describe('surface-scoped template tree', () => {
       (entry) => entry.type === 'row' && entry.key === `server:${server.url}`,
     )
 
-    expect(row).toMatchObject({ type: 'row', name: 'HQ guide', renamable: true })
-    expect(row).not.toHaveProperty('contextMenu')
-    expect(row).not.toHaveProperty('leadingActions')
+    expect(row).toMatchObject({
+      type: 'row',
+      name: 'HQ guide',
+      renamable: true,
+      contextMenu: true,
+      canReparent: true,
+      progress: { completed: 0, known: 0, total: 4 },
+      leadingActions: [expect.objectContaining({ label: 'Go to' })],
+    })
     expect(local).toMatchObject({
       type: 'row',
       actions: [

@@ -11,7 +11,9 @@ import type {
   TreeEntryModel,
   TreeRowModel,
 } from '@caelestis/ui/elements'
+import { allianceBounds } from '../alliance-coordinates.js'
 import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
+import { activeAllianceSurface } from '../alliance-surface.js'
 import { goToLocalTemplate, goToServerTemplate } from '../application/tree-navigation.js'
 import {
   hasRefreshedServer,
@@ -24,6 +26,8 @@ import {
   serverSnapshotError,
   serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
+import { artboardColourProgress, artboardTemplateProgress } from '../gl/artboard-markers.js'
+import { readArtboardPixels } from '../gl/artboard-pixels.js'
 import { moveLocalFolder, renameLocalFolder, setLocalFolderVisible } from '../local-folders.js'
 import type { ServerTemplate } from '../server-cache.js'
 import {
@@ -393,6 +397,37 @@ const buildTree = <Result>(
   const drawnTemplates = localTemplates().filter((template) =>
     sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
   )
+  const allianceProgress = new Map<
+    string,
+    { progress: TemplateProgress; colours: readonly TemplateColourProgress[] }
+  >()
+  if (surface.kind !== 'world') {
+    const active = activeAllianceSurface()
+    const bounds = active === null ? null : allianceBounds(active)
+    const regions =
+      active !== null && bounds !== null && sameTemplateSurface(active.surface, surface)
+        ? readArtboardPixels(active, {
+            originX: bounds.minX,
+            originY: bounds.minY,
+            width: bounds.maxX - bounds.minX,
+            height: bounds.maxY - bounds.minY,
+          })
+        : []
+    for (const template of drawnTemplates) {
+      allianceProgress.set(template.id, {
+        progress: artboardTemplateProgress(template, regions),
+        colours: artboardColourProgress(template, regions),
+      })
+    }
+  }
+  const drawnProgress = (template: PlacedTemplate): TemplateProgress =>
+    surface.kind === 'world'
+      ? pixelAccounting.read(template).progress
+      : (allianceProgress.get(template.id)?.progress ?? emptyProgress(0))
+  const drawnColourProgress = (template: PlacedTemplate): readonly TemplateColourProgress[] =>
+    surface.kind === 'world'
+      ? pixelAccounting.read(template).colours
+      : (allianceProgress.get(template.id)?.colours ?? [])
   const scopedRowsFor = (server: ConnectedServer) =>
     surface.kind === 'world' ? rowsFor(server) : (allianceManifestFor(server, surface) ?? undefined)
   const localOnly = drawnTemplates.filter((template) => !isServerTemplate(template))
@@ -411,6 +446,7 @@ const buildTree = <Result>(
     const baseline = serverProgress ?? emptyProgress(template.totalPixels ?? 0)
     const drawn = drawnByServer.get(server.url)?.get(template.id)
     if (drawn === undefined) return baseline
+    if (surface.kind !== 'world') return drawnProgress(drawn)
     const serverColours = serverColourProgressFor(server, template)
     if (serverColours !== null) {
       return (
@@ -424,6 +460,10 @@ const buildTree = <Result>(
     server: ConnectedServer,
     template: ServerTemplate,
   ): readonly TemplateColourProgress[] | undefined => {
+    if (surface.kind !== 'world') {
+      const drawn = drawnByServer.get(server.url)?.get(template.id)
+      return drawn === undefined ? undefined : drawnColourProgress(drawn)
+    }
     const serverProgress = serverColourProgressFor(server, template)
     if (serverProgress === null) return undefined
     const drawn = drawnByServer.get(server.url)?.get(template.id)
@@ -473,7 +513,7 @@ const buildTree = <Result>(
     // Only where the code can actually act. Offering create to someone who will only ever get a
     // 403 is worse than not offering it — Local always can, since nothing gates it.
     const canCreate = isLocal || (server?.isAdmin ?? false)
-    const canRearrange = surface.kind === 'world' && canCreate
+    const canRearrange = canCreate
     // Published only, same as every folder rollup below: an admin's unpublished drafts are listed
     // and metered individually, but never counted into the server's aggregate.
     const serverTemplates =
@@ -481,41 +521,31 @@ const buildTree = <Result>(
         ? []
         : (scopedRowsFor(server)?.templates ?? []).filter((template) => template.published)
     const readParentProgress = (): TemplateProgress | undefined =>
-      surface.kind !== 'world'
-        ? undefined
-        : isLocal
-          ? sumProgress(localOnly.map((template) => pixelAccounting.read(template).progress))
-          : server === undefined
-            ? undefined
-            : sumProgress(
-                serverTemplates.map((template) => serverTemplateProgress(server, template)),
-              )
+      isLocal
+        ? sumProgress(localOnly.map(drawnProgress))
+        : server === undefined
+          ? undefined
+          : sumProgress(serverTemplates.map((template) => serverTemplateProgress(server, template)))
     const parentProgress = readParentProgress()
     const parentColourProgress: (() => readonly TemplateColourProgress[] | undefined) | undefined =
-      surface.kind !== 'world'
-        ? undefined
-        : isLocal
-          ? localOnly.length === 0
-            ? undefined
-            : () =>
-                completeColourProgress(
-                  readParentProgress(),
-                  localOnly.map((template) => pixelAccounting.read(template).colours),
-                )
-          : server === undefined ||
-              serverTemplates.length === 0 ||
-              !serverTemplates.every(
-                (template) => serverTemplateColourProgress(server, template) !== undefined,
+      isLocal
+        ? localOnly.length === 0
+          ? undefined
+          : () => completeColourProgress(readParentProgress(), localOnly.map(drawnColourProgress))
+        : server === undefined ||
+            serverTemplates.length === 0 ||
+            !serverTemplates.every(
+              (template) => serverTemplateColourProgress(server, template) !== undefined,
+            )
+          ? undefined
+          : () =>
+              completeColourProgress(
+                readParentProgress(),
+                serverTemplates.flatMap((template) => {
+                  const colours = serverTemplateColourProgress(server, template)
+                  return colours === undefined ? [] : [colours]
+                }),
               )
-            ? undefined
-            : () =>
-                completeColourProgress(
-                  readParentProgress(),
-                  serverTemplates.flatMap((template) => {
-                    const colours = serverTemplateColourProgress(server, template)
-                    return colours === undefined ? [] : [colours]
-                  }),
-                )
 
     output.row({
       key,
@@ -698,10 +728,8 @@ const buildTree = <Result>(
         for (const template of published) {
           const templateKey = serverTemplateTreeKey(server, template.id)
           const drawn = drawnById.get(template.id)
-          const colourProgress =
-            surface.kind === 'world' ? serverTemplateColourProgress(server, template) : undefined
-          const progress =
-            surface.kind === 'world' ? serverTemplateProgress(server, template) : undefined
+          const colourProgress = serverTemplateColourProgress(server, template)
+          const progress = serverTemplateProgress(server, template)
           const visibilityKey = serverTemplateKey(server.url, template.id, surface)
           const alarm = serverAlarmFor(server, template)
           const templateTarget: TreeTarget = {
@@ -740,17 +768,13 @@ const buildTree = <Result>(
                       serverTemplateColourProgress(server, template) ?? colourProgress,
                   }),
               ...(progress === undefined ? {} : { progressSortable: true as const }),
-              ...(surface.kind === 'world'
-                ? {
-                    leadingActions: [
-                      {
-                        icon: 'search' as const,
-                        label: 'Go to',
-                        run: () => goToServerTemplate(template.bbox),
-                      },
-                    ],
-                  }
-                : {}),
+              leadingActions: [
+                {
+                  icon: 'search' as const,
+                  label: 'Go to',
+                  run: () => goToServerTemplate(template.bbox, surface),
+                },
+              ],
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: async (on) => {
                 // A drawn server row owns the dual commit: live bitmaps and the durable scope either
@@ -761,12 +785,7 @@ const buildTree = <Result>(
               },
               canReparent: canRearrange,
               ...(canRearrange ? { onDropAt: intoServer } : {}),
-              ...(surface.kind === 'world'
-                ? {
-                    onContextMenu: (event: MouseEvent) =>
-                      callbacks.onContextMenu(templateTarget, event),
-                  }
-                : {}),
+              onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(templateTarget, event),
               ...(canCreate
                 ? {
                     onRename: (value: string) =>
@@ -871,28 +890,24 @@ const buildTree = <Result>(
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
-            progress: pixelAccounting.read(template).progress,
-            progressReader: () => pixelAccounting.read(template).progress,
-            colourProgress: () => pixelAccounting.read(template).colours,
+            progress: drawnProgress(template),
+            progressReader: () => drawnProgress(template),
+            colourProgress: () => drawnColourProgress(template),
             progressSortable: true,
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),
-            canReparent: surface.kind === 'world',
-            ...(surface.kind === 'world' ? { onDropAt: dropInLocal } : {}),
+            canReparent: true,
+            onDropAt: dropInLocal,
             onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(templateTarget, event),
             onRename: (value: string) =>
               void renameTarget(templateTarget, value, rerender, surface),
-            ...(surface.kind === 'world'
-              ? {
-                  leadingActions: [
-                    {
-                      icon: 'search' as const,
-                      label: 'Go to',
-                      run: () => goToLocalTemplate(template.id),
-                    },
-                  ],
-                }
-              : {}),
+            leadingActions: [
+              {
+                icon: 'search' as const,
+                label: 'Go to',
+                run: () => goToLocalTemplate(template.id),
+              },
+            ],
             actions: [
               {
                 icon: 'uploadFile' as const,
