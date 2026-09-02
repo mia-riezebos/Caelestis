@@ -90,7 +90,7 @@ import {
   PIXEL_STYLE_PRESETS,
   pixelStylePresetOf,
 } from '../templates/appearance.js'
-import { globalHiddenColours } from '../templates/colour-filter.js'
+import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
 import { pixelAccounting } from '../templates/mismatch.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
@@ -769,9 +769,7 @@ const handleSettingsIntent = (intent: SettingsIntent): void => {
 const appearanceModel = (): AppearanceEditorModel => {
   const state = getState()
   const values = getSurfaceAppearance(panelSurface)
-  const effectiveHidden = new Set(
-    panelSurface.kind === 'world' ? globalHiddenColours() : values.hiddenColours,
-  )
+  const effectiveHidden = new Set(hiddenColoursFor(values))
   const activePixelPreset = pixelStylePresetOf(values)
   const activePreset = activeColourPreset(values.hiddenColours)
   const selected = selectedColour()
@@ -882,8 +880,8 @@ const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
       break
     case 'toggle-colour': {
       const base =
-        panelSurface.kind === 'world' && getState().onlySelectedColour && isPaintOpen()
-          ? globalHiddenColours()
+        getState().onlySelectedColour && isPaintOpen()
+          ? hiddenColoursFor(values)
           : values.hiddenColours
       const hidden = new Set(base)
       if (intent.visible) hidden.delete(intent.index)
@@ -892,19 +890,17 @@ const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
         setState({ hiddenColours: [...hidden], onlySelectedColour: false })
       } else {
         commitPanelAppearance({ ...values, hiddenColours: [...hidden] })
+        setState({ onlySelectedColour: false })
       }
       redraw()
       break
     }
     case 'only-selected-colour':
-      if (panelSurface.kind === 'world') setState({ onlySelectedColour: intent.value })
+      setState({ onlySelectedColour: intent.value })
       redraw()
       break
     case 'marker-budget':
-      if (
-        panelSurface.kind === 'world' &&
-        MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)
-      ) {
+      if (MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)) {
         setState({ markerBudget: intent.value })
       }
       break
