@@ -1,6 +1,8 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
+import type { CanvasWriteRect } from '../canvas-write.js'
 import {
+  type NativePixelRect,
   type NativePixelRegion,
   type NativePixelSnapshot,
   NO_NATIVE_DRAFT,
@@ -15,31 +17,103 @@ export interface ArtboardPixelGeometry {
 }
 
 const rgbIndex = buildExactRgbIndex(WPLACE_PALETTE)
+interface CachedCanvasPixels {
+  readonly width: number
+  readonly height: number
+  readonly emptyIndex: number
+  readonly pixels: Uint8Array
+}
+
+const canvasPixels = new WeakMap<HTMLCanvasElement, CachedCanvasPixels>()
 const isCaelestisCanvas = (canvas: HTMLCanvasElement): boolean =>
   canvas.hasAttribute('data-caelestis-alliance-overlay') ||
   canvas.hasAttribute('data-caelestis-alliance-outline') ||
   canvas.hasAttribute('data-caelestis-alliance-markers')
 
-const palettePixels = (canvas: HTMLCanvasElement, emptyIndex: number): Uint8Array | null => {
-  try {
-    const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (context === null) return null
-    const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data
-    const pixels = new Uint8Array(canvas.width * canvas.height).fill(emptyIndex)
-    for (let at = 0; at < pixels.length; at++) {
-      const rgbaAt = at * 4
-      if ((rgba[rgbaAt + 3] ?? 0) === 0) continue
-      pixels[at] = canvasRgbIndex(
+const writePalettePixels = (
+  target: Uint8Array,
+  targetWidth: number,
+  image: ImageData,
+  targetX: number,
+  targetY: number,
+  emptyIndex: number,
+): void => {
+  for (let y = 0; y < image.height; y++) {
+    for (let x = 0; x < image.width; x++) {
+      const imageAt = (y * image.width + x) * 4
+      const targetAt = (targetY + y) * targetWidth + targetX + x
+      if ((image.data[imageAt + 3] ?? 0) === 0) {
+        target[targetAt] = emptyIndex
+        continue
+      }
+      target[targetAt] = canvasRgbIndex(
         rgbIndex,
-        rgba[rgbaAt] ?? 0,
-        rgba[rgbaAt + 1] ?? 0,
-        rgba[rgbaAt + 2] ?? 0,
+        image.data[imageAt] ?? 0,
+        image.data[imageAt + 1] ?? 0,
+        image.data[imageAt + 2] ?? 0,
         TRANSPARENT_INDEX,
       )
     }
+  }
+}
+
+const palettePixels = (canvas: HTMLCanvasElement, emptyIndex: number): Uint8Array | null => {
+  const held = canvasPixels.get(canvas)
+  if (
+    held !== undefined &&
+    held.width === canvas.width &&
+    held.height === canvas.height &&
+    held.emptyIndex === emptyIndex
+  )
+    return held.pixels
+  try {
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (context === null) return null
+    const pixels = new Uint8Array(canvas.width * canvas.height).fill(emptyIndex)
+    writePalettePixels(
+      pixels,
+      canvas.width,
+      context.getImageData(0, 0, canvas.width, canvas.height),
+      0,
+      0,
+      emptyIndex,
+    )
+    canvasPixels.set(canvas, { width: canvas.width, height: canvas.height, emptyIndex, pixels })
     return pixels
   } catch {
     return null
+  }
+}
+
+/** Patch a retained native canvas snapshot after Wplace changes a bounded rectangle. */
+export const patchArtboardPixels = (
+  canvas: HTMLCanvasElement,
+  dirty: CanvasWriteRect | null,
+): void => {
+  const held = canvasPixels.get(canvas)
+  if (held === undefined) return
+  if (held.width !== canvas.width || held.height !== canvas.height || dirty === null) {
+    canvasPixels.delete(canvas)
+    return
+  }
+  const x = Math.max(0, Math.floor(Math.min(dirty.x, dirty.x + dirty.width)))
+  const y = Math.max(0, Math.floor(Math.min(dirty.y, dirty.y + dirty.height)))
+  const farX = Math.min(canvas.width, Math.ceil(Math.max(dirty.x, dirty.x + dirty.width)))
+  const farY = Math.min(canvas.height, Math.ceil(Math.max(dirty.y, dirty.y + dirty.height)))
+  if (farX <= x || farY <= y) return
+  try {
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (context === null) return
+    writePalettePixels(
+      held.pixels,
+      held.width,
+      context.getImageData(x, y, farX - x, farY - y),
+      x,
+      y,
+      held.emptyIndex,
+    )
+  } catch {
+    canvasPixels.delete(canvas)
   }
 }
 
@@ -106,6 +180,39 @@ const directNativeCanvases = (active: ActiveAllianceSurface): HTMLCanvasElement[
     (child): child is HTMLCanvasElement =>
       child instanceof HTMLCanvasElement && !isCaelestisCanvas(child),
   )
+
+/** Map one native canvas write into logical artboard pixels for retained marker accounting. */
+export const artboardCanvasWriteRect = (
+  active: ActiveAllianceSurface,
+  geometry: ArtboardPixelGeometry,
+  canvas: HTMLCanvasElement,
+  dirty: CanvasWriteRect | null,
+): NativePixelRect | null => {
+  if (isCaelestisCanvas(canvas)) return null
+  let x = geometry.originX
+  let y = geometry.originY
+  if (canvas.parentElement?.classList.contains('hq-tile-layer')) {
+    const drawnWidth = Number.parseFloat(canvas.style.width)
+    const drawnHeight = Number.parseFloat(canvas.style.height)
+    const left = Number.parseFloat(canvas.style.left)
+    const top = Number.parseFloat(canvas.style.top)
+    if (![drawnWidth, drawnHeight, left, top].every(Number.isFinite)) return null
+    const scaleX = drawnWidth / canvas.width
+    const scaleY = drawnHeight / canvas.height
+    if (scaleX <= 0 || scaleY <= 0) return null
+    x += Math.round(left / scaleX)
+    y += Math.round(top / scaleY)
+  } else if (!active.frame.contains(canvas)) return null
+
+  if (dirty === null) return { x, y, width: canvas.width, height: canvas.height }
+  const localX = Math.max(0, Math.floor(Math.min(dirty.x, dirty.x + dirty.width)))
+  const localY = Math.max(0, Math.floor(Math.min(dirty.y, dirty.y + dirty.height)))
+  const farX = Math.min(canvas.width, Math.ceil(Math.max(dirty.x, dirty.x + dirty.width)))
+  const farY = Math.min(canvas.height, Math.ceil(Math.max(dirty.y, dirty.y + dirty.height)))
+  return farX <= localX || farY <= localY
+    ? null
+    : { x: x + localX, y: y + localY, width: farX - localX, height: farY - localY }
+}
 
 const draftPixels = (
   active: ActiveAllianceSurface,

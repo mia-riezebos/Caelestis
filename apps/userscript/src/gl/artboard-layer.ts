@@ -4,7 +4,7 @@ import {
   activeAllianceSurface,
   onActiveAllianceSurfaceChange,
 } from '../alliance-surface.js'
-import { onCanvasWrite } from '../canvas-write.js'
+import { type CanvasWriteRect, onCanvasWrite } from '../canvas-write.js'
 import { warn } from '../debug.js'
 import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
 import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
@@ -25,8 +25,13 @@ import {
   type ArtboardMarkerWork,
   artboardMarkerWork,
 } from './artboard-markers.js'
-import { readArtboardPixels } from './artboard-pixels.js'
+import {
+  artboardCanvasWriteRect,
+  patchArtboardPixels,
+  readArtboardPixels,
+} from './artboard-pixels.js'
 import { isDarkMapTheme } from './contrast-outline.js'
+import { MarkerBatchStore } from './marker-batching.js'
 import {
   type MarkerVisibilityBudget,
   markerSampleRate,
@@ -211,6 +216,8 @@ export const insertAllianceArtboardCanvases = (
 
 interface RenderMarker {
   readonly batch: ArtboardMarkerBatch
+  readonly tile: object
+  readonly marks: Uint32Array
   readonly style: MarkerStyle
   readonly fade: number
   readonly sampleRate: number
@@ -474,7 +481,7 @@ class ArtboardPass {
             seedX: Math.floor(batch.x / batch.width),
             seedY: Math.floor(batch.y / batch.height),
           },
-          batch.marks,
+          marker.marks,
           marker.style,
           marker.fade,
           marker.sampleRate,
@@ -534,10 +541,18 @@ class ArtboardPass {
 
 class ArtboardRenderer {
   private readonly scene = new RenderScene()
+  private readonly markerBatches = new MarkerBatchStore()
+  private readonly markerTiles = new Map<string, object>()
   private readonly observer: MutationObserver
   private readonly resizeObserver: ResizeObserver | null
   private framePending = false
   private markerPixelsDirty = true
+  private readonly markerDirtyRects: Array<{
+    readonly x: number
+    readonly y: number
+    readonly width: number
+    readonly height: number
+  }> = []
   private readonly markerWork = new Map<string, ArtboardMarkerWork>()
   private renderGeneration = 0
   private lastViewportKey = ''
@@ -645,9 +660,23 @@ class ArtboardRenderer {
     this.requestRender()
   }
 
-  nativeCanvasWritten(canvas: object): void {
+  private markerTile(batch: ArtboardMarkerBatch): object {
+    const key = `${batch.x}/${batch.y}/${batch.width}/${batch.height}`
+    const held = this.markerTiles.get(key)
+    if (held !== undefined) return held
+    const created = {}
+    this.markerTiles.set(key, created)
+    return created
+  }
+
+  nativeCanvasWritten(canvas: object, dirty: CanvasWriteRect | null): void {
     try {
-      if (this.active.frame.contains(canvas as Node)) this.invalidatePixels()
+      if (!(canvas instanceof HTMLCanvasElement) || !this.active.frame.contains(canvas)) return
+      patchArtboardPixels(canvas, dirty)
+      const rect = artboardCanvasWriteRect(this.active, this.geometry, canvas, dirty)
+      if (rect === null) this.markerPixelsDirty = true
+      else this.markerDirtyRects.push(rect)
+      this.requestRender()
     } catch {
       // Offscreen and foreign-realm canvases cannot belong to this DOM artboard.
     }
@@ -679,13 +708,23 @@ class ArtboardRenderer {
     const selected = isPaintOpen() ? selectedColour() : null
     const markerScene = this.scene.advanceMarkers(templateScene.templates, selected, now)
     if (markerScene.animating) animating = true
-    if (this.markerPixelsDirty) {
+    if (this.markerPixelsDirty || this.markerDirtyRects.length > 0) {
       const regions = readArtboardPixels(this.active, this.geometry)
-      this.markerWork.clear()
       for (const { template, appearance } of templateScene.templates) {
+        const intersectsDirty = this.markerDirtyRects.some(
+          (dirty) =>
+            dirty.x < template.originX + template.width &&
+            dirty.x + dirty.width > template.originX &&
+            dirty.y < template.originY + template.height &&
+            dirty.y + dirty.height > template.originY,
+        )
+        if (!this.markerPixelsDirty && this.markerWork.has(template.id) && !intersectsDirty)
+          continue
         this.markerWork.set(template.id, artboardMarkerWork(template, regions, appearance))
       }
+      for (const id of this.markerWork.keys()) if (!ids.has(id)) this.markerWork.delete(id)
       this.markerPixelsDirty = false
+      this.markerDirtyRects.length = 0
     }
     const selectedLayers: Omit<RenderMarker, 'sampleRate'>[] = []
     const mismatchLayers: Omit<RenderMarker, 'sampleRate'>[] = []
@@ -720,6 +759,8 @@ class ArtboardRenderer {
         for (const batch of selectedWork.batches) {
           selectedLayers.push({
             batch,
+            tile: this.markerTile(batch),
+            marks: batch.marks,
             style: selectedStyle,
             fade: selectedFade.fade,
           })
@@ -728,6 +769,8 @@ class ArtboardRenderer {
       for (const batch of work.mismatch)
         mismatchLayers.push({
           batch,
+          tile: this.markerTile(batch),
+          marks: batch.marks,
           style: mismatchStyle,
           fade: mismatchFade,
         })
@@ -737,15 +780,24 @@ class ArtboardRenderer {
       layers.reduce(
         (total, layer) =>
           total +
-          visibleArtboardMarkerPoints(layer.batch, this.geometry, viewport, visibilityBudget),
+          visibleArtboardMarkerPoints(
+            { ...layer.batch, marks: layer.marks },
+            this.geometry,
+            viewport,
+            visibilityBudget,
+          ),
         0,
       )
     const selectedSampleRate = markerSampleRate(visiblePoints(selectedLayers), state.markerBudget)
     const mismatchSampleRate = markerSampleRate(visiblePoints(mismatchLayers), state.markerBudget)
+    this.markerBatches.beginFrame()
+    const selectedDraws = this.markerBatches.batch(selectedLayers)
+    const mismatchDraws = this.markerBatches.batch(mismatchLayers)
     const markerLayers: RenderMarker[] = [
-      ...selectedLayers.map((layer) => ({ ...layer, sampleRate: selectedSampleRate })),
-      ...mismatchLayers.map((layer) => ({ ...layer, sampleRate: mismatchSampleRate })),
+      ...selectedDraws.map((layer) => ({ ...layer, sampleRate: selectedSampleRate })),
+      ...mismatchDraws.map((layer) => ({ ...layer, sampleRate: mismatchSampleRate })),
     ]
+    this.markerBatches.endFrame()
     const moving = this.viewportIsMoving(viewport)
     const minifyTapCap = moving ? movingOverlayTapCap(templates.length) : 4
     const outlineAllowance = Math.floor(TEMPLATE_UPLOAD_PIXELS_PER_FRAME / 2)
@@ -798,7 +850,11 @@ class ArtboardRenderer {
       recordProfileWorkload('Alliance marker source batches', markerLayers.length)
       recordProfileWorkload(
         'Alliance marker source points',
-        markerLayers.reduce((total, marker) => total + marker.batch.marks.length, 0),
+        markerLayers.reduce((total, marker) => total + marker.marks.length, 0),
+      )
+      recordProfileWorkload(
+        'Alliance marker draw batches saved',
+        selectedLayers.length + mismatchLayers.length - markerLayers.length,
       )
     }
     if (outlineResult.animating || overlayResult.animating || moving) animating = true
@@ -847,6 +903,6 @@ export const installAllianceOverlayLayer = (): void => {
   onOverlayPeekChange(repaintAllianceOverlayLayer)
   onStateChange(repaintAllianceOverlayLayer)
   onPaintSelectionChange(() => renderer?.requestRender())
-  onCanvasWrite((canvas) => renderer?.nativeCanvasWritten(canvas))
+  onCanvasWrite((canvas, dirty) => renderer?.nativeCanvasWritten(canvas, dirty))
   reconcileRenderer()
 }

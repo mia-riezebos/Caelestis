@@ -1,5 +1,4 @@
 import type { MismatchMarks } from '../templates/mismatch-marks.js'
-import type { TileQuad } from '../tile-transform.js'
 
 export interface BatchableMarkerStyle {
   readonly size: number
@@ -11,23 +10,11 @@ export interface BatchableMarkerStyle {
 }
 
 export interface BatchableMarkerWork {
-  readonly tile: TileQuad
+  /** Stable projection identity. Work can merge only when these are the same object. */
+  readonly tile: object
   readonly marks: MismatchMarks
   readonly style: BatchableMarkerStyle
   readonly fade: number
-}
-
-const sourceIds = new WeakMap<MismatchMarks, number>()
-let nextSourceId = 1
-const mergedMarks = new Map<string, MismatchMarks>()
-const usedMergedMarks = new Set<string>()
-
-const sourceId = (marks: MismatchMarks): number => {
-  const held = sourceIds.get(marks)
-  if (held !== undefined) return held
-  const created = nextSourceId++
-  sourceIds.set(marks, created)
-  return created
 }
 
 const sameColour = (
@@ -54,37 +41,6 @@ const sameDrawState = (left: BatchableMarkerWork, right: BatchableMarkerWork): b
 const hasOrderIndependentColour = ({ style }: BatchableMarkerWork): boolean =>
   style.selected < 0 || style.otherColour === null || sameColour(style.colour, style.otherColour)
 
-const merge = (sources: readonly MismatchMarks[]): MismatchMarks => {
-  if (sources.length === 1) return sources[0] as MismatchMarks
-  const key = sources.map(sourceId).join(',')
-  usedMergedMarks.add(key)
-  const held = mergedMarks.get(key)
-  if (held !== undefined) return held
-  const length = sources.reduce((total, marks) => total + marks.length, 0)
-  const combined = new Uint32Array(length)
-  let offset = 0
-  for (const marks of sources) {
-    combined.set(marks, offset)
-    offset += marks.length
-  }
-  mergedMarks.set(key, combined)
-  return combined
-}
-
-export const beginMarkerBatchFrame = (): void => {
-  usedMergedMarks.clear()
-}
-
-export const endMarkerBatchFrame = (): void => {
-  for (const key of mergedMarks.keys()) if (!usedMergedMarks.has(key)) mergedMarks.delete(key)
-}
-
-export const markerBatchMemoryBytes = (): number => {
-  let bytes = 0
-  for (const marks of mergedMarks.values()) bytes += marks.byteLength
-  return bytes
-}
-
 /**
  * Collapse the common case of many templates sharing one marker appearance into one draw per tile.
  *
@@ -93,29 +49,82 @@ export const markerBatchMemoryBytes = (): number => {
  * state, concatenating its point lists is pixel-for-pixel equivalent and removes dozens of tiny
  * WebGL calls from a dense multi-template viewport.
  */
-export const batchMarkerWork = <Work extends BatchableMarkerWork>(
-  work: readonly Work[],
-): Work[] => {
-  const first = work[0]
-  if (first === undefined || work.length === 1) return [...work]
-  if (!work.every((candidate) => sameDrawState(first, candidate))) return [...work]
-  // Tile grouping changes template-major primitive order. That is blend-equivalent when every
-  // point uses one RGB colour, but not while selected-colour dimming can emit two different colours
-  // from the same work item at an overlapping tile boundary.
-  if (!work.every(hasOrderIndependentColour)) return [...work]
+export class MarkerBatchStore {
+  private readonly sourceIds = new WeakMap<MismatchMarks, number>()
+  private nextSourceId = 1
+  private readonly mergedMarks = new Map<string, MismatchMarks>()
+  private readonly usedMergedMarks = new Set<string>()
 
-  const byTile = new Map<TileQuad, Work[]>()
-  for (const candidate of work) {
-    const group = byTile.get(candidate.tile)
-    if (group === undefined) byTile.set(candidate.tile, [candidate])
-    else group.push(candidate)
+  private sourceId(marks: MismatchMarks): number {
+    const held = this.sourceIds.get(marks)
+    if (held !== undefined) return held
+    const created = this.nextSourceId++
+    this.sourceIds.set(marks, created)
+    return created
   }
-  return [...byTile.values()].map((group) => {
-    const representative = group[0] as Work
-    if (group.length === 1) return representative
-    return {
-      ...representative,
-      marks: merge(group.map(({ marks }) => marks)),
+
+  private merge(sources: readonly MismatchMarks[]): MismatchMarks {
+    if (sources.length === 1) return sources[0] as MismatchMarks
+    const key = sources.map((source) => this.sourceId(source)).join(',')
+    this.usedMergedMarks.add(key)
+    const held = this.mergedMarks.get(key)
+    if (held !== undefined) return held
+    const length = sources.reduce((total, marks) => total + marks.length, 0)
+    const combined = new Uint32Array(length)
+    let offset = 0
+    for (const marks of sources) {
+      combined.set(marks, offset)
+      offset += marks.length
     }
-  })
+    this.mergedMarks.set(key, combined)
+    return combined
+  }
+
+  beginFrame(): void {
+    this.usedMergedMarks.clear()
+  }
+
+  endFrame(): void {
+    for (const key of this.mergedMarks.keys())
+      if (!this.usedMergedMarks.has(key)) this.mergedMarks.delete(key)
+  }
+
+  memoryBytes(): number {
+    let bytes = 0
+    for (const marks of this.mergedMarks.values()) bytes += marks.byteLength
+    return bytes
+  }
+
+  batch<Work extends BatchableMarkerWork>(work: readonly Work[]): Work[] {
+    const first = work[0]
+    if (first === undefined || work.length === 1) return [...work]
+    if (!work.every((candidate) => sameDrawState(first, candidate))) return [...work]
+    // Tile grouping changes template-major primitive order. That is blend-equivalent when every
+    // point uses one RGB colour, but not while selected-colour dimming can emit two different
+    // colours from the same work item at an overlapping tile boundary.
+    if (!work.every(hasOrderIndependentColour)) return [...work]
+
+    const byTile = new Map<object, Work[]>()
+    for (const candidate of work) {
+      const group = byTile.get(candidate.tile)
+      if (group === undefined) byTile.set(candidate.tile, [candidate])
+      else group.push(candidate)
+    }
+    return [...byTile.values()].map((group) => {
+      const representative = group[0] as Work
+      if (group.length === 1) return representative
+      return {
+        ...representative,
+        marks: this.merge(group.map(({ marks }) => marks)),
+      }
+    })
+  }
 }
+
+const worldMarkerBatches = new MarkerBatchStore()
+
+export const beginMarkerBatchFrame = (): void => worldMarkerBatches.beginFrame()
+export const endMarkerBatchFrame = (): void => worldMarkerBatches.endFrame()
+export const markerBatchMemoryBytes = (): number => worldMarkerBatches.memoryBytes()
+export const batchMarkerWork = <Work extends BatchableMarkerWork>(work: readonly Work[]): Work[] =>
+  worldMarkerBatches.batch(work)

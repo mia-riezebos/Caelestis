@@ -52,6 +52,29 @@ beforeEach(() => {
 })
 
 describe('shared render scene', () => {
+  it.each([
+    { kind: 'alliance-headquarters', allianceId: 535_245 },
+    { kind: 'alliance-picture', allianceId: 535_245 },
+    { kind: 'alliance-banner', allianceId: 535_245 },
+  ] as const)('produces the world scene state for $kind', (surface) => {
+    fixture.appearance = {
+      ...DEFAULT_APPEARANCE,
+      hiddenColours: [2],
+      markMismatch: true,
+      markSelectedColour: true,
+    }
+    const world = new RenderScene()
+    const artboard = new RenderScene()
+    for (const now of [0, 75, 150, 225, 300]) {
+      const worldTemplates = world.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, now, false)
+      const artboardTemplates = artboard.advanceTemplates([template], surface, now, false)
+      expect(artboardTemplates).toEqual(worldTemplates)
+      expect(artboard.advanceMarkers(artboardTemplates.templates, 1, now)).toEqual(
+        world.advanceMarkers(worldTemplates.templates, 1, now),
+      )
+    }
+  })
+
   it('drives template visibility and colour filters through the same fade curve', () => {
     const scene = new RenderScene()
 
