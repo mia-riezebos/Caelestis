@@ -65,6 +65,25 @@ describe('alliance artboard marker work', () => {
     ).toEqual([])
   })
 
+  it('ignores loaded HQ tiles outside the template bounds', () => {
+    const regions = [
+      { x: -65, y: -64, width: 64, height: 64, pixels: new Uint8Array(64 * 64) },
+      { x: 64, y: 64, width: 64, height: 64, pixels: new Uint8Array(64 * 64) },
+    ]
+
+    expect(artboardTemplateProgress(template, regions)).toEqual({
+      completed: 0,
+      mismatched: 0,
+      unpainted: 0,
+      known: 0,
+      total: 3,
+    })
+    expect(artboardMarkerWork(template, regions, DEFAULT_APPEARANCE)).toEqual({
+      mismatch: [],
+      selected: [],
+    })
+  })
+
   it('measures the unpainted marker threshold from loaded pixels only', () => {
     const work = artboardMarkerWork(
       template,

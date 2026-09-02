@@ -44,6 +44,7 @@ const artboardActualPixels = (
     const top = Math.max(template.originY, region.y)
     const right = Math.min(template.originX + template.width, region.x + region.width)
     const bottom = Math.min(template.originY + template.height, region.y + region.height)
+    if (right <= left || bottom <= top) continue
     for (let y = top; y < bottom; y++) {
       const sourceAt = (y - region.y) * region.width + (left - region.x)
       const targetAt = (y - template.originY) * template.width + (left - template.originX)
