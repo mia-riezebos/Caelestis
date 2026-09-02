@@ -14,6 +14,7 @@ import {
   type ArtboardViewport,
   artboardDevicePlacement,
   artboardGeometry,
+  artboardGpuTilePlacement,
   artboardPlacement,
   insertAllianceArtboardCanvases,
   reconcileAllianceControlsForViewport,
@@ -90,6 +91,44 @@ describe('alliance artboard projection', () => {
         },
       ),
     ).toEqual({ left: 3_300, top: 3_600, right: 3_380, bottom: 3_640 })
+  })
+
+  it('projects chunk halos only at template edges, not across chunk seams', () => {
+    const template = { originX: 0, originY: 0, width: 4, height: 2 }
+    const geometry = { originX: 0, originY: 0, width: 4, height: 2 }
+    const viewport = {
+      bufferWidth: 40,
+      bufferHeight: 20,
+      frameLeft: 0,
+      frameTop: 0,
+      frameWidth: 40,
+      frameHeight: 20,
+    }
+
+    expect(
+      artboardGpuTilePlacement(
+        template,
+        { x: 0, y: 0, width: 2, height: 2, textureWidth: 4, textureHeight: 4, inset: 1 },
+        geometry,
+        viewport,
+        1,
+      ),
+    ).toEqual({
+      box: { left: -10, top: -10, right: 20, bottom: 30 },
+      u0: 0,
+      v0: 0,
+      u1: 0.75,
+      v1: 1,
+    })
+    expect(
+      artboardGpuTilePlacement(
+        template,
+        { x: 2, y: 0, width: 2, height: 2, textureWidth: 4, textureHeight: 4, inset: 1 },
+        geometry,
+        viewport,
+        1,
+      ),
+    ).toEqual({ box: { left: 20, top: -10, right: 50, bottom: 30 }, u0: 0.25, v0: 0, u1: 1, v1: 1 })
   })
 
   it('counts only markers inside the visible viewport for density budgeting', () => {

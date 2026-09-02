@@ -13,6 +13,7 @@ import {
 import { onCanvasWrite } from '../canvas-write.js'
 import { warn } from '../debug.js'
 import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
+import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
 import { getState, onlySelectedColourFor, onStateChange } from '../state.js'
 import { isColourHidden, isPlain, toRgbUnit } from '../templates/appearance.js'
 import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
@@ -44,8 +45,16 @@ import {
   visibleMarkerPoints,
 } from './marker-density.js'
 import { MarkerRenderer, type MarkerStyle } from './marker-renderer.js'
+import { movingOverlayTapCap } from './minify-quality.js'
 import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
 import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE } from './shaders.js'
+import {
+  TEMPLATE_GPU_CACHE_BYTES,
+  TEMPLATE_UPLOAD_PIXELS_PER_FRAME,
+  type TemplateGpuEntry,
+  TemplateGpuStore,
+  type TemplateGpuTile,
+} from './template-gpu-store.js'
 
 const OVERLAY_ATTRIBUTE = 'data-caelestis-alliance-overlay'
 const OUTLINE_ATTRIBUTE = 'data-caelestis-alliance-outline'
@@ -123,6 +132,41 @@ export const artboardDevicePlacement = (
   }
 }
 
+/** Project one shared GPU chunk, including only the outer outline halo, into an artboard. */
+export const artboardGpuTilePlacement = (
+  template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height'>,
+  source: Pick<
+    TemplateGpuTile,
+    'x' | 'y' | 'width' | 'height' | 'textureWidth' | 'textureHeight' | 'inset'
+  >,
+  geometry: ArtboardGeometry,
+  viewport: ArtboardViewport,
+  margin: number,
+) => {
+  const leftMargin = source.x === 0 ? Math.min(margin, source.inset) : 0
+  const topMargin = source.y === 0 ? Math.min(margin, source.inset) : 0
+  const rightMargin =
+    source.x + source.width === template.width ? Math.min(margin, source.inset) : 0
+  const bottomMargin =
+    source.y + source.height === template.height ? Math.min(margin, source.inset) : 0
+  return {
+    box: artboardDevicePlacement(
+      {
+        originX: template.originX + source.x - leftMargin,
+        originY: template.originY + source.y - topMargin,
+        width: source.width + leftMargin + rightMargin,
+        height: source.height + topMargin + bottomMargin,
+      },
+      geometry,
+      viewport,
+    ),
+    u0: (source.inset - leftMargin) / source.textureWidth,
+    v0: (source.inset - topMargin) / source.textureHeight,
+    u1: (source.inset + source.width + rightMargin) / source.textureWidth,
+    v1: (source.inset + source.height + bottomMargin) / source.textureHeight,
+  }
+}
+
 /** Count marker points inside the current alliance artboard viewport. */
 export const visibleArtboardMarkerPoints = (
   batch: ArtboardMarkerBatch,
@@ -175,14 +219,6 @@ export const insertAllianceArtboardCanvases = (
   frame.insertBefore(markers, nativeDraft?.nextSibling ?? null)
 }
 
-interface GpuTemplate {
-  readonly indices: WebGLTexture
-  readonly palette: WebGLTexture
-  readonly source: Uint8Array
-  readonly width: number
-  readonly height: number
-}
-
 interface RenderTemplate {
   readonly template: PlacedTemplate
   readonly appearance: ReturnType<typeof appearanceOf>
@@ -198,11 +234,17 @@ interface RenderMarker {
   readonly sampleRate: number
 }
 
+interface ArtboardDrawResult {
+  readonly animating: boolean
+  readonly uploadedPixels: number
+  readonly drawIntersections: number
+}
+
 const vertices = new Float32Array(4 * 6)
 
 class ArtboardPass {
   private readonly uniforms = new Map<string, WebGLUniformLocation | null>()
-  private readonly gpu = new Map<string, GpuTemplate>()
+  private readonly gpu: TemplateGpuStore | null
 
   private constructor(
     readonly canvas: HTMLCanvasElement,
@@ -212,7 +254,10 @@ class ArtboardPass {
     private readonly quad: WebGLBuffer,
     private readonly vao: WebGLVertexArrayObject,
     private readonly markers: MarkerRenderer | null,
-  ) {}
+  ) {
+    this.gpu =
+      kind === 'markers' ? null : new TemplateGpuStore(gl, Math.floor(TEMPLATE_GPU_CACHE_BYTES / 2))
+  }
 
   static create(document: Document, kind: 'outline' | 'overlay' | 'markers'): ArtboardPass | null {
     const canvas = document.createElement('canvas')
@@ -279,73 +324,6 @@ class ArtboardPass {
     return this.uniforms.get(name) ?? null
   }
 
-  private release(id: string): void {
-    const entry = this.gpu.get(id)
-    if (entry === undefined) return
-    this.gl.deleteTexture(entry.indices)
-    this.gl.deleteTexture(entry.palette)
-    this.gpu.delete(id)
-  }
-
-  private textureFor(template: PlacedTemplate): GpuTemplate | null {
-    const held = this.gpu.get(template.id)
-    if (
-      held !== undefined &&
-      held.source === template.indices &&
-      held.width === template.width &&
-      held.height === template.height
-    )
-      return held
-    this.release(template.id)
-    const measured = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) as unknown
-    if (typeof measured === 'number' && (template.width > measured || template.height > measured))
-      return null
-    const indices = this.gl.createTexture()
-    const palette = this.gl.createTexture()
-    if (indices === null || palette === null) {
-      if (indices !== null) this.gl.deleteTexture(indices)
-      if (palette !== null) this.gl.deleteTexture(palette)
-      return null
-    }
-    const gl = this.gl
-    gl.bindTexture(gl.TEXTURE_2D, indices)
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R8UI,
-      template.width,
-      template.height,
-      0,
-      gl.RED_INTEGER,
-      gl.UNSIGNED_BYTE,
-      template.indices,
-    )
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    const entry = {
-      indices,
-      palette,
-      source: template.indices,
-      width: template.width,
-      height: template.height,
-    }
-    this.gpu.set(template.id, entry)
-    return entry
-  }
-
-  private uploadPalette(texture: WebGLTexture, data: Uint8Array): void {
-    const gl = this.gl
-    gl.bindTexture(gl.TEXTURE_2D, texture)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, PALETTE_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-  }
-
   private writeQuad(
     box: {
       readonly left: number
@@ -382,20 +360,37 @@ class ArtboardPass {
     )
   }
 
-  draw(
+  private draw(
     templates: readonly RenderTemplate[],
     markers: readonly RenderMarker[],
+    allIds: ReadonlySet<string>,
     geometry: ArtboardGeometry,
     viewport: ArtboardViewport,
-  ): void {
+    uploadAllowance: number,
+    generation: number,
+    minifyTapCap: number,
+  ): ArtboardDrawResult {
     const gl = this.gl
+    let animating = false
+    let uploadedPixels = 0
+    let drawIntersections = 0
     gl.disable(gl.SCISSOR_TEST)
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
     gl.clearColor(0, 0, 0, 0)
     gl.clear(gl.COLOR_BUFFER_BIT)
-    if (isOverlayPeekActive()) return
-    const ids = new Set(templates.map(({ template }) => template.id))
-    for (const id of this.gpu.keys()) if (!ids.has(id)) this.release(id)
+    if (isOverlayPeekActive()) return { animating, uploadedPixels, drawIntersections }
+    const margin = this.kind === 'outline' ? 1 : 0
+    const visible = templates.filter(({ template, outlineFade }) => {
+      if (this.kind === 'outline' && outlineFade <= 0) return false
+      const box = artboardDevicePlacement(template, geometry, viewport, margin)
+      return (
+        box.right > viewport.frameLeft &&
+        box.bottom > viewport.frameTop &&
+        box.left < viewport.frameLeft + viewport.frameWidth &&
+        box.top < viewport.frameTop + viewport.frameHeight
+      )
+    })
+    this.gpu?.collect(allIds, new Set(visible.map(({ template }) => template.id)))
     const scissorLeft = Math.max(0, Math.floor(viewport.frameLeft))
     const scissorTop = Math.max(0, Math.floor(viewport.frameTop))
     const scissorRight = Math.min(
@@ -406,7 +401,8 @@ class ArtboardPass {
       this.canvas.height,
       Math.ceil(viewport.frameTop + viewport.frameHeight),
     )
-    if (scissorRight <= scissorLeft || scissorBottom <= scissorTop) return
+    if (scissorRight <= scissorLeft || scissorBottom <= scissorTop)
+      return { animating, uploadedPixels, drawIntersections }
     gl.enable(gl.SCISSOR_TEST)
     gl.scissor(
       scissorLeft,
@@ -423,33 +419,33 @@ class ArtboardPass {
     if (this.kind === 'outline') {
       gl.uniform1i(this.uniform('u_darkTheme'), isDarkMapTheme() ? 1 : 0)
     } else if (this.kind === 'overlay') {
-      gl.uniform1i(this.uniform('u_maxMinifyTaps'), 4)
+      gl.uniform1i(this.uniform('u_maxMinifyTaps'), minifyTapCap)
     }
-    for (const rendered of templates) {
-      if (this.kind === 'outline' && rendered.outlineFade <= 0) continue
+    let uploadsLeft = visible.reduce(
+      (total, { template }) => total + (this.gpu?.hasCurrent(template) === false ? 1 : 0),
+      0,
+    )
+    let uploadPixelsLeft = uploadAllowance
+    for (const rendered of visible) {
       const { template, appearance } = rendered
-      const entry = this.textureFor(template)
+      let entry: TemplateGpuEntry | null = null
+      if (this.gpu !== null) {
+        const allowance = uploadsLeft > 0 ? Math.floor(uploadPixelsLeft / uploadsLeft) : 0
+        if (!this.gpu.hasCurrent(template)) uploadsLeft = Math.max(0, uploadsLeft - 1)
+        const advanced = this.gpu.advance(template, allowance, generation)
+        uploadPixelsLeft -= advanced.uploadedPixels
+        uploadedPixels += advanced.uploadedPixels
+        if (advanced.status !== 'complete') {
+          animating = true
+          continue
+        }
+        entry = advanced.entry
+      }
       if (entry === null) continue
-      this.uploadPalette(entry.palette, rendered.palette)
-      const margin = this.kind === 'outline' ? 1 : 0
-      const box = artboardDevicePlacement(template, geometry, viewport, margin)
-      if (
-        box.right <= viewport.frameLeft ||
-        box.bottom <= viewport.frameTop ||
-        box.left >= viewport.frameLeft + viewport.frameWidth ||
-        box.top >= viewport.frameTop + viewport.frameHeight
-      )
-        continue
-      const uMargin = margin / template.width
-      const vMargin = margin / template.height
-      this.writeQuad(box, -uMargin, -vMargin, 1 + uMargin, 1 + vMargin)
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, entry.indices)
-      gl.uniform1i(this.uniform('u_indices'), 0)
+      this.gpu?.uploadPalette(entry, rendered.palette)
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(this.uniform('u_palette'), 1)
-      gl.uniform2f(this.uniform('u_size'), template.width, template.height)
       gl.uniform1f(this.uniform('u_stampSize'), appearance.size)
       gl.uniform1f(this.uniform('u_stampRadius'), appearance.radius)
       gl.uniform2f(this.uniform('u_stampOffset'), appearance.translateX, appearance.translateY)
@@ -465,8 +461,17 @@ class ArtboardPass {
         gl.uniform1f(this.uniform('u_opacity'), appearance.opacity)
         gl.uniform1i(this.uniform('u_plain'), isPlain(appearance) ? 1 : 0)
       }
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices)
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      for (const source of entry.indices) {
+        const placement = artboardGpuTilePlacement(template, source, geometry, viewport, margin)
+        this.writeQuad(placement.box, placement.u0, placement.v0, placement.u1, placement.v1)
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, source.texture)
+        gl.uniform1i(this.uniform('u_indices'), 0)
+        gl.uniform2f(this.uniform('u_size'), source.textureWidth, source.textureHeight)
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices)
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+        drawIntersections++
+      }
     }
     gl.bindVertexArray(null)
     if (this.markers !== null) {
@@ -495,10 +500,47 @@ class ArtboardPass {
       this.markers.endFrame()
     }
     gl.disable(gl.SCISSOR_TEST)
+    return { animating, uploadedPixels, drawIntersections }
+  }
+
+  render(
+    templates: readonly RenderTemplate[],
+    markers: readonly RenderMarker[],
+    allIds: ReadonlySet<string>,
+    geometry: ArtboardGeometry,
+    viewport: ArtboardViewport,
+    uploadAllowance: number,
+    generation: number,
+    minifyTapCap: number,
+  ): ArtboardDrawResult {
+    const name =
+      this.kind === 'outline'
+        ? 'Alliance outline'
+        : this.kind === 'overlay'
+          ? 'Alliance overlay'
+          : 'Alliance markers'
+    return profileGpu(this.gl, `${name} GPU`, () =>
+      measureProfile(`${name} render`, () =>
+        this.draw(
+          templates,
+          markers,
+          allIds,
+          geometry,
+          viewport,
+          uploadAllowance,
+          generation,
+          minifyTapCap,
+        ),
+      ),
+    )
+  }
+
+  memoryBytes(): number {
+    return this.gpu?.memoryBytes() ?? this.markers?.memoryBytes() ?? 0
   }
 
   dispose(): void {
-    for (const id of [...this.gpu.keys()]) this.release(id)
+    this.gpu?.dispose()
     this.gl.deleteBuffer(this.quad)
     this.gl.deleteVertexArray(this.vao)
     this.gl.deleteProgram(this.program)
@@ -521,6 +563,9 @@ class ArtboardRenderer {
   private framePending = false
   private markerPixelsDirty = true
   private readonly markerWork = new Map<string, ArtboardMarkerWork>()
+  private renderGeneration = 0
+  private lastViewportKey = ''
+  private settleFramePending = false
   private disposed = false
 
   private constructor(
@@ -589,6 +634,20 @@ class ArtboardRenderer {
     }
   }
 
+  private viewportIsMoving(viewport: ArtboardViewport): boolean {
+    const key = [
+      viewport.frameLeft,
+      viewport.frameTop,
+      viewport.frameWidth,
+      viewport.frameHeight,
+    ].join(':')
+    const moving = this.lastViewportKey !== '' && key !== this.lastViewportKey
+    this.lastViewportKey = key
+    if (moving) this.settleFramePending = true
+    else if (this.settleFramePending) this.settleFramePending = false
+    return moving
+  }
+
   private paletteFor(template: PlacedTemplate, now: number): { data: Uint8Array; done: boolean } {
     const hidden = new Set(
       hiddenColoursFor(appearanceWithPreview(template.id, appearanceOf(template)), this.surface),
@@ -651,6 +710,7 @@ class ArtboardRenderer {
     )
       return
     const all = displayTemplatesForSurface(this.surface)
+    this.renderGeneration++
     const ids = new Set(all.map(({ id }) => id))
     this.templateFades.prune(ids)
     this.outlineFades.prune(ids)
@@ -805,10 +865,67 @@ class ArtboardRenderer {
       ...selectedLayers.map((layer) => ({ ...layer, sampleRate: selectedSampleRate })),
       ...mismatchLayers.map((layer) => ({ ...layer, sampleRate: mismatchSampleRate })),
     ]
-    this.outline.draw(templates, [], this.geometry, viewport)
-    this.overlay.draw(templates, [], this.geometry, viewport)
-    this.markers.draw([], markerLayers, this.geometry, viewport)
+    const moving = this.viewportIsMoving(viewport)
+    const minifyTapCap = moving ? movingOverlayTapCap(templates.length) : 4
+    const outlineAllowance = Math.floor(TEMPLATE_UPLOAD_PIXELS_PER_FRAME / 2)
+    const outlineResult = this.outline.render(
+      templates,
+      [],
+      ids,
+      this.geometry,
+      viewport,
+      outlineAllowance,
+      this.renderGeneration,
+      minifyTapCap,
+    )
+    const overlayResult = this.overlay.render(
+      templates,
+      [],
+      ids,
+      this.geometry,
+      viewport,
+      TEMPLATE_UPLOAD_PIXELS_PER_FRAME - outlineAllowance,
+      this.renderGeneration,
+      minifyTapCap,
+    )
+    this.markers.render(
+      [],
+      markerLayers,
+      ids,
+      this.geometry,
+      viewport,
+      0,
+      this.renderGeneration,
+      minifyTapCap,
+    )
+    if (isProfileEnabled()) {
+      recordProfileWorkload('Alliance overlay visible templates', templates.length)
+      recordProfileWorkload(
+        'Alliance overlay visible source pixels',
+        templates.reduce((total, { template }) => total + template.width * template.height, 0),
+      )
+      recordProfileWorkload(
+        'Alliance overlay draw intersections',
+        outlineResult.drawIntersections + overlayResult.drawIntersections,
+      )
+      recordProfileWorkload(
+        'Alliance overlay uploaded index pixels',
+        outlineResult.uploadedPixels + overlayResult.uploadedPixels,
+      )
+      recordProfileWorkload('Alliance overlay minify tap cap', minifyTapCap)
+      recordProfileWorkload('Alliance overlay moving', moving ? 1 : 0)
+      recordProfileWorkload('Alliance marker source batches', markerLayers.length)
+      recordProfileWorkload(
+        'Alliance marker source points',
+        markerLayers.reduce((total, marker) => total + marker.batch.marks.length, 0),
+      )
+    }
+    if (outlineResult.animating || overlayResult.animating || moving) animating = true
     if (animating) this.requestRender()
+  }
+
+  memoryBytes(): number {
+    return this.outline.memoryBytes() + this.overlay.memoryBytes() + this.markers.memoryBytes()
   }
 
   dispose(): void {
@@ -824,6 +941,8 @@ class ArtboardRenderer {
 }
 
 let renderer: ArtboardRenderer | null = null
+
+export const allianceOverlayGpuMemoryBytes = (): number => renderer?.memoryBytes() ?? 0
 
 const reconcileRenderer = (): void => {
   const active = activeAllianceSurface()
