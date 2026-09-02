@@ -136,7 +136,8 @@ const intersectsTiles = (
 }
 
 /** Visit each source/host-tile intersection once, with exact clip-space corners from Wplace. */
-const visitIntersections = (
+/** @internal Host-adapter seam used by differential projection tests. */
+export const visitIntersections = (
   template: PlacedTemplate,
   spans: readonly HorizontalSpan[],
   entry: TemplateGpuEntry,

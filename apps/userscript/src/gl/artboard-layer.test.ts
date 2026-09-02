@@ -1,7 +1,10 @@
 // @vitest-environment happy-dom
 
+import { TILE_SIZE } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
+import type { PlacedTemplate } from '../templates/local-store.js'
+import type { TemplateGpuEntry, TemplateGpuTile } from './template-gpu-store.js'
 
 const controls = vi.hoisted(() => ({ detach: vi.fn(), render: vi.fn() }))
 
@@ -20,7 +23,9 @@ import {
   reconcileAllianceControlsForViewport,
   visibleArtboardMarkerPoints,
 } from './artboard-layer.js'
+import { visitIntersections } from './layer.js'
 import { markerVisibilityBudget } from './marker-density.js'
+import { writeClipCorner } from './renderer-core.js'
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -91,6 +96,107 @@ describe('alliance artboard projection', () => {
         },
       ),
     ).toEqual({ left: 3_300, top: 3_600, right: 3_380, bottom: 3_640 })
+  })
+
+  it('produces the same shader quad as the world adapter at a matching scale', () => {
+    const template = {
+      originX: 0,
+      originY: 0,
+      width: 2,
+      height: 2,
+    } as PlacedTemplate
+    const source = {
+      texture: {} as WebGLTexture,
+      x: 0,
+      y: 0,
+      width: 2,
+      height: 2,
+      textureWidth: 4,
+      textureHeight: 4,
+      inset: 1,
+    } satisfies TemplateGpuTile
+    const entry = {
+      indices: [source],
+      palette: {} as WebGLTexture,
+      width: 2,
+      height: 2,
+      source: new Uint8Array(4),
+      lastUsed: 0,
+      paletteData: null,
+    } satisfies TemplateGpuEntry
+    const bufferWidth = 2_000
+    const bufferHeight = 2_000
+    let worldVertices: Float32Array | null = null
+
+    expect(
+      visitIntersections(
+        template,
+        [{ worldStart: 0, worldEnd: 2, sourceStart: 0, sourceEnd: 2 }],
+        entry,
+        [{ tile: { x: 0, y: 0 }, x: 100, y: 200, width: TILE_SIZE, height: TILE_SIZE }],
+        bufferWidth,
+        bufferHeight,
+        (_source, vertices) => (worldVertices = vertices.slice()),
+      ),
+    ).toBe(1)
+
+    const placement = artboardGpuTilePlacement(
+      template,
+      source,
+      { originX: 0, originY: 0, width: TILE_SIZE, height: TILE_SIZE },
+      {
+        bufferWidth,
+        bufferHeight,
+        frameLeft: 100,
+        frameTop: 200,
+        frameWidth: TILE_SIZE,
+        frameHeight: TILE_SIZE,
+      },
+      0,
+    )
+    const artboardVertices = new Float32Array(24)
+    writeClipCorner(
+      placement.box.left,
+      placement.box.top,
+      bufferWidth,
+      bufferHeight,
+      placement.u0,
+      placement.v0,
+      artboardVertices,
+      0,
+    )
+    writeClipCorner(
+      placement.box.right,
+      placement.box.top,
+      bufferWidth,
+      bufferHeight,
+      placement.u1,
+      placement.v0,
+      artboardVertices,
+      6,
+    )
+    writeClipCorner(
+      placement.box.left,
+      placement.box.bottom,
+      bufferWidth,
+      bufferHeight,
+      placement.u0,
+      placement.v1,
+      artboardVertices,
+      12,
+    )
+    writeClipCorner(
+      placement.box.right,
+      placement.box.bottom,
+      bufferWidth,
+      bufferHeight,
+      placement.u1,
+      placement.v1,
+      artboardVertices,
+      18,
+    )
+
+    expect(worldVertices).toEqual(artboardVertices)
   })
 
   it('projects chunk halos only at template edges, not across chunk seams', () => {
