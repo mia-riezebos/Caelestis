@@ -166,13 +166,13 @@ export const insertAllianceArtboardCanvases = (
     (child): child is HTMLCanvasElement => child.tagName === 'CANVAS' && !isCaelestisCanvas(child),
   )
   const hasHqTiles = [...frame.children].some((child) => child.classList.contains('hq-tile-layer'))
-  const nativeOverlay = hasHqTiles
+  const nativeDraft = hasHqTiles
     ? (directCanvases[0] ?? null)
     : directCanvases.length >= 2
       ? (directCanvases.at(-1) ?? null)
       : null
-  frame.insertBefore(overlay, nativeOverlay)
-  frame.insertBefore(markers, nativeOverlay?.nextSibling ?? null)
+  frame.insertBefore(overlay, nativeDraft)
+  frame.insertBefore(markers, nativeDraft?.nextSibling ?? null)
 }
 
 interface GpuTemplate {
