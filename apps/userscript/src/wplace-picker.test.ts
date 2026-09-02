@@ -76,7 +76,9 @@ afterEach(() => {
   vi.resetModules()
 })
 
-const pickerDom = (target: HTMLElement): void => {
+const pickerDom = (
+  target: HTMLElement,
+): { pickerButton: HTMLButtonElement; eraserButton: HTMLButtonElement } => {
   const picker = document.createElement('div')
   picker.className = 'tooltip'
   const pickerLabel = document.createElement('div')
@@ -84,9 +86,23 @@ const pickerDom = (target: HTMLElement): void => {
   pickerLabel.textContent = 'Color Picker'
   const pickerButton = document.createElement('button')
   pickerButton.className = 'btn-primary'
-  picker.append(pickerLabel, pickerButton)
+  pickerButton.setAttribute('aria-label', 'Color Picker')
+  pickerButton.setAttribute('aria-pressed', 'true')
+  const eraserButton = document.createElement('button')
+  eraserButton.setAttribute('aria-label', 'Eraser')
+  eraserButton.setAttribute('aria-pressed', 'false')
+  eraserButton.addEventListener('click', () => {
+    const active = eraserButton.getAttribute('aria-pressed') !== 'true'
+    eraserButton.setAttribute('aria-pressed', String(active))
+    if (active) {
+      pickerButton.classList.remove('btn-primary')
+      pickerButton.setAttribute('aria-pressed', 'false')
+    }
+  })
+  picker.append(pickerLabel, pickerButton, eraserButton)
 
   document.body.append(target, picker)
+  return { pickerButton, eraserButton }
 }
 
 it('picks the overlay source cell from the transparent gutter around a 60% stamp', async () => {
@@ -98,7 +114,15 @@ it('picks the overlay source cell from the transparent gutter around a 60% stamp
 
   const { installColourPicker } = await import('./wplace-picker.js')
   installColourPicker()
-  map.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+  map.dispatchEvent(
+    new MouseEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+    }),
+  )
 
   expect(harness.selectPaintColour).toHaveBeenCalledWith(12)
 })
@@ -127,8 +151,105 @@ it('picks the visible overlay source cell inside an alliance artboard', async ()
   const { installColourPicker } = await import('./wplace-picker.js')
   installColourPicker()
   art.dispatchEvent(
-    new MouseEvent('click', { bubbles: true, button: 0, clientX: 100.5, clientY: 200.5 }),
+    new MouseEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 100.5,
+      clientY: 200.5,
+    }),
   )
 
   expect(harness.selectPaintColour).toHaveBeenCalledWith(12)
+})
+
+it("swallows Wplace's matching click after an alliance source pick", async () => {
+  vi.stubGlobal('requestAnimationFrame', vi.fn())
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const art = document.createElement('canvas')
+  frame.append(art)
+  stage.append(frame)
+  frame.getBoundingClientRect = () =>
+    ({ left: 100, top: 200, right: 350, bottom: 450, width: 250, height: 250 }) as DOMRect
+  harness.activeAlliance = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+  }
+  harness.template.surface = harness.activeAlliance.surface
+  harness.template.originX = -125
+  harness.template.originY = -125
+  pickerDom(stage)
+  const nativePick = vi.fn()
+  art.addEventListener('click', nativePick)
+
+  const { installColourPicker } = await import('./wplace-picker.js')
+  installColourPicker()
+  art.dispatchEvent(
+    new MouseEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 100.5,
+      clientY: 200.5,
+    }),
+  )
+  art.dispatchEvent(
+    new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 100.5,
+      clientY: 200.5,
+    }),
+  )
+
+  expect(harness.selectPaintColour).toHaveBeenCalledWith(12)
+  expect(nativePick).not.toHaveBeenCalled()
+})
+
+it('returns an alliance source pick to the neutral brush tool', async () => {
+  vi.stubGlobal(
+    'requestAnimationFrame',
+    vi.fn((callback: FrameRequestCallback) => {
+      callback(0)
+      return 1
+    }),
+  )
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const art = document.createElement('canvas')
+  frame.append(art)
+  stage.append(frame)
+  frame.getBoundingClientRect = () =>
+    ({ left: 100, top: 200, right: 350, bottom: 450, width: 250, height: 250 }) as DOMRect
+  harness.activeAlliance = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+  }
+  harness.template.surface = harness.activeAlliance.surface
+  harness.template.originX = -125
+  harness.template.originY = -125
+  const { pickerButton, eraserButton } = pickerDom(stage)
+
+  const { installColourPicker } = await import('./wplace-picker.js')
+  installColourPicker()
+  art.dispatchEvent(
+    new MouseEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 100.5,
+      clientY: 200.5,
+    }),
+  )
+
+  expect(pickerButton.getAttribute('aria-pressed')).toBe('false')
+  expect(eraserButton.getAttribute('aria-pressed')).toBe('false')
 })
