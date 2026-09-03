@@ -74,6 +74,8 @@
   }
   const percent = (progress: TreeProgressModel): number => wholePercent(progress.completed, progress.total)
   const scannedPercent = (progress: TreeProgressModel): number => wholePercent(progress.known, progress.total)
+  const branchIndent = 18
+  const leafHeadingIndent = 20
 
   const focusRowAction = async (key: string, label: string): Promise<void> => {
     await tick()
@@ -279,7 +281,8 @@
         {@const canShowExpandedProgress = entry.progress !== undefined && (!entry.container || entry.expanded)}
         {@const disclosure = !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
         {@const tallHeading = entry.progress !== undefined || (entry.actions?.length ?? 0) > 0 || (entry.leadingActions?.length ?? 0) > 0}
-        {@const connectorWidth = (entry.branches?.length ?? 0) * 18 + (entry.container ? 0 : 20)}
+        {@const connectorWidth = (entry.branches?.length ?? 0) * branchIndent + (entry.container ? 0 : leafHeadingIndent)}
+        {@const progressDetailOffset = entry.container ? leafHeadingIndent : 0}
         <div
           class:tall-heading={tallHeading}
           class:muted={entry.muted}
@@ -298,6 +301,7 @@
           data-caelestis-tree-key={entry.key}
           draggable={entry.draggable === true}
           style:padding-inline-start={connectorWidth === 0 ? '0.5rem' : `calc(0.5rem + ${connectorWidth}px)`}
+          style:--progress-detail-offset={`${progressDetailOffset}px`}
           onclick={() => { activeKey = entry.key; if (entry.container && !entry.forceExpanded) emit({ type: 'toggle-expanded', key: entry.key }) }}
           onkeydown={(event) => keydown(event, entry)}
           oncontextmenu={(event) => { if (entry.contextMenu) { event.preventDefault(); event.currentTarget.focus(); emit({ type: 'context-menu', key: entry.key, x: event.clientX, y: event.clientY }) } }}
@@ -451,7 +455,7 @@
   .visibility :global(svg) { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
   .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
-  .progress-detail { display: flex; flex-basis: 100%; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .progress-detail { display: flex; flex-basis: 100%; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
   .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
   .progress-summary { display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
   .progress-summary :global(.meter-wrap) { inline-size: 100%; }
