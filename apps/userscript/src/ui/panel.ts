@@ -346,7 +346,6 @@ const mountAllianceRail = (active: ActiveAllianceSurface): void => {
     realm.requestAnimationFrame(() => refreshOverlayMenu())
     allianceRailObserver = new realm.MutationObserver(() => {
       positionAllianceRail(active)
-      refreshTemplateTreeFocus()
     })
     const viewportAttributes = { attributes: true, attributeFilter: ['class', 'style'] }
     allianceRailObserver.observe(active.frame, viewportAttributes)
