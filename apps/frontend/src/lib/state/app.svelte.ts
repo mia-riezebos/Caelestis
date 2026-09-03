@@ -6,6 +6,7 @@ import type {
   TemplateStatus,
   TileKey,
 } from '@caelestis/shared'
+import { getContext, setContext } from 'svelte'
 import {
   ApiError,
   getAlarms,
@@ -15,6 +16,7 @@ import {
   getStatus,
   probeAdminScope,
   readToken,
+  usesServerReadProxy,
 } from '$lib/api/client'
 import { buildTree, type TemplateTree } from '$lib/tree'
 
@@ -23,6 +25,15 @@ import { buildTree, type TemplateTree } from '$lib/tree'
  * and canvas observations everything on screen derives from. Pages layer their own reads (history,
  * leaderboard, timelapse) on top; this holds only what every page needs.
  */
+export interface AppBootstrap {
+  readonly server: ServerInfo | null
+  readonly manifest: Manifest | null
+  readonly statuses: readonly TemplateStatus[]
+  readonly alarms: readonly Alarm[]
+  readonly canvas: readonly CanvasTileSummary[]
+  readonly error: string | null
+}
+
 class AppState {
   server = $state<ServerInfo | null>(null)
   manifest = $state<Manifest | null>(null)
@@ -42,6 +53,15 @@ class AppState {
   /** Bumped per load, so a slow older load can never overwrite a newer one's answers. */
   private generation = 0
 
+  constructor(bootstrap: AppBootstrap) {
+    this.server = bootstrap.server
+    this.manifest = bootstrap.manifest
+    this.statuses = new Map(bootstrap.statuses.map((status) => [status.templateId, status]))
+    this.alarms = new Map(bootstrap.alarms.map((alarm) => [alarm.templateId, alarm]))
+    this.canvas = new Map(bootstrap.canvas.map((tile) => [tile.tile, tile]))
+    this.error = bootstrap.error
+  }
+
   async load(): Promise<void> {
     const generation = ++this.generation
     this.loading = true
@@ -60,7 +80,7 @@ class AppState {
       const server = await getServer()
       if (generation !== this.generation) return
       this.server = server
-      if (server.auth === 'access_token' && readToken() === null) {
+      if (server.auth === 'access_token' && readToken() === null && !usesServerReadProxy()) {
         this.authRequired = true
         return
       }
@@ -98,4 +118,13 @@ class AppState {
   }
 }
 
-export const app = new AppState()
+const APP_STATE = Symbol('caelestis-app-state')
+
+export const provideApp = (bootstrap: AppBootstrap): AppState =>
+  setContext(APP_STATE, new AppState(bootstrap))
+
+export const useApp = (): AppState => {
+  const app = getContext<AppState | undefined>(APP_STATE)
+  if (app === undefined) throw new Error('app state was read outside the root layout')
+  return app
+}

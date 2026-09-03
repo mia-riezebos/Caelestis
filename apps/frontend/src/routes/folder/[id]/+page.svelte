@@ -6,8 +6,10 @@ import FolderSection from '$lib/components/FolderSection.svelte'
 import StatsPanel from '$lib/components/StatsPanel.svelte'
 import TemplateCard from '$lib/components/TemplateCard.svelte'
 import { Skeleton } from '$lib/components/ui/skeleton'
-import { app } from '$lib/state/app.svelte'
+import { useApp } from '$lib/state/app.svelte'
 import { folderColourStatuses, folderTemplates, type TreeFolder } from '$lib/tree'
+
+const app = useApp()
 
 const findFolder = (folders: readonly TreeFolder[], id: string): TreeFolder | null => {
   for (const folder of folders) {

@@ -45,7 +45,7 @@ describe('API request recovery', () => {
 
     await expect(getServer()).resolves.toMatchObject({ id: 'server', name: 'Caelestis' })
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(fetch.mock.calls[0]?.[0]).toContain('/backend/v1/server')
+    expect(fetch.mock.calls[0]?.[0]).toBe('/api/v1/server')
   })
 
   it('probes admin scope without treating an ordinary read token as an app error', async () => {
@@ -62,6 +62,7 @@ describe('API request recovery', () => {
   })
 
   it('sends lifecycle mutations and history windows without a client tier', async () => {
+    stored.set('caelestis:token', 'browser-admin-token')
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url, init) => {
       if (String(url).includes('/telemetry/history')) {
         return new Response(JSON.stringify({ buckets: [] }), { status: 200 })
@@ -102,7 +103,25 @@ describe('API request recovery', () => {
     vi.stubGlobal('fetch', fetch)
 
     await expect(getAlarms(7)).resolves.toEqual({ alarms: [] })
-    expect(fetch.mock.calls[0]?.[0]).toContain('/telemetry/alarms?season=7')
+    expect(fetch.mock.calls[0]?.[0]).toBe('/api/v1/telemetry/alarms?season=7')
+    expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).has('authorization')).toBe(false)
+  })
+
+  it('keeps a browser-supplied admin token separate from the Worker read token', async () => {
+    stored.set('caelestis:token', 'browser-admin-token')
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ alarms: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetch)
+
+    await getAlarms(7)
+
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      'http://127.0.0.1:8787/backend/v1/telemetry/alarms?season=7',
+    )
+    expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get('authorization')).toBe(
+      'Bearer browser-admin-token',
+    )
   })
 
   it('keeps older self-hosted servers connected through their unversioned API', async () => {
@@ -119,9 +138,9 @@ describe('API request recovery', () => {
     await expect(getServer()).resolves.toMatchObject({ name: 'Legacy' })
     await expect(getAlarms(7)).resolves.toEqual({ alarms: [] })
     expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
-      'http://127.0.0.1:8787/backend/v1/server',
-      'http://127.0.0.1:8787/backend/server',
-      'http://127.0.0.1:8787/backend/telemetry/alarms?season=7',
+      '/api/v1/server',
+      '/api/server',
+      '/api/telemetry/alarms?season=7',
     ])
   })
 })

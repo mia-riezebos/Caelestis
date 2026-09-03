@@ -35,6 +35,13 @@ export const readServerUrl = (): string =>
 
 export const readToken = (): string | null => localStorage.getItem(TOKEN_KEY)
 
+/** Use the SSR Worker credential only for its configured/default server and never for user choices. */
+export const usesServerReadProxy = (): boolean =>
+  readToken() === null &&
+  (serverUrlIsConfigured ||
+    localStorage.getItem(SERVER_KEY) === null ||
+    readServerUrl() === `${window.location.origin.replace(/\/+$/, '')}/backend`)
+
 export const writeConnection = (url: string, token: string | null): void => {
   if (!serverUrlIsConfigured) localStorage.setItem(SERVER_KEY, resolveSelectedServerUrl(url))
   if (token === null || token.length === 0) localStorage.removeItem(TOKEN_KEY)
@@ -75,6 +82,7 @@ const request = async (
   versionPath: ApiVersionPath = apiVersionPath,
 ): Promise<Response> => {
   const token = readToken()
+  const proxy = usesServerReadProxy()
   const headers = new Headers(init?.headers)
   const reconciles =
     path === '/manifest' ||
@@ -88,10 +96,8 @@ const request = async (
     reconciles ? frontendClientAccept('recovery', 'connect') : frontendClientAccept(),
   )
   if (token !== null) headers.set('authorization', `Bearer ${token}`)
-  const response = await fetchWithTransientRetry(`${readServerUrl()}${versionPath}${path}`, {
-    ...init,
-    headers,
-  })
+  const endpoint = proxy ? `/api${versionPath}${path}` : `${readServerUrl()}${versionPath}${path}`
+  const response = await fetchWithTransientRetry(endpoint, { ...init, headers })
   if (!response.ok) {
     let message = response.statusText
     try {

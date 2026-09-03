@@ -1,19 +1,23 @@
 <script lang="ts">
 import { Moon, Sun } from '@lucide/svelte'
-import { onMount } from 'svelte'
-import { serverUrlIsConfigured } from '$lib/api/client'
+import { onMount, untrack } from 'svelte'
+import { readToken, serverUrlIsConfigured, usesServerReadProxy } from '$lib/api/client'
 import ConnectDialog from '$lib/components/ConnectDialog.svelte'
-import { app } from '$lib/state/app.svelte'
+import { provideApp } from '$lib/state/app.svelte'
 import '../app.css'
+import type { LayoutProps } from './$types'
 
 const REPO_URL = 'https://github.com/mia-riezebos/Caelestis'
 
-let { children } = $props()
+let { children, data }: LayoutProps = $props()
+
+const app = untrack(() => provideApp(data.bootstrap))
 
 let connectOpen = $state(false)
 
 onMount(() => {
-  void app.load()
+  // SSR supplied the public read model. A browser-held credential may upgrade it to admin.
+  if (readToken() !== null || !usesServerReadProxy() || app.manifest === null) void app.load()
 })
 
 // An auth failure opens the connect dialog. A valid token fixes it.

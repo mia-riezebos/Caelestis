@@ -7,7 +7,9 @@ import {
 } from '$lib/api/client'
 import { Button } from '$lib/components/ui/button'
 import * as Dialog from '$lib/components/ui/dialog'
-import { app } from '$lib/state/app.svelte'
+import { useApp } from '$lib/state/app.svelte'
+
+const app = useApp()
 
 let { open = $bindable(false) }: { open?: boolean } = $props()
 

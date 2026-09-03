@@ -14,9 +14,11 @@
   import { Skeleton } from '$lib/components/ui/skeleton'
   import { Slider } from '$lib/components/ui/slider'
   import { tilesInRect, tileUnionRect } from '$lib/render'
-  import { app } from '$lib/state/app.svelte'
+  import { useApp } from '$lib/state/app.svelte'
   import { persisted } from '$lib/persisted.svelte'
   import { progressFromStatus } from '$lib/tree'
+
+  const app = useApp()
 
   const template = $derived(
     app.manifest?.templates.find((entry) => entry.id === page.params.id) ?? null,

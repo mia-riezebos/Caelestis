@@ -2,8 +2,9 @@
 import FolderSection from '$lib/components/FolderSection.svelte'
 import TemplateCard from '$lib/components/TemplateCard.svelte'
 import { Skeleton } from '$lib/components/ui/skeleton'
-import { app } from '$lib/state/app.svelte'
+import { useApp } from '$lib/state/app.svelte'
 
+const app = useApp()
 const tree = $derived(app.tree)
 const activeAlarms = $derived([...app.alarms.values()])
 const sustainedAlarms = $derived(
