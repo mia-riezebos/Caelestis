@@ -124,6 +124,12 @@
     emit({ type: 'action', key: row.key, actionId: item.id })
   }
 
+  const clickRow = (event: MouseEvent, row: TreeRowModel): void => {
+    if (event.target instanceof Element && event.target.closest('.visibility') !== null) return
+    activeKey = row.key
+    if (row.container && !row.forceExpanded) emit({ type: 'toggle-expanded', key: row.key })
+  }
+
   const keydown = (event: KeyboardEvent, row: TreeRowModel): void => {
     if (event.target !== event.currentTarget) return
     const rows = model.entries.filter((entry): entry is TreeRowModel => entry.type === 'row')
@@ -302,7 +308,7 @@
           draggable={entry.draggable === true}
           style:padding-inline-start={connectorWidth === 0 ? '0.5rem' : `calc(0.5rem + ${connectorWidth}px)`}
           style:--progress-detail-offset={`${progressDetailOffset}px`}
-          onclick={() => { activeKey = entry.key; if (entry.container && !entry.forceExpanded) emit({ type: 'toggle-expanded', key: entry.key }) }}
+          onclick={(event) => clickRow(event, entry)}
           onkeydown={(event) => keydown(event, entry)}
           oncontextmenu={(event) => { if (entry.contextMenu) { event.preventDefault(); event.currentTarget.focus(); emit({ type: 'context-menu', key: entry.key, x: event.clientX, y: event.clientY }) } }}
           ondragstart={(event) => startDrag(event, entry)}
