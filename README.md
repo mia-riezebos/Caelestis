@@ -94,9 +94,12 @@ packages/
   ui/            Reserved package for future shared UI components
 ```
 
-The backend keeps its Hono routes root-relative. Its Worker mounts them under `/backend`, which lets
-the frontend and API share one domain. When a server is added by origin, the userscript uses
-`/backend` automatically. Supplying a URL with another path overrides that default.
+The backend Worker mounts under `/backend`, which lets the frontend and API share one domain. Its
+application API lives under `/backend/v1`. Existing root-relative routes remain compatibility
+aliases for installed clients. The health check stays at `/backend/health`, outside the application
+API. When a server is added by origin, the userscript uses `/backend` automatically. Supplying a URL
+with another path overrides that default. See [Backend API versioning](docs/backend-api-versioning.md)
+for the version and compatibility policy.
 
 ## Self-hosting
 
