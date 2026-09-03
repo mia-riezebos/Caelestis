@@ -66,8 +66,9 @@
             {toast.action.label}
           </a>
         {/if}
-        {#if toast.kind === 'error'}
-          <button type="button" aria-label="Dismiss error" title="Dismiss error" onclick={() => dismiss(toast.id)}>
+        {#if toast.kind === 'error' || toast.action !== undefined}
+          {@const dismissLabel = toast.kind === 'error' ? 'Dismiss error' : 'Dismiss notification'}
+          <button type="button" aria-label={dismissLabel} title={dismissLabel} onclick={() => dismiss(toast.id)}>
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M6 6l12 12M18 6 6 18" />
             </svg>

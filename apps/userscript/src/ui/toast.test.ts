@@ -67,6 +67,22 @@ describe('toast', () => {
     expect(action?.href).toBe('https://example.com/caelestis.user.js')
   })
 
+  it('keeps an action available until the user dismisses it', async () => {
+    toast('A new version is available.', 'info', {
+      label: 'Update userscript',
+      href: 'https://example.com/caelestis.user.js',
+    })
+    await settle()
+
+    vi.advanceTimersByTime(60_000)
+    await settle()
+
+    expect(shadow()?.querySelector('.toast-action')).not.toBeNull()
+    shadow()?.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')?.click()
+    await settle()
+    expect(shadow()?.querySelector('[data-caelestis-toast="info"]')).toBeNull()
+  })
+
   it('keeps errors until they are dismissed', async () => {
     toast('Upload failed', 'error')
     vi.advanceTimersByTime(60_000)

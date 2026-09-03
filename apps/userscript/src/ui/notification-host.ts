@@ -144,7 +144,7 @@ const pushToast = (message: string, kind: ToastKind, action?: ToastActionModel):
   toasts.push({ id, kind, message, ...(action === undefined ? {} : { action }) })
   render()
 
-  if (kind !== 'error') {
+  if (kind !== 'error' && action === undefined) {
     timers.set(
       id,
       window.setTimeout(() => removeToast(id), 6000),
