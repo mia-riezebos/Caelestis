@@ -181,4 +181,45 @@ describe('rolling pace retention', () => {
 
     expect(document.querySelectorAll('text[data-axis="time"]')).toHaveLength(6)
   })
+
+  it('distinguishes sub-day ticks across a multi-day range', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(3_600, 0)],
+        resolution: 3_600,
+        from: 0,
+        to: 3.5 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map((label) =>
+      label.textContent?.trim(),
+    )
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+
+  it('includes years on multi-year lifecycle ticks', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(21_600, 0)],
+        resolution: 21_600,
+        from: 0,
+        to: 3 * 365 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map(
+      (label) => label.textContent?.trim() ?? '',
+    )
+    expect(labels.length).toBeGreaterThan(1)
+    expect(labels.every((label) => /19(?:70|71|72|73)/.test(label))).toBe(true)
+  })
 })

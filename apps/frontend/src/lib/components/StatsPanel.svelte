@@ -118,7 +118,9 @@
   })
 
   const pacePeriod = $derived(
-    pace !== null && pace.hours < 23 ? `over ${pace.hours} h within the last day` : 'over the last day',
+    pace !== null && pace.hours < 23
+      ? `over ${pace.hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h within the last day`
+      : 'over the last day',
   )
 
   const eta = $derived.by(() => {

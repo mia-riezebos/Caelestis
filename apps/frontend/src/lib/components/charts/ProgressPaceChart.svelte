@@ -255,20 +255,31 @@
   }
 
   const yTicks = $derived([0.25, 0.5, 0.75, 1])
+  const DAY_SECONDS = 86_400
+  const LONG_RANGE_SECONDS = 3 * DAY_SECONDS
+  const tickStep = $derived(timeTickStep(selTo - selFrom, width - pad.left - pad.right))
 
   const xTicks = $derived.by(() => {
     const ticks: number[] = []
-    const span = selTo - selFrom
-    const step = timeTickStep(span, width - pad.left - pad.right)
-    for (let t = Math.ceil(selFrom / step) * step; t < selTo; t += step) ticks.push(t)
+    for (let t = Math.ceil(selFrom / tickStep) * tickStep; t < selTo; t += tickStep) {
+      ticks.push(t)
+    }
     return ticks
   })
 
   const formatTick = (t: number): string => {
     const date = new Date(t * 1000)
-    return selTo - selFrom > 86_400 * 3
-      ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-      : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    if (selTo - selFrom <= LONG_RANGE_SECONDS) {
+      return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    }
+    const crossesYear =
+      new Date(selFrom * 1_000).getFullYear() !== new Date((selTo - 1) * 1_000).getFullYear()
+    return date.toLocaleString(undefined, {
+      ...(crossesYear ? { year: 'numeric' } : {}),
+      month: 'short',
+      day: 'numeric',
+      ...(tickStep < DAY_SECONDS ? { hour: '2-digit', minute: '2-digit' } : {}),
+    })
   }
 
   const formatCount = (v: number): string =>

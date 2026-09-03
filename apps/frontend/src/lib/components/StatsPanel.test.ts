@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { millis, type Template } from '@caelestis/shared'
+import { millis, seconds, type Template } from '@caelestis/shared'
 import { flushSync, mount, unmount } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -97,5 +97,32 @@ describe('retained history range', () => {
     await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(8))
 
     expect(api.getHistory).toHaveBeenCalledWith(['finished', 'live'], 0, NOW_SECONDS + 1)
+  })
+
+  it('formats partial-day coverage without exposing floating-point noise', async () => {
+    api.getHistory.mockImplementation((_templateIds, _from, _to, options) =>
+      Promise.resolve(
+        options?.maxResolution === 43_200
+          ? {
+              resolution: 900,
+              coverageStart: seconds(NOW_SECONDS - 10.5 * 3_600),
+              buckets: [],
+            }
+          : { buckets: [] },
+      ),
+    )
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+      },
+    })
+    flushSync()
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('over 10.5 h within the last day'),
+    )
   })
 })
