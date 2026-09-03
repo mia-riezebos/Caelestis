@@ -43,11 +43,16 @@ const coordinator = vi.hoisted(() => ({
         reason: 'connect' | 'manifest-applied',
         transport: SyncTransport,
       ) => Promise<unknown>
+      applyLiveEvent?: (server: ConnectedServer, event: unknown) => boolean
     }
   >(),
 }))
 
 const debug = vi.hoisted(() => ({ count: vi.fn(), warn: vi.fn() }))
+const mismatch = vi.hoisted(() => ({
+  invalidateServer: vi.fn(),
+  invalidateTile: vi.fn(),
+}))
 const account = vi.hoisted(() => ({
   identity: { wplaceUserId: 42, displayName: 'Mía 🎨' } as {
     wplaceUserId: number
@@ -58,6 +63,10 @@ const account = vi.hoisted(() => ({
 }))
 
 vi.mock('./debug.js', () => debug)
+vi.mock('./server-mismatch.js', () => ({
+  invalidateServerMismatches: mismatch.invalidateServer,
+  invalidateServerMismatchTile: mismatch.invalidateTile,
+}))
 vi.mock('./state.js', () => ({
   activeServerToken: (server: ConnectedServer) =>
     server.tokenUsable === false ? null : server.token,
@@ -228,6 +237,28 @@ describe('server telemetry client', () => {
     ])
   })
 
+  it('invalidates mismatch masks from exact live status tiles', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ revision: 1, templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    const resource = coordinator.resources.get('telemetry-status')
+    expect(
+      resource?.applyLiveEvent?.(server, {
+        baseRevision: 1,
+        revision: 2,
+        templates: [],
+        removedTemplateIds: [],
+        invalidatedTiles: ['1/2'],
+      }),
+    ).toBe(true)
+    expect(mismatch.invalidateTile).toHaveBeenCalledWith(server.url, { x: 1, y: 2 })
+  })
+
   it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
     vi.stubGlobal(
       'fetch',
@@ -336,6 +367,7 @@ describe('server telemetry client', () => {
       templates: [{ ...template }],
     })
     releaseBody?.({
+      version: 'a'.repeat(64),
       alarms: [
         {
           id: '01890f3e-7b2c-7abc-8def-0123456789ac',
@@ -381,6 +413,7 @@ describe('server telemetry client', () => {
       templates: [{ ...template }],
     })
     releaseBody?.({
+      version: 'a'.repeat(64),
       alarms: [
         {
           id: '01890f3e-7b2c-7abc-8def-0123456789ac',
@@ -393,7 +426,7 @@ describe('server telemetry client', () => {
       ],
     })
 
-    await expect(refreshing).resolves.toEqual({ status: 'changed' })
+    await expect(refreshing).resolves.toEqual({ status: 'changed', revision: 'a'.repeat(64) })
     expect(serverAlarmFor(server, template)?.pixelsLost).toBe(12)
   })
 

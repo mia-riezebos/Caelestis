@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   current: { servers: [] as object[] },
   identities: new WeakMap<object, object>(),
   listener: null as null | (() => void),
+  invalidatedServerUrls: [] as string[],
 }))
 
 vi.mock('./state.js', () => ({
@@ -25,6 +26,10 @@ vi.mock('./state.js', () => ({
     state.listener = listener
     return () => undefined
   },
+}))
+
+vi.mock('./server-mismatch.js', () => ({
+  invalidateServerMismatches: (serverUrl: string) => state.invalidatedServerUrls.push(serverUrl),
 }))
 
 const server = {
@@ -74,6 +79,49 @@ class FakeWebSocket extends EventTarget {
   }
 }
 
+const socketStateVector = (socket: FakeWebSocket) => {
+  const parsed = socket.sent
+    .map((message) => {
+      try {
+        return JSON.parse(message) as Record<string, unknown>
+      } catch {
+        return null
+      }
+    })
+    .find((message) => message?.type === 'state-vector')
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed.requestId !== 'string' ||
+    !Array.isArray(parsed.projections)
+  )
+    throw new Error('live state vector was not sent')
+  return parsed as {
+    readonly requestId: string
+    readonly revision: number | null
+    readonly projections: Array<{
+      readonly resource: 'world-manifest' | 'alliance-manifest' | 'telemetry-alarms'
+      readonly scope: string
+      readonly version: string | null
+    }>
+  }
+}
+
+const reconcileSocket = (
+  socket: FakeWebSocket,
+  revision: number,
+  mode: 'correction' | 'snapshot' = 'snapshot',
+  projections = socketStateVector(socket).projections,
+): void => {
+  socket.receive({
+    type: 'state-correction',
+    requestId: socketStateVector(socket).requestId,
+    mode,
+    revision,
+    projections,
+  })
+}
+
 const setVisibility = (value: 'visible' | 'hidden'): void => {
   Object.defineProperty(document, 'visibilityState', { configurable: true, value })
 }
@@ -90,6 +138,7 @@ describe('server sync coordinator', () => {
     state.current = { servers: [server] }
     state.identities = new WeakMap()
     state.listener = null
+    state.invalidatedServerUrls = []
     const stored = new Map<string, string>()
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => stored.get(key) ?? null,
@@ -361,6 +410,7 @@ describe('server sync coordinator', () => {
     expect(socket.url).toContain('scope=public')
     expect(socket.url).toContain('client=userscript')
     expect(socket.url).toContain('clientVersion=development')
+    expect(socket.url).toContain('stateVector=1')
     expect(new URL(socket.url).searchParams.has('clientId')).toBe(false)
     expect(socket.url).not.toContain(liveServer.token)
     expect(socket.protocols).toEqual([
@@ -374,13 +424,20 @@ describe('server sync coordinator', () => {
     expect(alarms).not.toHaveBeenCalled()
 
     socket.open()
-    socket.receive({ type: 'ready', revision: 7 })
+    expect(socketStateVector(socket)).toMatchObject({
+      revision: null,
+      projections: [
+        { resource: 'world-manifest', scope: 'world', version: null },
+        { resource: 'telemetry-alarms', scope: 'world', version: null },
+      ],
+    })
+    reconcileSocket(socket, 7)
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
     expect(alarms).toHaveBeenCalledOnce()
-    expect(status).toHaveBeenLastCalledWith(liveServer, 'revision-gap', 'recovery')
-    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'connect', 'recovery')
+    expect(status).toHaveBeenLastCalledWith(liveServer, 'reconnect', 'recovery')
+    expect(manifest).toHaveBeenLastCalledWith(liveServer, 'reconnect', 'recovery')
     status.mockClear()
     manifest.mockClear()
     alarms.mockClear()
@@ -389,6 +446,8 @@ describe('server sync coordinator', () => {
     window.dispatchEvent(new Event('focus'))
     window.dispatchEvent(new Event('online'))
     await vi.advanceTimersByTimeAsync(0)
+    expect(socket.sent.filter((message) => message === 'ping')).toHaveLength(1)
+    socket.receiveRaw('pong')
     expect(status).not.toHaveBeenCalled()
     expect(manifest).not.toHaveBeenCalled()
     expect(alarms).not.toHaveBeenCalled()
@@ -399,15 +458,15 @@ describe('server sync coordinator', () => {
     expect(alarms).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(5 * 60_000)
-    expect(socket.sent).toEqual(['ping'])
+    expect(socket.sent.filter((message) => message === 'ping')).toHaveLength(2)
     expect(status).not.toHaveBeenCalled()
     expect(manifest).not.toHaveBeenCalled()
     expect(alarms).not.toHaveBeenCalled()
     socket.receiveRaw('pong')
 
-    for (let heartbeat = 2; heartbeat <= 4; heartbeat++) {
+    for (let heartbeat = 3; heartbeat <= 5; heartbeat++) {
       await vi.advanceTimersByTimeAsync(15 * 60_000)
-      expect(socket.sent).toHaveLength(heartbeat)
+      expect(socket.sent.filter((message) => message === 'ping')).toHaveLength(heartbeat)
       socket.receiveRaw('pong')
     }
 
@@ -434,6 +493,7 @@ describe('server sync coordinator', () => {
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
     socket.open()
+    reconcileSocket(socket, 0, 'correction', [])
 
     const pending = requestLiveTileOfferCache(liveServer, {
       wplaceUserId: 42,
@@ -463,6 +523,103 @@ describe('server sync coordinator', () => {
       acknowledgedDeliveryIds: ['01890f3e-7b2c-7abc-8def-000000000001'],
       unresolvedDeliveryIds: [],
     })
+  })
+
+  it('reconnects with cached versions and refreshes only divergent projections', async () => {
+    const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource } = await import(
+      './server-sync-coordinator.js'
+    )
+    const status = vi.fn(async () => ({ status: 'unchanged' as const, revision: '7' }))
+    const manifest = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'unchanged' as const, revision: 'a'.repeat(64) })
+      .mockResolvedValue({ status: 'changed' as const, revision: 'c'.repeat(64) })
+    const alarms = vi.fn(async () => ({
+      status: 'unchanged' as const,
+      revision: 'b'.repeat(64),
+    }))
+    registerServerSyncResource({
+      id: 'telemetry-status',
+      scope: () => 'world',
+      refresh: status,
+      live: true,
+    })
+    registerServerSyncResource({
+      id: 'world-manifest',
+      scope: () => 'world',
+      refresh: manifest,
+      live: true,
+    })
+    registerServerSyncResource({
+      id: 'telemetry-alarms',
+      scope: () => 'world',
+      refresh: alarms,
+      live: true,
+    })
+    installServerSyncCoordinator()
+    const first = FakeWebSocket.instances[0]
+    if (first === undefined) throw new Error('live socket was not created')
+    first.open()
+    reconcileSocket(first, 7)
+    await vi.advanceTimersByTimeAsync(0)
+    status.mockClear()
+    manifest.mockClear()
+    alarms.mockClear()
+    state.invalidatedServerUrls = []
+
+    first.close()
+    await vi.advanceTimersByTimeAsync(1_000)
+    const replacement = FakeWebSocket.instances[1]
+    if (replacement === undefined) throw new Error('replacement live socket was not created')
+    replacement.open()
+    expect(socketStateVector(replacement)).toMatchObject({
+      revision: 7,
+      projections: [
+        { resource: 'world-manifest', scope: 'world', version: 'a'.repeat(64) },
+        { resource: 'telemetry-alarms', scope: 'world', version: 'b'.repeat(64) },
+      ],
+    })
+    const requestId = socketStateVector(replacement).requestId
+    const correction = {
+      type: 'state-correction',
+      requestId,
+      mode: 'correction',
+      revision: 7,
+      projections: [{ resource: 'world-manifest', scope: 'world', version: 'c'.repeat(64) }],
+    }
+    replacement.receive(correction)
+    replacement.receive(correction)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(status).not.toHaveBeenCalled()
+    expect(manifest).toHaveBeenCalledOnce()
+    expect(alarms).not.toHaveBeenCalled()
+    expect(state.invalidatedServerUrls).toEqual([])
+  })
+
+  it('probes a resumed socket and reconnects when it stays silent', async () => {
+    const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const addEventListener = vi.spyOn(window, 'addEventListener')
+    const { installServerSyncCoordinator } = await import('./server-sync-coordinator.js')
+    installServerSyncCoordinator()
+    const first = FakeWebSocket.instances[0]
+    if (first === undefined) throw new Error('live socket was not created')
+    first.open()
+    reconcileSocket(first, 0, 'correction', [])
+
+    const focus = addEventListener.mock.calls.find(([type]) => type === 'focus')?.[1]
+    if (typeof focus !== 'function') throw new Error('focus recovery listener was not installed')
+    focus(new Event('focus'))
+    expect(first.sent.at(-1)).toBe('ping')
+    await vi.advanceTimersByTimeAsync(10_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(FakeWebSocket.instances).toHaveLength(2)
   })
 
   it('coalesces malformed, out-of-order, and reconnect recovery into bounded reads', async () => {
@@ -508,6 +665,7 @@ describe('server sync coordinator', () => {
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
     socket.open()
+    reconcileSocket(socket, 7)
     await vi.advanceTimersByTimeAsync(0)
     expect(FakeWebSocket.instances).toHaveLength(1)
     status.mockClear()
@@ -555,6 +713,7 @@ describe('server sync coordinator', () => {
     const replacement = FakeWebSocket.instances[1]
     if (replacement === undefined) throw new Error('replacement live socket was not created')
     replacement.open()
+    reconcileSocket(replacement, 7)
     await vi.advanceTimersByTimeAsync(0)
     expect(status).toHaveBeenCalledOnce()
     expect(manifest).toHaveBeenCalledOnce()
@@ -637,6 +796,7 @@ describe('server sync coordinator', () => {
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
     socket.open()
+    reconcileSocket(socket, 7)
     vi.advanceTimersByTime(0)
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
     socket.receive({ type: 'status-reconcile', revision: 7 })
@@ -668,6 +828,7 @@ describe('server sync coordinator', () => {
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
     socket.open()
+    reconcileSocket(socket, 1)
     await vi.advanceTimersByTimeAsync(0)
     expect(refresh).toHaveBeenCalledOnce()
 
@@ -688,7 +849,7 @@ describe('server sync coordinator', () => {
     first.open()
 
     await vi.advanceTimersByTimeAsync(15 * 60_000)
-    expect(first.sent).toEqual(['ping'])
+    expect(first.sent.filter((message) => message === 'ping')).toEqual(['ping'])
     await vi.advanceTimersByTimeAsync(10_000)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
@@ -794,6 +955,7 @@ describe('server sync coordinator', () => {
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
     socket.open()
+    reconcileSocket(socket, 1)
     await vi.advanceTimersByTimeAsync(0)
     status.mockClear()
     compatibility.mockClear()
@@ -824,6 +986,7 @@ describe('server sync coordinator', () => {
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
     socket.open()
+    reconcileSocket(socket, 1)
     await vi.advanceTimersByTimeAsync(0)
     status.mockClear()
 

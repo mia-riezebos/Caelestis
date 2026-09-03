@@ -133,3 +133,21 @@ export const deleteCachedServerMismatchTile = async (
     } catch {}
   })
 }
+
+export const deleteCachedServerMismatches = async (serverUrl: string): Promise<void> => {
+  const prefix = `${serverUrl}\u0000`
+  await Promise.all(
+    [...tileOperations].flatMap(([key, operation]) => (key.startsWith(prefix) ? [operation] : [])),
+  )
+  const cache = await open()
+  if (cache === null) return
+  try {
+    const requests = await cache.keys()
+    await Promise.all(
+      requests.map((request) => {
+        const key = keyFrom(request)
+        return key?.startsWith(prefix) ? cache.delete(request) : false
+      }),
+    )
+  } catch {}
+}

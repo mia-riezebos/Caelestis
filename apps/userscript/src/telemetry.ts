@@ -4,6 +4,7 @@ import {
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   type PaintEvent,
+  parseTileKey,
   type ReconciliationReason,
   type StatusDelta,
   type StatusResponse,
@@ -21,7 +22,7 @@ import { count, warn } from './debug.js'
 import { readBoundedJsonResponse } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
 import { MAX_MANIFEST_TEMPLATES } from './server-manifest.js'
-import { invalidateServerMismatchTile } from './server-mismatch.js'
+import { invalidateServerMismatches, invalidateServerMismatchTile } from './server-mismatch.js'
 import { coalesceServerRead } from './server-read-coalescer.js'
 import {
   applyServerSyncDelta,
@@ -1010,7 +1011,10 @@ export const statusDeltaFrom = (value: unknown): StatusDelta | null => {
     !Array.isArray(candidate.templates) ||
     candidate.templates.length > MAX_MANIFEST_TEMPLATES ||
     !Array.isArray(candidate.removedTemplateIds) ||
-    candidate.removedTemplateIds.length > MAX_MANIFEST_TEMPLATES
+    candidate.removedTemplateIds.length > MAX_MANIFEST_TEMPLATES ||
+    (candidate.invalidatedTiles !== undefined &&
+      (!Array.isArray(candidate.invalidatedTiles) ||
+        candidate.invalidatedTiles.some((tile) => parseTileKey(tile) === null)))
   )
     return null
   const templates: TemplateStatus[] = []
@@ -1037,6 +1041,9 @@ export const statusDeltaFrom = (value: unknown): StatusDelta | null => {
     revision: Number(candidate.revision),
     templates,
     removedTemplateIds: [...removedTemplateIds],
+    ...(candidate.invalidatedTiles === undefined
+      ? {}
+      : { invalidatedTiles: candidate.invalidatedTiles }),
   }
 }
 
@@ -1062,6 +1069,10 @@ const applyStatusDelta = (
     String(delta.revision),
     () => {
       if (statuses.applyDelta(server, delta)) notifyStatusListeners()
+      for (const key of delta.invalidatedTiles ?? []) {
+        const tile = parseTileKey(key)
+        if (tile !== null) invalidateServerMismatchTile(server.url, tile)
+      }
     },
   )
 
@@ -1108,6 +1119,8 @@ const refreshStatus = async (
         ...(body.revision === undefined ? {} : { revision: String(body.revision) }),
       }
       applyServerSyncSnapshot(server, 'world', 'telemetry-status', startedRevision, result, () => {
+        if (result.revision !== undefined && result.revision !== startedRevision)
+          invalidateServerMismatches(server.url)
         statuses.replace(server, next)
         if (changed) notifyStatusListeners()
       })
@@ -1150,7 +1163,8 @@ const refreshAlarms = async (
       if (
         body === null ||
         !Array.isArray(body.alarms) ||
-        body.alarms.length > MAX_MANIFEST_TEMPLATES
+        body.alarms.length > MAX_MANIFEST_TEMPLATES ||
+        (body.version !== undefined && !/^[0-9a-f]{64}$/.test(body.version))
       )
         return { status: 'failed' }
       const parsed: Alarm[] = []
@@ -1188,7 +1202,10 @@ const refreshAlarms = async (
         changed = true
       }
       if (changed) notifyAlarmListeners()
-      return { status: changed ? 'changed' : 'unchanged' }
+      return {
+        status: changed ? 'changed' : 'unchanged',
+        ...(body.version === undefined ? {} : { revision: body.version }),
+      }
     },
   )
 }

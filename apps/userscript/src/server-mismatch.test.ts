@@ -15,11 +15,13 @@ const harness = vi.hoisted(() => ({
     write: vi.fn<(key: string, bytes: Uint8Array) => Promise<void>>(),
     deleteOne: vi.fn<(key: string) => Promise<void>>(),
     deleteTile: vi.fn<(serverUrl: string, tile: { x: number; y: number }) => Promise<void>>(),
+    deleteServer: vi.fn<(serverUrl: string) => Promise<void>>(),
   },
 }))
 
 vi.mock('./server-mismatch-cache.js', () => ({
   deleteCachedServerMismatch: harness.cache.deleteOne,
+  deleteCachedServerMismatches: harness.cache.deleteServer,
   deleteCachedServerMismatchTile: harness.cache.deleteTile,
   readCachedServerMismatch: harness.cache.read,
   writeCachedServerMismatch: harness.cache.write,
@@ -44,6 +46,7 @@ beforeEach(() => {
   harness.cache.write.mockResolvedValue()
   harness.cache.deleteOne.mockResolvedValue()
   harness.cache.deleteTile.mockResolvedValue()
+  harness.cache.deleteServer.mockResolvedValue()
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -142,6 +145,14 @@ describe('server mismatch masks', () => {
     invalidateServerMismatchTile(harness.server.url, { x: 3, y: 4 })
 
     expect(harness.cache.deleteTile).toHaveBeenCalledWith(harness.server.url, { x: 3, y: 4 })
+  })
+
+  it('discards every server mask after a missed live revision', async () => {
+    const { invalidateServerMismatches } = await import('./server-mismatch.js')
+
+    invalidateServerMismatches(harness.server.url)
+
+    expect(harness.cache.deleteServer).toHaveBeenCalledWith(harness.server.url)
   })
 
   it('rejects a response body that finishes after its tile was invalidated', async () => {

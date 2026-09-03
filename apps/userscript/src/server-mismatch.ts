@@ -2,6 +2,7 @@ import { decodeMismatchMask, type MismatchMask, TILE_SIZE, type TileCoord } from
 import { userscriptClientHeaders } from './client-metrics.js'
 import {
   deleteCachedServerMismatch,
+  deleteCachedServerMismatches,
   deleteCachedServerMismatchTile,
   readCachedServerMismatch,
   writeCachedServerMismatch,
@@ -42,6 +43,7 @@ const listeners = new Set<() => void>()
 let requestedThisFrame: Set<string> | null = null
 let useGeneration = 0
 const tileInvalidations = new Map<string, number>()
+const serverInvalidations = new Map<string, number>()
 
 const MAX_HELD_MASKS = 512
 const MAX_HELD_MASK_BYTES = 16 * 1024 * 1024
@@ -97,8 +99,10 @@ const readMask = async (
   const token = activeServerToken(server)
   const invalidationKey = invalidationKeyFor(server.url, tile)
   const invalidation = tileInvalidations.get(invalidationKey) ?? 0
+  const serverInvalidation = serverInvalidations.get(server.url) ?? 0
   const isCurrent = (): boolean =>
     isCurrentServerConnection(server) &&
+    (serverInvalidations.get(server.url) ?? 0) === serverInvalidation &&
     (tileInvalidations.get(invalidationKey) ?? 0) === invalidation
   const request = fetch(
     serverEndpoint(
@@ -269,6 +273,21 @@ export const invalidateServerMismatchTile = (serverUrl: string, tile: TileCoord)
     if (key.startsWith(prefix) && key.endsWith(suffix)) misses.delete(key)
   }
   void deleteCachedServerMismatchTile(serverUrl, tile)
+  if (changed) notify()
+}
+
+/** A missed status revision can cover any tile, so discard every derived mask for that server. */
+export const invalidateServerMismatches = (serverUrl: string): void => {
+  serverInvalidations.set(serverUrl, (serverInvalidations.get(serverUrl) ?? 0) + 1)
+  const prefix = `${serverUrl}\u0000`
+  let changed = false
+  for (const key of [...masks.keys()]) {
+    if (!key.startsWith(prefix)) continue
+    masks.delete(key)
+    changed = true
+  }
+  for (const key of [...misses.keys()]) if (key.startsWith(prefix)) misses.delete(key)
+  void deleteCachedServerMismatches(serverUrl)
   if (changed) notify()
 }
 
