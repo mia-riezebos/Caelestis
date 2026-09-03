@@ -270,7 +270,9 @@ export const invalidateServerMismatchTile = (serverUrl: string, tile: TileCoord)
     changed = true
   }
   for (const key of [...misses.keys()]) {
-    if (key.startsWith(prefix) && key.endsWith(suffix)) misses.delete(key)
+    if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue
+    misses.delete(key)
+    changed = true
   }
   void deleteCachedServerMismatchTile(serverUrl, tile)
   if (changed) notify()
@@ -286,7 +288,11 @@ export const invalidateServerMismatches = (serverUrl: string): void => {
     masks.delete(key)
     changed = true
   }
-  for (const key of [...misses.keys()]) if (key.startsWith(prefix)) misses.delete(key)
+  for (const key of [...misses.keys()]) {
+    if (!key.startsWith(prefix)) continue
+    misses.delete(key)
+    changed = true
+  }
   void deleteCachedServerMismatches(serverUrl)
   if (changed) notify()
 }

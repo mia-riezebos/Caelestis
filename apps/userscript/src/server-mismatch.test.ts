@@ -155,6 +155,23 @@ describe('server mismatch masks', () => {
     expect(harness.cache.deleteServer).toHaveBeenCalledWith(harness.server.url)
   })
 
+  it('wakes rendering when server invalidation removes a cached miss', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 204 })),
+    )
+    const { invalidateServerMismatches, onServerMismatchesChanged, serverMismatchMaskFor } =
+      await import('./server-mismatch.js')
+    const changed = vi.fn()
+    onServerMismatchesChanged(changed)
+
+    expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).toBeNull()
+    await vi.waitFor(() => expect(harness.cache.deleteOne).toHaveBeenCalledOnce())
+    invalidateServerMismatches(harness.server.url)
+
+    expect(changed).toHaveBeenCalledOnce()
+  })
+
   it('rejects a response body that finishes after its tile was invalidated', async () => {
     const body = encodeMismatchMask(
       { left: 0, top: 0, width: 1, height: 1 },
