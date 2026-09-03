@@ -151,15 +151,19 @@ export const buildTree = (
   }
 }
 
+/** Every published template inside a folder, including descendants. */
+export const folderTemplates = (folder: TreeFolder): Template[] => [
+  ...folder.templates.filter((entry) => entry.template.published).map((entry) => entry.template),
+  ...folder.folders.flatMap(folderTemplates),
+]
+
 /**
  * Every published template id inside a folder, for folder-scoped history/leaderboard queries.
  * Skip unpublished IDs because they do not count toward totals. The server also hides them from
  * read tokens.
  */
-export const folderTemplateIds = (folder: TreeFolder): string[] => [
-  ...folder.templates.filter((t) => t.template.published).map((t) => t.template.id),
-  ...folder.folders.flatMap(folderTemplateIds),
-]
+export const folderTemplateIds = (folder: TreeFolder): string[] =>
+  folderTemplates(folder).map((template) => template.id)
 
 /**
  * Sum each palette index across published descendants. Return null if any template lacks colour

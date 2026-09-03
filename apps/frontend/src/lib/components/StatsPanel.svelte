@@ -2,43 +2,55 @@
   import type {
     ContributionDay,
     HistoryBucket,
-    HistoryResponse,
     LeaderboardEntry,
+    Template,
   } from '@caelestis/shared'
   import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
+  import {
+    PACE_WINDOWS,
+    type PaceHistorySource,
+    averagePace,
+  } from '$lib/components/charts/progress-pace'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
   import type { Progress } from '$lib/tree'
 
   let {
-    templateIds,
+    templates,
     season,
     progress,
   }: {
-    templateIds: readonly string[]
+    templates: readonly Template[]
     season: number
     /** The scope's live status — the progress chart's anchor and the ETA's numerator. */
     progress: Progress
   } = $props()
 
+  const templateIds = $derived(templates.map((template) => template.id))
   const remainingPixels = $derived(progress.total - progress.completed)
 
-  // One fixed window; every pace horizon is a line in the chart, not a mode of the panel.
-  const WINDOW_SECONDS = 604_800
+  const DAY_SECONDS = 86_400
   const RESOLUTION = 900
-  // A rolling window needs at least two buckets. Ask the server for whatever retained tier can
-  // still satisfy the shortest line, without copying the server's decay ladder into the client.
-  const SHORTEST_PACE_WINDOW_SECONDS = 1_800
-  const MAX_PACE_BUCKET_SECONDS = SHORTEST_PACE_WINDOW_SECONDS / 2
 
-  const now = Math.floor(Date.now() / 1000)
-  const from = Math.floor((now - WINDOW_SECONDS) / RESOLUTION) * RESOLUTION
-  const to = Math.ceil(now / RESOLUTION) * RESOLUTION
+  const now = Math.floor(Date.now() / 1_000)
+  // Start at a day boundary so every retained tier can return the bucket containing creation.
+  const from = $derived.by(
+    () =>
+      Math.floor(
+        Math.min(...templates.map((template) => template.createdAt / 1_000)) / DAY_SECONDS,
+      ) * DAY_SECONDS,
+  )
+  const to = $derived.by(() => {
+    const finishedAt = templates.map((template) => template.finishedAt)
+    return finishedAt.some((finished) => finished === null)
+      ? now + 1
+      : Math.floor(Math.max(...finishedAt.map((finished) => finished ?? 0)) / 1_000) + 1
+  })
 
   let history = $state<HistoryBucket[] | null>(null)
-  let paceHistory = $state<HistoryResponse | null>(null)
+  let paceHistories = $state<readonly PaceHistorySource[]>([])
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   let failed = $state(false)
@@ -47,7 +59,7 @@
     if (templateIds.length === 0) return
     const generation = { cancelled: false }
     history = null
-    paceHistory = null
+    paceHistories = []
     failed = false
     getHistory(templateIds, from, to)
       .then((response) => {
@@ -56,12 +68,24 @@
       .catch(() => {
         if (!generation.cancelled) failed = true
       })
-    getHistory(templateIds, from, to, { maxResolution: MAX_PACE_BUCKET_SECONDS })
-      .then((response) => {
-        if (!generation.cancelled) paceHistory = response
-      })
-      // The coarse history still renders if a mixed-version deployment does not know this query.
-      .catch(() => {})
+    Promise.all(
+      PACE_WINDOWS.map(async (window): Promise<PaceHistorySource | null> => {
+        try {
+          const paceHistory = await getHistory(templateIds, from, to, {
+            // Two buckets are the minimum honest representation of a rolling window.
+            maxResolution: window.seconds / 2,
+          })
+          return { window: window.key, history: paceHistory }
+        } catch {
+          // The coarse history still renders against servers without bounded-tier queries.
+          return null
+        }
+      }),
+    ).then((responses) => {
+      if (!generation.cancelled) {
+        paceHistories = responses.filter((response) => response !== null)
+      }
+    })
     return () => {
       generation.cancelled = true
     }
@@ -89,18 +113,15 @@
 
   // Show the last 24 hours as pixels per hour.
   const pace = $derived.by(() => {
-    if (history === null) return null
-    const cutoff = to - 86_400
-    let placed = 0
-    let correct = 0
-    for (const bucket of history) {
-      if (bucket.bucketStart >= cutoff) {
-        placed += bucket.placed
-        correct += bucket.correct
-      }
-    }
-    return { placed: placed / 24, correct: correct / 24 }
+    const source = paceHistories.find((candidate) => candidate.window === '1d')
+    return source === undefined ? null : averagePace(source.history, to, DAY_SECONDS)
   })
+
+  const pacePeriod = $derived(
+    pace !== null && pace.hours < 23
+      ? `over ${pace.hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h within the last day`
+      : 'over the last day',
+  )
 
   const eta = $derived.by(() => {
     if (pace === null || pace.correct <= 0 || remainingPixels <= 0) return null
@@ -118,10 +139,10 @@
 <div class="flex flex-col gap-4">
   <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-      <h2 class="font-semibold">Progress &amp; pace <span class="text-xs font-normal text-base-content/50">last 7 days</span></h2>
+      <h2 class="font-semibold">Progress &amp; pace</h2>
       <div class="text-xs tabular-nums text-base-content/60">
         {#if pace !== null}
-          {Math.round(pace.placed).toLocaleString()} px/h over the last day
+          {Math.round(pace.placed).toLocaleString()} px/h {pacePeriod}
           {#if eta !== null}
             · done in {formatEta(eta)} at this pace
           {/if}
@@ -137,9 +158,7 @@
     {:else}
       <ProgressPaceChart
         buckets={history}
-        paceBuckets={paceHistory?.buckets ?? []}
-        paceResolution={paceHistory?.resolution ?? null}
-        paceFrom={paceHistory?.coverageStart ?? null}
+        {paceHistories}
         resolution={history[0]?.resolution ?? RESOLUTION}
         {from}
         {to}

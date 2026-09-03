@@ -22,6 +22,7 @@ afterEach(async () => {
   mounted = null
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   document.body.replaceChildren()
 })
 
@@ -43,9 +44,16 @@ describe('rolling pace retention', () => {
       target: document.body,
       props: {
         buckets,
-        paceBuckets,
-        paceResolution: 900,
-        paceFrom: 3_600,
+        paceHistories: [
+          {
+            window: '30m',
+            history: { buckets: paceBuckets, resolution: 900, coverageStart: seconds(3_600) },
+          },
+          {
+            window: '1h',
+            history: { buckets: paceBuckets, resolution: 900, coverageStart: seconds(3_600) },
+          },
+        ],
         resolution: 3_600,
         from: 0,
         to: 9_000,
@@ -78,9 +86,12 @@ describe('rolling pace retention', () => {
       target: document.body,
       props: {
         buckets,
-        paceBuckets,
-        paceResolution: 900,
-        paceFrom: 3_600,
+        paceHistories: [
+          {
+            window: '30m',
+            history: { buckets: paceBuckets, resolution: 900, coverageStart: seconds(3_600) },
+          },
+        ],
         resolution: 3_600,
         from: 0,
         to: 9_000,
@@ -106,5 +117,187 @@ describe('rolling pace retention', () => {
       (line) => line.getAttribute('class') === 'stroke-base-content/25',
     )
     expect(Number(hoverLine?.getAttribute('x1'))).toBe(firstPaceX)
+  })
+
+  it('starts coarser pace windows earlier without inventing pruned detail', () => {
+    stored.set('caelestis:pace-windows', JSON.stringify(['30m', '6h']))
+    const to = 90_000
+
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(21_600, 0)],
+        paceHistories: [
+          {
+            window: '30m',
+            history: {
+              buckets: [bucket(900, 72_000)],
+              resolution: 900,
+              coverageStart: seconds(72_000),
+            },
+          },
+          {
+            window: '6h',
+            history: {
+              buckets: [bucket(3_600, 0)],
+              resolution: 3_600,
+              coverageStart: seconds(0),
+            },
+          },
+        ],
+        resolution: 21_600,
+        from: 0,
+        to,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const shortLine = document.querySelector('path[data-pace-window="30m"]')
+    const coarseLine = document.querySelector('path[data-pace-window="6h"]')
+    const brush = document.querySelector('svg[role="slider"]')
+
+    expect(shortLine?.getAttribute('data-series-start')).toBe('73800')
+    expect(coarseLine?.getAttribute('data-series-start')).toBe('21600')
+    expect(Number(shortLine?.getAttribute('data-series-first-value'))).toBeGreaterThan(0)
+    expect(Number(coarseLine?.getAttribute('data-series-first-value'))).toBeGreaterThan(0)
+    expect(shortLine?.getAttribute('d')).toMatch(/^M/)
+    expect(coarseLine?.getAttribute('d')).toMatch(/^M/)
+    expect(brush?.getAttribute('aria-valuemin')).toBe('0')
+    expect(brush?.getAttribute('aria-valuemax')).toBe(String(to))
+  })
+
+  it('keeps lifecycle-wide time labels sparse enough to read', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(21_600, 0)],
+        resolution: 21_600,
+        from: 0,
+        to: 180 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    expect(document.querySelectorAll('text[data-axis="time"]')).toHaveLength(6)
+  })
+
+  it('distinguishes sub-day ticks across a two-day range', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(3_600, 0)],
+        resolution: 3_600,
+        from: 0,
+        to: 2 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map((label) =>
+      label.textContent?.trim(),
+    )
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+
+  it('distinguishes the repeated local hour during DST fall-back', () => {
+    vi.stubEnv('TZ', 'America/New_York')
+    const from = Date.parse('2026-11-01T03:00:00Z') / 1_000
+    expect(new Date(from * 1_000).getTimezoneOffset()).not.toBe(
+      new Date((from + 6 * 3_600) * 1_000).getTimezoneOffset(),
+    )
+
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(3_600, from)],
+        resolution: 3_600,
+        from,
+        to: from + 6 * 3_600,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map((label) =>
+      label.textContent?.trim(),
+    )
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+
+  it('does not synthesize progress points for empty lifecycle history', () => {
+    const emptyBuckets: HistoryBucket[] = []
+    emptyBuckets[Symbol.iterator] = () => {
+      throw new Error('empty history must not be iterated')
+    }
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: emptyBuckets,
+        resolution: 900,
+        from: 0,
+        to: 10 * 365 * 86_400,
+        anchorCorrect: 0,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    expect(document.body.textContent).toContain('No paint activity reported in this window.')
+    expect(document.querySelector('svg[role="img"]')).toBeNull()
+  })
+
+  it('distinguishes daily ticks across an offset-crossing fall-back', () => {
+    vi.stubEnv('TZ', 'Atlantic/Azores')
+    const from = Date.parse('2026-10-24T00:00:00Z') / 1_000
+    expect(new Date(from * 1_000).getTimezoneOffset()).not.toBe(
+      new Date((from + 4 * 86_400) * 1_000).getTimezoneOffset(),
+    )
+
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(86_400, from)],
+        resolution: 86_400,
+        from,
+        to: from + 4 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map((label) =>
+      label.textContent?.trim(),
+    )
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+
+  it('includes years on multi-year lifecycle ticks', () => {
+    const from = Date.UTC(2020, 6, 1, 12) / 1_000
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(21_600, from)],
+        resolution: 21_600,
+        from,
+        to: from + 3 * 365 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map(
+      (label) => label.textContent?.trim() ?? '',
+    )
+    expect(labels.length).toBeGreaterThan(1)
+    expect(labels.every((label) => /202(?:0|1|2|3)/.test(label))).toBe(true)
   })
 })

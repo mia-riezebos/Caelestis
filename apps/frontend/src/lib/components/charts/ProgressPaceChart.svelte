@@ -1,12 +1,17 @@
 <script lang="ts">
   import type { HistoryBucket } from '@caelestis/shared'
   import { persisted } from '$lib/persisted.svelte'
+  import {
+    PACE_WINDOWS,
+    type PaceHistorySource,
+    type PacePoint,
+    rollingPaceSeries,
+    timeTickStep,
+  } from '$lib/components/charts/progress-pace'
 
   let {
     buckets,
-    paceBuckets = [],
-    paceResolution = null,
-    paceFrom = null,
+    paceHistories = [],
     resolution,
     from,
     to,
@@ -14,12 +19,8 @@
     anchorMismatched,
   }: {
     buckets: readonly HistoryBucket[]
-    /** Recent fine-grained history used when the full-range tier cannot represent a short window. */
-    paceBuckets?: readonly HistoryBucket[]
-    /** Bucket width selected for `paceBuckets`, including when sparse history returns no rows. */
-    paceResolution?: number | null
-    /** First selected-resolution bucket whose absence means zero activity rather than pruned data. */
-    paceFrom?: number | null
+    /** One server-selected retained source for each rolling window. */
+    paceHistories?: readonly PaceHistorySource[]
     /** Bucket width in seconds; buckets are summed across templates per bucket start. */
     resolution: number
     from: number
@@ -38,16 +39,6 @@
    * Fetch deltas once and derive each chart series here. Stacked areas show correct and mismatched
    * pixels. Rolling pace windows use the right axis. Longer windows use darker, thicker lines.
    */
-  const WINDOWS = [
-    { key: '30m', seconds: 1_800 },
-    { key: '1h', seconds: 3_600 },
-    { key: '2h', seconds: 7_200 },
-    { key: '3h', seconds: 10_800 },
-    { key: '6h', seconds: 21_600 },
-    { key: '12h', seconds: 43_200 },
-    { key: '1d', seconds: 86_400 },
-  ] as const
-
   const storedWindows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h'])
   const enabledWindows = $derived(new Set(storedWindows.value))
   const toggleWindow = (key: string): void => {
@@ -70,6 +61,7 @@
   }
 
   const points = $derived.by<Point[]>(() => {
+    if (buckets.length === 0) return []
     const byStart = new Map<number, { placed: number; correct: number; repairs: number }>()
     for (const bucket of buckets) {
       const entry = byStart.get(bucket.bucketStart) ?? { placed: 0, correct: 0, repairs: 0 }
@@ -133,18 +125,14 @@
 
   const visiblePoints = $derived(points.filter((p) => p.t >= selFrom && p.t <= selTo))
 
-  interface PacePoint {
-    t: number
-    cumPlaced: number
-  }
-
-  const retainedPacePoints = $derived.by<PacePoint[]>(() => {
-    if (paceResolution === null || paceFrom === null) return []
+  const retainedPacePoints = (source: PaceHistorySource): PacePoint[] => {
+    const { buckets: paceBuckets, coverageStart, resolution: paceResolution } = source.history
+    if (paceResolution === undefined || coverageStart === undefined) return []
     const placedByStart = new Map<number, number>()
     for (const bucket of paceBuckets) {
       placedByStart.set(bucket.bucketStart, (placedByStart.get(bucket.bucketStart) ?? 0) + bucket.placed)
     }
-    const firstBucket = Math.ceil(paceFrom / paceResolution) * paceResolution
+    const firstBucket = Math.ceil(coverageStart / paceResolution) * paceResolution
     const filled: PacePoint[] = []
     let cumPlaced = 0
     for (let t = firstBucket; t < to; t += paceResolution) {
@@ -152,39 +140,23 @@
       filled.push({ t, cumPlaced })
     }
     return filled
-  })
-
-  /** px/h at each point for one window, clipped where the source tier is not fully covered. */
-  const paceSeries = (
-    source: readonly PacePoint[],
-    bucketSeconds: number,
-    windowSeconds: number,
-  ): { t: number; v: number }[] => {
-    const series: { t: number; v: number }[] = []
-    const steps = Math.round(windowSeconds / bucketSeconds)
-    for (let i = steps; i < source.length; i++) {
-      const now = source[i]
-      const before = source[i - steps]
-      if (now === undefined || before === undefined) continue
-      series.push({ t: now.t, v: ((now.cumPlaced - before.cumPlaced) / windowSeconds) * 3_600 })
-    }
-    return series
   }
 
   const paceWindows = $derived(
-    WINDOWS.map((window) => {
+    PACE_WINDOWS.map((window) => {
+      const retained = paceHistories.find((source) => source.window === window.key)
       const source = windowUsable(window.seconds, resolution)
         ? { points, resolution }
-        : paceResolution !== null && windowUsable(window.seconds, paceResolution)
-          ? { points: retainedPacePoints, resolution: paceResolution }
+        : retained?.history.resolution !== undefined &&
+            windowUsable(window.seconds, retained.history.resolution)
+          ? { points: retainedPacePoints(retained), resolution: retained.history.resolution }
           : null
-      const series =
+      const fullSeries =
         source === null
           ? []
-          : paceSeries(source.points, source.resolution, window.seconds).filter(
-              (point) => point.t >= selFrom && point.t <= selTo,
-            )
-      return { ...window, usable: series.length > 0, series }
+          : rollingPaceSeries(source.points, source.resolution, window.seconds)
+      const series = fullSeries.filter((point) => point.t >= selFrom && point.t <= selTo)
+      return { ...window, usable: fullSeries.length > 0, fullSeries, series }
     }),
   )
 
@@ -192,7 +164,9 @@
     paceWindows.filter((w) => enabledWindows.has(w.key) && w.usable).map(
       (w, _, all) => ({
         ...w,
-        rank: WINDOWS.findIndex((x) => x.key === w.key) / Math.max(1, WINDOWS.length - 1),
+        rank:
+          PACE_WINDOWS.findIndex((x) => x.key === w.key) /
+          Math.max(1, PACE_WINDOWS.length - 1),
         count: all.length,
       }),
     ),
@@ -262,21 +236,41 @@
   }
 
   const yTicks = $derived([0.25, 0.5, 0.75, 1])
+  const DAY_SECONDS = 86_400
+  const tickStep = $derived(timeTickStep(selTo - selFrom, width - pad.left - pad.right))
 
   const xTicks = $derived.by(() => {
     const ticks: number[] = []
-    const span = selTo - selFrom
-    const step =
-      span > 86_400 * 3 ? 86_400 : span > 86_400 ? 21_600 : span > 21_600 ? 3_600 * 4 : 3_600
-    for (let t = Math.ceil(selFrom / step) * step; t < selTo; t += step) ticks.push(t)
+    for (let t = Math.ceil(selFrom / tickStep) * tickStep; t < selTo; t += tickStep) {
+      ticks.push(t)
+    }
     return ticks
   })
 
   const formatTick = (t: number): string => {
     const date = new Date(t * 1000)
-    return selTo - selFrom > 86_400 * 3
-      ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-      : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    const rangeStart = new Date(selFrom * 1_000)
+    const rangeEnd = new Date((selTo - 1) * 1_000)
+    const crossesDay =
+      rangeStart.getFullYear() !== rangeEnd.getFullYear() ||
+      rangeStart.getMonth() !== rangeEnd.getMonth() ||
+      rangeStart.getDate() !== rangeEnd.getDate()
+    const crossesOffset = rangeStart.getTimezoneOffset() !== rangeEnd.getTimezoneOffset()
+    if (!crossesDay) {
+      return date.toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        ...(crossesOffset ? { timeZoneName: 'shortOffset' } : {}),
+      })
+    }
+    const crossesYear = rangeStart.getFullYear() !== rangeEnd.getFullYear()
+    return date.toLocaleString(undefined, {
+      ...(crossesYear ? { year: 'numeric' } : {}),
+      month: 'short',
+      day: 'numeric',
+      ...(tickStep < DAY_SECONDS || crossesOffset ? { hour: '2-digit', minute: '2-digit' } : {}),
+      ...(crossesOffset ? { timeZoneName: 'shortOffset' } : {}),
+    })
   }
 
   const formatCount = (v: number): string =>
@@ -447,8 +441,8 @@
         <span
           class="rounded-full"
           style:width="10px"
-          style:height="{paceWidth(index / (WINDOWS.length - 1)) + 1}px"
-          style:background={paceColor(index / (WINDOWS.length - 1))}
+          style:height="{paceWidth(index / (PACE_WINDOWS.length - 1)) + 1}px"
+          style:background={paceColor(index / (PACE_WINDOWS.length - 1))}
         ></span>
         {window.key}
       </button>
@@ -495,7 +489,13 @@
         <text x={width - pad.right + 6} y={pad.top - 2} text-anchor="start" class="fill-base-content/40 text-[9px]">px/h</text>
       {/if}
       {#each xTicks as tick (tick)}
-        <text x={x(tick)} y={height - 6} text-anchor="middle" class="fill-base-content/50 text-[10px]">
+        <text
+          data-axis="time"
+          x={x(tick)}
+          y={height - 6}
+          text-anchor="middle"
+          class="fill-base-content/50 text-[10px]"
+        >
           {formatTick(tick)}
         </text>
       {/each}
@@ -518,7 +518,8 @@
       {#each activePaces as pace (pace.key)}
         <path
           data-pace-window={pace.key}
-          data-series-start={pace.series[0]?.t}
+          data-series-start={pace.fullSeries[0]?.t}
+          data-series-first-value={pace.fullSeries[0]?.v}
           d={linePath(pace.series)}
           fill="none"
           stroke={paceColor(pace.rank)}
