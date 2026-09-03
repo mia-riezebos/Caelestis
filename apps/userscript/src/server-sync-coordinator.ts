@@ -13,7 +13,6 @@ import {
   uuidV7,
 } from '@caelestis/shared'
 import { userscriptVersion } from './client-metrics.js'
-import { invalidateServerMismatches } from './server-mismatch.js'
 import { canonicalServerUrl, serverEndpoint } from './server-url.js'
 import {
   type ConnectedServer,
@@ -155,6 +154,18 @@ const activeDocument = (): boolean =>
 const scheduleKey = (server: ConnectedServer, scope: string, resource: string): string =>
   `${server.url}\u0000${server.season ?? ''}\u0000${scope}\u0000${resource}`
 
+const scheduleFor = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+): Schedule | undefined => {
+  const schedule = schedules.get(scheduleKey(server, scope, resource))
+  return schedule !== undefined &&
+    serverConnectionIdentity(schedule.server) === serverConnectionIdentity(server)
+    ? schedule
+    : undefined
+}
+
 const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
   server.isAdmin ? 'admin' : 'public'
 
@@ -214,7 +225,7 @@ const applyResult = (
 ): void => {
   if (!isCurrentServerConnection(server) || result.status === 'skipped') return
   const key = scheduleKey(server, scope, resource)
-  const previous = schedules.get(key)
+  const previous = scheduleFor(server, scope, resource)
   const revisionChanged = result.revision !== undefined && result.revision !== previous?.revision
   const changed = result.status === 'changed' || revisionChanged
   const unchanged = result.status === 'failed' || changed ? 0 : (previous?.unchanged ?? 0) + 1
@@ -244,7 +255,7 @@ const deferHealthyLiveSchedules = (server: ConnectedServer): void => {
     const scope = resource.scope(server)
     if (scope === null) continue
     const key = scheduleKey(server, scope, resource.id)
-    const schedule = schedules.get(key)
+    const schedule = scheduleFor(server, scope, resource.id)
     if (schedule === undefined || schedule.failed) continue
     schedules.set(key, {
       ...schedule,
@@ -301,7 +312,7 @@ const sweep = async (
       const targeted = explicit?.servers.get(serverConnectionIdentity(server))
       if (requested !== null && explicit?.allReason === undefined && targeted === undefined)
         continue
-      const scheduled = schedules.get(key)
+      const scheduled = scheduleFor(server, scope, resource.id)
       if (requested === null && scheduled !== undefined && scheduled.dueAt > now) continue
       const reason = targeted ?? explicit?.allReason ?? 'interval'
       work.push(() =>
@@ -394,7 +405,7 @@ export const serverSyncRevision = (
   server: ConnectedServer,
   scope: string,
   resource: string,
-): string | undefined => schedules.get(scheduleKey(server, scope, resource))?.revision
+): string | undefined => scheduleFor(server, scope, resource)?.revision
 
 const liveProjectionResource = (resource: string): resource is LiveProjectionResource =>
   resource === 'world-manifest' ||
@@ -658,7 +669,6 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
       currentRevision < event.revision ||
       (event.mode === 'snapshot' && currentRevision === event.revision)
     if (refreshStatus) {
-      invalidateServerMismatches(server.url)
       requestServerSync('reconnect', 'telemetry-status', server)
     }
     for (const projection of event.projections) {

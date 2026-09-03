@@ -1021,6 +1021,39 @@ describe('server sync coordinator', () => {
     expect(status).toHaveBeenCalledWith(capabilityWithdrawn, 'state-change', 'compatibility-poll')
   })
 
+  it('does not reuse revisions after a server is removed and re-added', async () => {
+    const firstServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
+    state.current = { servers: [firstServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource } = await import(
+      './server-sync-coordinator.js'
+    )
+    const status = vi.fn(async () => ({ status: 'unchanged' as const, revision: '7' }))
+    registerServerSyncResource({
+      id: 'telemetry-status',
+      scope: () => 'world',
+      refresh: status,
+      live: true,
+    })
+    installServerSyncCoordinator()
+    const firstSocket = FakeWebSocket.instances[0]
+    if (firstSocket === undefined) throw new Error('live socket was not created')
+    firstSocket.open()
+    reconcileSocket(firstSocket, 7)
+    await vi.advanceTimersByTimeAsync(0)
+
+    state.current = { servers: [] }
+    state.listener?.()
+    const replacement = { ...firstServer }
+    state.current = { servers: [replacement] }
+    state.listener?.()
+    const replacementSocket = FakeWebSocket.instances[1]
+    if (replacementSocket === undefined) throw new Error('replacement socket was not created')
+    replacementSocket.open()
+
+    expect(socketStateVector(replacementSocket).revision).toBeNull()
+  })
+
   it('falls back once when an advertised live socket never opens', async () => {
     const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
     state.current = { servers: [liveServer] }
