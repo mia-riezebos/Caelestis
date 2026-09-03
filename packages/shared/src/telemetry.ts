@@ -135,6 +135,8 @@ export interface StatusDelta {
   readonly revision: number
   readonly templates: readonly TemplateStatus[]
   readonly removedTemplateIds: readonly string[]
+  /** Every cached mismatch artifact may be stale because the delta crosses an unknown revision. */
+  readonly invalidateAllTiles?: true
   /** Canvas tiles whose immutable mismatch artifacts changed with this revision. */
   readonly invalidatedTiles?: readonly TileKey[]
 }

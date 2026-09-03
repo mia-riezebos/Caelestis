@@ -1012,6 +1012,8 @@ export const statusDeltaFrom = (value: unknown): StatusDelta | null => {
     candidate.templates.length > MAX_MANIFEST_TEMPLATES ||
     !Array.isArray(candidate.removedTemplateIds) ||
     candidate.removedTemplateIds.length > MAX_MANIFEST_TEMPLATES ||
+    (candidate.invalidateAllTiles !== undefined && candidate.invalidateAllTiles !== true) ||
+    (candidate.invalidateAllTiles === true && candidate.invalidatedTiles !== undefined) ||
     (candidate.invalidatedTiles !== undefined &&
       (!Array.isArray(candidate.invalidatedTiles) ||
         candidate.invalidatedTiles.some((tile) => parseTileKey(tile) === null)))
@@ -1041,6 +1043,7 @@ export const statusDeltaFrom = (value: unknown): StatusDelta | null => {
     revision: Number(candidate.revision),
     templates,
     removedTemplateIds: [...removedTemplateIds],
+    ...(candidate.invalidateAllTiles === true ? { invalidateAllTiles: true as const } : {}),
     ...(candidate.invalidatedTiles === undefined
       ? {}
       : { invalidatedTiles: candidate.invalidatedTiles }),
@@ -1069,9 +1072,13 @@ const applyStatusDelta = (
     String(delta.revision),
     () => {
       if (statuses.applyDelta(server, delta)) notifyStatusListeners()
-      for (const key of delta.invalidatedTiles ?? []) {
-        const tile = parseTileKey(key)
-        if (tile !== null) invalidateServerMismatchTile(server.url, tile)
+      if (delta.invalidateAllTiles === true) {
+        invalidateServerMismatches(server.url)
+      } else {
+        for (const key of delta.invalidatedTiles ?? []) {
+          const tile = parseTileKey(key)
+          if (tile !== null) invalidateServerMismatchTile(server.url, tile)
+        }
       }
     },
   )

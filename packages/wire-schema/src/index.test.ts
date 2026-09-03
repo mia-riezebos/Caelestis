@@ -1442,6 +1442,10 @@ describe('cross-field and time-unit schemas', () => {
       removedTemplateIds: [TEMPLATE_ID],
     }
     expect(Schema.decodeUnknownSync(StatusDelta)(delta)).toEqual(delta)
+    expect(Schema.decodeUnknownSync(StatusDelta)({ ...delta, invalidateAllTiles: true })).toEqual({
+      ...delta,
+      invalidateAllTiles: true,
+    })
     expect(
       Schema.decodeUnknownSync(TileOfferResponse)({
         wanted: [],

@@ -85,11 +85,14 @@ const applyStatusProjectionMutations = async (
   return repairCommittedStatusProjection(readModel, season, {
     baseRevision: first.baseRevision,
     revision: last.revision,
-    ...(contiguous ? {} : { forceReconcile: true }),
-    invalidatedTiles: [
-      ...new Set(mutations.flatMap((mutation) => mutation.invalidatedTiles ?? [])),
-    ],
-    changes: contiguous ? mutations.flatMap((mutation) => mutation.changes) : [],
+    ...(contiguous
+      ? {
+          invalidatedTiles: [
+            ...new Set(mutations.flatMap((mutation) => mutation.invalidatedTiles ?? [])),
+          ],
+          changes: mutations.flatMap((mutation) => mutation.changes),
+        }
+      : { forceReconcile: true, changes: [] }),
   })
 }
 

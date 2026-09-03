@@ -718,6 +718,7 @@ export const StatusDelta: Schema.Codec<Shared.StatusDelta> = Schema.Struct({
   revision: NonNegativeInteger,
   templates: boundedArray(TemplateStatus, MAX_MANIFEST_TEMPLATES),
   removedTemplateIds: boundedArray(Identifier, MAX_MANIFEST_TEMPLATES),
+  invalidateAllTiles: Schema.optionalKey(Schema.Literal(true)),
   invalidatedTiles: Schema.optionalKey(boundedArray(TileKey, MAX_MANIFEST_TILES)),
 }).pipe(
   Schema.check(
@@ -729,6 +730,10 @@ export const StatusDelta: Schema.Codec<Shared.StatusDelta> = Schema.Struct({
         new Set(delta.removedTemplateIds).size === delta.removedTemplateIds.length &&
         delta.templates.every((status) => !delta.removedTemplateIds.includes(status.templateId)),
       'status delta revisions must be ordered and template ids must be unique',
+    ),
+    booleanFilter(
+      (delta) => !(delta.invalidateAllTiles === true && delta.invalidatedTiles !== undefined),
+      'status delta invalidation must be either complete or tile-specific',
     ),
   ),
 )

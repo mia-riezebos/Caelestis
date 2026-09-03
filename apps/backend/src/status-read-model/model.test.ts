@@ -162,7 +162,7 @@ describe('season status read model', () => {
     })
   })
 
-  it('preserves tile invalidations whenever a mutation reconstructs the projection', async () => {
+  it('invalidates every mismatch tile whenever a mutation reconstructs the projection', async () => {
     const test = harness()
     await test.model.reconcileSnapshot('public')
     test.setPublic([status('public', 1)])
@@ -176,8 +176,8 @@ describe('season status read model', () => {
         changes: [],
       }),
     ).resolves.toMatchObject({
-      public: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
-      admin: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
+      public: { baseRevision: 1, revision: 2, invalidateAllTiles: true },
+      admin: { baseRevision: 1, revision: 2, invalidateAllTiles: true },
     })
 
     const forced = harness()
@@ -193,8 +193,8 @@ describe('season status read model', () => {
         changes: [],
       }),
     ).resolves.toMatchObject({
-      public: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
-      admin: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
+      public: { baseRevision: 1, revision: 2, invalidateAllTiles: true },
+      admin: { baseRevision: 1, revision: 2, invalidateAllTiles: true },
     })
   })
 

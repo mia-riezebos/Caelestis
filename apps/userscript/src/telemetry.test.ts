@@ -278,6 +278,29 @@ describe('server telemetry client', () => {
     expect(mismatch.invalidateTile).toHaveBeenCalledWith(server.url, { x: 1, y: 2 })
   })
 
+  it('invalidates every mismatch mask when a live status gap has unknown tiles', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ revision: 1, templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    const resource = coordinator.resources.get('telemetry-status')
+    expect(
+      resource?.applyLiveEvent?.(server, {
+        baseRevision: 1,
+        revision: 3,
+        templates: [],
+        removedTemplateIds: [],
+        invalidateAllTiles: true,
+      }),
+    ).toBe(true)
+    expect(mismatch.invalidateServer).toHaveBeenCalledWith(server.url)
+    expect(mismatch.invalidateTile).not.toHaveBeenCalled()
+  })
+
   it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
     vi.stubGlobal(
       'fetch',
