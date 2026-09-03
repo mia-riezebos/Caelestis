@@ -247,9 +247,9 @@ beforeEach(() => {
 })
 
 describe('Wplace paint palette progress', () => {
-  it('shows pixels left for only the focused template and hides a completed colour', async () => {
+  it('shows pixels left for only the focused template while progress is still loading', async () => {
     harness.localProgress = [
-      { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 112 },
+      { index: 0, completed: 12, mismatched: 0, unpainted: 0, known: 12, total: 112 },
     ]
     const swatch = document.createElement('button')
     swatch.id = 'color-1'
@@ -264,9 +264,8 @@ describe('Wplace paint palette progress', () => {
       swatch.querySelector<HTMLElement & { model?: { value: string } }>(
         'caelestis-palette-progress',
       )?.model?.value,
-    ).toBe('…')
-    expect(swatch.getAttribute('aria-label')).toContain('Checking progress')
-    expect(swatch.getAttribute('aria-label')).not.toContain('112 pixels left')
+    ).toBe('100')
+    expect(swatch.getAttribute('aria-label')).toContain('100 pixels left')
 
     harness.localProgress = [
       { index: 0, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },

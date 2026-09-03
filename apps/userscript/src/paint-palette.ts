@@ -534,17 +534,6 @@ const render = (): void => {
     const existing = element.querySelector<CaelestisPaletteProgress>(
       ':scope > caelestis-palette-progress',
     )
-    if (entry !== undefined && entry.known < entry.total) {
-      const label =
-        originalLabels.get(element) ?? element.getAttribute('aria-label') ?? `Colour ${index + 1}`
-      originalLabels.set(element, label)
-      element.setAttribute('aria-label', `${label}. Checking progress for the focused template.`)
-      const badge = existing ?? document.createElement('caelestis-palette-progress')
-      badge.className = 'caelestis-palette-progress'
-      if (badge.model?.value !== '…') badge.model = { value: '…' }
-      if (existing === null) element.appendChild(badge)
-      continue
-    }
     const remaining = entry === undefined ? 0 : Math.max(0, entry.total - entry.completed)
     if (remaining === 0) {
       existing?.remove()
