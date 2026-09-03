@@ -20,7 +20,7 @@ describe('progress meter', () => {
     const meter = document.querySelector('[role="meter"]')
     expect(meter?.getAttribute('aria-valuenow')).toBe('75')
     expect(meter?.getAttribute('aria-label')).toBe('painted 75%, scanned 90%')
-    expect(document.body.textContent).toContain('75.0%')
+    expect(document.body.textContent).toContain('75%')
     expect(document.querySelector('.alarm-text')).not.toBeNull()
 
     void unmount(component)

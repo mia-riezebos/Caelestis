@@ -248,6 +248,8 @@ export type TreeIcon =
   | 'trash'
   | 'eye'
   | 'eyeOff'
+  | 'expandMore'
+  | 'expandLess'
   | 'reset'
   | 'download'
 

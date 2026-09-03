@@ -68,6 +68,8 @@
   const emit = (intent: TemplateTreeIntent): void => onIntent?.(intent)
   const percent = (progress: TreeProgressModel): number =>
     progress.total <= 0 ? 0 : Math.round(Math.min(1, Math.max(0, progress.completed / progress.total)) * 100)
+  const scannedPercent = (progress: TreeProgressModel): number =>
+    progress.total <= 0 ? 0 : Math.round(Math.min(1, Math.max(0, progress.known / progress.total)) * 100)
 
   const paths: Record<TreeIcon, string> = {
     folder: 'M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Z',
@@ -85,6 +87,8 @@
     trash: 'M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360Z',
     eye: 'M480-320q75 0 127.5-52.5T660-500q0-75-52.5-127.5T480-680q-75 0-127.5 52.5T300-500q0 75 52.5 127.5T480-320Zm0-72q-45 0-76.5-31.5T372-500q0-45 31.5-76.5T480-608q45 0 76.5 31.5T588-500q0 45-31.5 76.5T480-392Zm0 192q-146 0-266-81.5T40-500q54-137 174-218.5T480-800q146 0 266 81.5T920-500q-54 137-174 218.5T480-200Z',
     eyeOff: 'm637-425-62-62q4-38-23-65.5T487-576l-62-62q13-5 26-7.5t29-2.5q75 0 127.5 52.5T660-468q0 16-2.5 29t-7.5 26ZM792-270l-58-58q38-29 67.5-63.5T851-468q-50-101-143.5-160.5T500-688q-29 0-57 4t-55 12l-62-62q41-17 84.5-25.5T500-768q152 0 275.5 82T956-468q-23 59-61 109.5T792-270Zm14 208L648-220q-35 11-71.5 16.5T500-198q-152 0-275.5-82T44-468q22-57 58-104.5t84-83.5L64-778l51-51 742 742-51 25ZM238-604q-35 28-65 62t-49 74q50 101 143.5 160.5T500-248q26 0 51-3t50-10l-53-53q-13 5-26 7.5t-28 2.5q-75 0-127.5-52.5T314-484q0-15 2.5-28t7.5-26l-86-66Z',
+    expandMore: 'M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z',
+    expandLess: 'M296-320l-56-56 240-240 240 240-56 56-184-184-184 184Z',
     reset: 'M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z',
     download: 'M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z',
   }
@@ -258,7 +262,9 @@
   <div bind:this={treeElement} class="tree" role="tree" tabindex="-1" ondrop={drop} ondragend={endDrag}>
     {#each model.entries as entry (entry.key)}
       {#if entry.type === 'row'}
-        {@const disclosure = disclosures.get(entry.key)}
+        {@const requestedDisclosure = disclosures.get(entry.key)}
+        {@const canShowExpandedProgress = entry.progress !== undefined && (!entry.container || entry.expanded)}
+        {@const disclosure = !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
         {@const connectorWidth = (entry.branches?.length ?? 0) * 18 + (entry.container ? 0 : 20)}
         <div
           class:muted={entry.muted}
@@ -307,31 +313,68 @@
           {/if}
           {#if entry.meta !== undefined}<span class="meta">{entry.meta}</span>{/if}
           {#if entry.lifecycle !== undefined}<TemplateState compact {...entry.lifecycle} />{/if}
-          {#if entry.progress !== undefined}
-            <button class="progress" type="button" aria-label={`${percent(entry.progress)}% complete`} onclick={(event) => { event.stopPropagation(); if (disclosure === undefined) disclosures.set(entry.key, 'expanded'); else disclosures.delete(entry.key) }}>
-              <ProgressMeter progress={entry.progress} size="sm" />
-            </button>
+          {#if entry.progress !== undefined && disclosure === undefined}
+            <span class="row-tail">
+              <span class="progress" aria-label={`${percent(entry.progress)}% complete`}>
+                <ProgressMeter progress={entry.progress} size="sm" />
+              </span>
+              <span class="actions">
+                {#each entry.actions ?? [] as item (item.id)}
+                  <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
+                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+                  </button>
+                {/each}
+                <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded') }}>
+                  <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
+                </button>
+              </span>
+            </span>
+          {:else if (entry.actions?.length ?? 0) > 0 || (entry.progress !== undefined && disclosure !== undefined)}
+            <span class="actions">
+              {#each entry.actions ?? [] as item (item.id)}
+                <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
+                  <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+                </button>
+              {/each}
+              {#if entry.progress !== undefined && disclosure !== undefined}
+                <button class="icon-action" type="button" title="Collapse progress" aria-label="Collapse progress" onclick={(event) => { event.stopPropagation(); disclosures.delete(entry.key) }}>
+                  <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandLess} /></svg>
+                </button>
+              {/if}
+            </span>
           {/if}
-          <span class="actions">
-            {#each entry.actions ?? [] as item (item.id)}
-              <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-                <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
-              </button>
-            {/each}
-          </span>
           <label class="visibility" title={entry.visible ? `Hide ${entry.name}` : `Show ${entry.name}`}>
             <input type="checkbox" checked={entry.visible} aria-label={`Show ${entry.name}`} onclick={(event) => event.stopPropagation()} onchange={(event) => emit({ type: 'toggle-visible', key: entry.key, visible: event.currentTarget.checked })} />
             <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
           </label>
           {#if disclosure !== undefined && entry.progress !== undefined}
             <div class="progress-detail">
-              <span>{entry.progress.completed.toLocaleString()} completed</span>
-              <span>{entry.progress.mismatched.toLocaleString()} mismatched</span>
-              <span>{entry.progress.unpainted.toLocaleString()} unpainted</span>
+              <div class="progress-disclosure">
+                <div class="progress-summary">
+                  <ProgressMeter progress={entry.progress} size="sm" />
+                  <div class="progress-legend">
+                    <span class="completed" title="Completed">{entry.progress.completed.toLocaleString()}</span>
+                    <span class="mismatched" title="Mismatched">{entry.progress.mismatched.toLocaleString()}</span>
+                    <span class="unpainted" title="Unpainted">{entry.progress.unpainted.toLocaleString()}</span>
+                    {#if entry.progress.known < entry.progress.total}<span class="coverage">{scannedPercent(entry.progress)}% scanned</span>{/if}
+                  </div>
+                </div>
+                {#if entry.colourProgress !== undefined}
+                  <button class="icon-action progress-detail-action" type="button" title={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} aria-label={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} onclick={(event) => { event.stopPropagation(); disclosures.set(entry.key, disclosure === 'colours' ? 'expanded' : 'colours') }}>
+                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.palette} /></svg>
+                  </button>
+                {/if}
+              </div>
               {#if disclosure === 'colours' && entry.colourProgress !== undefined}
-                <div class="colours">{#each entry.colourProgress as colour}<span title={colour.name} style:background={colour.hex}></span>{/each}</div>
-              {:else if entry.colourProgress !== undefined}
-                <button type="button" onclick={(event) => { event.stopPropagation(); disclosures.set(entry.key, 'colours') }}>Colour progress</button>
+                <div class="colour-progress">
+                  {#each entry.colourProgress as colour (colour.index)}
+                    <div class="colour-progress-row" aria-label={`${colour.name}, ${percent(colour)}% complete`}>
+                      <span class="colour-swatch" style:background={colour.hex}></span>
+                      <span class="colour-name" title={colour.name}>{colour.name}</span>
+                      <ProgressMeter progress={colour} size="sm" completedColour={colour.hex} />
+                    </div>
+                  {/each}
+                </div>
               {/if}
             </div>
           {/if}
@@ -375,7 +418,10 @@
   .name { min-inline-size: 2rem; overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
   .rename { min-inline-size: 4rem; flex: 1; }
   .meta { color: var(--caelestis-muted-text); font-size: 0.75rem; }
-  .actions { display: flex; align-items: center; margin-inline-start: auto; }
+  .actions { display: flex; align-items: center; margin-inline-start: auto; transition: opacity 100ms ease-out; }
+  .row-tail { display: grid; flex: 0 0 6.5rem; inline-size: 6.5rem; min-inline-size: 0; align-items: center; }
+  .row-tail > * { grid-area: 1 / 1; }
+  .row-tail > .actions { justify-self: end; }
   .icon-action { display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; min-inline-size: 2rem; min-block-size: 2rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; }
   .icon-action:hover { background: color-mix(in oklch, currentColor 8%, transparent); }
   .visibility { position: relative; display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; cursor: pointer; }
@@ -383,13 +429,28 @@
   .visibility > span { display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border: 1px solid color-mix(in oklab, currentColor 44%, transparent); border-radius: 999px; }
   .visibility :global(svg) { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
-  .progress { inline-size: 6.5rem; padding: 0; border: 0; background: transparent; color: inherit; }
-  .progress-detail { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 0.5rem; padding: 0.2rem 2.25rem 0.35rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }
-  .colours { display: flex; gap: 2px; inline-size: 100%; }
-  .colours span { flex: 1; block-size: 0.35rem; border-radius: 999px; }
+  .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
+  .progress-detail { display: flex; flex-basis: 100%; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
+  .progress-summary { display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
+  .progress-summary :global(.meter-wrap) { inline-size: 100%; }
+  .progress-detail-action { position: absolute; inset-block-start: -0.4375rem; inset-inline-end: 0; inline-size: 1.5rem; block-size: 1.5rem; min-inline-size: 1.5rem; min-block-size: 1.5rem; }
+  .progress-legend { display: flex; min-inline-size: 0; align-items: center; gap: 0.625rem; font-size: 0.625rem; font-variant-numeric: tabular-nums; }
+  .progress-legend span { display: inline-flex; align-items: center; gap: 0.2rem; }
+  .progress-legend span::before { content: ''; inline-size: 0.375rem; block-size: 0.375rem; border-radius: 999px; background: currentColor; }
+  .progress-legend .completed { color: var(--caelestis-success); }
+  .progress-legend .mismatched { color: var(--caelestis-danger); }
+  .progress-legend .unpainted { opacity: 0.62; }
+  .progress-legend .coverage { margin-inline-start: auto; opacity: 0.55; white-space: nowrap; }
+  .progress-legend .coverage::before { display: none; }
+  .colour-progress { display: flex; min-inline-size: 0; flex-direction: column; gap: 0.25rem; }
+  .colour-progress-row { display: flex; min-inline-size: 0; align-items: center; gap: 0.375rem; }
+  .colour-swatch { flex: 0 0 0.625rem; inline-size: 0.625rem; block-size: 0.625rem; border-radius: 999px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12); }
+  .colour-name { flex: 0 0 5rem; overflow: hidden; font-size: 0.625rem; line-height: 1; opacity: 0.68; text-overflow: ellipsis; white-space: nowrap; }
+  .colour-progress-row :global(.meter-wrap) { flex: 1; }
   .notice { display: flex; align-items: center; gap: 0.5rem; min-block-size: 1.75rem; padding-inline-end: 0.75rem; color: var(--caelestis-muted-text); font-size: 0.72rem; }
   .standalone { display: flex; justify-content: center; padding: 0.5rem 0.75rem; }
-  .notice button, .standalone button, .progress-detail button { border: 0; border-radius: 0.45rem; background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
+  .notice button, .standalone button { border: 0; border-radius: 0.45rem; background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
   .operation { display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; margin: 0 0.5rem 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-raised-surface); font: 500 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
   .operation select { min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; }
   .operation small { color: var(--caelestis-muted-text); }
@@ -402,5 +463,10 @@
   .context-menu button:hover, .context-menu button:focus-visible { background: var(--caelestis-raised-surface); }
   .context-menu button.danger { color: var(--caelestis-danger); }
   .context-menu svg { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
-  @media (hover: hover) { .row:not(:hover, :focus-within) .actions { opacity: 0; pointer-events: none; } }
+  @media (hover: hover) {
+    .actions { opacity: 0; pointer-events: none; }
+    .row:hover .actions, .row:focus-within .actions { opacity: 1; pointer-events: auto; }
+    .row:hover .row-tail > .progress, .row:focus-within .row-tail > .progress { opacity: 0; pointer-events: none; }
+  }
+  @media (hover: none) { .row-tail > .progress { visibility: hidden; } }
 </style>
