@@ -96,23 +96,26 @@
     if (templateIds.length === 0) return
     const ids = [...templateIds]
     const generation = { cancelled: false }
-    let requestGeneration = 0
+    let refreshPending = false
     const refresh = (): void => {
-      const request = ++requestGeneration
+      if (refreshPending) return
+      refreshPending = true
       const requestedAt = Math.floor(Date.now() / 1_000)
       const contributionFrom = requestedAt - 86_400 * 7 * 16
-      getContributions(ids, contributionFrom, requestedAt)
-        .then((response) => {
-          if (!generation.cancelled && request === requestGeneration)
-            contributions = response.days
-        })
-        .catch(() => {})
-      getLeaderboard(season, { templateIds: ids })
-        .then((response) => {
-          if (!generation.cancelled && request === requestGeneration)
-            leaderboard = response.entries
-        })
-        .catch(() => {})
+      void Promise.all([
+        getContributions(ids, contributionFrom, requestedAt)
+          .then((response) => {
+            if (!generation.cancelled) contributions = response.days
+          })
+          .catch(() => {}),
+        getLeaderboard(season, { templateIds: ids })
+          .then((response) => {
+            if (!generation.cancelled) leaderboard = response.entries
+          })
+          .catch(() => {}),
+      ]).finally(() => {
+        refreshPending = false
+      })
     }
     const refreshWhenVisible = (): void => {
       if (document.visibilityState === 'visible') refresh()

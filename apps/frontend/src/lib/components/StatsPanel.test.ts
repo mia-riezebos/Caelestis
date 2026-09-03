@@ -150,4 +150,40 @@ describe('live counts', () => {
     expect(api.getContributions).toHaveBeenCalledTimes(2)
     expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
   })
+
+  it('does not supersede a slow refresh with overlapping timer requests', async () => {
+    vi.useFakeTimers()
+    let resolveContributions: (value: { days: never[] }) => void = () => {}
+    let resolveLeaderboard: (value: { entries: never[] }) => void = () => {}
+    api.getContributions.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveContributions = resolve
+      }),
+    )
+    api.getLeaderboard.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveLeaderboard = resolve
+      }),
+    )
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(api.getContributions).toHaveBeenCalledTimes(1)
+    expect(api.getLeaderboard).toHaveBeenCalledTimes(1)
+
+    resolveContributions({ days: [] })
+    resolveLeaderboard({ entries: [] })
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(api.getContributions).toHaveBeenCalledTimes(2)
+    expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
+  })
 })
