@@ -1,5 +1,108 @@
 # @caelestis/userscript
 
+## 0.6.0
+
+### Minor Changes
+
+- 7517b8f: Support shared overlays on alliance headquarters, picture, and banner canvases.
+
+### Patch Changes
+
+- d23121c: Route keyboard shortcuts to the active alliance canvas.
+- c96f8fd: Show server template move and delete actions on alliance canvases.
+- 214b572: Keep tree connectors aligned with row headings when progress details expand.
+- 0e0fd04: Move repeatedly refused live connections onto the hourly recovery cadence.
+- a6426a1: Keep the theme shortcut from reaching the world behind an alliance canvas.
+- a7447f4: Bound draft correction source revisions to cached tiles instead of individual pixels.
+- fccc284: Bound failed tile-report retries without suppressing their first delivery attempt.
+- d9e10ee: Bound tile-offer and upload response bodies before parsing them.
+- 436c1be: Show and notify server-owned regression and sustained-griefing alarms.
+- ef66732: Add template creation and folder workflows to alliance canvas drawers.
+- 9f4b881: Patch transparent alliance draft presence from the changed native pixel.
+- ef66732: Keep the alliance canvas rail outside Wplace's artboard pointer capture.
+- a9d45a8: Report anonymous client version and sync reasons for capacity diagnostics.
+- cb08904: Track authoritative status revisions when coordinating server progress reads.
+- 0f3a4a5: Pick overlay colours before Wplace falls back to its composited canvas.
+- fa40757: Keep native paint shortcuts inside an alliance editor when its controls disappear.
+- 4776db7: Keep template controls inside the visible alliance canvas while panning and zooming.
+- ef66732: Scope server folders to their alliance drawing surface.
+- 63ecea0: Keep alliance overlay controls and the fullscreen action bar clear of each other.
+- b9743ac: Render alliance overlays with world-quality zoom, pixel styles, and contrast outlines.
+- 0f65332: Limit source-picker click suppression to the intercepted pointer gesture.
+- 80996f4: Fix alliance overlay controls with canvas-scoped drawers and appearance settings.
+- eb022c1: Ignore off-template HQ tiles when calculating alliance overlay progress.
+- 1029c60: Hide alliance template controls while the artboard has zero size.
+- a4afcf2: Update paint palette counters as draft pixels are placed, changed, undone, or cleared.
+- 70db7e1: Close active template controls when an alliance canvas becomes too small to contain them.
+- c36c271: Fade alliance mismatch and colour markers when their state changes.
+- 09a6753: Fade overlays, outlines, and markers while holding and releasing the peek shortcut.
+- 05e31c2: Keep late tile-offer failures out of retired report connections.
+- 3a91a3f: Keep accepted palette corrections tied to their submitted template lifetime.
+- dc90fe6: Keep retained tile offers inside their originating server connection lifetime.
+- 29b654b: Fence retained headquarters snapshots against first native tile writes.
+- f815200: Finish alliance template navigation and keep world-coordinate import formats out of alliance canvases.
+- 2830b65: Classify healthy live safety reads as recovery traffic in capacity metrics.
+- b9743ac: Use template menus and placement controls on alliance canvases.
+- 286e9e9: Keep alliance template controls moving smoothly beside their templates near fullscreen chrome.
+- 24cc9fd: Retire alliance overlays when their server connection is replaced.
+- 36e343d: Offer every observed tile through the live server cache with HTTP recovery.
+- 9cf6f53: Hide marker settings on alliance canvases until paint accounting is available.
+- 9cf6f53: Hide alliance template rails when the visible canvas is too small to contain them.
+- 3077a8d: Keep focus and online recovery inside the live reconnect cooldown.
+- c36c271: Keep selected-colour filtering isolated to its alliance canvas.
+- 16249f5: Keep shortcuts isolated while an alliance asset canvas is waiting for metadata.
+- 9dc4958: Keep alliance progress current when other canvases draw in the same frame.
+- c36c271: Render alliance markers above Wplace draft art and below native feedback.
+- 954f96a: Refresh every active template surface from one live manifest revision.
+- d7d91c6: Deliver alarm changes over live sync with hourly recovery reads.
+- 42d07eb: Sync alliance headquarters, pictures, and banners through the shared live connection.
+- 3d46fac: Use hibernating live server sync for status and manifest updates with adaptive polling fallback.
+- c95d0d7: Reconcile manifest changes once from revisioned live server events.
+- 954f96a: Reconcile status and alarms against the manifest snapshot that admitted them.
+- b7d5f77: Patch alliance marker accounting from native canvas writes instead of rescanning whole templates.
+- 6752eac: Keep alliance template pixels attached when moving templates between Local and servers.
+- 116361f: Preserve the live reconnect cooldown across offline and online transitions.
+- 72d82c2: Preserve the exact paint-report body across deferred retries.
+- 05e31c2: Preserve tile-offer retry pacing while new observations arrive.
+- f38f558: Keep tree progress controls focused, aligned, and accurate while details change.
+- f52f886: Apply hold-to-peek to alliance canvas overlays.
+- 50a31b2: Suppress recently acknowledged duplicate tile offers while preserving bounded recovery retries.
+- 9af2821: Keep healthy live server sync quiet across focus, socket startup, and unchanged reports.
+- a3b56a5: Coalesce server reads and adapt background sync to page activity and server changes.
+- 2689884: Treat transparent alliance paint drafts as active pixels in progress, markers, and navigation.
+- 376fbc5: Recover status after an accepted tile upload omits its committed progress update.
+- 6f00399: Refresh alliance progress and marker batches when transparent drafts or marker settings change.
+- ac17e83: Keep retained alliance headquarters pixels synchronized with remote and in-flight canvas changes.
+- d66a4e2: Release queued tile offers when no reporter identity is available.
+- 6d68795: Retry paint reports independently when tile sharing is disabled.
+- c36c271: Use alliance canvas pixels for template progress, navigation, and tree actions.
+- 8c90d62: Report every distinct Wplace tile fetch while deduplicating only retries of the same observation.
+- fea4462: Apply authoritative tile progress responses without a redundant status refresh.
+- eb9f97b: Match alliance HQ, picture, and banner overlays to the world renderer, controls, colour picking, markers, and shortcuts.
+- affe86a: Restore tree row action swapping and detailed template colour progress.
+- 6682080: Reuse alliance marker batches and patch native canvas accounting from bounded writes.
+- 0f58143: Keep complete bounded alliance canvases available for progress, markers, picking, and navigation.
+- a736a50: Retain failed tile reports until recovery confirms their disposition.
+- 3e03b42: Retire accepted palette corrections when their captured tile leaves the bounded pixel cache.
+- 4e56a42: Retire accepted palette correction state when its captured tile refreshes.
+- 0eae90d: Retry tile reports after a transient account refresh failure.
+- 954f96a: Retry rejected tile offers when manifest coverage changes.
+- bd178d0: Retry queued tile reports after transient Wplace account lookup failures.
+- 42b73be: Retry recent tile reports after active-batch memory trimming.
+- c36c271: Keep alliance appearance controls and defaults scoped to the active canvas.
+- 35b5655: Keep alliance canvas shortcuts from changing the world behind the editor.
+- 5e4c8c3: Keep alliance server menus and drag actions scoped to the active canvas.
+- c6d4b30: Scope anonymous live-client identities per server and omit them from authenticated connections.
+- ba0fc42: Render alliance templates through the same chunked, progressive GPU pipeline as world templates.
+- ea0ce09: Drive world and alliance overlay appearance, colour, outline, and marker transitions from one render scene.
+- 0e0fd04: Share one anonymous live-socket identity across tabs without retaining the network address.
+- bbf1b06: Show alliance colour remaining counts while native art is still loading.
+- a3b2e49: Keep alliance folder visibility scoped to its drawing surface.
+- 6f00399: Stop failed overlay texture allocations from retrying on every animation frame.
+- d61ee1f: Fix pointer activation and fullscreen placement for alliance canvas controls.
+- a50a435: Tighten the vertical spacing beneath alliance fullscreen actions.
+- d75324e: Make alliance markers, progress, navigation, and picking read the same native art and draft sources.
+
 ## 0.5.5
 
 ### Patch Changes
