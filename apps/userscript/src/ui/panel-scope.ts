@@ -70,13 +70,24 @@ const allianceFullscreenHeader = (stage: HTMLElement): HTMLElement | null =>
       element.tagName === 'HEADER' && element.querySelector('button[aria-pressed="true"]') !== null,
   ) as HTMLElement | undefined) ?? null
 
-/** Keep artboard controls below Wplace's fullscreen header without relying on localized copy. */
-export const allianceRailTop = (stage: HTMLElement, normalTop: number, gap: number): number => {
+const allianceFullscreenActionGroup = (stage: HTMLElement): HTMLElement | null => {
   const header = allianceFullscreenHeader(stage)
-  if (header === null) return normalTop
+  const activeButton = header?.querySelector<HTMLElement>('button[aria-pressed="true"]')
+  if (header === null || activeButton === null || activeButton === undefined) return null
+  return (
+    (Array.from(header.children).find((child) => child.contains(activeButton)) as
+      | HTMLElement
+      | undefined) ?? null
+  )
+}
+
+/** Keep artboard controls below Wplace's visible fullscreen actions without counting header padding. */
+export const allianceRailTop = (stage: HTMLElement, normalTop: number, gap: number): number => {
+  const actionGroup = allianceFullscreenActionGroup(stage)
+  if (actionGroup === null) return normalTop
   return Math.max(
     normalTop,
-    Math.ceil(header.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + gap),
+    Math.ceil(actionGroup.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + gap),
   )
 }
 
@@ -86,12 +97,8 @@ export const allianceRailInlineEnd = (
   parent: HTMLElement,
   gap: number,
 ): number => {
-  const header = allianceFullscreenHeader(stage)
-  const activeButton = header?.querySelector<HTMLElement>('button[aria-pressed="true"]')
-  const actionGroup = Array.from(header?.children ?? []).find((child) =>
-    activeButton === null || activeButton === undefined ? false : child.contains(activeButton),
-  )
-  if (actionGroup !== undefined) {
+  const actionGroup = allianceFullscreenActionGroup(stage)
+  if (actionGroup !== null) {
     return Math.max(
       0,
       Math.round(parent.getBoundingClientRect().right - actionGroup.getBoundingClientRect().right),

@@ -1177,6 +1177,7 @@ describe('placement and geometry', () => {
     frame.getBoundingClientRect = () =>
       ({ left: 0, top: 0, right: 700, bottom: 700, width: 700, height: 700 }) as DOMRect
     header.getBoundingClientRect = () => ({ bottom: 78 }) as DOMRect
+    actionGroup.getBoundingClientRect = () => ({ bottom: 68 }) as DOMRect
     const overlayMenu = await import('./overlay-menu.js')
     const rerender = () =>
       overlayMenu.renderAllianceOverlayControls(
@@ -1196,7 +1197,7 @@ describe('placement and geometry', () => {
     gear('a').click()
     rerender()
 
-    const safeTop = 78 + GAP
+    const safeTop = 68 + GAP
     expect(floatingPosition(gear('a')).y).toBe(safeTop)
     expect(Number.parseFloat(menu().style.top)).toBeGreaterThanOrEqual(safeTop)
     for (const action of document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')) {

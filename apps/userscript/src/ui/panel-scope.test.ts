@@ -101,18 +101,21 @@ describe('alliance drawer DOM contracts', () => {
     dialog.setAttribute('open', '')
     const editor = document.createElement('div')
     const header = document.createElement('header')
+    const actionGroup = document.createElement('div')
     const exit = document.createElement('button')
     exit.setAttribute('aria-label', 'Vollbild beenden')
     exit.setAttribute('aria-pressed', 'true')
-    header.append(exit)
+    actionGroup.append(exit)
+    header.append(actionGroup)
     const stage = document.createElement('div')
     editor.append(header, stage)
     dialog.append(editor)
     document.body.append(dialog)
     stage.getBoundingClientRect = () => ({ top: 100 }) as DOMRect
     header.getBoundingClientRect = () => ({ bottom: 180 }) as DOMRect
+    actionGroup.getBoundingClientRect = () => ({ bottom: 168 }) as DOMRect
 
-    expect(allianceRailTop(stage, 12, 12)).toBe(92)
+    expect(allianceRailTop(stage, 12, 12)).toBe(80)
 
     exit.setAttribute('aria-label', 'Vollbild')
     exit.setAttribute('aria-pressed', 'false')
