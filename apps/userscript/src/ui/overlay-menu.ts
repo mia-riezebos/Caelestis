@@ -169,12 +169,6 @@ const localControlsRightEdge = (): number => {
   )
 }
 
-const alignWithAlliancePanelButton = (top: number): number => {
-  const button = document.getElementById('caelestis-alliance-rail-button')?.getBoundingClientRect()
-  if (button === undefined || button.height <= 0) return top
-  return top < button.bottom && top + MENU_BUTTON_SIZE > button.top ? button.top : top
-}
-
 /**
  * What a refused write is recorded against.
  *
@@ -2059,11 +2053,9 @@ const renderControls = (
     }
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
-    const buttonTop = alignWithAlliancePanelButton(
-      Math.min(
-        Math.max(corner.y, viewport.top),
-        Math.max(viewport.top, viewport.bottom - railHeight),
-      ),
+    const buttonTop = Math.min(
+      Math.max(corner.y, viewport.top),
+      Math.max(viewport.top, viewport.bottom - railHeight),
     )
     const buttonLeft = Math.min(
       Math.max(corner.x + 6, viewport.left),

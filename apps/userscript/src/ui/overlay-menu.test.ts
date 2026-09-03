@@ -1103,7 +1103,7 @@ describe('placement and geometry', () => {
     expect(menuPosition.y + 200).toBeLessThanOrEqual(viewport.bottom)
   })
 
-  it('keeps alliance template controls clear of the Caelestis button', async () => {
+  it('keeps alliance template controls clear of the Caelestis rail without changing their height', async () => {
     const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
     harness.localTemplates.mockReturnValue([
       template({ surface, originX: 100, originY: -123, width: 25 }),
@@ -1146,7 +1146,7 @@ describe('placement and geometry', () => {
     )
 
     expect(floatingPosition(gear('a')).x + RAIL_BUTTON).toBeLessThanOrEqual(640 - GAP)
-    expect(floatingPosition(gear('a')).y).toBe(162)
+    expect(floatingPosition(gear('a')).y).toBe(158)
   })
 
   it('keeps alliance template controls below the fullscreen action bar', async () => {
