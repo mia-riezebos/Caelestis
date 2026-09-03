@@ -41,6 +41,32 @@ describe('notifications', () => {
     )
   })
 
+  it('renders a toast action as an external link', async () => {
+    const root = new CaelestisNotifications()
+    root.model = model({
+      toasts: [
+        {
+          id: 'toast-1',
+          kind: 'info',
+          message: 'Caelestis v0.7.0 is available.',
+          action: {
+            label: 'Update userscript',
+            href: 'https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js',
+          },
+        },
+      ],
+    })
+    document.body.append(root)
+    await tick()
+
+    const action = root.shadowRoot?.querySelector<HTMLAnchorElement>('.toast-action')
+    expect(action?.textContent?.trim()).toBe('Update userscript')
+    expect(action?.href).toBe(
+      'https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js',
+    )
+    expect(action?.target).toBe('_blank')
+  })
+
   it('renders a destructive confirmation and emits one answer intent', async () => {
     const root = new CaelestisNotifications()
     const intent = vi.fn()

@@ -4,6 +4,7 @@ import type {
   NotificationsIntent,
   NotificationsModel,
   OneTimeSecretDialogModel,
+  ToastActionModel,
   ToastKind,
   ToastModel,
 } from '@caelestis/ui/elements'
@@ -27,7 +28,11 @@ let pendingConfirm:
   | undefined
 let pendingSecret: { readonly id: string; readonly resolve: () => void } | undefined
 const timers = new Map<string, number>()
-const pendingAmbientToasts: Array<{ readonly message: string; readonly kind: ToastKind }> = []
+const pendingAmbientToasts: Array<{
+  readonly message: string
+  readonly kind: ToastKind
+  readonly action?: ToastActionModel
+}> = []
 let awaitingDocumentBody = false
 
 const model = (): NotificationsModel => ({ toasts: [...toasts], confirm, oneTimeSecret })
@@ -128,7 +133,7 @@ const removeToast = (id: string): void => {
   render()
 }
 
-const pushToast = (message: string, kind: ToastKind): void => {
+const pushToast = (message: string, kind: ToastKind, action?: ToastActionModel): void => {
   ensureRoot()
 
   const replaced = kind === 'error' ? toasts : toasts.filter((toast) => toast.kind !== 'error')
@@ -136,10 +141,10 @@ const pushToast = (message: string, kind: ToastKind): void => {
   toasts = kind === 'error' ? [] : toasts.filter((toast) => toast.kind === 'error')
 
   const id = `toast-${++sequence}`
-  toasts.push({ id, kind, message })
+  toasts.push({ id, kind, message, ...(action === undefined ? {} : { action }) })
   render()
 
-  if (kind !== 'error') {
+  if (kind !== 'error' && action === undefined) {
     timers.set(
       id,
       window.setTimeout(() => removeToast(id), 6000),
@@ -150,26 +155,39 @@ const pushToast = (message: string, kind: ToastKind): void => {
 const flushAmbientToasts = (): void => {
   awaitingDocumentBody = false
   if (document.body === null) return
-  for (const toast of pendingAmbientToasts.splice(0)) pushToast(toast.message, toast.kind)
+  for (const toast of pendingAmbientToasts.splice(0))
+    pushToast(toast.message, toast.kind, toast.action)
 }
 
-export const showToast = (message: string, kind: ToastKind = 'info'): void => {
+export const showToast = (
+  message: string,
+  kind: ToastKind = 'info',
+  action?: ToastActionModel,
+): void => {
   if (document.getElementById(PANEL_ID) === null) return
-  pushToast(message, kind)
+  pushToast(message, kind, action)
 }
 
 /** Page-level notices such as alarms are valid while the panel itself is closed. */
-export const showAmbientToast = (message: string, kind: ToastKind = 'info'): void => {
+export const showAmbientToast = (
+  message: string,
+  kind: ToastKind = 'info',
+  action?: ToastActionModel,
+): void => {
   if (document.body === null) {
     if (pendingAmbientToasts.length >= MAX_PENDING_AMBIENT_TOASTS) pendingAmbientToasts.shift()
-    pendingAmbientToasts.push({ message, kind })
+    pendingAmbientToasts.push({
+      message,
+      kind,
+      ...(action === undefined ? {} : { action }),
+    })
     if (!awaitingDocumentBody) {
       awaitingDocumentBody = true
       document.addEventListener('DOMContentLoaded', flushAmbientToasts, { once: true })
     }
     return
   }
-  pushToast(message, kind)
+  pushToast(message, kind, action)
 }
 
 export interface ConfirmationRequest {

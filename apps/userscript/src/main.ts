@@ -70,6 +70,7 @@ import {
 } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
+import { installUserscriptUpdateCheck } from './userscript-update.js'
 import { loadAccount } from './wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 import { installColourPicker } from './wplace-picker.js'
@@ -394,6 +395,7 @@ const main = (): void => {
       installPanel()
     }
   })
+  step('userscript update check', installUserscriptUpdateCheck)
   try {
     console.info(`[caelestis] loaded — tile size ${TILE_SIZE}`)
   } catch {

@@ -15,6 +15,7 @@ const harness = vi.hoisted(() => ({
   screenPointForIn: vi.fn(() => ({ x: 56, y: 78 })),
   cssPixelsPerCanvasPixelIn: vi.fn(() => ({ x: 2, y: 3 })),
   canvasPixelAtIn: vi.fn(() => ({ x: 90, y: 12 })),
+  installUserscriptUpdateCheck: vi.fn(),
 }))
 
 vi.mock('./coordinates.js', () => ({
@@ -107,6 +108,9 @@ vi.mock('./ui/overlay-menu.js', () => ({
   toggleOverlayMenu: vi.fn(),
 }))
 vi.mock('./ui/panel.js', () => ({ installPanel: vi.fn(), togglePanel: vi.fn() }))
+vi.mock('./userscript-update.js', () => ({
+  installUserscriptUpdateCheck: harness.installUserscriptUpdateCheck,
+}))
 vi.mock('./wplace-account.js', () => ({ loadAccount: vi.fn() }))
 vi.mock('./wplace-paint.js', () => ({
   isPaintOpen: vi.fn(() => false),
@@ -138,6 +142,12 @@ beforeEach(() => {
 })
 
 describe('GL frame lifecycle', () => {
+  it('installs the deferred userscript update check', async () => {
+    await load()
+
+    expect(harness.installUserscriptUpdateCheck).toHaveBeenCalledOnce()
+  })
+
   it('drops a stale projection when the current frame has no tiles', async () => {
     const main = await load()
     const first = document.createElement('canvas')
