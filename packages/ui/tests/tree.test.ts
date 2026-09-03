@@ -90,6 +90,44 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('keeps label and checkbox visibility activation separate from row disclosure', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          entries: model.entries.map((entry) =>
+            entry.type === 'row' && entry.key === 'local' ? { ...entry, expanded: true } : entry,
+          ),
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+
+    const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
+    const label = row?.querySelector<HTMLLabelElement>('.visibility')
+    const checkbox = label?.querySelector<HTMLInputElement>('input')
+
+    label?.click()
+    expect(row?.getAttribute('aria-expanded')).toBe('true')
+    expect(onIntent.mock.calls).toEqual([
+      [{ type: 'toggle-visible', key: 'local', visible: false }],
+    ])
+
+    onIntent.mockClear()
+    checkbox?.focus()
+    checkbox?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+    checkbox?.click()
+    expect(onIntent.mock.calls).toEqual([[{ type: 'toggle-visible', key: 'local', visible: true }]])
+
+    onIntent.mockClear()
+    row?.click()
+    expect(onIntent.mock.calls).toEqual([[{ type: 'toggle-expanded', key: 'local' }]])
+    void unmount(component)
+  })
+
   it('keeps the compact Daisy tree controls and explicit visibility icon', () => {
     const component = mount(TemplateTree, { target: document.body, props: { model } })
     flushSync()
