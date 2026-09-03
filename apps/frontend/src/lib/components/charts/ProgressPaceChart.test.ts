@@ -232,10 +232,14 @@ describe('rolling pace retention', () => {
   })
 
   it('does not synthesize progress points for empty lifecycle history', () => {
+    const emptyBuckets: HistoryBucket[] = []
+    emptyBuckets[Symbol.iterator] = () => {
+      throw new Error('empty history must not be iterated')
+    }
     mounted = mount(ProgressPaceChart, {
       target: document.body,
       props: {
-        buckets: [],
+        buckets: emptyBuckets,
         resolution: 900,
         from: 0,
         to: 10 * 365 * 86_400,
@@ -247,6 +251,32 @@ describe('rolling pace retention', () => {
 
     expect(document.body.textContent).toContain('No paint activity reported in this window.')
     expect(document.querySelector('svg[role="img"]')).toBeNull()
+  })
+
+  it('distinguishes daily ticks across an offset-crossing fall-back', () => {
+    vi.stubEnv('TZ', 'Atlantic/Azores')
+    const from = Date.parse('2026-10-24T00:00:00Z') / 1_000
+    expect(new Date(from * 1_000).getTimezoneOffset()).not.toBe(
+      new Date((from + 4 * 86_400) * 1_000).getTimezoneOffset(),
+    )
+
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(86_400, from)],
+        resolution: 86_400,
+        from,
+        to: from + 4 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map((label) =>
+      label.textContent?.trim(),
+    )
+    expect(new Set(labels).size).toBe(labels.length)
   })
 
   it('includes years on multi-year lifecycle ticks', () => {

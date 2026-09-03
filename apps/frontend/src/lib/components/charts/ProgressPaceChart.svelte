@@ -268,8 +268,8 @@
       ...(crossesYear ? { year: 'numeric' } : {}),
       month: 'short',
       day: 'numeric',
-      ...(tickStep < DAY_SECONDS ? { hour: '2-digit', minute: '2-digit' } : {}),
-      ...(tickStep < DAY_SECONDS && crossesOffset ? { timeZoneName: 'shortOffset' } : {}),
+      ...(tickStep < DAY_SECONDS || crossesOffset ? { hour: '2-digit', minute: '2-digit' } : {}),
+      ...(crossesOffset ? { timeZoneName: 'shortOffset' } : {}),
     })
   }
 
