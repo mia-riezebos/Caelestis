@@ -174,7 +174,6 @@ it('does not let a late HQ snapshot replace a newer native tile write', async ()
     )
 
   await refreshArtboardPixels(active, geometry)
-  readArtboardPixels(active, geometry)
   const pending = refreshArtboardPixels(active, geometry)
   patchArtboardPixels(active, geometry, canvas, { x: 0, y: 0, width: 1, height: 1 })
   expect(nativePixelAt(readArtboardPixels(active, geometry), 0, 0)).toEqual({

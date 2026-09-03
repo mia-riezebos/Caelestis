@@ -203,20 +203,37 @@ export const patchArtboardPixels = (
     patchCrosshairPixels(canvas, dirty)
     return
   }
+  const syncHeadquartersPixels = (): void => {
+    if (
+      active.surface.kind === 'alliance-headquarters' &&
+      canvas.parentElement?.classList.contains('hq-tile-layer') === true
+    )
+      headquartersPixels(active.surface.allianceId, geometry, hqPixels(active, geometry), true)
+  }
   const held = canvasPixels.get(canvas)
-  if (held === undefined) return
+  if (held === undefined) {
+    syncHeadquartersPixels()
+    return
+  }
   if (held.width !== canvas.width || held.height !== canvas.height || dirty === null) {
     canvasPixels.delete(canvas)
+    syncHeadquartersPixels()
     return
   }
   const x = Math.max(0, Math.floor(Math.min(dirty.x, dirty.x + dirty.width)))
   const y = Math.max(0, Math.floor(Math.min(dirty.y, dirty.y + dirty.height)))
   const farX = Math.min(canvas.width, Math.ceil(Math.max(dirty.x, dirty.x + dirty.width)))
   const farY = Math.min(canvas.height, Math.ceil(Math.max(dirty.y, dirty.y + dirty.height)))
-  if (farX <= x || farY <= y) return
+  if (farX <= x || farY <= y) {
+    syncHeadquartersPixels()
+    return
+  }
   try {
     const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (context === null) return
+    if (context === null) {
+      syncHeadquartersPixels()
+      return
+    }
     writePalettePixels(
       held.pixels,
       held.width,
@@ -228,12 +245,7 @@ export const patchArtboardPixels = (
   } catch {
     canvasPixels.delete(canvas)
   }
-  if (
-    active.surface.kind === 'alliance-headquarters' &&
-    canvas.parentElement?.classList.contains('hq-tile-layer') === true
-  ) {
-    headquartersPixels(active.surface.allianceId, geometry, hqPixels(active, geometry), true)
-  }
+  syncHeadquartersPixels()
 }
 
 const hqPixels = (
