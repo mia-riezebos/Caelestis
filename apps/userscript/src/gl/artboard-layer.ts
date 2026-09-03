@@ -3,6 +3,7 @@ import {
   type ActiveAllianceSurface,
   activeAllianceSurface,
   onActiveAllianceSurfaceChange,
+  onHeadquartersRevisionChange,
 } from '../alliance-surface.js'
 import { type CanvasWriteRect, onCanvasWrite } from '../canvas-write.js'
 import { warn } from '../debug.js'
@@ -678,7 +679,7 @@ class ArtboardRenderer {
         (!this.active.frame.contains(canvas) && !isArtboardCrosshairCanvas(this.active, canvas))
       )
         return
-      patchArtboardPixels(canvas, dirty)
+      patchArtboardPixels(this.active, this.geometry, canvas, dirty)
       const rect = artboardCanvasWriteRect(this.active, this.geometry, canvas, dirty)
       if (rect === null) this.markerPixelsDirty = true
       else this.markerDirtyRects.push(rect)
@@ -935,6 +936,18 @@ export const repaintAllianceOverlayLayer = (): void => renderer?.requestRender()
 /** Attach viewport-resolution WebGL passes inside whichever Wplace alliance artboard is open. */
 export const installAllianceOverlayLayer = (): void => {
   onActiveAllianceSurfaceChange(reconcileRenderer)
+  onHeadquartersRevisionChange((allianceId) => {
+    queueMicrotask(() => {
+      const active = activeAllianceSurface()
+      if (
+        active?.surface.kind !== 'alliance-headquarters' ||
+        active.surface.allianceId !== allianceId
+      )
+        return
+      const geometry = artboardGeometry(active)
+      if (geometry !== null) void refreshArtboardPixels(active, geometry)
+    })
+  })
   onLocalChange(repaintAllianceOverlayLayer)
   onLocalPreviewChange(repaintAllianceOverlayLayer)
   onOverlayPeekChange(repaintAllianceOverlayLayer)

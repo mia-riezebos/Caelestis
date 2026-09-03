@@ -6,6 +6,7 @@ import {
   activeAllianceSurface,
   installAllianceSurfaceObserver,
   onActiveAllianceSurfaceChange,
+  onHeadquartersRevisionChange,
   resetAllianceSurfaceObserver,
 } from './alliance-surface.js'
 
@@ -63,6 +64,30 @@ describe('active alliance surface observation', () => {
       draftId: null,
       bounds: { minX: -1_000, minY: -1_000, maxX: 1_000, maxY: 1_000 },
     })
+  })
+
+  it('publishes a same-surface HQ revision advance', async () => {
+    let eventHwm = 10
+    window.fetch = vi.fn<typeof fetch>((input) => {
+      const url = String(input)
+      if (url.endsWith('/alliance')) return json({ id: 535_245 })
+      return json({
+        allianceId: 535_245,
+        bounds: { minX: -125, minY: -125, maxX: 124, maxY: 124 },
+        eventHwm: eventHwm++,
+      })
+    })
+    installAllianceSurfaceObserver()
+    stage('Headquarters canvas')
+    await window.fetch('https://backend.wplace.live/alliance/headquarters')
+    await settle()
+
+    const revisions: number[] = []
+    onHeadquartersRevisionChange((allianceId) => revisions.push(allianceId))
+    await window.fetch('https://backend.wplace.live/alliances/535245/headquarters/manifest')
+    await settle()
+
+    expect(revisions).toEqual([535_245])
   })
 
   it('recovers a public HQ alliance id from its request URL after a late injection', async () => {

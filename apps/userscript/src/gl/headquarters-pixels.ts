@@ -40,6 +40,8 @@ interface RetainedPixels {
   tileSize: number | null
   loaded: boolean
   pending: Promise<void> | null
+  refreshQueued: boolean
+  nativeGeneration: number
 }
 
 let retained: RetainedPixels | null = null
@@ -64,6 +66,8 @@ const cacheFor = (allianceId: number, geometry: HeadquartersPixelGeometry): Reta
     tileSize: null,
     loaded: false,
     pending: null,
+    refreshQueued: false,
+    nativeGeneration: 0,
   }
   return retained
 }
@@ -176,32 +180,49 @@ export const refreshHeadquartersPixels = async (
   )
     return
   const cache = cacheFor(allianceId, geometry)
-  if (cache.pending !== null) return cache.pending
-  const knownTiles = [...cache.versions.values()]
+  if (cache.pending !== null) {
+    cache.refreshQueued = true
+    return cache.pending
+  }
   const pending = (async () => {
-    try {
-      const response = await pageWindow().fetch(
-        `https://backend.wplace.live/alliances/${allianceId}/headquarters/snapshot`,
-        {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            minX: geometry.originX,
-            minY: geometry.originY,
-            maxX: geometry.originX + geometry.width - 1,
-            maxY: geometry.originY + geometry.height - 1,
-            knownTiles,
-          }),
-        },
-      )
-      if (!response.ok || !response.headers.get('content-type')?.startsWith(SNAPSHOT_TYPE)) return
-      const snapshot = decode(await response.arrayBuffer())
+    while (retained === cache) {
+      cache.refreshQueued = false
+      const knownTiles = [...cache.versions.values()]
+      const nativeGeneration = cache.nativeGeneration
+      let snapshot: DecodedSnapshot | null = null
+      try {
+        const response = await pageWindow().fetch(
+          `https://backend.wplace.live/alliances/${allianceId}/headquarters/snapshot`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              minX: geometry.originX,
+              minY: geometry.originY,
+              maxX: geometry.originX + geometry.width - 1,
+              maxY: geometry.originY + geometry.height - 1,
+              knownTiles,
+            }),
+          },
+        )
+        if (response.ok && response.headers.get('content-type')?.startsWith(SNAPSHOT_TYPE))
+          snapshot = decode(await response.arrayBuffer())
+      } catch {
+        // Sparse native canvases remain the truthful fallback until a later refresh retries.
+      }
       if (retained !== cache) return
+      if (snapshot === null) {
+        if (!cache.refreshQueued) return
+        continue
+      }
+      if (cache.nativeGeneration !== nativeGeneration) {
+        cache.refreshQueued = true
+        continue
+      }
       apply(cache, snapshot)
       for (const listener of listeners) listener()
-    } catch {
-      // Sparse native canvases remain the truthful fallback until a later editor mount retries.
+      if (!cache.refreshQueued) return
     }
   })()
   cache.pending = pending
@@ -214,15 +235,12 @@ export const headquartersPixels = (
   allianceId: number,
   geometry: HeadquartersPixelGeometry,
   visible: readonly NativePixelRegion[],
+  nativeAdvanced = false,
 ): NativePixelRegion[] | null => {
   const cache = retained
-  if (
-    cache === null ||
-    !cache.loaded ||
-    cache.allianceId !== allianceId ||
-    !sameGeometry(cache.geometry, geometry)
-  )
+  if (cache === null || cache.allianceId !== allianceId || !sameGeometry(cache.geometry, geometry))
     return null
+  let changed = false
   for (const region of visible) {
     const startX = Math.max(geometry.originX, region.x)
     const startY = Math.max(geometry.originY, region.y)
@@ -231,9 +249,25 @@ export const headquartersPixels = (
     for (let y = startY; y < farY; y++) {
       const sourceAt = (y - region.y) * region.width + startX - region.x
       const targetAt = (y - geometry.originY) * geometry.width + startX - geometry.originX
-      cache.pixels.set(region.pixels.subarray(sourceAt, sourceAt + farX - startX), targetAt)
+      const width = farX - startX
+      const source = region.pixels.subarray(sourceAt, sourceAt + width)
+      if (cache.pending === null) {
+        cache.pixels.set(source, targetAt)
+        continue
+      }
+      for (let x = 0; x < width; x++) {
+        const next = source[x] ?? TRANSPARENT_INDEX
+        if (cache.pixels[targetAt + x] === next) continue
+        cache.pixels[targetAt + x] = next
+        changed = true
+      }
     }
   }
+  if (changed || nativeAdvanced) {
+    cache.nativeGeneration++
+    if (cache.pending !== null) cache.refreshQueued = true
+  }
+  if (!cache.loaded) return null
   return [
     {
       x: geometry.originX,

@@ -128,6 +128,70 @@ it('retains complete HQ bounds after loading the bounded snapshot', async () => 
   expect(artboardTemplateProgress(template, readArtboardPixels(active, geometry)).known).toBe(8)
 })
 
+it('does not let a late HQ snapshot replace a newer native tile write', async () => {
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const layer = document.createElement('div')
+  layer.className = 'hq-tile-layer'
+  const canvas = document.createElement('canvas')
+  canvas.width = 2
+  canvas.height = 1
+  canvas.style.left = '0px'
+  canvas.style.top = '0px'
+  canvas.style.width = '2px'
+  canvas.style.height = '1px'
+  const current = TRANSPARENT_INDEX
+  canvas.getContext = (() => ({
+    getImageData: () => image([current, TRANSPARENT_INDEX]),
+  })) as unknown as typeof canvas.getContext
+  layer.append(canvas)
+  frame.append(layer)
+  stage.append(frame)
+  const active: ActiveAllianceSurface = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: 0, minY: 0, maxX: 2, maxY: 1 },
+  }
+  const geometry = { originX: 0, originY: 0, width: 2, height: 1 }
+  const response = (body: ArrayBuffer): Response =>
+    new Response(body, {
+      headers: { 'content-type': 'application/x-wplace-alliance-hq-snapshot' },
+    })
+  let finishLate!: (response: Response) => void
+  const late = new Promise<Response>((resolve) => {
+    finishLate = resolve
+  })
+  const fetch = vi
+    .spyOn(window, 'fetch')
+    .mockResolvedValueOnce(
+      response(hqSnapshot(2, [{ x: 0, y: 0, version: 1, pixels: [0, 0, 0, 0] }])),
+    )
+    .mockReturnValueOnce(late)
+    .mockResolvedValueOnce(
+      response(hqSnapshot(2, [{ x: 0, y: 0, version: 3, pixels: [0, 0, 0, 0] }])),
+    )
+
+  await refreshArtboardPixels(active, geometry)
+  readArtboardPixels(active, geometry)
+  const pending = refreshArtboardPixels(active, geometry)
+  patchArtboardPixels(active, geometry, canvas, { x: 0, y: 0, width: 1, height: 1 })
+  expect(nativePixelAt(readArtboardPixels(active, geometry), 0, 0)).toEqual({
+    index: TRANSPARENT_INDEX,
+    source: 'committed',
+  })
+  layer.remove()
+  finishLate(response(hqSnapshot(2, [{ x: 0, y: 0, version: 2, pixels: [7, 0, 0, 0] }])))
+  await pending
+
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(nativePixelAt(readArtboardPixels(active, geometry), 0, 0)).toEqual({
+    index: TRANSPARENT_INDEX,
+    source: 'committed',
+  })
+})
+
 it.each([
   ['alliance-picture', 64, 64],
   ['alliance-banner', 384, 128],
@@ -355,7 +419,7 @@ it('patches only the crosshair cells Wplace changed', () => {
     index: TRANSPARENT_INDEX,
     source: 'draft',
   })
-  patchArtboardPixels(crosshair, { x: 0, y: 0, width: 10, height: 10 })
+  patchArtboardPixels(active, geometry, crosshair, { x: 0, y: 0, width: 10, height: 10 })
   expect(nativePixelAt(readArtboardPixels(active, geometry), -1, 0)).toEqual({
     index: TRANSPARENT_INDEX,
     source: 'draft',
@@ -399,7 +463,7 @@ it('patches only the native canvas rectangle Wplace changed', () => {
   const geometry = { originX: -1, originY: 0, width: 2, height: 1 }
 
   expect(readArtboardPixels(active, geometry).committed[0]?.pixels).toEqual(new Uint8Array([4, 7]))
-  patchArtboardPixels(canvas, { x: 1, y: 0, width: 1, height: 1 })
+  patchArtboardPixels(active, geometry, canvas, { x: 1, y: 0, width: 1, height: 1 })
   expect(readArtboardPixels(active, geometry).committed[0]?.pixels).toEqual(new Uint8Array([4, 2]))
   expect(reads).toEqual([
     [0, 0, 2, 1],

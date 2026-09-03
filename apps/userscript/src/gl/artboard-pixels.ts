@@ -194,6 +194,8 @@ const patchCrosshairPixels = (canvas: HTMLCanvasElement, dirty: CanvasWriteRect 
 
 /** Patch a retained native canvas snapshot after Wplace changes a bounded rectangle. */
 export const patchArtboardPixels = (
+  active: ActiveAllianceSurface,
+  geometry: ArtboardPixelGeometry,
   canvas: HTMLCanvasElement,
   dirty: CanvasWriteRect | null,
 ): void => {
@@ -225,6 +227,12 @@ export const patchArtboardPixels = (
     )
   } catch {
     canvasPixels.delete(canvas)
+  }
+  if (
+    active.surface.kind === 'alliance-headquarters' &&
+    canvas.parentElement?.classList.contains('hq-tile-layer') === true
+  ) {
+    headquartersPixels(active.surface.allianceId, geometry, hqPixels(active, geometry), true)
   }
 }
 
