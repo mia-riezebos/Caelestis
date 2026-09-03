@@ -4,6 +4,8 @@
   import {
     PACE_WINDOWS,
     type PaceHistorySource,
+    type PacePoint,
+    rollingPaceSeries,
     timeTickStep,
   } from '$lib/components/charts/progress-pace'
 
@@ -122,11 +124,6 @@
 
   const visiblePoints = $derived(points.filter((p) => p.t >= selFrom && p.t <= selTo))
 
-  interface PacePoint {
-    t: number
-    cumPlaced: number
-  }
-
   const retainedPacePoints = (source: PaceHistorySource): PacePoint[] => {
     const { buckets: paceBuckets, coverageStart, resolution: paceResolution } = source.history
     if (paceResolution === undefined || coverageStart === undefined) return []
@@ -144,23 +141,6 @@
     return filled
   }
 
-  /** px/h at each point for one window, clipped where the source tier is not fully covered. */
-  const paceSeries = (
-    source: readonly PacePoint[],
-    bucketSeconds: number,
-    windowSeconds: number,
-  ): { t: number; v: number }[] => {
-    const series: { t: number; v: number }[] = []
-    const steps = Math.round(windowSeconds / bucketSeconds)
-    for (let i = steps; i < source.length; i++) {
-      const now = source[i]
-      const before = source[i - steps]
-      if (now === undefined || before === undefined) continue
-      series.push({ t: now.t, v: ((now.cumPlaced - before.cumPlaced) / windowSeconds) * 3_600 })
-    }
-    return series
-  }
-
   const paceWindows = $derived(
     PACE_WINDOWS.map((window) => {
       const retained = paceHistories.find((source) => source.window === window.key)
@@ -173,7 +153,7 @@
       const fullSeries =
         source === null
           ? []
-          : paceSeries(source.points, source.resolution, window.seconds)
+          : rollingPaceSeries(source.points, source.resolution, window.seconds)
       const series = fullSeries.filter((point) => point.t >= selFrom && point.t <= selTo)
       return { ...window, usable: fullSeries.length > 0, fullSeries, series }
     }),
@@ -528,6 +508,7 @@
         <path
           data-pace-window={pace.key}
           data-series-start={pace.fullSeries[0]?.t}
+          data-series-first-value={pace.fullSeries[0]?.v}
           d={linePath(pace.series)}
           fill="none"
           stroke={paceColor(pace.rank)}

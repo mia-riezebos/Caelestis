@@ -1,6 +1,6 @@
 import { type HistoryResponse, seconds } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
-import { averagePace, timeTickStep } from './progress-pace.js'
+import { averagePace, rollingPaceSeries, timeTickStep } from './progress-pace.js'
 
 describe('pace summaries', () => {
   it('averages complete retained buckets instead of treating partial boundaries as full hours', () => {
@@ -22,6 +22,23 @@ describe('pace summaries', () => {
       correct: 5,
       hours: 18,
     })
+  })
+
+  it('includes the first bucket and stamps each trailing window at its end', () => {
+    expect(
+      rollingPaceSeries(
+        [
+          { t: 0, cumPlaced: 4 },
+          { t: 3_600, cumPlaced: 12 },
+          { t: 7_200, cumPlaced: 15 },
+        ],
+        3_600,
+        7_200,
+      ),
+    ).toEqual([
+      { t: 7_200, v: 6 },
+      { t: 10_800, v: 5.5 },
+    ])
   })
 })
 

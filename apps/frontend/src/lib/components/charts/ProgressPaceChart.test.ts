@@ -159,6 +159,8 @@ describe('rolling pace retention', () => {
 
     expect(shortLine?.getAttribute('data-series-start')).toBe('73800')
     expect(coarseLine?.getAttribute('data-series-start')).toBe('21600')
+    expect(Number(shortLine?.getAttribute('data-series-first-value'))).toBeGreaterThan(0)
+    expect(Number(coarseLine?.getAttribute('data-series-first-value'))).toBeGreaterThan(0)
     expect(shortLine?.getAttribute('d')).toMatch(/^M/)
     expect(coarseLine?.getAttribute('d')).toMatch(/^M/)
     expect(brush?.getAttribute('aria-valuemin')).toBe('0')

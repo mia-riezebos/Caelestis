@@ -24,6 +24,39 @@ export interface PaceAverage {
   readonly hours: number
 }
 
+/** A bucket-start timestamp paired with cumulative placements through that bucket. */
+export interface PacePoint {
+  readonly t: number
+  readonly cumPlaced: number
+}
+
+/** A trailing placement rate stamped at the end of its complete window. */
+export interface PaceRatePoint {
+  readonly t: number
+  readonly v: number
+}
+
+/** Calculate trailing px/h windows at the end of each complete source bucket. */
+export const rollingPaceSeries = (
+  source: readonly PacePoint[],
+  bucketSeconds: number,
+  windowSeconds: number,
+): PaceRatePoint[] => {
+  const series: PaceRatePoint[] = []
+  const steps = Math.round(windowSeconds / bucketSeconds)
+  for (let i = steps - 1; i < source.length; i++) {
+    const current = source[i]
+    if (current === undefined) continue
+    const before = i === steps - 1 ? 0 : source[i - steps]?.cumPlaced
+    if (before === undefined) continue
+    series.push({
+      t: current.t + bucketSeconds,
+      v: ((current.cumPlaced - before) / windowSeconds) * 3_600,
+    })
+  }
+  return series
+}
+
 /** Average only complete retained buckets inside the requested window. */
 export const averagePace = (
   history: HistoryResponse,
