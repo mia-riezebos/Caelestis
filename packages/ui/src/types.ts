@@ -32,10 +32,16 @@ export interface TemplateAdminProps {
 
 export type ToastKind = 'info' | 'warning' | 'error'
 
+export interface ToastActionModel {
+  readonly label: string
+  readonly href: string
+}
+
 export interface ToastModel {
   readonly id: string
   readonly kind: ToastKind
   readonly message: string
+  readonly action?: ToastActionModel
 }
 
 export interface ConfirmDialogModel {

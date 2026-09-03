@@ -61,6 +61,7 @@ export type {
   TemplateStateProps,
   TemplateTreeIntent,
   TemplateTreeModel,
+  ToastActionModel,
   ToastKind,
   ToastModel,
   TreeActionModel,

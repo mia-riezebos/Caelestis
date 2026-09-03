@@ -61,6 +61,11 @@
     {#each model.toasts as toast (toast.id)}
       <div class="toast {toast.kind}" data-caelestis-toast={toast.kind}>
         <span>{toast.message}</span>
+        {#if toast.action !== undefined}
+          <a class="toast-action" href={toast.action.href} target="_blank" rel="noopener noreferrer">
+            {toast.action.label}
+          </a>
+        {/if}
         {#if toast.kind === 'error'}
           <button type="button" aria-label="Dismiss error" title="Dismiss error" onclick={() => dismiss(toast.id)}>
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -163,6 +168,22 @@
   .toast button:hover { background: color-mix(in oklch, currentColor 12%, transparent); }
   .toast svg { inline-size: 1rem; block-size: 1rem; fill: none; stroke: currentColor; stroke-width: 2; }
 
+  .toast-action {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    min-block-size: var(--caelestis-touch-target, 2.75rem);
+    padding-inline: 0.75rem;
+    border: 1px solid color-mix(in oklch, currentColor 32%, transparent);
+    border-radius: var(--caelestis-field-radius, 0.65rem);
+    color: currentColor;
+    font-weight: 700;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .toast-action:hover { background: color-mix(in oklch, currentColor 12%, transparent); }
+
   dialog {
     inline-size: min(28rem, calc(100vw - 2rem));
     max-inline-size: none;
@@ -210,7 +231,7 @@
   .button.success { background: var(--caelestis-success, oklch(0.63 0.16 154)); }
   .button.warning { background: var(--caelestis-warning, oklch(0.68 0.15 75)); color: black; }
   .secret { inline-size: 100%; min-block-size: 2.5rem; margin-block-start: 1rem; padding-inline: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-raised-surface, color-mix(in oklch, var(--caelestis-surface) 88%, black)); color: inherit; font: 500 0.85rem ui-monospace, monospace; }
-  .button:focus-visible, .toast button:focus-visible { outline: 3px solid color-mix(in oklch, var(--caelestis-focus, oklch(0.62 0.17 252)) 55%, transparent); outline-offset: 2px; }
+  .button:focus-visible, .toast button:focus-visible, .toast-action:focus-visible { outline: 3px solid color-mix(in oklch, var(--caelestis-focus, oklch(0.62 0.17 252)) 55%, transparent); outline-offset: 2px; }
 
   @media (prefers-color-scheme: dark) {
     .toasts, dialog {
