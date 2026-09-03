@@ -291,13 +291,13 @@
         >
           {#if connectorWidth > 0}
             {@const current = (entry.branches?.length ?? 1) - 1}
-            <svg class="connector" style:width={`${connectorWidth}px`} viewBox={`0 0 ${connectorWidth} 36`} preserveAspectRatio="none" aria-hidden="true">
+            <span class="connector" style:inline-size={`${connectorWidth}px`} aria-hidden="true">
               {#each entry.branches?.slice(0, -1) ?? [] as continued, index}
-                {#if continued}<line x1={index * 18 + 9} y1="0" x2={index * 18 + 9} y2="36" />{/if}
+                {#if continued}<span class="connector-vertical" style:inset-inline-start={`${index * 18 + 9}px`}></span>{/if}
               {/each}
-              <line x1={current * 18 + 9} y1="0" x2={current * 18 + 9} y2={entry.branches?.[current] === true ? 36 : 18} />
-              <line x1={current * 18 + 9} y1="18" x2={connectorWidth - 4} y2="18" />
-            </svg>
+              <span class:continues={entry.branches?.[current] === true} class="connector-current" style:inset-inline-start={`${current * 18 + 9}px`}></span>
+              <span class="connector-elbow" style:inset-inline-start={`${current * 18 + 9}px`}></span>
+            </span>
           {/if}
           {#if entry.container}<span class:open={entry.expanded} class="caret" aria-hidden="true">›</span>{/if}
           <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
@@ -403,8 +403,12 @@
   select { padding-inline: 0.75rem 2rem; }
   .scroller { flex: 1; min-block-size: 0; overflow-y: auto; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
-  .row { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
-  .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; block-size: 100%; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.28; pointer-events: none; }
+  .row { position: relative; display: flex; flex-wrap: wrap; align-content: flex-start; align-items: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
+  .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; opacity: 0.28; pointer-events: none; }
+  .connector-vertical, .connector-current { position: absolute; inset-block-start: 0; border-inline-start: 1px solid currentColor; }
+  .connector-vertical, .connector-current.continues { inset-block-end: 0; }
+  .connector-current:not(.continues) { block-size: 20px; }
+  .connector-elbow { position: absolute; top: 20px; inset-inline-end: 4px; border-block-start: 1px solid currentColor; }
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
   .row:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .row.muted { opacity: 0.55; }

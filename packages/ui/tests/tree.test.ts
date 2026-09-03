@@ -146,9 +146,14 @@ describe('template tree', () => {
     expect(document.querySelector('.progress-legend .completed')?.textContent).toBe('75')
     expect(document.querySelector('.progress-legend .mismatched')?.textContent).toBe('5')
     expect(document.querySelector('.progress-legend .unpainted')?.textContent).toBe('20')
-    expect(
-      document.querySelector('[data-caelestis-tree-key="local:city"] .connector'),
-    ).not.toBeNull()
+    const connector = document.querySelector<HTMLElement>(
+      '[data-caelestis-tree-key="local:city"] .connector',
+    )
+    expect(connector?.tagName).toBe('SPAN')
+    expect(getComputedStyle(connector?.querySelector('.connector-elbow') as Element).top).toBe(
+      '20px',
+    )
+    expect(getComputedStyle(connector?.closest('.row') as Element).alignContent).toBe('flex-start')
     const disclosure = document.querySelector<HTMLElement>('.progress-disclosure')
     const detailPercent = disclosure?.querySelector<HTMLElement>('.percent')
     const detailAction = disclosure?.querySelector<HTMLElement>('.progress-detail-action')
