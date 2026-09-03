@@ -14,6 +14,7 @@ import {
   nodeTreeKey,
   refreshServerSnapshot,
   serverTemplateAt,
+  serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
 import {
   admittedServerContentsFor,
@@ -24,7 +25,7 @@ import {
   probeServer,
   setState,
 } from '../state.js'
-import { templateTreeAdapter } from './tree.js'
+import { templateTreeAdapter, templateTreeKeyFor } from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
@@ -78,6 +79,33 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
 })
 
 describe('tree model adapter', () => {
+  it('maps focused local and server templates to their rendered row keys', () => {
+    const connected = server(SERVER_ID, 0)
+
+    expect(templateTreeKeyFor({ id: 'local-template' }, [])).toBe('local:local-template')
+    expect(
+      templateTreeKeyFor(
+        {
+          id: 'drawn-server-template',
+          serverUrl: connected.url,
+          serverTemplateId: TEMPLATE_A,
+        },
+        [connected],
+      ),
+    ).toBe(serverTemplateTreeKey(connected, TEMPLATE_A))
+    expect(
+      templateTreeKeyFor(
+        {
+          id: 'orphaned-server-template',
+          serverUrl: 'https://disconnected.example.com',
+          serverTemplateId: TEMPLATE_A,
+        },
+        [connected],
+      ),
+    ).toBeUndefined()
+    expect(templateTreeKeyFor(null, [connected])).toBeUndefined()
+  })
+
   it('translates tree state and routes typed expansion and action intents', () => {
     setState({ collapsed: ['local'] })
     const rerender = vi.fn()

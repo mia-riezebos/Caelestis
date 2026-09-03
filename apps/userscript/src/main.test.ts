@@ -11,6 +11,8 @@ const harness = vi.hoisted(() => ({
   clearDraftPixels: vi.fn(),
   triggerRepaint: vi.fn(),
   renderOverlayControls: vi.fn(),
+  refreshTemplateTreeFocus: vi.fn(),
+  allianceViewportChange: null as (() => void) | null,
   viewportCentreIn: vi.fn(() => ({ x: 12, y: 34 })),
   screenPointForIn: vi.fn(() => ({ x: 56, y: 78 })),
   cssPixelsPerCanvasPixelIn: vi.fn(() => ({ x: 2, y: 3 })),
@@ -35,6 +37,13 @@ vi.mock('./gl/layer.js', () => ({
   overlayGpuMemoryBytes: vi.fn(() => 0),
   overlayStagingMemoryBytes: vi.fn(() => 0),
   setNudge: vi.fn(),
+}))
+vi.mock('./gl/artboard-layer.js', () => ({
+  allianceOverlayGpuMemoryBytes: vi.fn(() => 0),
+  installAllianceOverlayLayer: (onViewportChange: () => void) => {
+    harness.allianceViewportChange = onViewportChange
+  },
+  repaintAllianceOverlayLayer: vi.fn(),
 }))
 vi.mock('./gl/markers.js', () => ({
   keepMarkersAboveDrafts: vi.fn(),
@@ -107,7 +116,11 @@ vi.mock('./ui/overlay-menu.js', () => ({
   renderOverlayControls: harness.renderOverlayControls,
   toggleOverlayMenu: vi.fn(),
 }))
-vi.mock('./ui/panel.js', () => ({ installPanel: vi.fn(), togglePanel: vi.fn() }))
+vi.mock('./ui/panel.js', () => ({
+  installPanel: vi.fn(),
+  refreshTemplateTreeFocus: harness.refreshTemplateTreeFocus,
+  togglePanel: vi.fn(),
+}))
 vi.mock('./userscript-update.js', () => ({
   installUserscriptUpdateCheck: harness.installUserscriptUpdateCheck,
 }))
@@ -139,6 +152,7 @@ beforeEach(() => {
   harness.stateListeners = []
   harness.paintListeners = []
   harness.mismatchListeners = []
+  harness.allianceViewportChange = null
 })
 
 describe('GL frame lifecycle', () => {
@@ -146,6 +160,25 @@ describe('GL frame lifecycle', () => {
     await load()
 
     expect(harness.installUserscriptUpdateCheck).toHaveBeenCalledOnce()
+  })
+
+  it('refreshes the focused template row only when the world viewport centre changes', async () => {
+    await load()
+    const canvas = document.createElement('canvas')
+    harness.tileFrame?.(frame(canvas))
+    harness.tileFrame?.(frame(canvas))
+    harness.viewportCentreIn.mockReturnValueOnce({ x: 13, y: 34 })
+    harness.tileFrame?.(frame(canvas))
+
+    expect(harness.refreshTemplateTreeFocus).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes the focused template row from alliance viewport geometry changes', async () => {
+    await load()
+
+    harness.allianceViewportChange?.()
+
+    expect(harness.refreshTemplateTreeFocus).toHaveBeenCalledOnce()
   })
 
   it('drops a stale projection when the current frame has no tiles', async () => {

@@ -75,6 +75,17 @@ export interface ArtboardViewport {
   readonly frameHeight: number
 }
 
+/** Geometry identity for focus and movement work that depends on both the stage and frame. */
+export const artboardViewportKey = (viewport: ArtboardViewport): string =>
+  [
+    viewport.bufferWidth,
+    viewport.bufferHeight,
+    viewport.frameLeft,
+    viewport.frameTop,
+    viewport.frameWidth,
+    viewport.frameHeight,
+  ].join(':')
+
 /** Keep fixed template controls in lockstep with whether the artboard has usable geometry. */
 export const reconcileAllianceControlsForViewport = (
   viewport: ArtboardViewport | null,
@@ -566,7 +577,7 @@ class ArtboardRenderer {
     { readonly index: ArtboardMarkerIndex; readonly work: ArtboardMarkerWork }
   >()
   private renderGeneration = 0
-  private lastViewportKey = ''
+  private lastViewportKey: string | null | undefined
   private settleFramePending = false
   private disposed = false
 
@@ -577,6 +588,7 @@ class ArtboardRenderer {
     private readonly outline: ArtboardPass,
     private readonly overlay: ArtboardPass,
     private readonly markers: ArtboardPass,
+    private readonly onViewportChange: () => void,
   ) {
     this.observer = new MutationObserver(() => this.requestRender())
     this.observer.observe(active.frame, { attributes: true, attributeFilter: ['class', 'style'] })
@@ -590,6 +602,7 @@ class ArtboardRenderer {
   static create(
     active: ActiveAllianceSurface,
     geometry: ArtboardGeometry,
+    onViewportChange: () => void,
   ): ArtboardRenderer | null {
     const outline = ArtboardPass.create(active.frame.ownerDocument, 'outline')
     const overlay = ArtboardPass.create(active.frame.ownerDocument, 'overlay')
@@ -601,7 +614,15 @@ class ArtboardRenderer {
       return null
     }
     insertAllianceArtboardCanvases(active.frame, outline.canvas, overlay.canvas, markers.canvas)
-    return new ArtboardRenderer(active, active.surface, geometry, outline, overlay, markers)
+    return new ArtboardRenderer(
+      active,
+      active.surface,
+      geometry,
+      outline,
+      overlay,
+      markers,
+      onViewportChange,
+    )
   }
 
   private syncViewport(): ArtboardViewport | null {
@@ -636,15 +657,12 @@ class ArtboardRenderer {
     }
   }
 
-  private viewportIsMoving(viewport: ArtboardViewport): boolean {
-    const key = [
-      viewport.frameLeft,
-      viewport.frameTop,
-      viewport.frameWidth,
-      viewport.frameHeight,
-    ].join(':')
-    const moving = this.lastViewportKey !== '' && key !== this.lastViewportKey
+  private viewportIsMoving(viewport: ArtboardViewport | null): boolean {
+    const key = viewport === null ? null : artboardViewportKey(viewport)
+    const changed = key !== this.lastViewportKey
+    const moving = this.lastViewportKey !== undefined && key !== null && changed
     this.lastViewportKey = key
+    if (changed) this.onViewportChange()
     if (moving) this.settleFramePending = true
     else if (this.settleFramePending) this.settleFramePending = false
     return moving
@@ -700,6 +718,7 @@ class ArtboardRenderer {
 
   private draw(): void {
     const viewport = this.syncViewport()
+    const moving = this.viewportIsMoving(viewport)
     if (
       !reconcileAllianceControlsForViewport(viewport, () =>
         renderAllianceOverlayControls(
@@ -838,7 +857,6 @@ class ArtboardRenderer {
       ...mismatchDraws.map((layer) => ({ ...layer, sampleRate: mismatchSampleRate })),
     ]
     this.markerBatches.endFrame()
-    const moving = this.viewportIsMoving(viewport)
     const minifyTapCap = moving ? movingOverlayTapCap(templates.length) : 4
     const outlineAllowance = Math.floor(TEMPLATE_UPLOAD_PIXELS_PER_FRAME / 2)
     const outlineResult = this.outline.render(
@@ -922,6 +940,7 @@ class ArtboardRenderer {
 }
 
 let renderer: ArtboardRenderer | null = null
+let viewportChangeListener: () => void = () => {}
 
 export const allianceOverlayGpuMemoryBytes = (): number => renderer?.memoryBytes() ?? 0
 
@@ -933,7 +952,7 @@ const reconcileRenderer = (): void => {
   if (active === null) return
   const geometry = artboardGeometry(active)
   if (geometry === null || geometry.width <= 0 || geometry.height <= 0) return
-  renderer = ArtboardRenderer.create(active, geometry)
+  renderer = ArtboardRenderer.create(active, geometry, viewportChangeListener)
   renderer?.requestRender()
   void refreshArtboardPixels(active, geometry)
 }
@@ -941,7 +960,8 @@ const reconcileRenderer = (): void => {
 export const repaintAllianceOverlayLayer = (): void => renderer?.requestRender()
 
 /** Attach viewport-resolution WebGL passes inside whichever Wplace alliance artboard is open. */
-export const installAllianceOverlayLayer = (): void => {
+export const installAllianceOverlayLayer = (onViewportChange: () => void = () => {}): void => {
+  viewportChangeListener = onViewportChange
   onActiveAllianceSurfaceChange(reconcileRenderer)
   onHeadquartersRevisionChange((allianceId) => {
     queueMicrotask(() => {

@@ -69,7 +69,7 @@ import {
   type TileFrame,
 } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
-import { installPanel } from './ui/panel.js'
+import { installPanel, refreshTemplateTreeFocus } from './ui/panel.js'
 import { installUserscriptUpdateCheck } from './userscript-update.js'
 import { loadAccount } from './wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
@@ -99,6 +99,24 @@ interface RegisteredFrameHook {
 }
 
 const hooks: RegisteredFrameHook[] = []
+
+let lastTreeFocusCentre: { readonly x: number; readonly y: number } | null | undefined
+
+const refreshWorldTemplateTreeFocus = (frame: TileFrame): void => {
+  if (activeAllianceSurface() !== null) return
+  const centre = viewportCentreIn(frame)
+  if (
+    lastTreeFocusCentre !== undefined &&
+    (centre === null
+      ? lastTreeFocusCentre === null
+      : lastTreeFocusCentre !== null &&
+        lastTreeFocusCentre.x === centre.x &&
+        lastTreeFocusCentre.y === centre.y)
+  )
+    return
+  lastTreeFocusCentre = centre
+  refreshTemplateTreeFocus()
+}
 
 /** Register something to run per frame, in registration order. */
 export const onFrame = (hook: FrameHook, name = 'Frame hook'): void => {
@@ -334,6 +352,7 @@ const main = (): void => {
   })
   step('paint palette progress', installPaintPaletteProgress)
   onFrame(refreshPaintPaletteFocus, 'Paint palette focus')
+  onFrame(refreshWorldTemplateTreeFocus, 'Template tree focus')
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
   step('keyboard shortcuts', () => {
@@ -380,7 +399,7 @@ const main = (): void => {
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
-  step('alliance overlay layer', installAllianceOverlayLayer)
+  step('alliance overlay layer', () => installAllianceOverlayLayer(refreshTemplateTreeFocus))
   onFrame((frame) => {
     if (activeAllianceSurface() === null) renderOverlayControls(repaint, frame.canvas)
   }, 'Overlay controls')
