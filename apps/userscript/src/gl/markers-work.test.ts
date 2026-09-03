@@ -95,6 +95,8 @@ vi.mock('../wplace-paint.js', () => ({
   selectedColour: () => fixture.selected,
 }))
 vi.mock('./fade.js', () => ({
+  FADE_MS: 300,
+  fadeProgress: () => 1,
   markerFades: {
     advance: (_id: string, target: number) => ({ value: target, done: true }),
     prune: vi.fn(),

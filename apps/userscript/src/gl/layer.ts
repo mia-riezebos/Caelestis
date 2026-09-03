@@ -1,7 +1,7 @@
 import { TILE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
-import { isOverlayPeekActive } from '../overlay-peek.js'
+import { overlayPeekFade } from '../overlay-peek.js'
 import {
   clearGpuProfile,
   isProfileEnabled,
@@ -274,7 +274,9 @@ export const overlayLayer = {
   draw(gl: WebGL2RenderingContext, _args: unknown): void {
     if (program === null || vao === null || gpu === null) return
     const store = gpu
-    if (isOverlayPeekActive()) return
+    const now = performance.now()
+    const peek = overlayPeekFade(now)
+    if (peek.opacity <= 0 && peek.done) return
     // Stop where wplace stops. A layer renders every frame whatever the zoom, so without this the
     // overlay stayed on screen past the point their canvas disappears — annotating nothing.
     if (!isDrawingTiles()) return
@@ -290,13 +292,12 @@ export const overlayLayer = {
 
     // Switched off is a destination, not an exclusion: a template on its way out is still drawn,
     // at falling opacity, and only leaves once its ramp has run out.
-    const now = performance.now()
     // This is a browser preference, not a template property. Reading matchMedia for every visible
     // template made a dense viewport repeat the same native query dozens of times per frame.
     const reducedMotion = prefersReducedMotion()
     const profiling = isProfileEnabled()
     const scene = worldRenderScene.advanceTemplates(all, WORLD_TEMPLATE_SURFACE, now, reducedMotion)
-    let animating = scene.animating
+    let animating = scene.animating || !peek.done
     let visibleSourcePixels = 0
     const visible: {
       rendered: SceneTemplate
@@ -404,7 +405,7 @@ export const overlayLayer = {
         gl.bindTexture(gl.TEXTURE_2D, entry.palette)
         gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
-        gl.uniform1f(uniform(gl, 'u_fade'), fade)
+        gl.uniform1f(uniform(gl, 'u_fade'), fade * peek.opacity)
         gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
         gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
         gl.uniform1f(uniform(gl, 'u_stampRadius'), appearance.radius)
@@ -529,7 +530,9 @@ export const outlineLayer = {
     if (outlineProgram === null || outlineVao === null || outlineQuad === null || gpu === null)
       return
     const store = gpu
-    if (isOverlayPeekActive() || !isDrawingTiles()) return
+    const now = performance.now()
+    const peek = overlayPeekFade(now)
+    if ((peek.opacity <= 0 && peek.done) || !isDrawingTiles()) return
     const map = getMap() as { triggerRepaint?: () => void } | null
     // MapLibre exposes the same current tile matrices its raster layer will upload later in this
     // frame. The coordinate module reads those early, with the intercepted previous frame only as
@@ -558,7 +561,6 @@ export const outlineLayer = {
 
     const bufferWidth = gl.drawingBufferWidth
     const bufferHeight = gl.drawingBufferHeight
-    const now = performance.now()
     const reducedMotion = prefersReducedMotion()
     let drawIntersections = 0
     let visibleTemplates = 0
@@ -582,7 +584,10 @@ export const outlineLayer = {
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(outlineUniform(gl, 'u_palette'), 1)
-      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity * outlineFade)
+      gl.uniform1f(
+        outlineUniform(gl, 'u_fade'),
+        fade * appearance.opacity * outlineFade * peek.opacity,
+      )
       // Keep the persisted control scale, but render it as 3.125%..25% of a canvas pixel. Unlike a
       // device-pixel width, this grows and shrinks with Wplace's pixels as the map zooms.
       gl.uniform1f(outlineUniform(gl, 'u_outlineWidth'), appearance.contrastOutlineSize / 8)
@@ -618,7 +623,7 @@ export const outlineLayer = {
       recordProfileWorkload('Outline visible templates', visibleTemplates)
       recordProfileWorkload('Outline draw intersections', drawIntersections)
     }
-    if (scene.animating) map?.triggerRepaint?.()
+    if (scene.animating || !peek.done) map?.triggerRepaint?.()
   },
 }
 

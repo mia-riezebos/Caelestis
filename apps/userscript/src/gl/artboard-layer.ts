@@ -7,7 +7,7 @@ import {
 } from '../alliance-surface.js'
 import { type CanvasWriteRect, onCanvasWrite } from '../canvas-write.js'
 import { warn } from '../debug.js'
-import { isOverlayPeekActive, onOverlayPeekChange } from '../overlay-peek.js'
+import { onOverlayPeekChange, overlayPeekFade } from '../overlay-peek.js'
 import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
 import { getState, onlySelectedColourFor, onStateChange } from '../state.js'
 import { isPlain, toRgbUnit } from '../templates/appearance.js'
@@ -362,6 +362,7 @@ class ArtboardPass {
     uploadAllowance: number,
     generation: number,
     minifyTapCap: number,
+    peekOpacity: number,
   ): ArtboardDrawResult {
     const gl = this.gl
     let animating = false
@@ -371,7 +372,7 @@ class ArtboardPass {
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
     gl.clearColor(0, 0, 0, 0)
     gl.clear(gl.COLOR_BUFFER_BIT)
-    if (isOverlayPeekActive()) return { animating, uploadedPixels, drawIntersections }
+    if (peekOpacity <= 0) return { animating, uploadedPixels, drawIntersections }
     const margin = this.kind === 'outline' ? 1 : 0
     const visible = templates.filter(({ template, outlineFade }) => {
       if (this.kind === 'outline' && outlineFade <= 0) return false
@@ -448,11 +449,11 @@ class ArtboardPass {
       if (this.kind === 'outline') {
         gl.uniform1f(
           this.uniform('u_fade'),
-          rendered.fade * appearance.opacity * rendered.outlineFade,
+          rendered.fade * appearance.opacity * rendered.outlineFade * peekOpacity,
         )
         gl.uniform1f(this.uniform('u_outlineWidth'), appearance.contrastOutlineSize / 8)
       } else {
-        gl.uniform1f(this.uniform('u_fade'), rendered.fade)
+        gl.uniform1f(this.uniform('u_fade'), rendered.fade * peekOpacity)
         gl.uniform1f(this.uniform('u_opacity'), appearance.opacity)
         gl.uniform1i(this.uniform('u_plain'), isPlain(appearance) ? 1 : 0)
       }
@@ -488,7 +489,7 @@ class ArtboardPass {
           },
           marker.marks,
           marker.style,
-          marker.fade,
+          marker.fade * peekOpacity,
           marker.sampleRate,
         )
       }
@@ -507,6 +508,7 @@ class ArtboardPass {
     uploadAllowance: number,
     generation: number,
     minifyTapCap: number,
+    peekOpacity: number,
   ): ArtboardDrawResult {
     const name =
       this.kind === 'outline'
@@ -525,6 +527,7 @@ class ArtboardPass {
           uploadAllowance,
           generation,
           minifyTapCap,
+          peekOpacity,
         ),
       ),
     )
@@ -712,6 +715,7 @@ class ArtboardRenderer {
     this.renderGeneration++
     const ids = new Set(all.map(({ id }) => id))
     const now = performance.now()
+    const peek = overlayPeekFade(now)
     const reducedMotion = prefersReducedMotion()
     const templateScene = this.scene.advanceTemplates(all, this.surface, now, reducedMotion)
     const templates = templateScene.templates.filter(
@@ -846,6 +850,7 @@ class ArtboardRenderer {
       outlineAllowance,
       this.renderGeneration,
       minifyTapCap,
+      peek.opacity,
     )
     const overlayResult = this.overlay.render(
       templates,
@@ -856,6 +861,7 @@ class ArtboardRenderer {
       TEMPLATE_UPLOAD_PIXELS_PER_FRAME - outlineAllowance,
       this.renderGeneration,
       minifyTapCap,
+      peek.opacity,
     )
     this.markers.render(
       [],
@@ -866,6 +872,7 @@ class ArtboardRenderer {
       0,
       this.renderGeneration,
       minifyTapCap,
+      peek.opacity,
     )
     if (isProfileEnabled()) {
       recordProfileWorkload('Alliance overlay visible templates', templates.length)
@@ -894,7 +901,7 @@ class ArtboardRenderer {
         selectedLayers.length + mismatchLayers.length - markerLayers.length,
       )
     }
-    if (outlineResult.animating || overlayResult.animating || moving) animating = true
+    if (outlineResult.animating || overlayResult.animating || moving || !peek.done) animating = true
     if (animating) this.requestRender()
   }
 

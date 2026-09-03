@@ -69,6 +69,8 @@ vi.mock('../tile-transform.js', () => ({
   isDrawingTiles: () => true,
 }))
 vi.mock('./fade.js', () => ({
+  FADE_MS: 300,
+  fadeProgress: () => 1,
   colourFades: {
     advance: (_key: string, target: number) => ({ value: target, done: true }),
     prune: vi.fn(),

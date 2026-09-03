@@ -1,7 +1,7 @@
 import { sameTemplateSurface, TILE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
-import { isOverlayPeekActive } from '../overlay-peek.js'
+import { overlayPeekFade } from '../overlay-peek.js'
 import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
 import { getState } from '../state.js'
 import { toRgbUnit } from '../templates/appearance.js'
@@ -180,7 +180,10 @@ const RETRY_MS = 250
 let nextRetry = 0
 
 /** Every marked pixel of every template that asks for it, over every tile on screen. */
-const drawVisible = (gl: WebGL2RenderingContext): void => {
+const drawVisible = (
+  gl: WebGL2RenderingContext,
+  peek: { readonly opacity: number; readonly done: boolean },
+): void => {
   if (!isDrawingTiles()) return
   const tiles = currentQuads()
   if (tiles.length === 0) return
@@ -209,7 +212,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     selected >= 0 ? selected : null,
     now,
   )
-  const animating = sceneTemplates.animating || sceneMarkers.animating
+  const animating = sceneTemplates.animating || sceneMarkers.animating || !peek.done
   const wanted: {
     template: PlacedTemplate
     appearance: (typeof sceneTemplates.templates)[number]['appearance']
@@ -309,7 +312,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
                 tile,
                 marks,
                 style: selectedStyle,
-                fade: selectedFade.fade,
+                fade: selectedFade.fade * peek.opacity,
               })
             }
           }
@@ -323,7 +326,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
             tile,
             marks: tileAccounting.markers,
             style: mismatchStyle,
-            fade: mismatchFade,
+            fade: mismatchFade * peek.opacity,
           })
         }
       }
@@ -414,11 +417,14 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }
 }
 
-const drawAll = (gl: WebGL2RenderingContext): void => {
+const drawAll = (
+  gl: WebGL2RenderingContext,
+  peek: { readonly opacity: number; readonly done: boolean },
+): void => {
   worldMarkerRenderer?.beginFrame()
   beginMarkerBatchFrame()
   try {
-    pixelAccounting.frame(() => drawVisible(gl))
+    pixelAccounting.frame(() => drawVisible(gl, peek))
   } finally {
     endMarkerBatchFrame()
     worldMarkerRenderer?.endFrame()
@@ -448,12 +454,13 @@ export const markerLayer = {
   },
 
   render(gl: WebGL2RenderingContext): void {
-    // Peek is a display suppression, not cache invalidation. Stop before `drawAll` so its normal
-    // unused-buffer sweep does not discard every retained marker buffer during the held key.
-    if (isOverlayPeekActive()) return
+    const peek = overlayPeekFade(performance.now())
+    // Peek is display suppression, not cache invalidation. Once the fade reaches zero, stop before
+    // `drawAll` so its normal unused-buffer sweep keeps every retained marker buffer warm.
+    if (peek.opacity <= 0 && peek.done) return
     // Never let this escape into MapLibre's render loop; a throw here takes the whole frame with it.
     try {
-      profileGpu(gl, 'Marker GPU', () => measureProfile('Marker render', () => drawAll(gl)))
+      profileGpu(gl, 'Marker GPU', () => measureProfile('Marker render', () => drawAll(gl, peek)))
     } catch (error) {
       warn('install', 'marker layer render failed; skipping this frame', String(error))
     }
