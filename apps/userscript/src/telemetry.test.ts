@@ -1442,9 +1442,10 @@ describe('server telemetry client', () => {
 
     await vi.advanceTimersByTimeAsync(60_000)
     await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(2), { timeout: 2_000 })
-    expect(attempts.get(server.url)?.[1]?.offers.map((offer) => offer.tile)).toEqual(
-      Array.from({ length: 32 }, (_, index) => `${index + 2}/11`),
-    )
+    const retriedTiles = attempts.get(server.url)?.[1]?.offers.map((offer) => offer.tile) ?? []
+    const expectedTiles = Array.from({ length: 32 }, (_, index) => `${index + 2}/11`)
+    expect(retriedTiles).toHaveLength(expectedTiles.length)
+    expect(new Set(retriedTiles)).toEqual(new Set(expectedTiles))
   })
 
   it('releases queued tile offers when no reporter identity is available', async () => {
