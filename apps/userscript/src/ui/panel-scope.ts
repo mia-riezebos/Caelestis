@@ -64,17 +64,40 @@ export const alliancePanelTitle = (surface: TemplateSurface): string => {
   }
 }
 
-/** Keep the artboard control below Wplace's fullscreen header without relying on localized copy. */
-export const allianceRailTop = (stage: HTMLElement, normalTop: number, gap: number): number => {
-  const header = Array.from(stage.parentElement?.children ?? []).find(
+const allianceFullscreenHeader = (stage: HTMLElement): HTMLElement | null =>
+  (Array.from(stage.parentElement?.children ?? []).find(
     (element) =>
       element.tagName === 'HEADER' && element.querySelector('button[aria-pressed="true"]') !== null,
-  )
-  if (header === undefined) return normalTop
+  ) as HTMLElement | undefined) ?? null
+
+/** Keep artboard controls below Wplace's fullscreen header without relying on localized copy. */
+export const allianceRailTop = (stage: HTMLElement, normalTop: number, gap: number): number => {
+  const header = allianceFullscreenHeader(stage)
+  if (header === null) return normalTop
   return Math.max(
     normalTop,
     Math.ceil(header.getBoundingClientRect().bottom - stage.getBoundingClientRect().top + gap),
   )
+}
+
+/** Align the alliance rail's right edge with Wplace's fullscreen action group. */
+export const allianceRailInlineEnd = (
+  stage: HTMLElement,
+  parent: HTMLElement,
+  gap: number,
+): number => {
+  const header = allianceFullscreenHeader(stage)
+  const activeButton = header?.querySelector<HTMLElement>('button[aria-pressed="true"]')
+  const actionGroup = Array.from(header?.children ?? []).find((child) =>
+    activeButton === null || activeButton === undefined ? false : child.contains(activeButton),
+  )
+  if (actionGroup !== undefined) {
+    return Math.max(
+      0,
+      Math.round(parent.getBoundingClientRect().right - actionGroup.getBoundingClientRect().right),
+    )
+  }
+  return Math.max(0, parent.clientWidth - stage.offsetLeft - stage.offsetWidth + gap)
 }
 
 /** Accept both activation paths, optionally shielding a nested control from artboard pointer capture. */
@@ -96,23 +119,38 @@ export const bindRailActivation = (
   })
 }
 
-/** Own and restore the one Wplace style changed while the alliance drawer is open. */
+/** Own and restore the Wplace geometry changed while the alliance drawer is open. */
 export class AllianceDrawerInset {
   private stage: HTMLElement | null = null
-  private previous = ''
+  private stagePrevious = ''
+  private header: HTMLElement | null = null
+  private headerPrevious = ''
 
   apply(stage: HTMLElement, width: number, gap: number): void {
     if (this.stage !== stage) {
       this.clear()
       this.stage = stage
-      this.previous = stage.style.marginInlineEnd
+      this.stagePrevious = stage.style.marginInlineEnd
     }
-    stage.style.marginInlineEnd = `${Math.max(0, Math.round(width + gap))}px`
+    const header = allianceFullscreenHeader(stage)
+    if (this.header !== header) {
+      if (this.header !== null) this.header.style.marginInlineEnd = this.headerPrevious
+      this.header = header
+      this.headerPrevious = header?.style.marginInlineEnd ?? ''
+    }
+    const inset = `${Math.max(0, Math.round(width + gap))}px`
+    if (stage.style.marginInlineEnd !== inset) stage.style.marginInlineEnd = inset
+    if (header !== null && header.style.marginInlineEnd !== inset) {
+      header.style.marginInlineEnd = inset
+    }
   }
 
   clear(): void {
-    if (this.stage !== null) this.stage.style.marginInlineEnd = this.previous
+    if (this.stage !== null) this.stage.style.marginInlineEnd = this.stagePrevious
+    if (this.header !== null) this.header.style.marginInlineEnd = this.headerPrevious
     this.stage = null
-    this.previous = ''
+    this.stagePrevious = ''
+    this.header = null
+    this.headerPrevious = ''
   }
 }

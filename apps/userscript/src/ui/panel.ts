@@ -110,6 +110,7 @@ import { canvasWritesTouchArtboard } from './panel-progress.js'
 import {
   AllianceDrawerInset,
   alliancePanelTitle,
+  allianceRailInlineEnd,
   allianceRailTop,
   bindRailActivation,
   type PanelScope,
@@ -307,11 +308,14 @@ const positionAllianceRail = (active: ActiveAllianceSurface): void => {
   if (wrapper === null) return
   const parent = wrapper.parentElement
   if (parent === null) return
+  if (panelSessions.isOpen('alliance')) {
+    const panel = active.stage.ownerDocument.getElementById(ALLIANCE_PANEL_ID)
+    const measuredWidth = panel?.getBoundingClientRect().width ?? 0
+    const width = measuredWidth > 0 ? measuredWidth : panelWidthForViewport(getState().panelWidth)
+    allianceDrawerInset.apply(active.stage, width, GAP)
+  }
   wrapper.style.top = `${active.stage.offsetTop + allianceRailTop(active.stage, GAP, GAP)}px`
-  wrapper.style.right = `${Math.max(
-    0,
-    parent.clientWidth - active.stage.offsetLeft - active.stage.offsetWidth + GAP,
-  )}px`
+  wrapper.style.right = `${allianceRailInlineEnd(active.stage, parent, GAP)}px`
 }
 
 const mountAllianceRail = (active: ActiveAllianceSurface): void => {

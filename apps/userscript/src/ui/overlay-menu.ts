@@ -77,6 +77,7 @@ import {
   type AppearanceUpdater as Updater,
 } from './overlay-appearance-state.js'
 import { type OverlayFailureKey as FailureKey, overlayFailures } from './overlay-failures.js'
+import { allianceRailTop } from './panel-scope.js'
 import { createRangeGestures } from './range-gestures.js'
 import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID } from './toast.js'
@@ -1739,13 +1740,14 @@ const worldControlViewport = (): ControlViewport => ({
 
 const allianceControlViewport = (stage: HTMLElement): ControlViewport | null => {
   const box = stage.getBoundingClientRect()
+  const safeTop = box.top + allianceRailTop(stage, VIEWPORT_EDGE, GAP)
   const viewport = {
     clipLeft: Math.max(0, box.left),
     clipTop: Math.max(0, box.top),
     clipRight: Math.min(window.innerWidth, box.right),
     clipBottom: Math.min(window.innerHeight, box.bottom),
     left: Math.max(4, box.left + 4),
-    top: Math.max(VIEWPORT_EDGE, box.top + VIEWPORT_EDGE),
+    top: Math.max(VIEWPORT_EDGE, safeTop),
     right: Math.min(localControlsRightEdge(), box.right - 4),
     bottom: Math.min(window.innerHeight - VIEWPORT_EDGE, box.bottom - VIEWPORT_EDGE),
   }

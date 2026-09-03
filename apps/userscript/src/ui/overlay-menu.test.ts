@@ -1149,6 +1149,61 @@ describe('placement and geometry', () => {
     expect(floatingPosition(gear('a')).y).toBe(162)
   })
 
+  it('keeps alliance template controls below the fullscreen action bar', async () => {
+    menuMeasures(200, 240)
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.localTemplates.mockReturnValue([
+      template({ surface, originX: 100, originY: -125, width: 25 }),
+    ])
+    const dialog = document.createElement('dialog')
+    const editor = document.createElement('div')
+    const header = document.createElement('header')
+    const actionGroup = document.createElement('div')
+    const exit = document.createElement('button')
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    dialog.setAttribute('open', '')
+    exit.setAttribute('aria-pressed', 'true')
+    actionGroup.append(exit)
+    header.append(actionGroup)
+    frame.append(canvas)
+    stage.append(frame)
+    editor.append(header, stage)
+    dialog.append(editor)
+    document.body.append(dialog)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 700, bottom: 650, width: 700, height: 650 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 700, bottom: 700, width: 700, height: 700 }) as DOMRect
+    header.getBoundingClientRect = () => ({ bottom: 78 }) as DOMRect
+    const overlayMenu = await import('./overlay-menu.js')
+    const rerender = () =>
+      overlayMenu.renderAllianceOverlayControls(
+        rerender,
+        {
+          surface,
+          stage,
+          frame,
+          draftId: null,
+          bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+        },
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const safeTop = 78 + GAP
+    expect(floatingPosition(gear('a')).y).toBe(safeTop)
+    expect(Number.parseFloat(menu().style.top)).toBeGreaterThanOrEqual(safeTop)
+    for (const action of document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')) {
+      expect(floatingPosition(action).y).toBeGreaterThanOrEqual(safeTop)
+    }
+  })
+
   it('hides alliance rails when the visible stage slice cannot fit them', async () => {
     const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
     harness.localTemplates.mockReturnValue([template({ surface, originX: -100, originY: -125 })])
