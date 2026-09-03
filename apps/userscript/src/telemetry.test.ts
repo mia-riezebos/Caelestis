@@ -27,6 +27,7 @@ const harness = vi.hoisted(() => ({
 
 const coordinator = vi.hoisted(() => ({
   liveHealthy: false,
+  revision: undefined as string | undefined,
   liveTileOffer: vi.fn<
     (
       server: ConnectedServer,
@@ -107,7 +108,7 @@ vi.mock('./server-sync-coordinator.js', () => ({
     apply()
     return 'applied'
   },
-  serverSyncRevision: () => undefined,
+  serverSyncRevision: () => coordinator.revision,
   serverLiveSyncHealthy: () => coordinator.liveHealthy,
   requestLiveTileOfferCache: coordinator.liveTileOffer,
   registerServerSyncResource: (resource: {
@@ -194,6 +195,7 @@ beforeEach(() => {
   harness.retiredServers = new WeakSet<object>()
   coordinator.resources.clear()
   coordinator.liveHealthy = false
+  coordinator.revision = undefined
   coordinator.liveTileOffer.mockReset()
   coordinator.liveTileOffer.mockResolvedValue(null)
   coordinator.snapshots = []
@@ -235,6 +237,23 @@ describe('server telemetry client', () => {
         revision: '12',
       },
     ])
+    expect(mismatch.invalidateServer).not.toHaveBeenCalled()
+  })
+
+  it('invalidates every mismatch mask after a confirmed status revision change', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    coordinator.revision = '11'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ revision: 12, templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    const resource = coordinator.resources.get('telemetry-status')
+    await resource?.refresh(server, 'connect', 'recovery')
+
+    expect(mismatch.invalidateServer).toHaveBeenCalledWith(server.url)
   })
 
   it('invalidates mismatch masks from exact live status tiles', async () => {

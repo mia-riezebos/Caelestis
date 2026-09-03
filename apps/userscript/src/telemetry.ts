@@ -1119,7 +1119,11 @@ const refreshStatus = async (
         ...(body.revision === undefined ? {} : { revision: String(body.revision) }),
       }
       applyServerSyncSnapshot(server, 'world', 'telemetry-status', startedRevision, result, () => {
-        if (result.revision !== undefined && result.revision !== startedRevision)
+        if (
+          startedRevision !== undefined &&
+          result.revision !== undefined &&
+          result.revision !== startedRevision
+        )
           invalidateServerMismatches(server.url)
         statuses.replace(server, next)
         if (changed) notifyStatusListeners()
