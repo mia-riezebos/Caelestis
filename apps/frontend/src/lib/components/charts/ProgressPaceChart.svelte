@@ -236,7 +236,6 @@
 
   const yTicks = $derived([0.25, 0.5, 0.75, 1])
   const DAY_SECONDS = 86_400
-  const LONG_RANGE_SECONDS = 3 * DAY_SECONDS
   const tickStep = $derived(timeTickStep(selTo - selFrom, width - pad.left - pad.right))
 
   const xTicks = $derived.by(() => {
@@ -249,11 +248,16 @@
 
   const formatTick = (t: number): string => {
     const date = new Date(t * 1000)
-    if (selTo - selFrom <= LONG_RANGE_SECONDS) {
+    const rangeStart = new Date(selFrom * 1_000)
+    const rangeEnd = new Date((selTo - 1) * 1_000)
+    const crossesDay =
+      rangeStart.getFullYear() !== rangeEnd.getFullYear() ||
+      rangeStart.getMonth() !== rangeEnd.getMonth() ||
+      rangeStart.getDate() !== rangeEnd.getDate()
+    if (!crossesDay) {
       return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
     }
-    const crossesYear =
-      new Date(selFrom * 1_000).getFullYear() !== new Date((selTo - 1) * 1_000).getFullYear()
+    const crossesYear = rangeStart.getFullYear() !== rangeEnd.getFullYear()
     return date.toLocaleString(undefined, {
       ...(crossesYear ? { year: 'numeric' } : {}),
       month: 'short',

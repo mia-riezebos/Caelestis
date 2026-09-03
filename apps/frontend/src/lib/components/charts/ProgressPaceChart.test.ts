@@ -184,14 +184,14 @@ describe('rolling pace retention', () => {
     expect(document.querySelectorAll('text[data-axis="time"]')).toHaveLength(6)
   })
 
-  it('distinguishes sub-day ticks across a multi-day range', () => {
+  it('distinguishes sub-day ticks across a two-day range', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,
       props: {
         buckets: [bucket(3_600, 0)],
         resolution: 3_600,
         from: 0,
-        to: 3.5 * 86_400,
+        to: 2 * 86_400,
         anchorCorrect: 1,
         anchorMismatched: 0,
       },
