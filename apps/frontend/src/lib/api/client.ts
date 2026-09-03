@@ -18,6 +18,7 @@ import { isServerUrlConfigured, resolveSelectedServerUrl, resolveServerUrl } fro
  */
 const SERVER_KEY = 'caelestis:server'
 const TOKEN_KEY = 'caelestis:token'
+const API_VERSION_PATH = '/v1'
 const configuredServer = import.meta.env.VITE_CAELESTIS_SERVER as string | undefined
 
 export const serverUrlIsConfigured = isServerUrlConfigured(configuredServer)
@@ -81,7 +82,10 @@ const request = async (path: string, init?: RequestInit): Promise<Response> => {
     reconciles ? frontendClientAccept('recovery', 'connect') : frontendClientAccept(),
   )
   if (token !== null) headers.set('authorization', `Bearer ${token}`)
-  const response = await fetchWithTransientRetry(`${readServerUrl()}${path}`, { ...init, headers })
+  const response = await fetchWithTransientRetry(`${readServerUrl()}${API_VERSION_PATH}${path}`, {
+    ...init,
+    headers,
+  })
   if (!response.ok) {
     let message = response.statusText
     try {

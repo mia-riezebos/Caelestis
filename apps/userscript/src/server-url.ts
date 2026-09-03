@@ -1,4 +1,5 @@
 const DEFAULT_SERVER_BASE_PATH = '/backend'
+const API_VERSION_PATH = '/v1'
 
 export const canonicalServerUrl = (value: string): string => {
   const parsed = new URL(value.trim())
@@ -24,5 +25,5 @@ export const canonicalServerUrl = (value: string): string => {
 export const serverEndpoint = (serverUrl: string, route: string): string => {
   const base = canonicalServerUrl(serverUrl)
   const path = route.startsWith('/') ? route : `/${route}`
-  return `${base}${new URL(base).pathname === '/' ? DEFAULT_SERVER_BASE_PATH : ''}${path}`
+  return `${base}${new URL(base).pathname === '/' ? DEFAULT_SERVER_BASE_PATH : ''}${API_VERSION_PATH}${path}`
 }

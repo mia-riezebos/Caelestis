@@ -345,7 +345,7 @@ describe('tree identity and ordering', () => {
 
     expect(fetch).toHaveBeenCalledTimes(4)
     expect(fetch).toHaveBeenLastCalledWith(
-      'https://example.com/backend/manifest?season=0',
+      'https://example.com/backend/v1/manifest?season=0',
       expect.any(Object),
     )
     expect(peekProbedNodes(connected)).toBeUndefined()

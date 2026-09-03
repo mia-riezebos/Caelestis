@@ -45,6 +45,7 @@ describe('API request recovery', () => {
 
     await expect(getServer()).resolves.toMatchObject({ id: 'server', name: 'Caelestis' })
     expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch.mock.calls[0]?.[0]).toContain('/backend/v1/server')
   })
 
   it('probes admin scope without treating an ordinary read token as an app error', async () => {
@@ -55,7 +56,7 @@ describe('API request recovery', () => {
 
     await expect(probeAdminScope(7)).resolves.toBe(false)
     expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/admin/nodes?season=7'),
+      expect.stringContaining('/v1/admin/nodes?season=7'),
       expect.any(Object),
     )
   })
@@ -76,6 +77,7 @@ describe('API request recovery', () => {
     await patchTemplateLifecycle('template', { finished: true })
     await getHistory(['template'], 10, 20)
     const historyUrl = String(fetch.mock.calls[1]?.[0])
+    expect(historyUrl).toContain('/v1/telemetry/history?')
     expect(historyUrl).toContain('from=10&to=20')
     expect(historyUrl).not.toContain('resolution')
   })

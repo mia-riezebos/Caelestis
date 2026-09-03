@@ -86,13 +86,13 @@ describe('server state boundaries', () => {
     expect(() => canonicalServerUrl('https://name:secret@example.com')).toThrow(/credentials/)
 
     expect(serverEndpoint('https://example.com', '/manifest?season=0')).toBe(
-      'https://example.com/backend/manifest?season=0',
+      'https://example.com/backend/v1/manifest?season=0',
     )
     expect(serverEndpoint('https://example.com/backend/', '/server')).toBe(
-      'https://example.com/backend/server',
+      'https://example.com/backend/v1/server',
     )
     expect(serverEndpoint('https://example.com/custom/base', '/admin/nodes')).toBe(
-      'https://example.com/custom/base/admin/nodes',
+      'https://example.com/custom/base/v1/admin/nodes',
     )
   })
 
@@ -452,7 +452,7 @@ describe('server state boundaries', () => {
     )
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/backend/admin/nodes?season=0')
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/backend/v1/admin/nodes?season=0')
   })
 
   it('accepts chunks on both runs of an antimeridian-wrapped template', async () => {
@@ -801,7 +801,7 @@ describe('server state boundaries', () => {
     })
     await expect(listAccessTokens(server)).resolves.toEqual({ tokens: [], nextCursor: null })
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
-      `https://example.com/backend/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
+      `https://example.com/backend/v1/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
     )
   })
 
@@ -1636,7 +1636,7 @@ describe('server state boundaries', () => {
       parentId: null,
     })
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
-      'https://example.com/backend/admin/nodes?season=0&surface=alliance-banner&allianceId=535245',
+      'https://example.com/backend/v1/admin/nodes?season=0&surface=alliance-banner&allianceId=535245',
     )
   })
 

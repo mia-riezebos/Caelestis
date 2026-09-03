@@ -68,7 +68,7 @@ describe('server mismatch masks', () => {
     endServerMismatchFrame()
 
     expect(String(fetch.mock.calls[0]?.[0])).toContain(
-      `/backend/telemetry/templates/${template.serverTemplateId}/versions/${template.serverVersion}/tiles/3/4/mismatches?season=0`,
+      `/backend/v1/telemetry/templates/${template.serverTemplateId}/versions/${template.serverVersion}/tiles/3/4/mismatches?season=0`,
     )
     expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get('authorization')).toBe(
       'Bearer read-token',
