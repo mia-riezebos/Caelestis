@@ -125,9 +125,13 @@ const exactRoutes = new Set([
   '/telemetry/paints',
 ])
 
+const unversionedMetricPath = (pathname: string): string =>
+  pathname.startsWith('/v1/') && pathname !== '/v1/health' ? pathname.slice('/v1'.length) : pathname
+
 /** A finite route vocabulary: request paths containing ids, hashes, or tokens never reach metrics. */
 export const normalizeMetricRoute = (method: string, pathname: string): string => {
   const verb = normalizeMetricMethod(method)
+  pathname = unversionedMetricPath(pathname)
   if (verb === 'OTHER') return route(verb, 'other')
   if (exactRoutes.has(pathname)) return route(verb, pathname)
   if (/^\/admin\/tokens\/[^/]+$/.test(pathname)) return route(verb, '/admin/tokens/:tokenHash')
@@ -336,6 +340,7 @@ export const measureRequest = async (
   pathname: string,
   run: () => Promise<Response>,
 ): Promise<Response> => {
+  const applicationPath = unversionedMetricPath(pathname)
   const parsedClient = parseClientMetricsAccept(request.headers.get('accept'))
   const client = metricClientIdentity(request.headers.get('accept'))
   const method = normalizeMetricMethod(request.method)
@@ -347,7 +352,7 @@ export const measureRequest = async (
     syncTransport: parsedClient.transport,
     reconciliationReason: parsedClient.reason,
     cacheOutcome: 'none',
-    tileOfferOutcome: pathname === '/telemetry/tiles/offers' ? 'requested' : 'none',
+    tileOfferOutcome: applicationPath === '/telemetry/tiles/offers' ? 'requested' : 'none',
     tileOfferCounts: { requested: 0, accepted: 0, alreadyKnown: 0, rejected: 0 },
     d1RowsRead: 0,
     d1RowsWritten: 0,

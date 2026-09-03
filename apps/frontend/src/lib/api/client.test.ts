@@ -45,6 +45,7 @@ describe('API request recovery', () => {
 
     await expect(getServer()).resolves.toMatchObject({ id: 'server', name: 'Caelestis' })
     expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch.mock.calls[0]?.[0]).toContain('/backend/v1/server')
   })
 
   it('probes admin scope without treating an ordinary read token as an app error', async () => {
@@ -55,7 +56,7 @@ describe('API request recovery', () => {
 
     await expect(probeAdminScope(7)).resolves.toBe(false)
     expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/admin/nodes?season=7'),
+      expect.stringContaining('/v1/admin/nodes?season=7'),
       expect.any(Object),
     )
   })
@@ -76,6 +77,7 @@ describe('API request recovery', () => {
     await patchTemplateLifecycle('template', { finished: true })
     await getHistory(['template'], 10, 20)
     const historyUrl = String(fetch.mock.calls[1]?.[0])
+    expect(historyUrl).toContain('/v1/telemetry/history?')
     expect(historyUrl).toContain('from=10&to=20')
     expect(historyUrl).not.toContain('resolution')
   })
@@ -101,5 +103,25 @@ describe('API request recovery', () => {
 
     await expect(getAlarms(7)).resolves.toEqual({ alarms: [] })
     expect(fetch.mock.calls[0]?.[0]).toContain('/telemetry/alarms?season=7')
+  })
+
+  it('keeps older self-hosted servers connected through their unversioned API', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/v1/server')) return new Response(null, { status: 404 })
+      if (url.endsWith('/server')) {
+        return Response.json({ id: 'server', name: 'Legacy', auth: 'access_token' })
+      }
+      return Response.json({ alarms: [] })
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(getServer()).resolves.toMatchObject({ name: 'Legacy' })
+    await expect(getAlarms(7)).resolves.toEqual({ alarms: [] })
+    expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
+      'http://127.0.0.1:8787/backend/v1/server',
+      'http://127.0.0.1:8787/backend/server',
+      'http://127.0.0.1:8787/backend/telemetry/alarms?season=7',
+    ])
   })
 })

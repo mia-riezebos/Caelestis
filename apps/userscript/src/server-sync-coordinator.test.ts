@@ -405,7 +405,7 @@ describe('server sync coordinator', () => {
     expect(FakeWebSocket.instances).toHaveLength(1)
     const socket = FakeWebSocket.instances[0]
     if (socket === undefined) throw new Error('live socket was not created')
-    expect(socket.url).toContain('wss://example.test/backend/telemetry/live?')
+    expect(socket.url).toContain('wss://example.test/backend/v1/telemetry/live?')
     expect(socket.url).toContain('season=0')
     expect(socket.url).toContain('scope=public')
     expect(socket.url).toContain('client=userscript')

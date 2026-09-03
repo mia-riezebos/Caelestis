@@ -51,6 +51,7 @@ export interface AppOptions {
 
 export const createApp = (context: BackendContext, options: AppOptions = {}) => {
   const app = new Hono()
+  const v1Routes = new Hono()
   const runtime = createBackendRuntime(context)
   const auth = {
     bootstrapAdminToken: options.bootstrapAdminToken,
@@ -112,16 +113,16 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
   app.get('/health', (c) =>
     runBackendHttp(c, runtime, Effect.succeed({ ok: true }), (health) => c.json(health)),
   )
-  app.route('/server', createServerRoutes(runtime, server))
-  app.route('/admin/server', createServerAdminRoutes(runtime, auth, currentSeason))
-  app.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
+  v1Routes.route('/server', createServerRoutes(runtime, server))
+  v1Routes.route('/admin/server', createServerAdminRoutes(runtime, auth, currentSeason))
+  v1Routes.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
 
-  app.route('/admin/tokens', createTokenRoutes(runtime, auth, currentSeason))
-  app.route('/admin/nodes', createNodeRoutes(runtime, auth))
-  app.route('/admin/templates', createTemplateRoutes(runtime, auth))
-  app.route('/chunks', createChunkRoutes(runtime, auth))
-  app.route('/tiles', createTileRoutes(runtime, auth))
-  app.route(
+  v1Routes.route('/admin/tokens', createTokenRoutes(runtime, auth, currentSeason))
+  v1Routes.route('/admin/nodes', createNodeRoutes(runtime, auth))
+  v1Routes.route('/admin/templates', createTemplateRoutes(runtime, auth))
+  v1Routes.route('/chunks', createChunkRoutes(runtime, auth))
+  v1Routes.route('/tiles', createTileRoutes(runtime, auth))
+  v1Routes.route(
     '/telemetry',
     createTelemetryRoutes(runtime, auth, {
       currentSeason,
@@ -130,6 +131,11 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
         : { connectStatusLive: options.connectStatusLive }),
     }),
   )
+
+  // Both mounts share these exact route objects. Compatibility aliases can therefore preserve old
+  // clients without gaining handlers or contracts that differ from the versioned API.
+  app.route('/v1', v1Routes)
+  app.route('/', v1Routes)
 
   return app
 }
