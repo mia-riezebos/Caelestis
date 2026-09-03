@@ -121,7 +121,9 @@ describe('manifest read model', () => {
       },
     })
     await model.read(input)
+    await expect(model.knownVersion('public', input.surface)).resolves.toBe('a'.repeat(64))
     now += 101
+    await expect(model.knownVersion('public', input.surface)).resolves.toBeNull()
 
     await expect(model.read(input)).resolves.toMatchObject({
       cacheOutcome: 'stale',
