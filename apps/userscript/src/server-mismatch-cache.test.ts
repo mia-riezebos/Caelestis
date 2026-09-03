@@ -100,4 +100,45 @@ describe('persisted server mismatch ordering', () => {
     expect(stored).toHaveLength(0)
     expect(events).toEqual(['delete', 'put:start', 'put:end', 'keys', 'delete'])
   })
+
+  it('keeps later reads behind a server-wide deletion', async () => {
+    const events: string[] = []
+    const stored = new Map<string, Response>()
+    const scan = deferred()
+    const cache = {
+      async delete(request: Request): Promise<boolean> {
+        events.push('delete')
+        return stored.delete(request.url)
+      },
+      async keys(): Promise<readonly Request[]> {
+        events.push('keys:start')
+        await scan.promise
+        events.push('keys:end')
+        return [...stored.keys()].map((url) => new Request(url))
+      },
+      async match(request: Request): Promise<Response | undefined> {
+        events.push('match')
+        return stored.get(request.url)
+      },
+      async put(request: Request, response: Response): Promise<void> {
+        stored.set(request.url, response)
+      },
+    } as unknown as Cache
+    vi.stubGlobal('caches', { open: vi.fn(async () => cache) })
+    const { deleteCachedServerMismatches, readCachedServerMismatch, writeCachedServerMismatch } =
+      await import('./server-mismatch-cache.js')
+    const serverUrl = 'https://templates.example'
+    const key = `${serverUrl}\u0000server\u00000\u0000template\u0000version\u00003/4`
+    await writeCachedServerMismatch(key, new Uint8Array([1]))
+
+    const invalidation = deleteCachedServerMismatches(serverUrl)
+    await vi.waitFor(() => expect(events).toContain('keys:start'))
+    const read = readCachedServerMismatch(key)
+    await Promise.resolve()
+    expect(events).not.toContain('match')
+
+    scan.resolve()
+    await expect(Promise.all([invalidation, read])).resolves.toEqual([undefined, null])
+    expect(events).toEqual(['delete', 'keys:start', 'keys:end', 'delete', 'match'])
+  })
 })
