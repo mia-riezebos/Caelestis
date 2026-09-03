@@ -82,16 +82,15 @@ const applyStatusProjectionMutations = async (
   const contiguous = mutations.every(
     (mutation, index) => index === 0 || mutation.baseRevision === mutations[index - 1]?.revision,
   )
-  return contiguous
-    ? repairCommittedStatusProjection(readModel, season, {
-        baseRevision: first.baseRevision,
-        revision: last.revision,
-        invalidatedTiles: [
-          ...new Set(mutations.flatMap((mutation) => mutation.invalidatedTiles ?? [])),
-        ],
-        changes: mutations.flatMap((mutation) => mutation.changes),
-      })
-    : repairCommittedStatusProjection(readModel, season)
+  return repairCommittedStatusProjection(readModel, season, {
+    baseRevision: first.baseRevision,
+    revision: last.revision,
+    ...(contiguous ? {} : { forceReconcile: true }),
+    invalidatedTiles: [
+      ...new Set(mutations.flatMap((mutation) => mutation.invalidatedTiles ?? [])),
+    ],
+    changes: contiguous ? mutations.flatMap((mutation) => mutation.changes) : [],
+  })
 }
 
 export interface StatusProjectionBatch {

@@ -162,6 +162,42 @@ describe('season status read model', () => {
     })
   })
 
+  it('preserves tile invalidations whenever a mutation reconstructs the projection', async () => {
+    const test = harness()
+    await test.model.reconcileSnapshot('public')
+    test.setPublic([status('public', 1)])
+    test.setAdmin([status('public', 1), status('draft', 0)])
+
+    await expect(
+      test.model.applyCommittedChange({
+        baseRevision: 0,
+        revision: 2,
+        invalidatedTiles: ['3/4'],
+        changes: [],
+      }),
+    ).resolves.toMatchObject({
+      public: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
+      admin: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
+    })
+
+    const forced = harness()
+    await forced.model.reconcileSnapshot('public')
+    forced.setPublic([status('public', 1)])
+    forced.setAdmin([status('public', 1), status('draft', 0)])
+    await expect(
+      forced.model.applyCommittedChange({
+        baseRevision: 1,
+        revision: 2,
+        forceReconcile: true,
+        invalidatedTiles: ['3/4'],
+        changes: [],
+      }),
+    ).resolves.toMatchObject({
+      public: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
+      admin: { baseRevision: 1, revision: 2, invalidatedTiles: ['3/4'] },
+    })
+  })
+
   it('retains the revision when source colour rows match an incrementally created template', async () => {
     const test = harness()
     test.setPublic([])
