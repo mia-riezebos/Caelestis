@@ -1,4 +1,5 @@
-import { getState } from '../state.js'
+import { type TemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { getState, onlySelectedColourFor } from '../state.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { type Appearance, drawableIndices } from './appearance.js'
 
@@ -31,9 +32,8 @@ const allBut = (keep: number): readonly number[] =>
  * so the hand-set switches stay in charge — hiding everything *except* a colour that does not exist
  * came out as hiding nothing, which switched the user's own hidden colours back on.
  */
-const followedColour = (): number | null => {
-  const state = getState()
-  if (!state.onlySelectedColour || !isPaintOpen()) return null
+const followedColour = (surface: TemplateSurface): number | null => {
+  if (!onlySelectedColourFor(surface) || !isPaintOpen()) return null
   return selectedColour()
 }
 
@@ -46,22 +46,25 @@ const followedColour = (): number | null => {
  * lining up the one colour you are placing, and there is no such colour before you start.
  */
 export const globalHiddenColours = (): readonly number[] => {
-  const keep = followedColour()
+  const keep = followedColour(WORLD_TEMPLATE_SURFACE)
   return keep === null ? getState().hiddenColours : allBut(keep)
 }
 
 /**
  * The set to draw one overlay with, given the appearance it owns — or null when it uses the defaults.
  *
- * **Follow-the-selection is one switch for the whole view**, and it beats every overlay's own
+ * **Follow-the-selection is one switch for the current canvas**, and it beats every overlay's own
  * filter while it runs. It used to exist per overlay as well, each scope's mode governing that
  * scope, which was coherent and unusable: a keybind then had to answer "which overlay did you
  * mean", and the only rules available — the one nearest the centre, unless it follows the defaults —
  * are rules nobody can predict by looking at the screen. It is a way of looking at the canvas
  * rather than a property of a template, so it belongs to the view.
  */
-export const hiddenColoursFor = (own: Appearance | null): readonly number[] => {
-  const keep = followedColour()
+export const hiddenColoursFor = (
+  own: Appearance | null,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): readonly number[] => {
+  const keep = followedColour(surface)
   if (keep !== null) return allBut(keep)
   const state = getState()
   return own === null ? state.hiddenColours : own.hiddenColours

@@ -63,6 +63,7 @@ const harness = vi.hoisted(() => ({
   setOwnsGroup: vi.fn(async () => true),
   ownsGroup: vi.fn(() => true),
   appearanceOf: vi.fn((template: { appearance: Appearance }) => template.appearance),
+  surfaceAppearance: null as unknown as Appearance,
   setAppearancePreview: vi.fn(),
   clearAppearancePreview: vi.fn(),
   refreshAllianceManifest: vi.fn(async () => {}),
@@ -93,6 +94,8 @@ vi.mock('../state.js', () => ({
     onlySelectedColour: false,
     servers: harness.servers,
   }),
+  getSurfaceAppearance: () => harness.surfaceAppearance,
+  onlySelectedColourFor: () => false,
   listServerContents: harness.listServerContents,
   removeTreeStateKeys: harness.removeTreeStateKeys,
   setState: vi.fn(),
@@ -276,6 +279,7 @@ const rerender = () => render(rerender, mapCanvas)
 
 beforeEach(async () => {
   document.body.innerHTML = ''
+  harness.surfaceAppearance = { ...DEFAULT_APPEARANCE }
   mapCanvas = document.createElement('canvas')
   // The class the module used to look itself up by; kept so the pre-fix module is still runnable
   // when these tests are checked for red.
@@ -304,6 +308,7 @@ afterEach(() => {
   harness.previewOriginFor.mockReturnValue(null)
   harness.screenPointFor.mockImplementation((x: number, y: number) => ({ x, y }))
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
+  harness.surfaceAppearance = { ...DEFAULT_APPEARANCE }
   harness.isMoving.mockReturnValue(false)
   harness.isFinishing.mockReturnValue(false)
   harness.alreadyAnswered.mockReturnValue(false)
@@ -1862,6 +1867,50 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
       expect(harness.setAppearance).toHaveBeenCalledWith(
         'a',
         expect.objectContaining({ size: DEFAULT_APPEARANCE.size }),
+      ),
+    )
+  })
+
+  it('resets an alliance slider to that canvas inherited value', async () => {
+    const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    harness.surfaceAppearance = { ...DEFAULT_APPEARANCE, size: 0.6 }
+    harness.localTemplates.mockReturnValue([template({ surface, appearance: { size: 0.8 } })])
+    const stage = document.createElement('div')
+    const frame = document.createElement('div')
+    const canvas = document.createElement('canvas')
+    frame.append(canvas)
+    stage.append(frame)
+    document.body.append(stage)
+    stage.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 1_000, bottom: 700, width: 1_000, height: 700 }) as DOMRect
+    frame.getBoundingClientRect = () =>
+      ({ left: 200, top: 100, right: 700, bottom: 600, width: 500, height: 500 }) as DOMRect
+    const active: ActiveAllianceSurface = {
+      surface,
+      stage,
+      frame,
+      draftId: null,
+      bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
+    }
+    const allianceRender = (await import('./overlay-menu.js')).renderAllianceOverlayControls
+    const renderAlliance = () =>
+      allianceRender(
+        renderAlliance,
+        active,
+        { originX: -125, originY: -125, width: 250, height: 250 },
+        canvas,
+      )
+    renderAlliance()
+    gear('a').click()
+    renderAlliance()
+
+    const input = (await byKey('size')) as HTMLInputElement
+    input.closest('label')?.querySelector<HTMLButtonElement>('[aria-label="Reset size"]')?.click()
+
+    await vi.waitFor(() =>
+      expect(harness.setAppearance).toHaveBeenCalledWith(
+        'a',
+        expect.objectContaining({ size: 0.6 }),
       ),
     )
   })

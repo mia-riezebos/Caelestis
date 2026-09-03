@@ -51,6 +51,7 @@ import {
   onServerSnapshot,
   primeFromCache,
 } from '../application/tree-server-state.js'
+import { onCanvasWrite } from '../canvas-write.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
@@ -74,11 +75,13 @@ import {
   isCurrentServerConnection,
   loadState,
   MAX_CONNECTED_SERVERS,
+  onlySelectedColourFor,
   onStateChange,
   previewSurfaceAppearance,
   probeServer,
   refreshStoredServers,
   removeServer,
+  setOnlySelectedColourFor,
   setState,
   setSurfaceAppearance,
   upsertServer,
@@ -90,7 +93,7 @@ import {
   PIXEL_STYLE_PRESETS,
   pixelStylePresetOf,
 } from '../templates/appearance.js'
-import { globalHiddenColours } from '../templates/colour-filter.js'
+import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
 import { pixelAccounting } from '../templates/mismatch.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
@@ -102,6 +105,7 @@ import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { refreshOverlayMenu } from './overlay-menu.js'
 import { panelWidthAfterMount } from './panel-geometry.js'
+import { canvasWritesTouchFrame } from './panel-progress.js'
 import {
   AllianceDrawerInset,
   alliancePanelTitle,
@@ -221,7 +225,7 @@ const syncRailButtonState = (): void => {
 
 const syncAllianceModeState = (active = activeAllianceSurface()): void => {
   const colour = document.getElementById(ALLIANCE_COLOUR_MODE_ID) as CaelestisRailControl | null
-  if (colour !== null) colour.model = colourRailModel()
+  if (colour !== null && active !== null) colour.model = colourRailModel(active.surface)
   const mismatch = document.getElementById(ALLIANCE_MISMATCH_MODE_ID) as CaelestisRailControl | null
   if (mismatch === null || active === null) return
   const on = getSurfaceAppearance(active.surface).markMismatch
@@ -264,17 +268,17 @@ const allianceRailButton = (active: ActiveAllianceSurface): CaelestisRailControl
   return button
 }
 
-const allianceColourModeButton = (): CaelestisRailControl => {
+const allianceColourModeButton = (active: ActiveAllianceSurface): CaelestisRailControl => {
   const existing = document.getElementById(ALLIANCE_COLOUR_MODE_ID)
   if (existing !== null) return existing as CaelestisRailControl
   const button = document.createElement('caelestis-rail-control')
   button.id = ALLIANCE_COLOUR_MODE_ID
-  button.model = colourRailModel()
+  button.model = colourRailModel(active.surface)
   applyWplaceTheme(button)
   button.addEventListener('caelestis-rail-intent', (event) => {
     const intent = (event as CustomEvent<RailControlIntent>).detail
     if (intent.id !== 'colour') return
-    setState({ onlySelectedColour: !getState().onlySelectedColour })
+    setOnlySelectedColourFor(active.surface, !onlySelectedColourFor(active.surface))
   })
   return button
 }
@@ -324,7 +328,7 @@ const mountAllianceRail = (active: ActiveAllianceSurface): void => {
   } satisfies Partial<CSSStyleDeclaration>)
   wrapper.append(
     allianceRailButton(active),
-    allianceColourModeButton(),
+    allianceColourModeButton(active),
     allianceMismatchModeButton(active),
   )
   ;(active.stage.parentElement ?? active.stage).appendChild(wrapper)
@@ -769,9 +773,7 @@ const handleSettingsIntent = (intent: SettingsIntent): void => {
 const appearanceModel = (): AppearanceEditorModel => {
   const state = getState()
   const values = getSurfaceAppearance(panelSurface)
-  const effectiveHidden = new Set(
-    panelSurface.kind === 'world' ? globalHiddenColours() : values.hiddenColours,
-  )
+  const effectiveHidden = new Set(hiddenColoursFor(values, panelSurface))
   const activePixelPreset = pixelStylePresetOf(values)
   const activePreset = activeColourPreset(values.hiddenColours)
   const selected = selectedColour()
@@ -823,7 +825,7 @@ const appearanceModel = (): AppearanceEditorModel => {
         visible: !effectiveHidden.has(colour.index),
       }),
     ),
-    onlySelectedColour: state.onlySelectedColour,
+    onlySelectedColour: onlySelectedColourFor(panelSurface),
     showOnlySelectedColour: true,
     showMarkers: true,
     paintOpen: isPaintOpen(),
@@ -882,8 +884,8 @@ const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
       break
     case 'toggle-colour': {
       const base =
-        panelSurface.kind === 'world' && getState().onlySelectedColour && isPaintOpen()
-          ? globalHiddenColours()
+        onlySelectedColourFor(panelSurface) && isPaintOpen()
+          ? hiddenColoursFor(values, panelSurface)
           : values.hiddenColours
       const hidden = new Set(base)
       if (intent.visible) hidden.delete(intent.index)
@@ -892,19 +894,17 @@ const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
         setState({ hiddenColours: [...hidden], onlySelectedColour: false })
       } else {
         commitPanelAppearance({ ...values, hiddenColours: [...hidden] })
+        setOnlySelectedColourFor(panelSurface, false)
       }
       redraw()
       break
     }
     case 'only-selected-colour':
-      if (panelSurface.kind === 'world') setState({ onlySelectedColour: intent.value })
+      setOnlySelectedColourFor(panelSurface, intent.value)
       redraw()
       break
     case 'marker-budget':
-      if (
-        panelSurface.kind === 'world' &&
-        MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)
-      ) {
+      if (MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)) {
         setState({ markerBudget: intent.value })
       }
       break
@@ -920,13 +920,13 @@ const treeCallbacks = (): TreeCallbacks => ({
   onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree, panelSurface),
   onCopyToServer: (id) => void copyToServer(id, rerenderTree),
   onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
-    dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
+    dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree, panelSurface),
   onDropInLocal: async (draggedKey, folderId) => {
     if (draggedKey.startsWith('node:')) {
-      return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree)
+      return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree, panelSurface)
     }
     if (draggedKey.startsWith('st:')) {
-      return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree)
+      return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree, panelSurface)
     }
     return null
   },
@@ -1246,14 +1246,14 @@ const positionRail = (): void => {
 }
 
 /**
- * Follow the colour wplace has selected, for every overlay at once.
+ * Follow the colour wplace has selected, for every overlay on the current canvas.
  *
  * On the rail rather than only in the panel because it is toggled constantly while painting, and
  * opening a panel to reach it costs more than the mode saves. It says nothing while their drawer is
  * shut — there is no selected colour then — which the tooltip carries.
  */
-const colourRailModel = (): RailControlModel => {
-  const on = getState().onlySelectedColour
+const colourRailModel = (surface: TemplateSurface = WORLD_TEMPLATE_SURFACE): RailControlModel => {
+  const on = onlySelectedColourFor(surface)
   const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
   return {
     id: 'colour',
@@ -1272,7 +1272,7 @@ const colourModeButton = (): CaelestisRailControl => {
   button.addEventListener('caelestis-rail-intent', (event) => {
     const intent = (event as CustomEvent<RailControlIntent>).detail
     if (intent.id !== 'colour') return
-    setState({ onlySelectedColour: !getState().onlySelectedColour })
+    setOnlySelectedColourFor(WORLD_TEMPLATE_SURFACE, !onlySelectedColourFor(WORLD_TEMPLATE_SURFACE))
     syncColourModeState()
   })
   return button
@@ -1357,6 +1357,20 @@ export const installPanel = (): void => {
       if (currentView() === 'tree') refreshView()
     }),
   )
+  let pendingCanvasWrites = new Set<object>()
+  const refreshAllianceProgress = frameQueue(() => {
+    const writes = pendingCanvasWrites
+    pendingCanvasWrites = new Set()
+    if (writes.size === 0) return
+    if (currentView() !== 'tree' || panelSurface.kind === 'world') return
+    const active = activeAllianceSurface()
+    if (active === null || !sameTemplateSurface(active.surface, panelSurface)) return
+    if (canvasWritesTouchFrame(active.frame, writes)) refreshView()
+  })
+  onCanvasWrite((canvas) => {
+    pendingCanvasWrites.add(canvas)
+    refreshAllianceProgress()
+  })
   pixelAccounting.onChange(
     frameQueue(() => {
       if (currentView() !== 'tree') return

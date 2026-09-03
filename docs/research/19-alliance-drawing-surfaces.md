@@ -465,11 +465,11 @@ An independent Caelestis overlay canvas attached inside the active frame inherit
 zoom, fit, and clipping without duplicating its transform state. The hashed Svelte class is not a
 stable selector; discovery should start at the accessible stage and search only inside it.
 
-The live HQ frame ordered the tile layer first and Wplace's full-artboard overlay canvas second. The
-Caelestis canvas should be inserted immediately before that Wplace overlay canvas, keeping the base
-art below Caelestis while Wplace's own tool and selection feedback remains above it. Wplace also
-keeps a stage-sized pointer-feedback canvas outside the transformed frame, which must stay above the
-artboard stack.
+The live HQ frame ordered the tile layer first and Wplace's full-artboard draft canvas second. The
+Caelestis overlay belongs immediately before that draft canvas, keeping committed art below it and
+the current native draft above it. Caelestis markers follow the draft so they remain visible while
+painting. Wplace keeps its tool and selection feedback on a separate stage-sized canvas outside the
+transformed frame and above the complete artboard stack.
 
 The same DOM structure appears in windowed and full-screen editor modes. A `MutationObserver` must
 reconcile on open, back, close, and Svelte remount, remove detached controls/canvases, and require

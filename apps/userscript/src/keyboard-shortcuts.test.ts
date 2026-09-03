@@ -27,6 +27,8 @@ const harness = vi.hoisted(() => ({
   setLocalVisible: vi.fn(async () => true),
   setOwnsGroup: vi.fn(async () => true),
   setState: vi.fn(),
+  onlySelected: false,
+  setOnlySelectedColour: vi.fn(() => true),
   surfaceAppearance: { opacity: 0.85, contrastOutline: false } as Record<string, unknown>,
   setSurfaceAppearance: vi.fn(() => true),
   refreshMenu: vi.fn(),
@@ -68,6 +70,8 @@ vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: harness.setPeek }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: harness.appearance, onlySelectedColour: false }),
   getSurfaceAppearance: () => harness.surfaceAppearance,
+  onlySelectedColourFor: () => harness.onlySelected,
+  setOnlySelectedColourFor: harness.setOnlySelectedColour,
   setState: harness.setState,
   setSurfaceAppearance: harness.setSurfaceAppearance,
 }))
@@ -106,6 +110,7 @@ const press = (key: string, init: KeyboardEventInit = {}): KeyboardEvent => {
 beforeEach(async () => {
   vi.clearAllMocks()
   harness.peek = false
+  harness.onlySelected = false
   harness.moving = false
   harness.allianceActive = false
   harness.allianceEditorActive = false
@@ -194,7 +199,10 @@ describe('keyboard shortcut actions', () => {
     expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)
     expect(harness.navigateColour).toHaveBeenCalledOnce()
     expect(harness.toggleAppearanceBoolean).not.toHaveBeenCalled()
-    expect(harness.setState).toHaveBeenCalledWith({ onlySelectedColour: true })
+    expect(harness.setOnlySelectedColour).toHaveBeenCalledWith(
+      { kind: 'alliance-headquarters', allianceId: 535_245 },
+      true,
+    )
     expect(harness.setSurfaceAppearance).toHaveBeenNthCalledWith(
       1,
       { kind: 'alliance-headquarters', allianceId: 535_245 },

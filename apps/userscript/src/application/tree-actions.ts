@@ -80,7 +80,7 @@ import {
   nodeTreeKey,
   optimisticallyPlaceServerRow,
   refreshServerSnapshot,
-  rowsFor,
+  rowsForSurface,
   type ServerSnapshotResult,
   serverTemplateAt,
   serverTemplateTreeKey,
@@ -227,6 +227,8 @@ const freeFolderName = (
 /** `local:<id>` is a template; `local`, `server:<url>` and `node:<id>` are containers. */
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
+
+const surfaceOf = (target: TreeTarget): TemplateSurface => target.surface ?? WORLD_TEMPLATE_SURFACE
 
 const exportTemplate = async (target: TreeTarget): Promise<void> => {
   const localId = localTemplateId(target)
@@ -386,7 +388,7 @@ const applyDelete = async (
       updatedAt: target.templateUpdatedAt,
     })
     if (!result.ok) toast(result.message, 'error')
-    await refreshCurrentNodes(target.server, rerender, true)
+    await refreshEditedSurface(target.server, surfaceOf(target), rerender)
     return
   }
   if (target.server === null || target.nodeId === null) {
@@ -445,7 +447,7 @@ const applyDelete = async (
     inside === null ? null : holding,
   )
   if (!result.ok) toast(result.message, 'error')
-  await refreshCurrentNodes(target.server, rerender, true)
+  await refreshEditedSurface(target.server, surfaceOf(target), rerender)
 }
 
 /**
@@ -457,7 +459,8 @@ const applyDelete = async (
 const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, templateId } = target
   if (server === null || templateId === undefined) return
-  const listed = await listServerNodes(server)
+  const surface = surfaceOf(target)
+  const listed = await listServerNodes(server, undefined, surface)
   if (listed.status !== 'ok') {
     toast(serverNodesFailure(listed), 'error')
     return
@@ -493,7 +496,7 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
           })
           closeOperation(id)
           if (!result.ok) toast(result.message, 'error')
-          void refreshCurrentNodes(server, rerender, true)
+          void refreshEditedSurface(server, surface, rerender)
         })
       },
     },
@@ -525,9 +528,10 @@ export const moveBranch = async (
   draggedKey: string,
   destination: Destination,
   rerender: () => void,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<string | null> => {
   const fromServer = draggedKey.startsWith('node:')
-  const found = fromServer ? findServerNode(draggedKey) : null
+  const found = fromServer ? findServerNode(draggedKey, surface) : null
   if (fromServer && found === null) return null
   const sourceId = found?.node.id ?? draggedKey.slice(draggedKey.indexOf(':') + 1)
 
@@ -550,11 +554,10 @@ export const moveBranch = async (
     destination.server.url === sourceServer.url
   ) {
     if (found !== null && destination.nodeId === found.node.parentId) return draggedKey
-    const optimistic = optimisticallyPlaceServerRow(
-      destination.server,
-      draggedKey,
-      destination.nodeId,
-    )
+    const optimistic =
+      surface.kind === 'world'
+        ? optimisticallyPlaceServerRow(destination.server, draggedKey, destination.nodeId)
+        : null
     const moved = await retryOptimisticMutation(() =>
       moveNodeOnServer(destination.server, sourceId, destination.nodeId),
     )
@@ -566,7 +569,7 @@ export const moveBranch = async (
     }
     optimistic?.commit()
     rerender()
-    void refreshCurrentNodes(destination.server, rerender, true)
+    void refreshEditedSurface(destination.server, surface, rerender)
     return draggedKey
   }
 
@@ -594,9 +597,10 @@ export const moveBranch = async (
   const result = await transplant(
     source,
     destination,
-    (server, nodeId) => templatesOfNode(server.url, nodeId),
-    (server) => templatesForServer(server.url),
-    (server) => refreshCurrentNodes(server, rerender, true),
+    (server, nodeId) => templatesOfNode(server.url, nodeId, surface),
+    (server) => templatesForServer(server.url, surface),
+    (server) => refreshEditedSurface(server, surface, rerender),
+    surface,
   )
   if (result.ok) toast(result.message)
   else toast(result.message, 'error')
@@ -617,13 +621,14 @@ export const copyServerTemplateToLocal = async (
   templateKey: string,
   folderId: string | null,
   rerender: () => void,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<string | null> => {
-  const found = findServerTemplate(templateKey)
+  const found = findServerTemplate(templateKey, surface)
   if (found === null) return null
   const templateId = found.template.id
   const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
   if (source === undefined) return null
-  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId))
+  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId, surface))
   if (drawn === undefined || drawn.serverVersion !== found.template.version) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
@@ -647,8 +652,8 @@ export const copyServerTemplateToLocal = async (
     found.template,
     drawn,
     folderId,
-    (server, id) => serverTemplateAt(server.url, id),
-    (server) => refreshCurrentNodes(server, rerender, true),
+    (server, id) => serverTemplateAt(server.url, id, surface),
+    (server) => refreshEditedSurface(server, surface, rerender),
   )
   toast(result.message, result.tone === 'success' ? undefined : result.tone)
   rerender()
@@ -661,6 +666,7 @@ export const dropOnServerNode = async (
   draggedKey: string,
   _beforeKey: string | null,
   rerender: () => void,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): Promise<string | null> => {
   // A folder is a branch, not a row: its structure and everything hanging off it must exist at the
   // destination before anything is taken off the source. `transplant` owns that ordering; this only
@@ -669,7 +675,7 @@ export const dropOnServerNode = async (
   // This is also the one destination that may be the server itself rather than a folder on it —
   // dropping onto the server's own row means the top level for folders and templates alike.
   if (draggedKey.startsWith('node:') || draggedKey.startsWith('lf:')) {
-    return await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender)
+    return await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender, surface)
   }
   if (draggedKey.startsWith('local:')) {
     const local = templateById(draggedKey.slice('local:'.length))
@@ -686,7 +692,7 @@ export const dropOnServerNode = async (
       local,
       server,
       nodeId,
-      (connected) => refreshCurrentNodes(connected, rerender, true),
+      (connected) => refreshEditedSurface(connected, surface, rerender),
       {},
     )
     if (result.ok) toast(`Uploaded “${local.name}” to ${server.info?.name ?? server.url}.`)
@@ -695,13 +701,14 @@ export const dropOnServerNode = async (
   }
 
   if (!draggedKey.startsWith('st:')) return null
-  const found = findServerTemplate(draggedKey)
+  const found = findServerTemplate(draggedKey, surface)
   if (found === null) return null
   const templateId = found.template.id
 
   if (found.serverUrl === server.url) {
     if (found.template.nodeId === nodeId) return draggedKey
-    const optimistic = optimisticallyPlaceServerRow(server, draggedKey, nodeId)
+    const optimistic =
+      surface.kind === 'world' ? optimisticallyPlaceServerRow(server, draggedKey, nodeId) : null
     const result = await retryOptimisticMutation(() =>
       patchTemplate(server, templateId, { nodeId }),
     )
@@ -713,7 +720,7 @@ export const dropOnServerNode = async (
     }
     optimistic?.commit()
     rerender()
-    void refreshCurrentNodes(server, rerender, true)
+    void refreshEditedSurface(server, surface, rerender)
     return draggedKey
   }
 
@@ -731,7 +738,7 @@ export const dropOnServerNode = async (
 
   // The pixels come from the copy already on the canvas, which is the assembled result of that
   // server's own chunks — so a cross-server move needs no second download.
-  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId))
+  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId, surface))
   if (drawn === undefined) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
@@ -742,8 +749,8 @@ export const dropOnServerNode = async (
     nodeId,
     found.template,
     drawn,
-    (connected, id) => serverTemplateAt(connected.url, id),
-    (connected) => refreshCurrentNodes(connected, rerender, true),
+    (connected, id) => serverTemplateAt(connected.url, id, surface),
+    (connected) => refreshEditedSurface(connected, surface, rerender),
   )
   toast(result.message, result.tone === 'success' ? undefined : result.tone)
   return result.destinationId === undefined
@@ -754,8 +761,7 @@ export const dropOnServerNode = async (
 /** The template state from the same admitted snapshot that drew this row. */
 const templateStateOf = (target: TreeTarget): ServerTemplate | null =>
   target.server !== null && target.templateId !== undefined
-    ? (rowsFor(target.server)?.templates.find((template) => template.id === target.templateId) ??
-      null)
+    ? serverTemplateAt(target.server.url, target.templateId, surfaceOf(target))
     : null
 
 const publishedStateOf = (target: TreeTarget): boolean =>
@@ -775,7 +781,8 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
   // A new version has to be the same size as the one it replaces; the server refuses anything else
   // and there is nothing the user can do about it after the fact. Offering every Local template
   // meant most choices were an unavoidable 409 presented as a valid option.
-  const current = serverTemplateAt(server.url, templateId)
+  const surface = surfaceOf(target)
+  const current = serverTemplateAt(server.url, templateId, surface)
   const span = (min: number, max: number) => (max >= min ? max - min : WORLD_PIXELS - min + max)
   const wanted =
     current === null
@@ -784,10 +791,13 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
           width: span(current.bbox.minX, current.bbox.maxX),
           height: current.bbox.maxY - current.bbox.minY,
         }
+  const localSources = allLocal().filter((candidate) =>
+    sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+  )
   const sources =
     wanted === null
-      ? allLocal()
-      : allLocal().filter(
+      ? localSources
+      : localSources.filter(
           (candidate) => candidate.width === wanted.width && candidate.height === wanted.height,
         )
   if (sources.length === 0) {
@@ -859,7 +869,7 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
           closeOperation(id)
           if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
           else toast(result.message, 'error')
-          const reconciliation = refreshCurrentNodes(server, rerender, true)
+          const reconciliation = refreshEditedSurface(server, surface, rerender)
           if (!result.ok && result.ambiguous === true) await reconciliation
           else void reconciliation
         })
@@ -878,7 +888,7 @@ const setServerTemplatePublished = async (
   if (server === null || templateId === undefined) return
   const result = await patchTemplate(server, templateId, { published })
   if (!result.ok) toast(result.message, 'error')
-  await refreshCurrentNodes(server, rerender, true)
+  await refreshEditedSurface(server, surfaceOf(target), rerender)
 }
 
 const setServerTemplateLifecycle = async (
@@ -890,13 +900,13 @@ const setServerTemplateLifecycle = async (
   if (server === null || templateId === undefined) return
   const result = await patchTemplate(server, templateId, patch)
   if (!result.ok) toast(result.message, 'error')
-  await refreshCurrentNodes(server, rerender, true)
+  await refreshEditedSurface(server, surfaceOf(target), rerender)
 }
 
 const folderTemplatesFor = (target: TreeTarget): readonly ServerTemplate[] | null => {
   if (target.server === null || target.nodeId === null || target.templateId !== undefined)
     return null
-  const rows = rowsFor(target.server)
+  const rows = rowsForSurface(target.server, surfaceOf(target))
   return rows === undefined
     ? null
     : templatesInFolderSubtree(rows.nodes, rows.templates, target.nodeId)
@@ -910,26 +920,32 @@ const setServerFolderPublished = async (
 ): Promise<void> => {
   const { server, nodeId } = target
   if (server === null || nodeId === null || target.templateId !== undefined) return
+  const surface = surfaceOf(target)
   const releasePublication = claimFolderPublication(server.url)
   if (releasePublication === null) {
     toast('Another folder on that server is already changing publication state.', 'warning')
     return
   }
   try {
-    const refreshed = await refreshCurrentNodesResult(server, rerender, true)
-    if (refreshed?.status !== 'admitted') {
-      toast(
-        refreshed?.message ?? 'That server was disconnected before the folder could change.',
-        'error',
-      )
-      return
+    if (surface.kind === 'world') {
+      const refreshed = await refreshCurrentNodesResult(server, rerender, true)
+      if (refreshed?.status !== 'admitted') {
+        toast(
+          refreshed?.message ?? 'That server was disconnected before the folder could change.',
+          'error',
+        )
+        return
+      }
+    } else {
+      await refreshAllianceManifest(server, surface)
+      rerender()
     }
     const current = getState().servers.find((candidate) => candidate.url === server.url)
     if (current === undefined) {
       toast('That server was disconnected before the folder could change.', 'error')
       return
     }
-    const rows = rowsFor(current)
+    const rows = rowsForSurface(current, surface)
     const templates =
       rows === undefined ? null : templatesInFolderSubtree(rows.nodes, rows.templates, nodeId)
     if (templates === null) {
@@ -960,7 +976,7 @@ const setServerFolderPublished = async (
         return await patchTemplate(current, template.id, { published })
       }),
     )
-    if (stillConnected(current)) await refreshCurrentNodes(current, rerender, true)
+    if (stillConnected(current)) await refreshEditedSurface(current, surface, rerender)
     else rerender()
     if (result.failures.length === 0) {
       toast(

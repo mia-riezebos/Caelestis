@@ -16,7 +16,10 @@ export interface ArtboardMarkerBatch {
 
 export interface ArtboardMarkerWork {
   readonly mismatch: readonly ArtboardMarkerBatch[]
-  readonly selected: readonly ArtboardMarkerBatch[]
+  readonly selected: readonly {
+    readonly index: number
+    readonly batches: readonly ArtboardMarkerBatch[]
+  }[]
 }
 
 interface MutableBatch {
@@ -41,6 +44,7 @@ const artboardActualPixels = (
     const top = Math.max(template.originY, region.y)
     const right = Math.min(template.originX + template.width, region.x + region.width)
     const bottom = Math.min(template.originY + template.height, region.y + region.height)
+    if (right <= left || bottom <= top) continue
     for (let y = top; y < bottom; y++) {
       const sourceAt = (y - region.y) * region.width + (left - region.x)
       const targetAt = (y - template.originY) * template.width + (left - template.originX)
@@ -119,6 +123,24 @@ export const artboardColourProgress = (
   return [...progress.values()].sort((left, right) => left.index - right.index)
 }
 
+/** Overall progress for one artboard template, derived from the same per-colour counts. */
+export const artboardTemplateProgress = (
+  template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
+  regions: readonly ArtboardPixelRegion[],
+) => {
+  const colours = artboardColourProgress(template, regions)
+  return colours.reduce(
+    (total, colour) => ({
+      completed: total.completed + colour.completed,
+      mismatched: total.mismatched + colour.mismatched,
+      unpainted: total.unpainted + colour.unpainted,
+      known: total.known + colour.known,
+      total: total.total + colour.total,
+    }),
+    { completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 0 },
+  )
+}
+
 /** Palette colours with at least one artboard pixel that still differs from the template. */
 export const artboardRemainingColours = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
@@ -171,7 +193,6 @@ export const artboardMarkerWork = (
   template: Pick<PlacedTemplate, 'originX' | 'originY' | 'width' | 'height' | 'indices'>,
   regions: readonly ArtboardPixelRegion[],
   appearance: Appearance,
-  selectedColour: number | null,
 ): ArtboardMarkerWork => {
   const actual = artboardActualPixels(template, regions)
 
@@ -195,20 +216,28 @@ export const artboardMarkerWork = (
   }
 
   const mismatchBatches = new Map<string, MutableBatch>()
-  if (appearance.markMismatch) {
-    const includeUnpainted =
-      appearance.markUnpainted &&
-      asserted > 0 &&
-      unpainted.length / asserted <= appearance.unpaintedLimit
-    for (const mark of includeUnpainted ? [...wrong, ...unpainted] : wrong)
-      appendMark(mismatchBatches, mark.x, mark.y, mark.wanted)
-  }
+  const includeUnpainted =
+    appearance.markUnpainted &&
+    asserted > 0 &&
+    unpainted.length / asserted <= appearance.unpaintedLimit
+  for (const mark of includeUnpainted ? [...wrong, ...unpainted] : wrong)
+    appendMark(mismatchBatches, mark.x, mark.y, mark.wanted)
 
-  const selectedBatches = new Map<string, MutableBatch>()
-  if (appearance.markSelectedColour && selectedColour !== null && !hidden.has(selectedColour)) {
-    for (const mark of unpainted) {
-      if (mark.wanted === selectedColour) appendMark(selectedBatches, mark.x, mark.y, mark.wanted)
+  const selectedByColour = new Map<number, Map<string, MutableBatch>>()
+  for (const mark of unpainted) {
+    if (hidden.has(mark.wanted)) continue
+    let batches = selectedByColour.get(mark.wanted)
+    if (batches === undefined) {
+      batches = new Map()
+      selectedByColour.set(mark.wanted, batches)
     }
+    appendMark(batches, mark.x, mark.y, mark.wanted)
   }
-  return { mismatch: freezeBatches(mismatchBatches), selected: freezeBatches(selectedBatches) }
+  return {
+    mismatch: freezeBatches(mismatchBatches),
+    selected: [...selectedByColour].map(([index, batches]) => ({
+      index,
+      batches: freezeBatches(batches),
+    })),
+  }
 }

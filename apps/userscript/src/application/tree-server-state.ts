@@ -1,3 +1,5 @@
+import { type TemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { allianceManifestFor } from '../alliance-server-sync.js'
 import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cache.js'
 import {
   MAX_MANIFEST_CHUNKS,
@@ -81,6 +83,13 @@ export const rowsFor = (
   return { nodes, templates: templatesByServer.get(server.url) ?? [] }
 }
 
+/** The exact manifest rows that back one world or alliance tree. */
+export const rowsForSurface = (
+  server: ConnectedServer,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): { nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] } | undefined =>
+  surface.kind === 'world' ? rowsFor(server) : (allianceManifestFor(server, surface) ?? undefined)
+
 export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
   `node:${encodeURIComponent(server.url)}:${serverIdentity(server) ?? 'unknown:unknown'}:${nodeId}`
 
@@ -153,9 +162,10 @@ export const optimisticallyPlaceServerRow = (
  */
 export const findServerTemplate = (
   key: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): { serverUrl: string; template: ServerTemplate } | null => {
   for (const server of getState().servers) {
-    const template = rowsFor(server)?.templates.find(
+    const template = rowsForSurface(server, surface)?.templates.find(
       (candidate) => serverTemplateTreeKey(server, candidate.id) === key,
     )
     if (template !== undefined) return { serverUrl: server.url, template }
@@ -169,25 +179,35 @@ export const findServerTemplate = (
  * Read from the same cache the row was drawn from, so a menu can never offer "Unpublish" on a row
  * drawn as unpublished — the two would otherwise be answering from different copies.
  */
-export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null => {
+export const serverTemplateAt = (
+  serverUrl: string,
+  id: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): ServerTemplate | null => {
   const server = getState().servers.find((candidate) => candidate.url === serverUrl)
   return server === undefined
     ? null
-    : (rowsFor(server)?.templates.find((template) => template.id === id) ?? null)
+    : (rowsForSurface(server, surface)?.templates.find((template) => template.id === id) ?? null)
 }
 
 /** The immutable manifest template array currently backing one server's tree rows. */
-export const templatesForServer = (serverUrl: string): readonly ServerTemplate[] => {
+export const templatesForServer = (
+  serverUrl: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): readonly ServerTemplate[] => {
   const server = getState().servers.find((candidate) => candidate.url === serverUrl)
   return server === undefined
     ? NO_SERVER_TEMPLATES
-    : (rowsFor(server)?.templates ?? NO_SERVER_TEMPLATES)
+    : (rowsForSurface(server, surface)?.templates ?? NO_SERVER_TEMPLATES)
 }
 
 /** Which server holds a folder row — the same scoped-key lookup as `findServerTemplate`. */
-export const findServerNode = (key: string): { serverUrl: string; node: TreeNode } | null => {
+export const findServerNode = (
+  key: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): { serverUrl: string; node: TreeNode } | null => {
   for (const server of getState().servers) {
-    const node = rowsFor(server)?.nodes.find(
+    const node = rowsForSurface(server, surface)?.nodes.find(
       (candidate) => nodeTreeKey(server, candidate.id) === key,
     )
     if (node !== undefined) return { serverUrl: server.url, node }
@@ -195,27 +215,35 @@ export const findServerNode = (key: string): { serverUrl: string; node: TreeNode
   return null
 }
 
-const serverUrlForTreeParent = (key: string | null): string | null => {
+const serverUrlForTreeParent = (
+  key: string | null,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): string | null => {
   if (key === null) return null
   if (key.startsWith('server:')) return key.slice('server:'.length)
-  return findServerNode(key)?.serverUrl ?? null
+  return findServerNode(key, surface)?.serverUrl ?? null
 }
 
-export const isSameServerPlacement = (draggedKey: string, parentKey: string | null): boolean => {
+export const isSameServerPlacement = (
+  draggedKey: string,
+  parentKey: string | null,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+): boolean => {
   const sourceUrl = draggedKey.startsWith('st:')
-    ? findServerTemplate(draggedKey)?.serverUrl
+    ? findServerTemplate(draggedKey, surface)?.serverUrl
     : draggedKey.startsWith('node:')
-      ? findServerNode(draggedKey)?.serverUrl
+      ? findServerNode(draggedKey, surface)?.serverUrl
       : undefined
-  return sourceUrl !== undefined && sourceUrl === serverUrlForTreeParent(parentKey)
+  return sourceUrl !== undefined && sourceUrl === serverUrlForTreeParent(parentKey, surface)
 }
 
 /** What a server publishes directly inside one folder. */
 export const templatesOfNode = (
   serverUrl: string,
   nodeId: string,
+  surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): ReadonlyArray<{ id: string; name: string; version: string }> => {
-  return templatesForServer(serverUrl).filter((template) => template.nodeId === nodeId)
+  return templatesForServer(serverUrl, surface).filter((template) => template.nodeId === nodeId)
 }
 
 /**

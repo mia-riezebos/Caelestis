@@ -1,9 +1,17 @@
+import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
 import { currentShortcutPlatform, type ShortcutPlatform, shortcutFor } from './shortcuts.js'
-import { getState, getSurfaceAppearance, setState, setSurfaceAppearance } from './state.js'
+import {
+  getState,
+  getSurfaceAppearance,
+  onlySelectedColourFor,
+  setOnlySelectedColourFor,
+  setState,
+  setSurfaceAppearance,
+} from './state.js'
 import {
   ownsGroup,
   setAppearance,
@@ -191,7 +199,8 @@ export const installKeyboardShortcuts = (
     }
     if (shortcut === 'toggle-colour') {
       claim()
-      setState({ onlySelectedColour: !getState().onlySelectedColour })
+      const surface = allianceSurface ?? WORLD_TEMPLATE_SURFACE
+      setOnlySelectedColourFor(surface, !onlySelectedColourFor(surface))
       return
     }
     if (shortcut === 'toggle-visibility') {

@@ -145,27 +145,45 @@ const nativePickerIsActive = (): boolean =>
   nativePickerButton()?.classList.contains('btn-primary') ?? false
 
 const exitNativePicker = (): void => {
-  // Selecting Wplace's own swatch normally schedules the picker to exit. Wait for that Svelte
-  // update before deciding whether any work remains: clicking the still-primary, soon-to-be-stale
-  // button synchronously races the update and turns the picker back on.
+  // World painting exits the picker when its swatch changes. Alliance painting does not, and its
+  // picker button is not a toggle. Toggling the native eraser on and back off is the public route
+  // to the neutral brush tool, so use it only if Wplace still has the picker active after rendering.
   requestAnimationFrame(() => {
     const button = nativePickerButton()
-    if (button?.classList.contains('btn-primary')) button.click()
+    if (!button?.classList.contains('btn-primary')) return
+    const root = button.closest('dialog[open]') ?? document
+    const eraser = root.querySelector<HTMLButtonElement>('button[aria-label="Eraser"]')
+    if (eraser === null) return
+    eraser.click()
+    requestAnimationFrame(() => {
+      const current = root.querySelector<HTMLButtonElement>('button[aria-label="Eraser"]')
+      if (current?.getAttribute('aria-pressed') === 'true') current.click()
+    })
   })
 }
 
 export const installColourPicker = (): void => {
+  let pendingLeftPick: {
+    readonly pointerId: number
+    readonly target: EventTarget | null
+    readonly x: number
+    readonly y: number
+    readonly until: number
+  } | null = null
+
   /**
-   * Replace Wplace's left-click pipette before MapLibre receives the click.
+   * Replace Wplace's left-click pipette before Wplace handles the pointer sequence.
    *
-   * Its picker listener is on the map container in bubble phase. Capture on `window` therefore
-   * wins without patching a Svelte store or MapLibre internals. Once picker mode is active, every
-   * map click is swallowed even when the base tile is still loading: falling through on a miss
-   * would re-enable the composited sampler and make a draft or mismatch marker pickable again.
+   * Wplace now ends picker mode during pointer handling, before the later `click` reaches our old
+   * capture listener. Capturing `pointerdown` on `window` preserves the active-tool signal and wins
+   * without patching a Svelte store. The matching click is swallowed below so Wplace cannot run its
+   * composited fallback after we have answered from source pixels.
    */
   window.addEventListener(
-    'click',
+    'pointerdown',
     (event) => {
+      // A new pointer sequence supersedes any pick that never produced its click.
+      pendingLeftPick = null
       if (event.button !== 0 || !isPaintOpen() || !nativePickerIsActive()) return
       const target = event.target
       if (!(target instanceof Element)) return
@@ -174,6 +192,13 @@ export const installColourPicker = (): void => {
 
       event.preventDefault()
       event.stopImmediatePropagation()
+      pendingLeftPick = {
+        pointerId: event.pointerId,
+        target: event.target,
+        x: event.clientX,
+        y: event.clientY,
+        until: performance.now() + 1_000,
+      }
 
       const { x, y } = point
       const index = pickedIndexAt(point)
@@ -186,6 +211,48 @@ export const installColourPicker = (): void => {
       // use the picker button as a fallback if that state change did not happen.
       exitNativePicker()
       log('install', 'picked a colour from source pixels', { x, y, index })
+    },
+    { capture: true },
+  )
+
+  window.addEventListener(
+    'pointercancel',
+    (event) => {
+      if (pendingLeftPick?.pointerId === event.pointerId) pendingLeftPick = null
+    },
+    { capture: true },
+  )
+
+  window.addEventListener(
+    'pointerup',
+    (event) => {
+      const pending = pendingLeftPick
+      if (pending?.pointerId !== event.pointerId) return
+      // A browser dispatches the synthetic click before the next task. If it does not, this
+      // gesture has ended and must not affect later input on the same canvas.
+      setTimeout(() => {
+        if (pendingLeftPick === pending) pendingLeftPick = null
+      }, 0)
+    },
+    { capture: true },
+  )
+
+  window.addEventListener(
+    'click',
+    (event) => {
+      const pending = pendingLeftPick
+      pendingLeftPick = null
+      if (
+        pending === null ||
+        event.button !== 0 ||
+        event.target !== pending.target ||
+        performance.now() > pending.until ||
+        Math.abs(event.clientX - pending.x) > 4 ||
+        Math.abs(event.clientY - pending.y) > 4
+      )
+        return
+      event.preventDefault()
+      event.stopImmediatePropagation()
     },
     { capture: true },
   )

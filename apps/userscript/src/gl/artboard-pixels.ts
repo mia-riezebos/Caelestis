@@ -20,7 +20,8 @@ export interface ArtboardPixelRegion {
 const rgbIndex = buildExactRgbIndex(WPLACE_PALETTE)
 const isCaelestisCanvas = (canvas: HTMLCanvasElement): boolean =>
   canvas.hasAttribute('data-caelestis-alliance-overlay') ||
-  canvas.hasAttribute('data-caelestis-alliance-outline')
+  canvas.hasAttribute('data-caelestis-alliance-outline') ||
+  canvas.hasAttribute('data-caelestis-alliance-markers')
 
 const palettePixels = (canvas: HTMLCanvasElement): Uint8Array | null => {
   try {

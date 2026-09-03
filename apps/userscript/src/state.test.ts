@@ -243,6 +243,34 @@ describe('server state boundaries', () => {
     ])
   })
 
+  it('keeps selected-colour mode isolated by canvas', async () => {
+    vi.stubGlobal('GM_setValue', vi.fn())
+    const {
+      getState,
+      onlySelectedColourFor,
+      setOnlySelectedColourFor,
+      setState,
+      setSurfaceAppearance,
+      getSurfaceAppearance,
+    } = await import('./state.js')
+    const headquarters = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
+    const picture = { kind: 'alliance-picture', allianceId: 535_245 } as const
+
+    setState({ onlySelectedColour: true })
+    expect(setOnlySelectedColourFor(headquarters, true)).toBe(true)
+
+    expect(onlySelectedColourFor({ kind: 'world', allianceId: null })).toBe(true)
+    expect(onlySelectedColourFor(headquarters)).toBe(true)
+    expect(onlySelectedColourFor(picture)).toBe(false)
+
+    setSurfaceAppearance(headquarters, {
+      ...getSurfaceAppearance(headquarters),
+      opacity: 0.5,
+    })
+    expect(onlySelectedColourFor(headquarters)).toBe(true)
+    expect(getState().onlySelectedColour).toBe(true)
+  })
+
   it('restores only valid saved alliance appearance scopes', async () => {
     const appearance = {
       size: 0.6,
