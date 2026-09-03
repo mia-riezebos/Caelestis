@@ -183,6 +183,114 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('aligns folder and template progress details at equal and nested depths', () => {
+    const progress = {
+      completed: 75,
+      mismatched: 5,
+      unpainted: 20,
+      known: 100,
+      total: 100,
+    }
+    const colourProgress = [
+      {
+        index: 0,
+        name: 'Black',
+        hex: '#000000',
+        completed: 10,
+        mismatched: 2,
+        unpainted: 3,
+        known: 15,
+        total: 15,
+      },
+    ]
+    const entries: TemplateTreeModel['entries'] = [
+      {
+        ...model.entries[0],
+        key: 'folder',
+        name: 'Folder',
+        depth: 1,
+        branches: [true],
+        expanded: true,
+        progress,
+        colourProgress,
+      },
+      {
+        ...model.entries[1],
+        key: 'template',
+        name: 'Template',
+        branches: [false],
+        progress,
+        colourProgress,
+      },
+      {
+        ...model.entries[0],
+        key: 'nested-folder',
+        name: 'Nested folder',
+        depth: 2,
+        branches: [true, true],
+        expanded: true,
+        progress,
+        colourProgress,
+      },
+      {
+        ...model.entries[1],
+        key: 'nested-template',
+        name: 'Nested template',
+        depth: 2,
+        branches: [true, false],
+        progress,
+        colourProgress,
+      },
+    ]
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: { model: { ...model, entries } },
+    })
+    flushSync()
+
+    document
+      .querySelectorAll<HTMLButtonElement>('[aria-label="Expand progress"]')
+      .forEach((button) => {
+        button.click()
+      })
+    flushSync()
+    document
+      .querySelectorAll<HTMLButtonElement>('[aria-label="Show colour progress"]')
+      .forEach((button) => {
+        button.click()
+      })
+    flushSync()
+
+    const pixelTerm = (value: string): number => Number(value.match(/(\d+)px/)?.[1] ?? 0)
+    const geometry = (key: string) => {
+      const row = document.querySelector<HTMLElement>(`[data-caelestis-tree-key="${key}"]`)
+      const detail = row?.querySelector<HTMLElement>('.progress-detail')
+      if (row === null || row === undefined || detail === null || detail === undefined) {
+        throw new Error(`missing progress detail for ${key}`)
+      }
+      const detailStyle = getComputedStyle(detail)
+      return {
+        inlineStart:
+          pixelTerm(row.style.paddingInlineStart) +
+          pixelTerm(row.style.getPropertyValue('--progress-detail-offset')),
+        inlineEnd:
+          pixelTerm(getComputedStyle(row).paddingRight) + pixelTerm(detailStyle.paddingRight),
+        hasSummary: detail.querySelector('.progress-summary') !== null,
+        hasColours: detail.querySelector('.colour-progress') !== null,
+      }
+    }
+    const folder = geometry('folder')
+    const template = geometry('template')
+    const nestedFolder = geometry('nested-folder')
+    const nestedTemplate = geometry('nested-template')
+
+    expect(folder).toEqual(template)
+    expect(nestedFolder).toEqual(nestedTemplate)
+    expect(nestedFolder.inlineStart - folder.inlineStart).toBe(18)
+    expect(folder.inlineEnd).toBeGreaterThan(0)
+    void unmount(component)
+  })
+
   it('anchors compact connectors to the actual heading height', () => {
     const plain = {
       ...model.entries[1],
