@@ -131,34 +131,41 @@ describe('status read-model Durable Object', () => {
       ifNoneMatch: [],
     })
     const alarmVersion = await sha256Hex(new TextEncoder().encode('[]'))
-    const send = vi.fn()
-    const socket = {
-      deserializeAttachment: () => ({
+    const connection = () => {
+      let attachment = {
         season: 8,
         scope: 'public',
         credentialScope: 'read',
         tokenHash: 'a'.repeat(64),
         revocable: true,
         revoked: false,
-      }),
-      send,
-      close: vi.fn(),
-    } as unknown as WebSocket
+      }
+      const send = vi.fn()
+      const close = vi.fn()
+      const socket = {
+        deserializeAttachment: () => attachment,
+        serializeAttachment: (next: typeof attachment) => {
+          attachment = next
+        },
+        send,
+        close,
+      } as unknown as WebSocket
+      return { close, send, socket }
+    }
+    const correction = connection()
+    const firstStateVector = {
+      type: 'state-vector',
+      requestId: '01890f3e-7b2c-7abc-8def-000000000001',
+      revision: 1,
+      projections: [
+        { resource: 'world-manifest', scope: 'world', version: 'f'.repeat(64) },
+        { resource: 'telemetry-alarms', scope: 'world', version: alarmVersion },
+      ],
+    }
 
-    await object.webSocketMessage(
-      socket,
-      JSON.stringify({
-        type: 'state-vector',
-        requestId: '01890f3e-7b2c-7abc-8def-000000000001',
-        revision: 1,
-        projections: [
-          { resource: 'world-manifest', scope: 'world', version: 'f'.repeat(64) },
-          { resource: 'telemetry-alarms', scope: 'world', version: alarmVersion },
-        ],
-      }),
-    )
+    await object.webSocketMessage(correction.socket, JSON.stringify(firstStateVector))
 
-    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toEqual({
+    expect(JSON.parse(String(correction.send.mock.calls[0]?.[0]))).toEqual({
       type: 'state-correction',
       requestId: '01890f3e-7b2c-7abc-8def-000000000001',
       mode: 'correction',
@@ -166,9 +173,9 @@ describe('status read-model Durable Object', () => {
       projections: [{ resource: 'world-manifest', scope: 'world', version: manifest.version }],
     })
 
-    send.mockClear()
+    const snapshot = connection()
     await object.webSocketMessage(
-      socket,
+      snapshot.socket,
       JSON.stringify({
         type: 'state-vector',
         requestId: '01890f3e-7b2c-7abc-8def-000000000002',
@@ -179,7 +186,7 @@ describe('status read-model Durable Object', () => {
         ],
       }),
     )
-    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toEqual({
+    expect(JSON.parse(String(snapshot.send.mock.calls[0]?.[0]))).toEqual({
       type: 'state-correction',
       requestId: '01890f3e-7b2c-7abc-8def-000000000002',
       mode: 'snapshot',
@@ -189,6 +196,10 @@ describe('status read-model Durable Object', () => {
         { resource: 'telemetry-alarms', scope: 'world', version: alarmVersion },
       ],
     })
+
+    await object.webSocketMessage(correction.socket, JSON.stringify(firstStateVector))
+    expect(correction.send).toHaveBeenCalledOnce()
+    expect(correction.close).toHaveBeenCalledWith(1008, 'state vector already received')
   })
 
   it('fans one committed status update out to five clients within two seconds', async () => {

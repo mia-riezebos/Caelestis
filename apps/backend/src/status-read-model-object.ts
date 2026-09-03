@@ -82,6 +82,7 @@ interface LiveSubscriberAttachment {
   readonly anonymous?: boolean
   readonly revocable: boolean
   readonly lastRevision: number | null
+  readonly stateVectorReceived?: boolean
   readonly revoked?: boolean
   readonly metricClient?: string
   readonly metricClientVersion?: string
@@ -924,6 +925,11 @@ export class StatusReadModelObject extends DurableObject<Env> {
         socket.close(1008, 'invalid live state scope')
         return
       }
+      if (attachment.stateVectorReceived === true) {
+        socket.close(1008, 'state vector already received')
+        return
+      }
+      socket.serializeAttachment({ ...attachment, stateVectorReceived: true })
       this.bindSeason(attachment.season)
       await this.reconcileLiveState(socket, attachment, event)
       return
