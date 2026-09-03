@@ -87,40 +87,53 @@ export class TelemetryShard extends DurableObject<Env> {
     })
   }
 
-  async record(deltas: readonly CounterDelta[]): Promise<void> {
+  async record(deltas: readonly CounterDelta[], idempotencyKey?: string): Promise<void> {
     const nowMilliseconds = this.clock()
     const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
     // A successful flush leaves retained reconciliation state but no alarm. The next write is a
     // lifecycle opportunity to reclaim expired rows that no pending or flush-batch state needs.
     this.pruneRetained(nowSeconds)
 
-    const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)
-    let droppedLate = deltas.length - boundedDeltas.length
-    const outstandingByTemplate = new Map<string, CounterValues>()
-    const cumulativeByBucket = new Map<string, CounterValues>()
-
-    for (const delta of boundedDeltas) {
-      // Keep one operational counter for all rejected input: both malformed and out-of-window
-      // deltas have the same outcome and remediation, and splitting them would add schema surface.
-      if (!isValidCounterDelta(delta, nowSeconds)) {
-        droppedLate += 1
-        continue
+    this.ctx.storage.transactionSync(() => {
+      if (idempotencyKey !== undefined) {
+        const claimed = this.ctx.storage.sql.exec(
+          `INSERT OR IGNORE INTO applied_counter_events (event_id, seen_at_ms) VALUES (?1, ?2)`,
+          idempotencyKey,
+          bindMillis(nowMilliseconds),
+        )
+        if (claimed.rowsWritten === 0) return
       }
-      if (!hasActivity(delta)) continue
 
-      const bucketStart = eventBucketStart(delta.occurredAt)
-      const key = `${delta.templateId}\u0000${bucketStart}`
-      const outstanding =
-        outstandingByTemplate.get(delta.templateId) ??
-        this.readOutstandingCounters(delta.templateId)
-      const cumulative =
-        cumulativeByBucket.get(key) ?? this.readCumulativeBucket(delta.templateId, bucketStart)
-      if (!canAccumulateCounters(outstanding, delta) || !canAccumulateCounters(cumulative, delta)) {
-        droppedLate += 1
-        continue
-      }
-      this.ctx.storage.sql.exec(
-        `
+      const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)
+      let droppedLate = deltas.length - boundedDeltas.length
+      const outstandingByTemplate = new Map<string, CounterValues>()
+      const cumulativeByBucket = new Map<string, CounterValues>()
+
+      for (const delta of boundedDeltas) {
+        // Keep one operational counter for all rejected input: both malformed and out-of-window
+        // deltas have the same outcome and remediation, and splitting them would add schema surface.
+        if (!isValidCounterDelta(delta, nowSeconds)) {
+          droppedLate += 1
+          continue
+        }
+        if (!hasActivity(delta)) continue
+
+        const bucketStart = eventBucketStart(delta.occurredAt)
+        const key = `${delta.templateId}\u0000${bucketStart}`
+        const outstanding =
+          outstandingByTemplate.get(delta.templateId) ??
+          this.readOutstandingCounters(delta.templateId)
+        const cumulative =
+          cumulativeByBucket.get(key) ?? this.readCumulativeBucket(delta.templateId, bucketStart)
+        if (
+          !canAccumulateCounters(outstanding, delta) ||
+          !canAccumulateCounters(cumulative, delta)
+        ) {
+          droppedLate += 1
+          continue
+        }
+        this.ctx.storage.sql.exec(
+          `
           INSERT INTO pending_counters (
             template_id, bucket_start_s, placed, correct, repairs
           ) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -129,28 +142,29 @@ export class TelemetryShard extends DurableObject<Env> {
             correct = correct + excluded.correct,
             repairs = repairs + excluded.repairs
         `,
-        delta.templateId,
-        bindSeconds(bucketStart),
-        delta.placed,
-        delta.correct,
-        delta.repairs,
-      )
-      outstandingByTemplate.set(delta.templateId, addCounters(outstanding, delta))
-      cumulativeByBucket.set(key, addCounters(cumulative, delta))
-    }
+          delta.templateId,
+          bindSeconds(bucketStart),
+          delta.placed,
+          delta.correct,
+          delta.repairs,
+        )
+        outstandingByTemplate.set(delta.templateId, addCounters(outstanding, delta))
+        cumulativeByBucket.set(key, addCounters(cumulative, delta))
+      }
 
-    this.pruneZeroPending()
+      this.pruneZeroPending()
 
-    if (droppedLate > 0) {
-      this.ctx.storage.sql.exec(
-        `
+      if (droppedLate > 0) {
+        this.ctx.storage.sql.exec(
+          `
           UPDATE counter_stats
           SET dropped_late_deltas = dropped_late_deltas + ?1
           WHERE singleton = 1
         `,
-        droppedLate,
-      )
-    }
+          droppedLate,
+        )
+      }
+    })
 
     await this.scheduleNextAlarm(nowMilliseconds)
   }
@@ -432,6 +446,10 @@ export class TelemetryShard extends DurableObject<Env> {
         consecutive_failures INTEGER NOT NULL
       );
       INSERT OR IGNORE INTO flush_retry_state (singleton, consecutive_failures) VALUES (1, 0);
+      CREATE TABLE IF NOT EXISTS applied_counter_events (
+        event_id TEXT PRIMARY KEY,
+        seen_at_ms INTEGER NOT NULL
+      );
     `)
   }
 

@@ -1383,9 +1383,15 @@ export class MemorySqlStore implements SqlStore {
     this.alarmStates.set(templateId, { ...state, probeDueAt: retryAt })
   }
 
-  async claimPaintEvent(eventId: string, _wplaceUserId: number, _seenAt: Millis): Promise<boolean> {
+  async applyPaintEvent(
+    eventId: string,
+    _wplaceUserId: number,
+    _seenAt: Millis,
+    deltas: readonly ContributionDelta[],
+  ): Promise<boolean> {
     if (this.appliedEvents.has(eventId)) return false
     this.appliedEvents.add(eventId)
+    await this.addContributions(deltas)
     return true
   }
 

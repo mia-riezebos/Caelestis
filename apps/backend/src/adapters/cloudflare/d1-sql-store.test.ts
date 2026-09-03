@@ -862,9 +862,46 @@ describe('D1SqlStore', () => {
     ])
   })
 
-  it('claims paint event ids once', async () => {
-    await expect(store.claimPaintEvent('event-1', 42, millis(1_000))).resolves.toBe(true)
-    await expect(store.claimPaintEvent('event-1', 42, millis(2_000))).resolves.toBe(false)
+  it('applies paint contributions once when a committed response is lost', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    const contribution = {
+      wplaceUserId: 42,
+      templateId: 'template-1',
+      day: seconds(0),
+      reportedWithToken: 'a'.repeat(64),
+      reportedByUserId: 42,
+      placed: 3,
+      correct: 2,
+      repairs: 1,
+    }
+
+    d1.failNextBatchAt('after-commit')
+    await expect(
+      store.applyPaintEvent('event-1', 42, millis(1_000), [contribution]),
+    ).rejects.toThrow('D1 response lost after commit')
+    await expect(store.applyPaintEvent('event-1', 42, millis(2_000), [contribution])).resolves.toBe(
+      false,
+    )
+    await expect(
+      store.readContributions({
+        templateIds: ['template-1'],
+        fromSeconds: seconds(0),
+        toSeconds: seconds(86_400),
+        includeUnpublished: true,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ day: seconds(0), placed: 3, correct: 2, repairs: 1 }),
+    ])
   })
 
   it('issues one statement per parameter chunk when reading a large template set', async () => {

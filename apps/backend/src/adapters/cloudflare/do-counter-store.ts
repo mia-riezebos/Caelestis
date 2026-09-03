@@ -10,8 +10,8 @@ export class DurableObjectCounterStore implements CounterStore {
     this.shard = namespace.getByName(SINGLE_SHARD_NAME)
   }
 
-  async record(deltas: readonly CounterDelta[]): Promise<void> {
-    await this.shard.record(deltas)
+  async record(deltas: readonly CounterDelta[], idempotencyKey?: string): Promise<void> {
+    await this.shard.record(deltas, idempotencyKey)
   }
 
   async readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]> {

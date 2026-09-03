@@ -4,6 +4,24 @@ import { MemoryCounterStore } from './memory-counter-store.js'
 import { MemorySqlStore } from './memory-sql-store.js'
 
 describe('MemoryCounterStore', () => {
+  it('records an idempotency key once', async () => {
+    const counters = new MemoryCounterStore(new MemorySqlStore(), () => millis(150_000))
+    const delta = {
+      templateId: 'template-a',
+      occurredAt: seconds(100),
+      placed: 4,
+      correct: 3,
+      repairs: 1,
+    }
+
+    await counters.record([delta], 'event-1')
+    await counters.record([delta], 'event-1')
+
+    await expect(counters.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
+    ])
+  })
+
   it.each([
     ['the same bucket', seconds(101)],
     ['another pending bucket', seconds(121)],

@@ -369,6 +369,25 @@ afterEach(() => {
 })
 
 describe('TelemetryShard', () => {
+  it('records an idempotency key once across cold starts', async () => {
+    const harness = await makeHarness(millis(150_000))
+    const delta = {
+      templateId: 'template-a',
+      occurredAt: seconds(100),
+      placed: 4,
+      correct: 3,
+      repairs: 1,
+    }
+
+    await harness.shard.record([delta], 'event-1')
+    await harness.coldRestart()
+    await harness.shard.record([delta], 'event-1')
+
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
+    ])
+  })
+
   it('schedules the alarm for when the next bucket becomes flushable, not for now', async () => {
     // Every other test freezes the clock at or past the flushable instant, so Math.max(now, ...)
     // collapses to `now` and the arithmetic never matters. Here the clock sits well before it, so a

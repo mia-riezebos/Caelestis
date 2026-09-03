@@ -84,7 +84,13 @@ export interface PendingCounters {
 }
 
 export interface CounterStore {
-  record(deltas: readonly CounterDelta[]): Promise<void>
+  /**
+   * Atomically record deltas once for an optional idempotency key.
+   *
+   * Paint ingestion supplies its event id so a retry after an ambiguous cross-store failure cannot
+   * increment this buffer twice. Internal callers and focused adapter tests may omit the key.
+   */
+  record(deltas: readonly CounterDelta[], idempotencyKey?: string): Promise<void>
 
   /**
    * Unflushed counters for these templates, reflecting anything recorded up to this moment.

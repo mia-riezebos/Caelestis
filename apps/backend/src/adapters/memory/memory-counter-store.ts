@@ -56,6 +56,7 @@ const flushRetryDelay = (failureCount: number): number =>
  * Tests may call `alarm` at the injected time to emulate delivery of `nextAlarmAt`.
  */
 export class MemoryCounterStore implements CounterStore {
+  private readonly appliedEvents = new Set<string>()
   private readonly pending = new Map<string, BucketCounters>()
   private readonly flushBatch = new Map<string, BucketCounters>()
   private readonly retained = new Map<string, BucketCounters>()
@@ -69,7 +70,11 @@ export class MemoryCounterStore implements CounterStore {
     private readonly clock: () => Millis = () => millis(Date.now()),
   ) {}
 
-  async record(deltas: readonly CounterDelta[]): Promise<void> {
+  async record(deltas: readonly CounterDelta[], idempotencyKey?: string): Promise<void> {
+    if (idempotencyKey !== undefined) {
+      if (this.appliedEvents.has(idempotencyKey)) return
+      this.appliedEvents.add(idempotencyKey)
+    }
     const nowMilliseconds = this.clock()
     const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
 

@@ -1070,8 +1070,13 @@ export interface SqlStore {
     retryAt: Millis,
   ): Promise<void>
 
-  /** Claims an idempotency key. False means this paint event was already accepted. */
-  claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>
+  /** Atomically claim a paint event and apply its contribution deltas. False means duplicate. */
+  applyPaintEvent(
+    eventId: string,
+    wplaceUserId: number,
+    seenAt: Millis,
+    contributions: readonly ContributionDelta[],
+  ): Promise<boolean>
 
   rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void>
 

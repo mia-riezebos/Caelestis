@@ -630,11 +630,12 @@ const recordPaintPromise = async (
   includeUnpublished: boolean,
 ): Promise<'duplicate' | 'partial' | 'recorded'> => {
   const seenAt = millis(Date.now())
-  if (!(await ports.sql.claimPaintEvent(event.eventId, event.wplaceUserId, seenAt)))
-    return 'duplicate'
   await ports.sql.rememberPainter(event.wplaceUserId, event.displayName, seenAt)
   const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
-  if (event.painted === null || event.painted !== submitted) return 'partial'
+  if (event.painted === null || event.painted !== submitted) {
+    const applied = await ports.sql.applyPaintEvent(event.eventId, event.wplaceUserId, seenAt, [])
+    return applied ? 'partial' : 'duplicate'
+  }
 
   const totals = new Map<string, { placed: number; correct: number; repairs: number }>()
   for (const paintedTile of event.tiles) {
@@ -688,9 +689,14 @@ const recordPaintPromise = async (
       ...total,
     })
   }
-  await ports.counters.record(counters)
-  await ports.sql.addContributions(contributions)
-  return 'recorded'
+  await ports.counters.record(counters, event.eventId)
+  const applied = await ports.sql.applyPaintEvent(
+    event.eventId,
+    event.wplaceUserId,
+    seenAt,
+    contributions,
+  )
+  return applied ? 'recorded' : 'duplicate'
 }
 
 const storage = <A>(operation: string, run: () => Promise<A>) =>
@@ -930,7 +936,7 @@ export const uploadTile = (
     )
   })
 
-/** Classify one accepted paint while preserving claim, counter, and contribution ordering. */
+/** Classify one accepted paint with retry-safe counter and contribution application. */
 export const recordPaint = (
   event: PaintEvent,
   reporterTokenHash: string,

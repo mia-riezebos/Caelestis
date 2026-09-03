@@ -31,7 +31,6 @@ import {
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
-  appliedEvents,
   canvasTiles,
   contributions,
   nodes,
@@ -2542,12 +2541,51 @@ export class D1SqlStore implements SqlStore {
       )
   }
 
-  async claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean> {
-    const result = await this.database
-      .insert(appliedEvents)
-      .values({ eventId, wplaceUserId, seenAtMs: seenAt })
-      .onConflictDoNothing()
-    return Number(result.meta.changes) > 0
+  async applyPaintEvent(
+    eventId: string,
+    wplaceUserId: number,
+    seenAt: Millis,
+    deltas: readonly ContributionDelta[],
+  ): Promise<boolean> {
+    const claim = this.client
+      .prepare(
+        `INSERT INTO applied_events (event_id, wplace_user_id, seen_at_ms)
+         VALUES (?, ?, ?)
+         ON CONFLICT DO NOTHING`,
+      )
+      .bind(eventId, wplaceUserId, seenAt)
+    if (deltas.length === 0) {
+      const result = await claim.run()
+      return Number(result.meta.changes) > 0
+    }
+
+    const incoming = JSON.stringify(deltas)
+    const contributionWrite = this.client
+      .prepare(
+        `INSERT INTO contributions (
+           wplace_user_id, template_id, day_s, reported_with_token, reported_by_user_id,
+           placed, correct, repairs
+         )
+         SELECT
+           json_extract(value, '$.wplaceUserId'),
+           json_extract(value, '$.templateId'),
+           json_extract(value, '$.day'),
+           json_extract(value, '$.reportedWithToken'),
+           json_extract(value, '$.reportedByUserId'),
+           json_extract(value, '$.placed'),
+           json_extract(value, '$.correct'),
+           json_extract(value, '$.repairs')
+         FROM json_each(?)
+         WHERE changes() > 0
+         ON CONFLICT(wplace_user_id, template_id, day_s, reported_by_user_id) DO UPDATE SET
+           reported_with_token = excluded.reported_with_token,
+           placed = contributions.placed + excluded.placed,
+           correct = contributions.correct + excluded.correct,
+           repairs = contributions.repairs + excluded.repairs`,
+      )
+      .bind(incoming)
+    const results = await this.client.batch([claim, contributionWrite])
+    return Number(results[0]?.meta.changes) > 0
   }
 
   async rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void> {
