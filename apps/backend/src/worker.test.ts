@@ -142,10 +142,15 @@ it('mounts the runtime app beneath its configured base path', async () => {
   } as unknown as Env
 
   const mounted = await worker.fetch(new Request('https://example.com/backend/health'), configured)
+  const versioned = await worker.fetch(
+    new Request('https://example.com/backend/v1/server'),
+    configured,
+  )
   const outside = await worker.fetch(new Request('https://example.com/health'), configured)
 
   expect(mounted.status).toBe(200)
   await expect(mounted.json()).resolves.toEqual({ ok: true })
+  expect(versioned.status).toBe(200)
   expect(outside.status).toBe(404)
 })
 

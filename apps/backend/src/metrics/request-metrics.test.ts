@@ -81,6 +81,13 @@ describe('request capacity metrics', () => {
     ])
   })
 
+  it('records versioned and compatibility paths under the same route dimensions', () => {
+    expect(normalizeMetricRoute('GET', '/v1/manifest')).toBe('GET /manifest')
+    expect(normalizeMetricRoute('POST', '/v1/telemetry/tiles/offers')).toBe(
+      'POST /telemetry/tiles/offers',
+    )
+  })
+
   it('bounds caller-controlled live client dimensions', () => {
     expect(normalizeMetricClientIdentity('userscript', '0.5.4')).toEqual({
       client: 'userscript',
