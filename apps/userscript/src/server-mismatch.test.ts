@@ -172,6 +172,30 @@ describe('server mismatch masks', () => {
     expect(changed).toHaveBeenCalledOnce()
   })
 
+  it('wakes rendering after an invalidated pending read stops blocking replacement', async () => {
+    let finishFetch!: (response: Response) => void
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            finishFetch = resolve
+          }),
+      )
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetch)
+    const { invalidateServerMismatches, onServerMismatchesChanged, serverMismatchMaskFor } =
+      await import('./server-mismatch.js')
+    onServerMismatchesChanged(() => serverMismatchMaskFor(template, { x: 3, y: 4 }))
+
+    expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).toBeNull()
+    await vi.waitFor(() => expect(finishFetch).toBeTypeOf('function'))
+    invalidateServerMismatches(harness.server.url)
+    finishFetch(new Response(null, { status: 204 }))
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+  })
+
   it('rejects a response body that finishes after its tile was invalidated', async () => {
     const body = encodeMismatchMask(
       { left: 0, top: 0, width: 1, height: 1 },

@@ -209,6 +209,7 @@ export const serverMismatchMaskFor = (
   )
     return null
   const key = keyFor(server, template.serverTemplateId, template.serverVersion, tile)
+  const invalidationKey = invalidationKeyFor(server.url, tile)
   requestedThisFrame?.add(key)
   const held = masks.get(key)
   if (held !== undefined && isCurrentServerConnection(held.server)) {
@@ -223,6 +224,8 @@ export const serverMismatchMaskFor = (
       Date.now() - miss.at < RETRY_AFTER_MS)
   )
     return null
+  const tileInvalidation = tileInvalidations.get(invalidationKey) ?? 0
+  const serverInvalidation = serverInvalidations.get(server.url) ?? 0
   const request = readMask(
     server,
     template.serverTemplateId,
@@ -230,7 +233,13 @@ export const serverMismatchMaskFor = (
     tile,
     key,
   ).finally(() => {
-    if (pending.get(key) === request) pending.delete(key)
+    if (pending.get(key) !== request) return
+    pending.delete(key)
+    if (
+      (tileInvalidations.get(invalidationKey) ?? 0) !== tileInvalidation ||
+      (serverInvalidations.get(server.url) ?? 0) !== serverInvalidation
+    )
+      notify()
   })
   pending.set(key, request)
   return null
