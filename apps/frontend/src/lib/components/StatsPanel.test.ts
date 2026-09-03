@@ -70,9 +70,14 @@ describe('retained history range', () => {
       },
     })
     flushSync()
-    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(8))
 
     expect(api.getHistory).toHaveBeenCalledWith(['older', 'newer'], 0, finishedAt + 1)
+    expect(
+      api.getHistory.mock.calls
+        .map((call) => call[3]?.maxResolution)
+        .filter((resolution) => resolution !== undefined),
+    ).toEqual([900, 1_800, 3_600, 5_400, 10_800, 21_600, 43_200])
     expect(document.body.textContent).not.toContain('last 7 days')
   })
 
@@ -89,7 +94,7 @@ describe('retained history range', () => {
       },
     })
     flushSync()
-    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(8))
 
     expect(api.getHistory).toHaveBeenCalledWith(['finished', 'live'], 0, NOW_SECONDS + 1)
   })

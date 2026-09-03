@@ -2,13 +2,16 @@
   import type {
     ContributionDay,
     HistoryBucket,
-    HistoryResponse,
     LeaderboardEntry,
     Template,
   } from '@caelestis/shared'
   import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
+  import {
+    PACE_WINDOWS,
+    type PaceHistorySource,
+  } from '$lib/components/charts/progress-pace'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
   import type { Progress } from '$lib/tree'
@@ -29,10 +32,6 @@
 
   const DAY_SECONDS = 86_400
   const RESOLUTION = 900
-  // A rolling window needs at least two buckets. Ask the server for whatever retained tier can
-  // still satisfy the shortest line, without copying the server's decay ladder into the client.
-  const SHORTEST_PACE_WINDOW_SECONDS = 1_800
-  const MAX_PACE_BUCKET_SECONDS = SHORTEST_PACE_WINDOW_SECONDS / 2
 
   const now = Math.floor(Date.now() / 1_000)
   // Start at a day boundary so every retained tier can return the bucket containing creation.
@@ -50,7 +49,7 @@
   })
 
   let history = $state<HistoryBucket[] | null>(null)
-  let paceHistory = $state<HistoryResponse | null>(null)
+  let paceHistories = $state<readonly PaceHistorySource[]>([])
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   let failed = $state(false)
@@ -59,7 +58,7 @@
     if (templateIds.length === 0) return
     const generation = { cancelled: false }
     history = null
-    paceHistory = null
+    paceHistories = []
     failed = false
     getHistory(templateIds, from, to)
       .then((response) => {
@@ -68,12 +67,24 @@
       .catch(() => {
         if (!generation.cancelled) failed = true
       })
-    getHistory(templateIds, from, to, { maxResolution: MAX_PACE_BUCKET_SECONDS })
-      .then((response) => {
-        if (!generation.cancelled) paceHistory = response
-      })
-      // The coarse history still renders if a mixed-version deployment does not know this query.
-      .catch(() => {})
+    Promise.all(
+      PACE_WINDOWS.map(async (window): Promise<PaceHistorySource | null> => {
+        try {
+          const paceHistory = await getHistory(templateIds, from, to, {
+            // Two buckets are the minimum honest representation of a rolling window.
+            maxResolution: window.seconds / 2,
+          })
+          return { window: window.key, history: paceHistory }
+        } catch {
+          // The coarse history still renders against servers without bounded-tier queries.
+          return null
+        }
+      }),
+    ).then((responses) => {
+      if (!generation.cancelled) {
+        paceHistories = responses.filter((response) => response !== null)
+      }
+    })
     return () => {
       generation.cancelled = true
     }
@@ -149,9 +160,7 @@
     {:else}
       <ProgressPaceChart
         buckets={history}
-        paceBuckets={paceHistory?.buckets ?? []}
-        paceResolution={paceHistory?.resolution ?? null}
-        paceFrom={paceHistory?.coverageStart ?? null}
+        {paceHistories}
         resolution={history[0]?.resolution ?? RESOLUTION}
         {from}
         {to}

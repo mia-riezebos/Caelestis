@@ -1,12 +1,14 @@
 <script lang="ts">
   import type { HistoryBucket } from '@caelestis/shared'
   import { persisted } from '$lib/persisted.svelte'
+  import {
+    PACE_WINDOWS,
+    type PaceHistorySource,
+  } from '$lib/components/charts/progress-pace'
 
   let {
     buckets,
-    paceBuckets = [],
-    paceResolution = null,
-    paceFrom = null,
+    paceHistories = [],
     resolution,
     from,
     to,
@@ -14,12 +16,8 @@
     anchorMismatched,
   }: {
     buckets: readonly HistoryBucket[]
-    /** Recent fine-grained history used when the full-range tier cannot represent a short window. */
-    paceBuckets?: readonly HistoryBucket[]
-    /** Bucket width selected for `paceBuckets`, including when sparse history returns no rows. */
-    paceResolution?: number | null
-    /** First selected-resolution bucket whose absence means zero activity rather than pruned data. */
-    paceFrom?: number | null
+    /** One server-selected retained source for each rolling window. */
+    paceHistories?: readonly PaceHistorySource[]
     /** Bucket width in seconds; buckets are summed across templates per bucket start. */
     resolution: number
     from: number
@@ -38,16 +36,6 @@
    * Fetch deltas once and derive each chart series here. Stacked areas show correct and mismatched
    * pixels. Rolling pace windows use the right axis. Longer windows use darker, thicker lines.
    */
-  const WINDOWS = [
-    { key: '30m', seconds: 1_800 },
-    { key: '1h', seconds: 3_600 },
-    { key: '2h', seconds: 7_200 },
-    { key: '3h', seconds: 10_800 },
-    { key: '6h', seconds: 21_600 },
-    { key: '12h', seconds: 43_200 },
-    { key: '1d', seconds: 86_400 },
-  ] as const
-
   const storedWindows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h'])
   const enabledWindows = $derived(new Set(storedWindows.value))
   const toggleWindow = (key: string): void => {
@@ -138,13 +126,14 @@
     cumPlaced: number
   }
 
-  const retainedPacePoints = $derived.by<PacePoint[]>(() => {
-    if (paceResolution === null || paceFrom === null) return []
+  const retainedPacePoints = (source: PaceHistorySource): PacePoint[] => {
+    const { buckets: paceBuckets, coverageStart, resolution: paceResolution } = source.history
+    if (paceResolution === undefined || coverageStart === undefined) return []
     const placedByStart = new Map<number, number>()
     for (const bucket of paceBuckets) {
       placedByStart.set(bucket.bucketStart, (placedByStart.get(bucket.bucketStart) ?? 0) + bucket.placed)
     }
-    const firstBucket = Math.ceil(paceFrom / paceResolution) * paceResolution
+    const firstBucket = Math.ceil(coverageStart / paceResolution) * paceResolution
     const filled: PacePoint[] = []
     let cumPlaced = 0
     for (let t = firstBucket; t < to; t += paceResolution) {
@@ -152,7 +141,7 @@
       filled.push({ t, cumPlaced })
     }
     return filled
-  })
+  }
 
   /** px/h at each point for one window, clipped where the source tier is not fully covered. */
   const paceSeries = (
@@ -172,19 +161,20 @@
   }
 
   const paceWindows = $derived(
-    WINDOWS.map((window) => {
+    PACE_WINDOWS.map((window) => {
+      const retained = paceHistories.find((source) => source.window === window.key)
       const source = windowUsable(window.seconds, resolution)
         ? { points, resolution }
-        : paceResolution !== null && windowUsable(window.seconds, paceResolution)
-          ? { points: retainedPacePoints, resolution: paceResolution }
+        : retained?.history.resolution !== undefined &&
+            windowUsable(window.seconds, retained.history.resolution)
+          ? { points: retainedPacePoints(retained), resolution: retained.history.resolution }
           : null
-      const series =
+      const fullSeries =
         source === null
           ? []
-          : paceSeries(source.points, source.resolution, window.seconds).filter(
-              (point) => point.t >= selFrom && point.t <= selTo,
-            )
-      return { ...window, usable: series.length > 0, series }
+          : paceSeries(source.points, source.resolution, window.seconds)
+      const series = fullSeries.filter((point) => point.t >= selFrom && point.t <= selTo)
+      return { ...window, usable: fullSeries.length > 0, fullSeries, series }
     }),
   )
 
@@ -192,7 +182,9 @@
     paceWindows.filter((w) => enabledWindows.has(w.key) && w.usable).map(
       (w, _, all) => ({
         ...w,
-        rank: WINDOWS.findIndex((x) => x.key === w.key) / Math.max(1, WINDOWS.length - 1),
+        rank:
+          PACE_WINDOWS.findIndex((x) => x.key === w.key) /
+          Math.max(1, PACE_WINDOWS.length - 1),
         count: all.length,
       }),
     ),
@@ -447,8 +439,8 @@
         <span
           class="rounded-full"
           style:width="10px"
-          style:height="{paceWidth(index / (WINDOWS.length - 1)) + 1}px"
-          style:background={paceColor(index / (WINDOWS.length - 1))}
+          style:height="{paceWidth(index / (PACE_WINDOWS.length - 1)) + 1}px"
+          style:background={paceColor(index / (PACE_WINDOWS.length - 1))}
         ></span>
         {window.key}
       </button>
@@ -518,7 +510,7 @@
       {#each activePaces as pace (pace.key)}
         <path
           data-pace-window={pace.key}
-          data-series-start={pace.series[0]?.t}
+          data-series-start={pace.fullSeries[0]?.t}
           d={linePath(pace.series)}
           fill="none"
           stroke={paceColor(pace.rank)}

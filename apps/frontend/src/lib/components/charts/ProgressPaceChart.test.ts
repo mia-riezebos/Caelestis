@@ -43,9 +43,16 @@ describe('rolling pace retention', () => {
       target: document.body,
       props: {
         buckets,
-        paceBuckets,
-        paceResolution: 900,
-        paceFrom: 3_600,
+        paceHistories: [
+          {
+            window: '30m',
+            history: { buckets: paceBuckets, resolution: 900, coverageStart: seconds(3_600) },
+          },
+          {
+            window: '1h',
+            history: { buckets: paceBuckets, resolution: 900, coverageStart: seconds(3_600) },
+          },
+        ],
         resolution: 3_600,
         from: 0,
         to: 9_000,
@@ -78,9 +85,12 @@ describe('rolling pace retention', () => {
       target: document.body,
       props: {
         buckets,
-        paceBuckets,
-        paceResolution: 900,
-        paceFrom: 3_600,
+        paceHistories: [
+          {
+            window: '30m',
+            history: { buckets: paceBuckets, resolution: 900, coverageStart: seconds(3_600) },
+          },
+        ],
         resolution: 3_600,
         from: 0,
         to: 9_000,
@@ -106,5 +116,52 @@ describe('rolling pace retention', () => {
       (line) => line.getAttribute('class') === 'stroke-base-content/25',
     )
     expect(Number(hoverLine?.getAttribute('x1'))).toBe(firstPaceX)
+  })
+
+  it('starts coarser pace windows earlier without inventing pruned detail', () => {
+    stored.set('caelestis:pace-windows', JSON.stringify(['30m', '6h']))
+    const to = 90_000
+
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(21_600, 0)],
+        paceHistories: [
+          {
+            window: '30m',
+            history: {
+              buckets: [bucket(900, 72_000)],
+              resolution: 900,
+              coverageStart: seconds(72_000),
+            },
+          },
+          {
+            window: '6h',
+            history: {
+              buckets: [bucket(3_600, 0)],
+              resolution: 3_600,
+              coverageStart: seconds(0),
+            },
+          },
+        ],
+        resolution: 21_600,
+        from: 0,
+        to,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const shortLine = document.querySelector('path[data-pace-window="30m"]')
+    const coarseLine = document.querySelector('path[data-pace-window="6h"]')
+    const brush = document.querySelector('svg[role="slider"]')
+
+    expect(shortLine?.getAttribute('data-series-start')).toBe('73800')
+    expect(coarseLine?.getAttribute('data-series-start')).toBe('21600')
+    expect(shortLine?.getAttribute('d')).toMatch(/^M/)
+    expect(coarseLine?.getAttribute('d')).toMatch(/^M/)
+    expect(brush?.getAttribute('aria-valuemin')).toBe('0')
+    expect(brush?.getAttribute('aria-valuemax')).toBe(String(to))
   })
 })
