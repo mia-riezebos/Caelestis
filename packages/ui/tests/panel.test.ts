@@ -190,4 +190,53 @@ describe('panel shell', () => {
 
     expect(panel.shadowRoot?.activeElement).toBe(row)
   })
+
+  it('marks only the current template as focus moves and clears', async () => {
+    const panel = new CaelestisPanel()
+    const entries: TemplateTreeModel['entries'] = [
+      ...tree.entries,
+      {
+        type: 'row',
+        key: 'local:city',
+        name: 'City',
+        icon: 'image',
+        depth: 1,
+        parentKey: 'local',
+        container: false,
+        expanded: false,
+        visible: true,
+        setSize: 1,
+        positionInSet: 1,
+      },
+      {
+        type: 'row',
+        key: 'local:forest',
+        name: 'Forest',
+        icon: 'image',
+        depth: 1,
+        parentKey: 'local',
+        container: false,
+        expanded: false,
+        visible: true,
+        setSize: 1,
+        positionInSet: 1,
+      },
+    ]
+    const focusedRows = (): HTMLElement[] =>
+      Array.from(panel.shadowRoot?.querySelectorAll<HTMLElement>('[aria-current="true"]') ?? [])
+
+    panel.model = model({ tree: { ...tree, entries, focusedKey: 'local:city' } })
+    document.body.append(panel)
+    await tick()
+    expect(focusedRows().map((row) => row.dataset.caelestisTreeKey)).toEqual(['local:city'])
+    expect(focusedRows()[0]?.classList).toContain('focused-template')
+
+    panel.model = model({ tree: { ...tree, entries, focusedKey: 'local:forest' } })
+    await tick()
+    expect(focusedRows().map((row) => row.dataset.caelestisTreeKey)).toEqual(['local:forest'])
+
+    panel.model = model({ tree: { ...tree, entries } })
+    await tick()
+    expect(focusedRows()).toHaveLength(0)
+  })
 })

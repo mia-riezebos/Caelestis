@@ -292,6 +292,7 @@
         <div
           class:tall-heading={tallHeading}
           class:muted={entry.muted}
+          class:focused-template={model.focusedKey === entry.key}
           class:dragging={draggingKey === entry.key}
           class:drop-before={dropTarget?.key === entry.key && dropTarget.position === 'before'}
           class:drop-after={dropTarget?.key === entry.key && dropTarget.position === 'after'}
@@ -299,6 +300,7 @@
           class="row"
           role="treeitem"
           aria-selected="false"
+          aria-current={model.focusedKey === entry.key ? 'true' : undefined}
           aria-level={entry.depth + 1}
           aria-expanded={entry.container ? entry.expanded : undefined}
           aria-setsize={entry.setSize}
@@ -437,6 +439,8 @@
   .row.tall-heading .connector-current:not(.continues) { block-size: 20px; }
   .row.tall-heading .connector-elbow { top: 20px; }
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
+  .row.focused-template { background: color-mix(in oklab, var(--caelestis-primary) 12%, transparent); }
+  .row.focused-template::before { content: ''; position: absolute; inset-block: 0.25rem; inset-inline-start: 0; inline-size: 3px; border-radius: 999px; background: var(--caelestis-primary); }
   .row:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .row.muted { opacity: 0.55; }
   .row.dragging { opacity: 0.25; }

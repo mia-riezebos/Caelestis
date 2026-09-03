@@ -347,6 +347,8 @@ export interface TemplateTreeModel {
   readonly query: string
   readonly sort: TreeSortModel
   readonly entries: readonly TreeEntryModel[]
+  /** The template row at the centre of the active canvas. */
+  readonly focusedKey?: string
   readonly renamingKey?: string
   readonly contextMenu?: TreeContextMenuModel
   readonly operation?: TreeOperationModel
