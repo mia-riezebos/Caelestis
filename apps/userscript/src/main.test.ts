@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
   clearDraftPixels: vi.fn(),
   triggerRepaint: vi.fn(),
   renderOverlayControls: vi.fn(),
+  refreshTemplateTreeFocus: vi.fn(),
   viewportCentreIn: vi.fn(() => ({ x: 12, y: 34 })),
   screenPointForIn: vi.fn(() => ({ x: 56, y: 78 })),
   cssPixelsPerCanvasPixelIn: vi.fn(() => ({ x: 2, y: 3 })),
@@ -107,7 +108,11 @@ vi.mock('./ui/overlay-menu.js', () => ({
   renderOverlayControls: harness.renderOverlayControls,
   toggleOverlayMenu: vi.fn(),
 }))
-vi.mock('./ui/panel.js', () => ({ installPanel: vi.fn(), togglePanel: vi.fn() }))
+vi.mock('./ui/panel.js', () => ({
+  installPanel: vi.fn(),
+  refreshTemplateTreeFocus: harness.refreshTemplateTreeFocus,
+  togglePanel: vi.fn(),
+}))
 vi.mock('./userscript-update.js', () => ({
   installUserscriptUpdateCheck: harness.installUserscriptUpdateCheck,
 }))
@@ -146,6 +151,13 @@ describe('GL frame lifecycle', () => {
     await load()
 
     expect(harness.installUserscriptUpdateCheck).toHaveBeenCalledOnce()
+  })
+
+  it('refreshes the focused template row from each rendered viewport', async () => {
+    await load()
+    harness.tileFrame?.(frame(document.createElement('canvas')))
+
+    expect(harness.refreshTemplateTreeFocus).toHaveBeenCalledOnce()
   })
 
   it('drops a stale projection when the current frame has no tiles', async () => {

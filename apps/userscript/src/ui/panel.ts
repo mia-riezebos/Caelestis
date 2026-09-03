@@ -97,6 +97,7 @@ import {
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
 import { pixelAccounting } from '../templates/mismatch.js'
+import { focusedTemplate } from '../templates/nearest.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { ownedColours, refreshAccount } from '../wplace-account.js'
@@ -126,6 +127,7 @@ import {
   type TemplateTreeAdapter,
   type TreeCallbacks,
   templateTreeAdapter,
+  templateTreeKeyFor,
 } from './tree.js'
 import { findWplaceRail } from './wplace-rail.js'
 
@@ -342,8 +344,13 @@ const mountAllianceRail = (active: ActiveAllianceSurface): void => {
   const realm = active.stage.ownerDocument.defaultView
   if (realm !== null) {
     realm.requestAnimationFrame(() => refreshOverlayMenu())
-    allianceRailObserver = new realm.MutationObserver(() => positionAllianceRail(active))
-    allianceRailObserver.observe(active.stage, { attributes: true, attributeFilter: ['class'] })
+    allianceRailObserver = new realm.MutationObserver(() => {
+      positionAllianceRail(active)
+      refreshTemplateTreeFocus()
+    })
+    const viewportAttributes = { attributes: true, attributeFilter: ['class', 'style'] }
+    allianceRailObserver.observe(active.frame, viewportAttributes)
+    allianceRailObserver.observe(active.stage, viewportAttributes)
   }
 }
 
@@ -937,6 +944,14 @@ const treeCallbacks = (): TreeCallbacks => ({
   },
 })
 
+const currentFocusedTreeKey = (): string | undefined =>
+  templateTreeKeyFor(focusedTemplate(), getState().servers)
+
+const focusedTreeModel = (): { readonly focusedKey?: string } => {
+  const focusedKey = currentFocusedTreeKey()
+  return focusedKey === undefined ? {} : { focusedKey }
+}
+
 const panelModel = (width = panelWidthForViewport(getState().panelWidth)): PanelModel => ({
   view: currentView(),
   title: alliancePanelTitle(panelSurface),
@@ -945,7 +960,13 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
   minWidth: minimumPanelWidth(),
   maxWidth: maximumPanelWidth(),
   ...(currentView() === 'tree' && activeTreeAdapter !== null
-    ? { tree: { ...activeTreeAdapter.model, ...treeActionPresentation() } }
+    ? {
+        tree: {
+          ...activeTreeAdapter.model,
+          ...focusedTreeModel(),
+          ...treeActionPresentation(),
+        },
+      }
     : {}),
   ...(currentView() === 'appearance' ? { appearance: appearanceModel() } : {}),
   ...(currentView() === 'settings' && panelSurface.kind === 'world'
@@ -1065,6 +1086,16 @@ const rerenderTree = (): void => {
   const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
   if (panel === null) return
   activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery, panelSurface)
+  panel.model = panelModel(currentPanelWidth(panel))
+}
+
+/** Move the focused-row marker without rebuilding the full template tree. */
+export const refreshTemplateTreeFocus = (): void => {
+  if (!panelOpen() || currentView() !== 'tree' || activeTreeAdapter === null) return
+  const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
+  if (panel === null) return
+  const focusedKey = currentFocusedTreeKey()
+  if (panel.model.tree?.focusedKey === focusedKey) return
   panel.model = panelModel(currentPanelWidth(panel))
 }
 

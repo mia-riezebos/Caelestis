@@ -69,7 +69,7 @@ import {
   type TileFrame,
 } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
-import { installPanel } from './ui/panel.js'
+import { installPanel, refreshTemplateTreeFocus } from './ui/panel.js'
 import { installUserscriptUpdateCheck } from './userscript-update.js'
 import { loadAccount } from './wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
@@ -334,6 +334,7 @@ const main = (): void => {
   })
   step('paint palette progress', installPaintPaletteProgress)
   onFrame(refreshPaintPaletteFocus, 'Paint palette focus')
+  onFrame(refreshTemplateTreeFocus, 'Template tree focus')
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
   step('keyboard shortcuts', () => {

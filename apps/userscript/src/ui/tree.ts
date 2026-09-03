@@ -90,6 +90,18 @@ export { startRenaming } from './tree-state.js'
 let modelTreeDragActive = false
 export const isTreeDragActive = (): boolean => modelTreeDragActive
 
+/** Resolve a drawn template to the stable key used by its main-menu row. */
+export const templateTreeKeyFor = (
+  template: Pick<PlacedTemplate, 'id' | 'serverUrl' | 'serverTemplateId'> | null,
+  servers: readonly ConnectedServer[],
+): string | undefined => {
+  if (template === null) return undefined
+  if (template.serverUrl === undefined) return `local:${template.id}`
+  if (template.serverTemplateId === undefined) return undefined
+  const server = servers.find((candidate) => candidate.url === template.serverUrl)
+  return server === undefined ? undefined : serverTemplateTreeKey(server, template.serverTemplateId)
+}
+
 /**
  * The tree: one root per source, plus `Local`.
  *
