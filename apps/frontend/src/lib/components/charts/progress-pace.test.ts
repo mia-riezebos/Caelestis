@@ -1,6 +1,6 @@
 import { type HistoryResponse, seconds } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
-import { averagePace } from './progress-pace.js'
+import { averagePace, timeTickStep } from './progress-pace.js'
 
 describe('pace summaries', () => {
   it('averages complete retained buckets instead of treating partial boundaries as full hours', () => {
@@ -22,5 +22,15 @@ describe('pace summaries', () => {
       correct: 5,
       hours: 18,
     })
+  })
+})
+
+describe('time axis', () => {
+  it('limits a six-month lifecycle to the labels that fit the plot', () => {
+    const span = 180 * 86_400
+    const step = timeTickStep(span, 544)
+
+    expect(step).toBe(30 * 86_400)
+    expect(Math.ceil(span / step)).toBeLessThanOrEqual(7)
   })
 })

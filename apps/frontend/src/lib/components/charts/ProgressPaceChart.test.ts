@@ -164,4 +164,21 @@ describe('rolling pace retention', () => {
     expect(brush?.getAttribute('aria-valuemin')).toBe('0')
     expect(brush?.getAttribute('aria-valuemax')).toBe(String(to))
   })
+
+  it('keeps lifecycle-wide time labels sparse enough to read', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(21_600, 0)],
+        resolution: 21_600,
+        from: 0,
+        to: 180 * 86_400,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    expect(document.querySelectorAll('text[data-axis="time"]')).toHaveLength(6)
+  })
 })

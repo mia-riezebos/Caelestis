@@ -47,3 +47,28 @@ export const averagePace = (
   const hours = (until - from) / 3_600
   return { placed: placed / hours, correct: correct / hours, hours }
 }
+
+const TIME_TICK_STEPS = [
+  3_600,
+  4 * 3_600,
+  6 * 3_600,
+  12 * 3_600,
+  86_400,
+  2 * 86_400,
+  7 * 86_400,
+  14 * 86_400,
+  30 * 86_400,
+  90 * 86_400,
+  180 * 86_400,
+  365 * 86_400,
+] as const
+
+/** Pick a readable fixed time step for the available horizontal space. */
+export const timeTickStep = (span: number, plotWidth: number): number => {
+  const targetTicks = Math.max(2, Math.floor(plotWidth / 72))
+  const minimumStep = span / targetTicks
+  const listed = TIME_TICK_STEPS.find((step) => step >= minimumStep)
+  if (listed !== undefined) return listed
+  const year = TIME_TICK_STEPS[TIME_TICK_STEPS.length - 1]
+  return Math.ceil(minimumStep / year) * year
+}

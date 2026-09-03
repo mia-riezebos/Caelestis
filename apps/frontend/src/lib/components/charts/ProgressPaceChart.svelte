@@ -4,6 +4,7 @@
   import {
     PACE_WINDOWS,
     type PaceHistorySource,
+    timeTickStep,
   } from '$lib/components/charts/progress-pace'
 
   let {
@@ -258,8 +259,7 @@
   const xTicks = $derived.by(() => {
     const ticks: number[] = []
     const span = selTo - selFrom
-    const step =
-      span > 86_400 * 3 ? 86_400 : span > 86_400 ? 21_600 : span > 21_600 ? 3_600 * 4 : 3_600
+    const step = timeTickStep(span, width - pad.left - pad.right)
     for (let t = Math.ceil(selFrom / step) * step; t < selTo; t += step) ticks.push(t)
     return ticks
   })
@@ -487,7 +487,13 @@
         <text x={width - pad.right + 6} y={pad.top - 2} text-anchor="start" class="fill-base-content/40 text-[9px]">px/h</text>
       {/if}
       {#each xTicks as tick (tick)}
-        <text x={x(tick)} y={height - 6} text-anchor="middle" class="fill-base-content/50 text-[10px]">
+        <text
+          data-axis="time"
+          x={x(tick)}
+          y={height - 6}
+          text-anchor="middle"
+          class="fill-base-content/50 text-[10px]"
+        >
           {formatTick(tick)}
         </text>
       {/each}
