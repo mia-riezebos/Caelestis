@@ -12,7 +12,11 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
-import { installAllianceOverlayLayer, repaintAllianceOverlayLayer } from './gl/artboard-layer.js'
+import {
+  allianceOverlayGpuMemoryBytes,
+  installAllianceOverlayLayer,
+  repaintAllianceOverlayLayer,
+} from './gl/artboard-layer.js'
 import {
   installOverlayLayer,
   overlayGpuMemoryBytes,
@@ -233,6 +237,7 @@ const main = (): void => {
   registerProfileMemorySource('Server mismatch masks', serverMismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
   registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
+  registerProfileMemorySource('Alliance overlay GPU buffers', allianceOverlayGpuMemoryBytes)
   registerProfileMemorySource('Overlay index staging', overlayStagingMemoryBytes)
   registerProfileMemorySource('Marker density buffers', markerDensityMemoryBytes)
   registerProfileMemorySource('Marker draw batches', markerBatchMemoryBytes)

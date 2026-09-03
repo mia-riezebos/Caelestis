@@ -53,6 +53,7 @@ import {
 } from '../application/tree-server-state.js'
 import { onCanvasWrite } from '../canvas-write.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
+import { onArtboardPixelsChange } from '../gl/artboard-pixels.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
 import {
@@ -105,10 +106,11 @@ import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { refreshOverlayMenu } from './overlay-menu.js'
 import { panelWidthAfterMount } from './panel-geometry.js'
-import { canvasWritesTouchFrame } from './panel-progress.js'
+import { canvasWritesTouchArtboard } from './panel-progress.js'
 import {
   AllianceDrawerInset,
   alliancePanelTitle,
+  allianceRailInlineEnd,
   allianceRailTop,
   bindRailActivation,
   type PanelScope,
@@ -306,11 +308,14 @@ const positionAllianceRail = (active: ActiveAllianceSurface): void => {
   if (wrapper === null) return
   const parent = wrapper.parentElement
   if (parent === null) return
+  if (panelSessions.isOpen('alliance')) {
+    const panel = active.stage.ownerDocument.getElementById(ALLIANCE_PANEL_ID)
+    const measuredWidth = panel?.getBoundingClientRect().width ?? 0
+    const width = measuredWidth > 0 ? measuredWidth : panelWidthForViewport(getState().panelWidth)
+    allianceDrawerInset.apply(active.stage, width, GAP)
+  }
   wrapper.style.top = `${active.stage.offsetTop + allianceRailTop(active.stage, GAP, GAP)}px`
-  wrapper.style.right = `${Math.max(
-    0,
-    parent.clientWidth - active.stage.offsetLeft - active.stage.offsetWidth + GAP,
-  )}px`
+  wrapper.style.right = `${allianceRailInlineEnd(active.stage, parent, GAP)}px`
 }
 
 const mountAllianceRail = (active: ActiveAllianceSurface): void => {
@@ -1351,6 +1356,9 @@ export const installPanel = (): void => {
   onStateChange(refreshView)
   onAllianceManifestChange(refreshView)
   onActiveAllianceSurfaceChange(selectAlliancePanelSurface)
+  onArtboardPixelsChange(() => {
+    if (currentView() === 'tree' && panelSurface.kind !== 'world') refreshView()
+  })
   selectAlliancePanelSurface(activeAllianceSurface())
   onLocalChange(
     frameQueue(() => {
@@ -1365,7 +1373,7 @@ export const installPanel = (): void => {
     if (currentView() !== 'tree' || panelSurface.kind === 'world') return
     const active = activeAllianceSurface()
     if (active === null || !sameTemplateSurface(active.surface, panelSurface)) return
-    if (canvasWritesTouchFrame(active.frame, writes)) refreshView()
+    if (canvasWritesTouchArtboard(active, writes)) refreshView()
   })
   onCanvasWrite((canvas) => {
     pendingCanvasWrites.add(canvas)

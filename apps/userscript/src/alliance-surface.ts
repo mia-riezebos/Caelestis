@@ -20,6 +20,7 @@ export interface ActiveAllianceSurface {
 }
 
 type Listener = (surface: ActiveAllianceSurface | null) => void
+type HeadquartersRevisionListener = (allianceId: number) => void
 
 let active: ActiveAllianceSurface | null = null
 let installed = false
@@ -30,6 +31,7 @@ let memberAllianceId: number | null = null
 let headquarters: {
   readonly allianceId: number
   readonly bounds: PixelBounds | null
+  readonly eventHwm: number | null
 } | null = null
 let draft: {
   readonly id: number
@@ -48,6 +50,7 @@ let draftSequence = 0
 let acceptedDraftSequence = 0
 let allianceEpoch = 0
 const listeners = new Set<Listener>()
+const headquartersRevisionListeners = new Set<HeadquartersRevisionListener>()
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -57,6 +60,11 @@ const positiveInteger = (value: unknown): number | null =>
 
 const integer = (value: unknown): number | null =>
   Number.isSafeInteger(value) ? Number(value) : null
+
+const nonNegativeInteger = (value: unknown): number | null => {
+  const parsed = integer(value)
+  return parsed !== null && parsed >= 0 ? parsed : null
+}
 
 const parseHqBounds = (value: unknown): PixelBounds | null => {
   if (!isRecord(value)) return null
@@ -223,6 +231,7 @@ const selectHeadquartersRequest = (nextAllianceId: number | null, sequence: numb
       : {
           allianceId: nextAllianceId,
           bounds: headquarters?.allianceId === nextAllianceId ? headquarters.bounds : null,
+          eventHwm: headquarters?.allianceId === nextAllianceId ? headquarters.eventHwm : null,
         }
   queueReconcile()
 }
@@ -237,8 +246,27 @@ const observeHeadquarters = (
     const nextAllianceId = knownAllianceId ?? positiveInteger(body.allianceId)
     if (nextAllianceId === null) return
     acceptedHeadquartersSequence = sequence
-    headquarters = { allianceId: nextAllianceId, bounds: parseHqBounds(body.bounds) }
+    const previous = headquarters
+    const bounds = parseHqBounds(body.bounds)
+    const eventHwm =
+      nonNegativeInteger(body.eventHwm) ??
+      (previous?.allianceId === nextAllianceId ? previous.eventHwm : null)
+    headquarters = { allianceId: nextAllianceId, bounds, eventHwm }
     queueReconcile()
+    if (
+      previous?.allianceId === nextAllianceId &&
+      sameBounds(previous.bounds, bounds) &&
+      eventHwm !== null &&
+      eventHwm !== previous.eventHwm
+    ) {
+      for (const listener of headquartersRevisionListeners) {
+        try {
+          listener(nextAllianceId)
+        } catch {
+          // Metadata observation must remain transparent when one refresh consumer fails.
+        }
+      }
+    }
   })
 }
 
@@ -445,6 +473,14 @@ export const onActiveAllianceSurfaceChange = (listener: Listener): (() => void) 
   return () => listeners.delete(listener)
 }
 
+/** Notify native-pixel consumers when the active HQ advances without changing bounds. */
+export const onHeadquartersRevisionChange = (
+  listener: HeadquartersRevisionListener,
+): (() => void) => {
+  headquartersRevisionListeners.add(listener)
+  return () => headquartersRevisionListeners.delete(listener)
+}
+
 /** Test-only lifecycle reset; harmless when called during teardown in a page. */
 export const resetAllianceSurfaceObserver = (): void => {
   observer?.disconnect()
@@ -466,4 +502,5 @@ export const resetAllianceSurfaceObserver = (): void => {
   allianceEpoch = 0
   active = null
   listeners.clear()
+  headquartersRevisionListeners.clear()
 }

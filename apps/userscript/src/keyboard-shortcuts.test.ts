@@ -44,6 +44,13 @@ const harness = vi.hoisted(() => ({
   allianceActive: false,
   allianceEditorActive: false,
   allianceStage: null as HTMLElement | null,
+  allianceSurface: {
+    kind: 'alliance-headquarters',
+    allianceId: 535_245,
+  } as
+    | { kind: 'alliance-headquarters'; allianceId: number }
+    | { kind: 'alliance-picture'; allianceId: number }
+    | { kind: 'alliance-banner'; allianceId: number },
 }))
 
 vi.mock('./alliance-surface.js', () => ({
@@ -54,7 +61,7 @@ vi.mock('./alliance-surface.js', () => ({
   activeAllianceSurface: () =>
     harness.allianceActive
       ? {
-          surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+          surface: harness.allianceSurface,
           stage: harness.allianceStage ?? document.body,
         }
       : null,
@@ -115,6 +122,7 @@ beforeEach(async () => {
   harness.allianceActive = false
   harness.allianceEditorActive = false
   harness.allianceStage = null
+  harness.allianceSurface = { kind: 'alliance-headquarters', allianceId: 535_245 }
   harness.appearance = { opacity: 0.85, markMismatch: false, markSelectedColour: false }
   harness.surfaceAppearance = { opacity: 0.85, contrastOutline: false }
   harness.focused = { id: 'focused', visible: true, owns: ['markers'] }
@@ -175,8 +183,13 @@ describe('keyboard shortcut actions', () => {
     expect(wplaceHandler).not.toHaveBeenCalled()
   })
 
-  it('routes alliance appearance shortcuts to the active canvas and native paint to its dialog', () => {
+  it.each([
+    { kind: 'alliance-headquarters', allianceId: 535_245 },
+    { kind: 'alliance-picture', allianceId: 535_245 },
+    { kind: 'alliance-banner', allianceId: 535_245 },
+  ] as const)('routes every shortcut to the active $kind canvas', (surface) => {
     harness.allianceActive = true
+    harness.allianceSurface = surface
     harness.focused.owns = []
     const dialog = document.createElement('dialog')
     dialog.setAttribute('open', '')
@@ -199,18 +212,15 @@ describe('keyboard shortcut actions', () => {
     expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)
     expect(harness.navigateColour).toHaveBeenCalledOnce()
     expect(harness.toggleAppearanceBoolean).not.toHaveBeenCalled()
-    expect(harness.setOnlySelectedColour).toHaveBeenCalledWith(
-      { kind: 'alliance-headquarters', allianceId: 535_245 },
-      true,
-    )
+    expect(harness.setOnlySelectedColour).toHaveBeenCalledWith(surface, true)
     expect(harness.setSurfaceAppearance).toHaveBeenNthCalledWith(
       1,
-      { kind: 'alliance-headquarters', allianceId: 535_245 },
+      surface,
       expect.objectContaining({ markMismatch: true }),
     )
     expect(harness.setSurfaceAppearance).toHaveBeenNthCalledWith(
       2,
-      { kind: 'alliance-headquarters', allianceId: 535_245 },
+      surface,
       expect.objectContaining({ markSelectedColour: true }),
     )
     expect(harness.toggleTheme).toHaveBeenCalledOnce()

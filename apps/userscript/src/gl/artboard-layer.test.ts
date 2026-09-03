@@ -1,7 +1,10 @@
 // @vitest-environment happy-dom
 
+import { TILE_SIZE } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
+import type { PlacedTemplate } from '../templates/local-store.js'
+import type { TemplateGpuEntry, TemplateGpuTile } from './template-gpu-store.js'
 
 const controls = vi.hoisted(() => ({ detach: vi.fn(), render: vi.fn() }))
 
@@ -14,12 +17,15 @@ import {
   type ArtboardViewport,
   artboardDevicePlacement,
   artboardGeometry,
+  artboardGpuTilePlacement,
   artboardPlacement,
   insertAllianceArtboardCanvases,
   reconcileAllianceControlsForViewport,
   visibleArtboardMarkerPoints,
 } from './artboard-layer.js'
+import { visitIntersections } from './layer.js'
 import { markerVisibilityBudget } from './marker-density.js'
+import { writeClipCorner } from './renderer-core.js'
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -63,6 +69,29 @@ describe('alliance artboard projection', () => {
     })
   })
 
+  it.each([250, 500, 1_000, 2_000])(
+    'keeps stored coordinates stable on a centred %i-pixel HQ',
+    (size) => {
+      const half = size / 2
+      const geometry = artboardGeometry(
+        active('alliance-headquarters', {
+          minX: -half,
+          minY: -half,
+          maxX: half,
+          maxY: half,
+        }),
+      )
+      expect(geometry).toEqual({ originX: -half, originY: -half, width: size, height: size })
+      if (geometry === null) throw new Error('expected HQ geometry')
+      expect(artboardPlacement({ originX: 0, originY: 0, width: 1, height: 1 }, geometry)).toEqual({
+        left: half,
+        top: half,
+        right: half + 1,
+        bottom: half + 1,
+      })
+    },
+  )
+
   it.each([
     ['alliance-picture', 64, 64],
     ['alliance-banner', 384, 128],
@@ -90,6 +119,145 @@ describe('alliance artboard projection', () => {
         },
       ),
     ).toEqual({ left: 3_300, top: 3_600, right: 3_380, bottom: 3_640 })
+  })
+
+  it('produces the same shader quad as the world adapter at a matching scale', () => {
+    const template = {
+      originX: 0,
+      originY: 0,
+      width: 2,
+      height: 2,
+    } as PlacedTemplate
+    const source = {
+      texture: {} as WebGLTexture,
+      x: 0,
+      y: 0,
+      width: 2,
+      height: 2,
+      textureWidth: 4,
+      textureHeight: 4,
+      inset: 1,
+    } satisfies TemplateGpuTile
+    const entry = {
+      indices: [source],
+      palette: {} as WebGLTexture,
+      width: 2,
+      height: 2,
+      source: new Uint8Array(4),
+      lastUsed: 0,
+      paletteData: null,
+    } satisfies TemplateGpuEntry
+    const bufferWidth = 2_000
+    const bufferHeight = 2_000
+    let worldVertices: Float32Array | null = null
+
+    expect(
+      visitIntersections(
+        template,
+        [{ worldStart: 0, worldEnd: 2, sourceStart: 0, sourceEnd: 2 }],
+        entry,
+        [{ tile: { x: 0, y: 0 }, x: 100, y: 200, width: TILE_SIZE, height: TILE_SIZE }],
+        bufferWidth,
+        bufferHeight,
+        (_source, vertices) => (worldVertices = vertices.slice()),
+      ),
+    ).toBe(1)
+
+    const placement = artboardGpuTilePlacement(
+      template,
+      source,
+      { originX: 0, originY: 0, width: TILE_SIZE, height: TILE_SIZE },
+      {
+        bufferWidth,
+        bufferHeight,
+        frameLeft: 100,
+        frameTop: 200,
+        frameWidth: TILE_SIZE,
+        frameHeight: TILE_SIZE,
+      },
+      0,
+    )
+    const artboardVertices = new Float32Array(24)
+    writeClipCorner(
+      placement.box.left,
+      placement.box.top,
+      bufferWidth,
+      bufferHeight,
+      placement.u0,
+      placement.v0,
+      artboardVertices,
+      0,
+    )
+    writeClipCorner(
+      placement.box.right,
+      placement.box.top,
+      bufferWidth,
+      bufferHeight,
+      placement.u1,
+      placement.v0,
+      artboardVertices,
+      6,
+    )
+    writeClipCorner(
+      placement.box.left,
+      placement.box.bottom,
+      bufferWidth,
+      bufferHeight,
+      placement.u0,
+      placement.v1,
+      artboardVertices,
+      12,
+    )
+    writeClipCorner(
+      placement.box.right,
+      placement.box.bottom,
+      bufferWidth,
+      bufferHeight,
+      placement.u1,
+      placement.v1,
+      artboardVertices,
+      18,
+    )
+
+    expect(worldVertices).toEqual(artboardVertices)
+  })
+
+  it('projects chunk halos only at template edges, not across chunk seams', () => {
+    const template = { originX: 0, originY: 0, width: 4, height: 2 }
+    const geometry = { originX: 0, originY: 0, width: 4, height: 2 }
+    const viewport = {
+      bufferWidth: 40,
+      bufferHeight: 20,
+      frameLeft: 0,
+      frameTop: 0,
+      frameWidth: 40,
+      frameHeight: 20,
+    }
+
+    expect(
+      artboardGpuTilePlacement(
+        template,
+        { x: 0, y: 0, width: 2, height: 2, textureWidth: 4, textureHeight: 4, inset: 1 },
+        geometry,
+        viewport,
+        1,
+      ),
+    ).toEqual({
+      box: { left: -10, top: -10, right: 20, bottom: 30 },
+      u0: 0,
+      v0: 0,
+      u1: 0.75,
+      v1: 1,
+    })
+    expect(
+      artboardGpuTilePlacement(
+        template,
+        { x: 2, y: 0, width: 2, height: 2, textureWidth: 4, textureHeight: 4, inset: 1 },
+        geometry,
+        viewport,
+        1,
+      ),
+    ).toEqual({ box: { left: 20, top: -10, right: 50, bottom: 30 }, u0: 0.25, v0: 0, u1: 1, v1: 1 })
   })
 
   it('counts only markers inside the visible viewport for density budgeting', () => {

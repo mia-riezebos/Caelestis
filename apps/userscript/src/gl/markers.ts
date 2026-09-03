@@ -1,13 +1,12 @@
 import { sameTemplateSurface, TILE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
-import { isOverlayPeekActive } from '../overlay-peek.js'
+import { overlayPeekFade } from '../overlay-peek.js'
 import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
 import { getState } from '../state.js'
-import { isColourHidden, toRgbUnit } from '../templates/appearance.js'
+import { toRgbUnit } from '../templates/appearance.js'
 import { colourMarksIn } from '../templates/colour-marker.js'
 import {
-  appearanceOf,
   displayTemplates,
   isTemplateVisible,
   type PlacedTemplate,
@@ -22,7 +21,7 @@ import {
   type TileQuad,
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
-import { markerFades, selectedColourMarkerFades, templateFades } from './fade.js'
+import { prefersReducedMotion } from './appearance-transition.js'
 import {
   batchMarkerWork,
   beginMarkerBatchFrame,
@@ -36,12 +35,10 @@ import {
   visibleMarkerPoints,
 } from './marker-density.js'
 import { MarkerRenderer, type MarkerStyle } from './marker-renderer.js'
+import { worldRenderScene } from './render-scene.js'
 
 export { deviceScale, MarkerRenderer, type MarkerStyle } from './marker-renderer.js'
 export { markerBatchMemoryBytes, markerDensityMemoryBytes }
-
-const selectedMarkerColours = new Set<number>()
-let latestSelectedMarkerColour: number | null = null
 
 let worldMarkerRenderer: MarkerRenderer | null = null
 
@@ -183,7 +180,10 @@ const RETRY_MS = 250
 let nextRetry = 0
 
 /** Every marked pixel of every template that asks for it, over every tile on screen. */
-const drawVisible = (gl: WebGL2RenderingContext): void => {
+const drawVisible = (
+  gl: WebGL2RenderingContext,
+  peek: { readonly opacity: number; readonly done: boolean },
+): void => {
   if (!isDrawingTiles()) return
   const tiles = currentQuads()
   if (tiles.length === 0) return
@@ -198,65 +198,30 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
    * opacity until the ramp runs out, and only then does the template drop off this list.
    */
   const now = performance.now()
-  let animating = false
   const selected = isPaintOpen() ? (selectedColour() ?? -1) : -1
-  if (selected >= 0 && selected !== latestSelectedMarkerColour) {
-    selectedMarkerColours.add(selected)
-    latestSelectedMarkerColour = selected
-  }
-  const selectedColourKeys = new Set<string>()
-  const selectedColourFades: { index: number; fade: number }[] = []
-  for (const index of [...selectedMarkerColours]) {
-    const key = String(index)
-    const target = index === latestSelectedMarkerColour ? 1 : 0
-    const fade = selectedColourMarkerFades.advance(key, target, now)
-    if (!fade.done) animating = true
-    if (target > 0 || fade.value > 0 || !fade.done) selectedColourKeys.add(key)
-    if (fade.value > 0) selectedColourFades.push({ index, fade: fade.value })
-    if (target === 0 && fade.done) selectedMarkerColours.delete(index)
-  }
-  selectedColourMarkerFades.prune(selectedColourKeys)
+  const sceneTemplates = worldRenderScene.advanceTemplates(
+    displayTemplates().filter((candidate) =>
+      sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
+    ),
+    WORLD_TEMPLATE_SURFACE,
+    now,
+    prefersReducedMotion(),
+  )
+  const sceneMarkers = worldRenderScene.advanceMarkers(
+    sceneTemplates.templates,
+    selected >= 0 ? selected : null,
+    now,
+  )
+  const animating = sceneTemplates.animating || sceneMarkers.animating || !peek.done
   const wanted: {
     template: PlacedTemplate
+    appearance: (typeof sceneTemplates.templates)[number]['appearance']
     mismatchFade: number
     selectedFades: readonly { index: number; fade: number }[]
   }[] = []
   const progressOnly: PlacedTemplate[] = []
-  const markerKeys = new Set<string>()
-  for (const template of displayTemplates().filter((candidate) =>
-    sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
-  )) {
-    const appearance = appearanceOf(template)
-    const mismatchKey = `mismatch:${template.id}`
-    const selectedKey = `selected:${template.id}`
-    markerKeys.add(mismatchKey)
-    markerKeys.add(selectedKey)
-    const mismatch = markerFades.advance(mismatchKey, appearance.markMismatch ? 1 : 0, now)
-    const selectedMarker = markerFades.advance(
-      selectedKey,
-      appearance.markSelectedColour && selected >= 0 && !isColourHidden(appearance, selected)
-        ? 1
-        : 0,
-      now,
-    )
-    if (!mismatch.done || !selectedMarker.done) animating = true
-    // Multiplied by the template's own ramp: markers belong to it, so one arriving with its markers
-    // on brings them with it rather than laying them over a template that is not there yet.
-    // Hiding the template is already in there: its own ramp is on its way to zero, and the markers
-    // leave with it rather than a step ahead of it.
-    const templateFade = templateFades.advance(
-      template.id,
-      isTemplateVisible(template) ? 1 : 0,
-      now,
-    )
-    if (!templateFade.done) animating = true
-    const mismatchFade = mismatch.value * templateFade.value
-    const selectedFades = selectedColourFades
-      .filter(({ index }) => !isColourHidden(appearance, index))
-      .map(({ index, fade }) => ({
-        index,
-        fade: fade * selectedMarker.value * templateFade.value,
-      }))
+  for (const { rendered, mismatchFade, selectedFades } of sceneMarkers.templates) {
+    const { template, appearance } = rendered
     const hasSelectedFade = selectedFades.some(({ fade }) => fade > 0)
     if (
       template.serverUrl === undefined &&
@@ -266,10 +231,9 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     )
       progressOnly.push(template)
     if (mismatchFade > 0 || hasSelectedFade) {
-      wanted.push({ template, mismatchFade, selectedFades })
+      wanted.push({ template, appearance, mismatchFade, selectedFades })
     }
   }
-  markerFades.prune(markerKeys)
   if (animating) {
     const map = getMap() as { triggerRepaint?: () => void } | null
     map?.triggerRepaint?.()
@@ -311,9 +275,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const renderBudget = markerBudget
   const profiling = isProfileEnabled()
   const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
-  for (const { template, mismatchFade, selectedFades } of wanted) {
+  for (const { template, appearance, mismatchFade, selectedFades } of wanted) {
     const accounting = pixelAccounting.read(template)
-    const appearance = appearanceOf(template)
     const mismatchStyle: MarkerStyle = {
       size: appearance.markerSize,
       thickness: 2,
@@ -349,7 +312,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
                 tile,
                 marks,
                 style: selectedStyle,
-                fade: selectedFade.fade,
+                fade: selectedFade.fade * peek.opacity,
               })
             }
           }
@@ -363,7 +326,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
             tile,
             marks: tileAccounting.markers,
             style: mismatchStyle,
-            fade: mismatchFade,
+            fade: mismatchFade * peek.opacity,
           })
         }
       }
@@ -454,11 +417,14 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }
 }
 
-const drawAll = (gl: WebGL2RenderingContext): void => {
+const drawAll = (
+  gl: WebGL2RenderingContext,
+  peek: { readonly opacity: number; readonly done: boolean },
+): void => {
   worldMarkerRenderer?.beginFrame()
   beginMarkerBatchFrame()
   try {
-    pixelAccounting.frame(() => drawVisible(gl))
+    pixelAccounting.frame(() => drawVisible(gl, peek))
   } finally {
     endMarkerBatchFrame()
     worldMarkerRenderer?.endFrame()
@@ -484,18 +450,17 @@ export const markerLayer = {
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
     releaseMarkers(gl)
-    selectedMarkerColours.clear()
-    latestSelectedMarkerColour = null
-    selectedColourMarkerFades.prune(new Set())
+    worldRenderScene.resetMarkers()
   },
 
   render(gl: WebGL2RenderingContext): void {
-    // Peek is a display suppression, not cache invalidation. Stop before `drawAll` so its normal
-    // unused-buffer sweep does not discard every retained marker buffer during the held key.
-    if (isOverlayPeekActive()) return
+    const peek = overlayPeekFade(performance.now())
+    // Peek is display suppression, not cache invalidation. Once the fade reaches zero, stop before
+    // `drawAll` so its normal unused-buffer sweep keeps every retained marker buffer warm.
+    if (peek.opacity <= 0 && peek.done) return
     // Never let this escape into MapLibre's render loop; a throw here takes the whole frame with it.
     try {
-      profileGpu(gl, 'Marker GPU', () => measureProfile('Marker render', () => drawAll(gl)))
+      profileGpu(gl, 'Marker GPU', () => measureProfile('Marker render', () => drawAll(gl, peek)))
     } catch (error) {
       warn('install', 'marker layer render failed; skipping this frame', String(error))
     }

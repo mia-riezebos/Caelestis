@@ -26,7 +26,9 @@ const fixture = vi.hoisted(() => ({
   quad: { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 },
   paintOpen: false,
   selected: null as number | null,
-  selectedFade: vi.fn((_id: string, target: number) => ({ value: target, done: true })),
+  selectedFade: vi.fn((_id: string, target: number, _now = 0) => ({ value: target, done: true })),
+  sceneSelected: new Set<number>(),
+  sceneLatest: null as number | null,
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
@@ -93,6 +95,8 @@ vi.mock('../wplace-paint.js', () => ({
   selectedColour: () => fixture.selected,
 }))
 vi.mock('./fade.js', () => ({
+  FADE_MS: 300,
+  fadeProgress: () => 1,
   markerFades: {
     advance: (_id: string, target: number) => ({ value: target, done: true }),
     prune: vi.fn(),
@@ -103,6 +107,53 @@ vi.mock('./fade.js', () => ({
   },
   templateFades: {
     advance: () => ({ value: 1, done: true }),
+  },
+}))
+vi.mock('./render-scene.js', () => ({
+  worldRenderScene: {
+    advanceTemplates: (templates: readonly Record<string, unknown>[]) => ({
+      animating: false,
+      templates: templates.map((template) => ({
+        template,
+        appearance: fixture.appearance,
+        fade: 1,
+        outlineFade: 1,
+        palette: new Uint8Array(256),
+      })),
+    }),
+    advanceMarkers: (
+      templates: readonly {
+        readonly template: Record<string, unknown>
+        readonly appearance: typeof fixture.appearance
+        readonly fade: number
+      }[],
+      selected: number | null,
+      now: number,
+    ) => {
+      if (selected !== null && selected !== fixture.sceneLatest) {
+        fixture.sceneSelected.add(selected)
+        fixture.sceneLatest = selected
+      }
+      const selectedFades = [...fixture.sceneSelected]
+        .map((index) => ({
+          index,
+          ...fixture.selectedFade(String(index), index === fixture.sceneLatest ? 1 : 0, now),
+        }))
+        .filter(({ value }) => value > 0)
+        .map(({ index, value }) => ({ index, fade: value }))
+      return {
+        animating: false,
+        templates: templates.map((rendered) => ({
+          rendered,
+          mismatchFade: fixture.appearance.markMismatch ? 1 : 0,
+          selectedFades: fixture.appearance.markSelectedColour ? selectedFades : [],
+        })),
+      }
+    },
+    resetMarkers: () => {
+      fixture.sceneSelected.clear()
+      fixture.sceneLatest = null
+    },
   },
 }))
 
@@ -198,6 +249,8 @@ describe('marker work selection', () => {
     fixture.quad = { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 }
     fixture.paintOpen = false
     fixture.selected = null
+    fixture.sceneSelected.clear()
+    fixture.sceneLatest = null
     fixture.selectedFade.mockReset().mockImplementation((_id: string, target: number) => ({
       value: target,
       done: true,

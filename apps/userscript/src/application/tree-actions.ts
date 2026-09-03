@@ -1093,9 +1093,7 @@ export const openContextMenu = (
             remove,
           ]
         : [
-            ...(surface.kind === 'world'
-              ? ([['search', 'Go to', () => goToLocalTemplate(templateId)]] as const)
-              : []),
+            ['search', 'Go to', () => goToLocalTemplate(templateId)],
             ['download', 'Export .wplace', () => void exportTemplate(target)],
             [
               'move',
@@ -1162,7 +1160,7 @@ export const importTemplate = async (
 ): Promise<void> => {
   const picker = document.createElement('input')
   picker.type = 'file'
-  picker.accept = '.wplace,.json,image/png,image/*'
+  picker.accept = surface.kind === 'world' ? '.wplace,.json,image/png,image/*' : 'image/png,image/*'
   picker.addEventListener('change', () => {
     void (async () => {
       const file = picker.files?.[0]

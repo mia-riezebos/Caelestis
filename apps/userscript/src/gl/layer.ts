@@ -1,40 +1,31 @@
-import {
-  PALETTE_SIZE,
-  TILE_SIZE,
-  TRANSPARENT_INDEX,
-  WORLD_TEMPLATE_SURFACE,
-  WPLACE_PALETTE,
-} from '@caelestis/shared'
+import { TILE_SIZE, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
-import { isOverlayPeekActive } from '../overlay-peek.js'
+import { overlayPeekFade } from '../overlay-peek.js'
 import {
   clearGpuProfile,
   isProfileEnabled,
   measureProfile,
-  measureProfileDetail,
   profileGpu,
   recordProfileWorkload,
 } from '../profile.js'
 import { isPlain } from '../templates/appearance.js'
-import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
-import { hiddenColoursFor } from '../templates/colour-filter.js'
-import {
-  appearanceOf,
-  displayTemplatesForSurface,
-  isTemplateVisible,
-  type PlacedTemplate,
-} from '../templates/local-store.js'
+import { displayTemplatesForSurface, type PlacedTemplate } from '../templates/local-store.js'
 import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles, type TileQuad, underlayQuads } from '../tile-transform.js'
-import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
+import { prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
-import { colourFades, outlineFades, templateFades } from './fade.js'
-import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
 import { movingOverlayTapCap } from './minify-quality.js'
+import { type SceneTemplate, worldRenderScene } from './render-scene.js'
 import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
 import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE } from './shaders.js'
+import {
+  TEMPLATE_UPLOAD_PIXELS_PER_FRAME,
+  type TemplateGpuEntry,
+  TemplateGpuStore,
+  type TemplateGpuTile,
+} from './template-gpu-store.js'
 
 /**
  * The overlay, drawn inside wplace's own canvas.
@@ -65,72 +56,7 @@ const PIXEL_ART_LAYER = 'pixel-art-layer'
 const BEFORE_LAYER = 'pixel-hover'
 const DRAFT_LAYER_ID = /^paint-preview-/
 
-interface IndexGpuTile {
-  readonly texture: WebGLTexture
-  /** Top-left and size of the non-halo source cells in template coordinates. */
-  readonly x: number
-  readonly y: number
-  readonly width: number
-  readonly height: number
-  readonly textureWidth: number
-  readonly textureHeight: number
-  readonly inset: number
-}
-
-interface PendingIndexGpuTile {
-  texture: WebGLTexture | null
-  /** Top-left and size of the non-halo source cells in template coordinates. */
-  readonly x: number
-  readonly y: number
-  readonly width: number
-  readonly height: number
-  readonly textureWidth: number
-  readonly textureHeight: number
-  readonly inset: number
-  uploadedPixels: number
-}
-
-interface PendingTemplateGpu {
-  readonly indices: readonly PendingIndexGpuTile[]
-  readonly palette: WebGLTexture
-  readonly width: number
-  readonly height: number
-  readonly source: Uint8Array
-  lastUsed: number
-}
-
-interface TemplateGpu {
-  readonly indices: readonly IndexGpuTile[]
-  readonly palette: WebGLTexture
-  width: number
-  height: number
-  /** Array identity of the pixels currently uploaded into `indices`. */
-  source: Uint8Array
-  /**
-   * What the palette texture was built from, so it is only rewritten when the filter moves.
-   *
-   * Null rather than an empty string, because "nothing hidden" *is* the empty string — starting at
-   * `''` meant a template with no filter matched on the first frame and the texture was never
-   * uploaded at all. An unwritten texture reads as zero, zero alpha means hidden, and the whole
-   * overlay silently drew nothing.
-   */
-  paletteKey: string | null
-  /** Whether any colour in it is still fading, and so whether it needs re-uploading next frame. */
-  paletteMoving: boolean
-  /** Whether the earlier outline pass already prepared this frame's shared palette. */
-  palettePreparedForOverlay: boolean
-  /** Render generation in which this template was most recently visible. */
-  lastUsed: number
-}
-
-const MAX_OVERLAY_GPU_BYTES = 64 * 1024 * 1024
-export const OVERLAY_UPLOAD_PIXELS_PER_FRAME = 512 * 1024
-
-/** Every palette index, for pruning ramps — one per template per colour. */
-const paletteKeys = Array.from({ length: PALETTE_SIZE }, (_, index) => index)
-
-/** Which templates existed last frame, so the colour ramps are only swept when that changes. */
-let lastTemplateSet = ''
+export const OVERLAY_UPLOAD_PIXELS_PER_FRAME = TEMPLATE_UPLOAD_PIXELS_PER_FRAME
 
 /** Four vertices of clip xyzw + uv, rewritten per template per frame. */
 const corners = new Float32Array(4 * 6)
@@ -172,25 +98,12 @@ let owner: WebGL2RenderingContext | null = null
 let program: WebGLProgram | null = null
 let quad: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
-let maximumTextureSize: number | null = null
 const uniforms = new Map<string, WebGLUniformLocation | null>()
-const gpu = new Map<string, TemplateGpu>()
-const pendingGpu = new Map<string, PendingTemplateGpu>()
+let gpu: TemplateGpuStore | null = null
 let renderGeneration = 0
 
-const gpuBytes = (entry: TemplateGpu): number =>
-  PALETTE_SIZE * 4 +
-  entry.indices.reduce((total, tile) => total + tile.textureWidth * tile.textureHeight, 0)
-
-const pendingGpuBytes = (entry: PendingTemplateGpu): number =>
-  PALETTE_SIZE * 4 +
-  entry.indices.reduce((total, tile) => total + tile.textureWidth * tile.textureHeight, 0)
-
 export const overlayGpuMemoryBytes = (): number => {
-  let bytes = quad === null ? 0 : corners.byteLength
-  for (const entry of gpu.values()) bytes += gpuBytes(entry)
-  for (const entry of pendingGpu.values()) bytes += pendingGpuBytes(entry)
-  return bytes
+  return (quad === null ? 0 : corners.byteLength) + (gpu?.memoryBytes() ?? 0)
 }
 
 /** Upload chunks are ephemeral; no full-template CPU staging copy is retained. */
@@ -201,297 +114,6 @@ const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation
     uniforms.set(name, program === null ? null : gl.getUniformLocation(program, name))
   }
   return uniforms.get(name) ?? null
-}
-
-/**
- * The palette as a 64x1 RGBA texture, with alpha standing in for "shown".
- *
- * Filtering a colour is then a 256-byte upload instead of a rebuilt bitmap — which is also what
- * makes fading one affordable: alpha is a number rather than a switch, so a colour leaving the
- * drawing is the same upload as a colour that has left. The wildcard index is always alpha 0, which
- * is also how a template pixel that requires nothing draws nothing.
- *
- * Filled from ramps rather than from the hidden set directly, and the ramps are advanced here
- * because this is the only place that knows every index needs one — a colour switched off has to
- * keep being asked about until it has finished leaving.
- */
-const buildPalette = (
-  templateId: string,
-  hidden: readonly number[],
-  now: number,
-): { data: Uint8Array; animating: boolean } => {
-  const off = new Set(hidden)
-  const data = new Uint8Array(PALETTE_SIZE * 4)
-  let animating = false
-  for (let index = 0; index < PALETTE_SIZE; index++) {
-    const colour = WPLACE_PALETTE[index]
-    const shown = colour !== undefined && index !== TRANSPARENT_INDEX && !off.has(index)
-    const { value, done } = colourFades.advance(`${templateId}:${index}`, shown ? 1 : 0, now)
-    if (!done) animating = true
-    data[index * 4] = colour?.rgb[0] ?? 0
-    data[index * 4 + 1] = colour?.rgb[1] ?? 0
-    data[index * 4 + 2] = colour?.rgb[2] ?? 0
-    data[index * 4 + 3] = Math.round(value * 255)
-  }
-  return { data, animating }
-}
-
-const uploadPalette = (
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Uint8Array,
-): void => {
-  gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, PALETTE_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-}
-
-/**
- * Bring the one palette texture shared by the outline and overlay to the requested visibility.
- *
- * The outline sits earlier in MapLibre's layer stack, so it must prepare the texture first. The
- * overlay then consumes that exact preparation instead of advancing the same colour ramps again a
- * few milliseconds later. Besides keeping both passes on the same pixels and alpha, this matters
- * on the final fade frame: if the overlay were the first pass to upload alpha zero, MapLibre could
- * retain the stale outline drawn immediately before it without scheduling another repaint.
- */
-const preparePalette = (
-  gl: WebGL2RenderingContext,
-  entry: TemplateGpu,
-  templateId: string,
-  hidden: readonly number[],
-  now: number,
-  pass: 'outline' | 'overlay',
-): boolean => {
-  if (pass === 'overlay' && entry.palettePreparedForOverlay) {
-    entry.palettePreparedForOverlay = false
-    return entry.paletteMoving
-  }
-
-  const paletteKey = hidden.join(',')
-  if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
-    const built = buildPalette(templateId, hidden, now)
-    uploadPalette(gl, entry.palette, built.data)
-    entry.paletteKey = paletteKey
-    entry.paletteMoving = built.animating
-  }
-  entry.palettePreparedForOverlay = pass === 'outline'
-  return entry.paletteMoving
-}
-
-/** Maximum side this context accepts, falling back to one whole-template upload in test shims. */
-const textureLimit = (width: number, height: number): number => {
-  if (maximumTextureSize === null) {
-    return Math.max(width, height) + 2
-  }
-  return maximumTextureSize
-}
-
-/** Allocate one index texture without synchronously transferring the whole template into it. */
-const allocateIndices = (
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  width: number,
-  height: number,
-): void => {
-  gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, null)
-  // Integer textures cannot be filtered, which is also exactly what we want: an index is a name,
-  // and the average of two names is not a name.
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-}
-
-/** Split accepted templates into bounded allocations this particular device can upload gradually. */
-const pendingIndexTiles = (width: number, height: number): readonly PendingIndexGpuTile[] => {
-  const allocationLimit = textureLimit(width, height)
-  // A one-cell halo lets the outline inspect neighbours across texture and template edges. WebGL 2
-  // guarantees a far larger limit, but tiny test shims keep the unpadded fallback valid.
-  const inset = allocationLimit >= 3 ? 1 : 0
-  const contentLimit = Math.max(1, allocationLimit - inset * 2)
-  const pending: PendingIndexGpuTile[] = []
-  for (let y = 0; y < height; y += contentLimit) {
-    const tileHeight = Math.min(contentLimit, height - y)
-    for (let x = 0; x < width; x += contentLimit) {
-      const tileWidth = Math.min(contentLimit, width - x)
-      const textureWidth = tileWidth + inset * 2
-      const textureHeight = tileHeight + inset * 2
-      pending.push({
-        texture: null,
-        x,
-        y,
-        width: tileWidth,
-        height: tileHeight,
-        textureWidth,
-        textureHeight,
-        inset,
-        uploadedPixels: 0,
-      })
-    }
-  }
-  return pending
-}
-
-const fillIndexUpload = (
-  pending: PendingTemplateGpu,
-  tile: PendingIndexGpuTile,
-  uploadX: number,
-  uploadY: number,
-  uploadWidth: number,
-  uploadHeight: number,
-): Uint8Array => {
-  const pixels = new Uint8Array(uploadWidth * uploadHeight).fill(TRANSPARENT_INDEX)
-  const textureLeft = tile.x - tile.inset
-  for (let row = 0; row < uploadHeight; row++) {
-    const textureY = uploadY + row
-    const destination = row * uploadWidth
-    const sourceY = tile.y - tile.inset + textureY
-    if (sourceY < 0 || sourceY >= pending.height) continue
-    const requestedLeft = textureLeft + uploadX
-    const sourceLeft = Math.max(0, requestedLeft)
-    const sourceRight = Math.min(pending.width, requestedLeft + uploadWidth)
-    if (sourceRight <= sourceLeft) continue
-    const source = sourceY * pending.width + sourceLeft
-    pixels.set(
-      pending.source.subarray(source, source + sourceRight - sourceLeft),
-      destination + sourceLeft - requestedLeft,
-    )
-  }
-  return pixels
-}
-
-type UploadAdvance =
-  | { readonly status: 'pending'; readonly uploadedPixels: number }
-  | { readonly status: 'failed'; readonly uploadedPixels: number }
-  | {
-      readonly status: 'complete'
-      readonly uploadedPixels: number
-      readonly indices: readonly IndexGpuTile[]
-    }
-
-/** Transfer bounded rectangles until this frame's allowance is spent. */
-const advanceIndexUpload = (
-  gl: WebGL2RenderingContext,
-  pending: PendingTemplateGpu,
-  allowance: number,
-): UploadAdvance => {
-  let left = Math.max(0, Math.floor(allowance))
-  let uploadedPixels = 0
-  for (const tile of pending.indices) {
-    const total = tile.textureWidth * tile.textureHeight
-    if (tile.uploadedPixels >= total) continue
-    if (left === 0) return { status: 'pending', uploadedPixels }
-    if (tile.texture === null) {
-      const texture = gl.createTexture()
-      if (texture === null) return { status: 'failed', uploadedPixels }
-      tile.texture = texture
-      measureProfileDetail('Overlay texture allocation', () =>
-        allocateIndices(gl, texture, tile.textureWidth, tile.textureHeight),
-      )
-    }
-    gl.bindTexture(gl.TEXTURE_2D, tile.texture)
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    while (tile.uploadedPixels < total && left > 0) {
-      const uploadY = Math.floor(tile.uploadedPixels / tile.textureWidth)
-      const uploadX = tile.uploadedPixels - uploadY * tile.textureWidth
-      const uploadWidth =
-        uploadX === 0 && left >= tile.textureWidth
-          ? tile.textureWidth
-          : Math.min(tile.textureWidth - uploadX, left)
-      const uploadHeight =
-        uploadX === 0 && uploadWidth === tile.textureWidth
-          ? Math.min(tile.textureHeight - uploadY, Math.max(1, Math.floor(left / uploadWidth)))
-          : 1
-      const count = uploadWidth * uploadHeight
-      const pixels = measureProfileDetail('Overlay index staging', () =>
-        fillIndexUpload(pending, tile, uploadX, uploadY, uploadWidth, uploadHeight),
-      )
-      measureProfileDetail('Overlay index upload', () =>
-        gl.texSubImage2D(
-          gl.TEXTURE_2D,
-          0,
-          uploadX,
-          uploadY,
-          uploadWidth,
-          uploadHeight,
-          gl.RED_INTEGER,
-          gl.UNSIGNED_BYTE,
-          pixels,
-        ),
-      )
-      tile.uploadedPixels += count
-      uploadedPixels += count
-      left -= count
-    }
-  }
-
-  const complete: IndexGpuTile[] = []
-  for (const tile of pending.indices) {
-    if (tile.texture === null || tile.uploadedPixels < tile.textureWidth * tile.textureHeight) {
-      return { status: 'pending', uploadedPixels }
-    }
-    complete.push({
-      texture: tile.texture,
-      x: tile.x,
-      y: tile.y,
-      width: tile.width,
-      height: tile.height,
-      textureWidth: tile.textureWidth,
-      textureHeight: tile.textureHeight,
-      inset: tile.inset,
-    })
-  }
-  return { status: 'complete', uploadedPixels, indices: complete }
-}
-
-const release = (gl: WebGL2RenderingContext, id: string): void => {
-  measureProfileDetail('Overlay texture deletion', () => {
-    const existing = gpu.get(id)
-    if (existing !== undefined) {
-      for (const tile of existing.indices) gl.deleteTexture(tile.texture)
-      gl.deleteTexture(existing.palette)
-      gpu.delete(id)
-    }
-    const pending = pendingGpu.get(id)
-    if (pending !== undefined) {
-      for (const tile of pending.indices) {
-        if (tile.texture !== null) gl.deleteTexture(tile.texture)
-      }
-      gl.deleteTexture(pending.palette)
-      pendingGpu.delete(id)
-    }
-  })
-}
-
-/** Keep recent offscreen uploads for pan-back, under a soft budget; deleted sources leave at once. */
-const collect = (
-  gl: WebGL2RenderingContext,
-  existing: ReadonlySet<string>,
-  visible: ReadonlySet<string>,
-): void => {
-  const records = [...gpu].map(([id, entry]) => ({
-    id,
-    bytes: gpuBytes(entry),
-    lastUsed: entry.lastUsed,
-    visible: visible.has(id),
-    exists: existing.has(id),
-  }))
-  for (const [id, entry] of pendingGpu) {
-    records.push({
-      id,
-      bytes: pendingGpuBytes(entry),
-      lastUsed: entry.lastUsed,
-      visible: visible.has(id),
-      exists: existing.has(id),
-    })
-  }
-  for (const id of gpuCacheEvictions(records, MAX_OVERLAY_GPU_BYTES)) release(gl, id)
 }
 
 /** Whether any source pixel can reach one of the tile quads wplace is drawing this frame. */
@@ -514,14 +136,15 @@ const intersectsTiles = (
 }
 
 /** Visit each source/host-tile intersection once, with exact clip-space corners from Wplace. */
-const visitIntersections = (
+/** @internal Host-adapter seam used by differential projection tests. */
+export const visitIntersections = (
   template: PlacedTemplate,
   spans: readonly HorizontalSpan[],
-  entry: TemplateGpu,
+  entry: TemplateGpuEntry,
   tiles: readonly TileQuad[],
   bufferWidth: number,
   bufferHeight: number,
-  draw: (source: IndexGpuTile, vertices: Float32Array) => void,
+  draw: (source: TemplateGpuTile, vertices: Float32Array) => void,
   margin = 0,
 ): number => {
   let count = 0
@@ -592,18 +215,10 @@ export const overlayLayer = {
     program = null
     quad = null
     vao = null
-    maximumTextureSize = null
     uniforms.clear()
-    gpu.clear()
-    pendingGpu.clear()
+    gpu = new TemplateGpuStore(gl)
     renderGeneration = 0
     owner = gl
-    try {
-      const measured = gl.getParameter(gl.MAX_TEXTURE_SIZE) as unknown
-      if (typeof measured === 'number' && Number.isFinite(measured) && measured > 0) {
-        maximumTextureSize = Math.max(1, Math.floor(measured))
-      }
-    } catch {}
     program = linkTemplateProgram(gl, FRAGMENT_SOURCE)
     if (program === null) return
     quad = gl.createBuffer()
@@ -629,14 +244,14 @@ export const overlayLayer = {
     if (owner !== gl) return
     clearGpuProfile(gl)
     owner = null
-    for (const id of new Set([...gpu.keys(), ...pendingGpu.keys()])) release(gl, id)
+    gpu?.dispose()
+    gpu = null
     if (quad !== null) gl.deleteBuffer(quad)
     if (vao !== null) gl.deleteVertexArray(vao)
     if (program !== null) gl.deleteProgram(program)
     program = null
     quad = null
     vao = null
-    maximumTextureSize = null
     uniforms.clear()
   },
 
@@ -657,8 +272,11 @@ export const overlayLayer = {
   },
 
   draw(gl: WebGL2RenderingContext, _args: unknown): void {
-    if (program === null || vao === null) return
-    if (isOverlayPeekActive()) return
+    if (program === null || vao === null || gpu === null) return
+    const store = gpu
+    const now = performance.now()
+    const peek = overlayPeekFade(now)
+    if (peek.opacity <= 0 && peek.done) return
     // Stop where wplace stops. A layer renders every frame whatever the zoom, so without this the
     // overlay stayed on screen past the point their canvas disappears — annotating nothing.
     if (!isDrawingTiles()) return
@@ -674,53 +292,32 @@ export const overlayLayer = {
 
     // Switched off is a destination, not an exclusion: a template on its way out is still drawn,
     // at falling opacity, and only leaves once its ramp has run out.
-    const now = performance.now()
     // This is a browser preference, not a template property. Reading matchMedia for every visible
     // template made a dense viewport repeat the same native query dozens of times per frame.
     const reducedMotion = prefersReducedMotion()
     const profiling = isProfileEnabled()
-    let animating = false
+    const scene = worldRenderScene.advanceTemplates(all, WORLD_TEMPLATE_SURFACE, now, reducedMotion)
+    let animating = scene.animating || !peek.done
     let visibleSourcePixels = 0
     const visible: {
-      template: (typeof all)[number]
-      fade: number
+      rendered: SceneTemplate
       spans: readonly HorizontalSpan[]
     }[] = []
-    for (const template of all) {
-      const { value, done } = templateFades.advance(
-        template.id,
-        isTemplateVisible(template) ? 1 : 0,
-        now,
-      )
-      if (!done) animating = true
-      if (value > 0) {
-        const spans = horizontalSpans(template)
-        if (intersectsTiles(template, spans, tiles)) {
-          visible.push({ template, fade: value, spans })
+    for (const rendered of scene.templates) {
+      const { template } = rendered
+      if (rendered.fade > 0 && rendered.palette !== null) {
+        const spans = horizontalSpans(rendered.template)
+        if (intersectsTiles(rendered.template, spans, tiles)) {
+          visible.push({ rendered, spans })
           if (profiling) visibleSourcePixels += template.width * template.height
         }
       }
     }
     const ids = new Set(all.map((template) => template.id))
-    templateFades.prune(ids)
-    outlineFades.prune(ids)
-    appearanceTransitions.prune(ids)
     // Offscreen textures can be large. Keep only the templates this frame could actually draw;
     // panning back uploads them lazily again.
-    const visibleIds = new Set(visible.map(({ template }) => template.id))
-    collect(gl, ids, visibleIds)
-    /**
-     * The colour ramps are keyed per template *per palette entry*, so their keep-set is sixty-four
-     * strings per template — built only when the set of templates has actually changed, rather than
-     * on every frame. This runs inside a render callback at whatever rate MapLibre draws at, and a
-     * few hundred strings a frame is garbage collected for nothing: templates come and go on human
-     * timescales.
-     */
-    const fingerprint = [...ids].join(' ')
-    if (fingerprint !== lastTemplateSet) {
-      lastTemplateSet = fingerprint
-      colourFades.prune(new Set(all.flatMap((t) => paletteKeys.map((i) => `${t.id}:${i}`))))
-    }
+    const visibleIds = new Set(visible.map(({ rendered }) => rendered.template.id))
+    store.collect(ids, visibleIds)
     /**
      * MapLibre renders on demand, so a frame nobody asked for is a frame that never happens.
      * Without this a ramp would advance only as far as the next pan.
@@ -768,10 +365,11 @@ export const overlayLayer = {
     let uploadPixelsLeft = OVERLAY_UPLOAD_PIXELS_PER_FRAME
     let uploadedIndexPixels = 0
     let drawIntersections = 0
-    let uploadsLeft = visible.reduce((total, { template }) => {
-      const entry = gpu.get(template.id)
+    let uploadsLeft = visible.reduce((total, { rendered }) => {
+      const { template } = rendered
+      const entry = store.entry(template.id)
       const complete =
-        entry !== undefined &&
+        entry !== null &&
         entry.source === template.indices &&
         entry.width === template.width &&
         entry.height === template.height
@@ -779,93 +377,35 @@ export const overlayLayer = {
     }, 0)
 
     try {
-      for (const { template, fade, spans } of visible) {
-        let entry = gpu.get(template.id)
-        let pending = pendingGpu.get(template.id)
-        const sourceChanged =
-          (entry !== undefined &&
-            (entry.source !== template.indices ||
-              entry.width !== template.width ||
-              entry.height !== template.height)) ||
-          (pending !== undefined &&
-            (pending.source !== template.indices ||
-              pending.width !== template.width ||
-              pending.height !== template.height))
-        if (sourceChanged) {
-          release(gl, template.id)
-          entry = undefined
-          pending = undefined
-        }
-        if (entry === undefined) {
+      for (const { rendered, spans } of visible) {
+        const { template, appearance, fade, palette } = rendered
+        let entry = store.hasCurrent(template) ? store.entry(template.id) : null
+        if (entry === null) {
           const uploadAllowance =
             uploadsLeft > 0 ? Math.floor(uploadPixelsLeft / uploadsLeft) : uploadPixelsLeft
           uploadsLeft = Math.max(0, uploadsLeft - 1)
-          if (pending === undefined) {
-            const palette = gl.createTexture()
-            if (palette === null) continue
-            pending = {
-              indices: measureProfileDetail('Overlay upload planning', () =>
-                pendingIndexTiles(template.width, template.height),
-              ),
-              palette,
-              width: template.width,
-              height: template.height,
-              source: template.indices,
-              lastUsed: renderGeneration,
-            }
-            pendingGpu.set(template.id, pending)
-          }
-          pending.lastUsed = renderGeneration
-          const advanced = advanceIndexUpload(gl, pending, uploadAllowance)
+          const advanced = store.advance(template, uploadAllowance, renderGeneration)
           uploadPixelsLeft -= advanced.uploadedPixels
           uploadedIndexPixels += advanced.uploadedPixels
-          if (advanced.status === 'failed') {
-            release(gl, template.id)
-            animating = true
-            continue
-          }
+          if (advanced.status === 'failed') continue
           if (advanced.status === 'pending') {
             animating = true
             continue
           }
-          entry = {
-            indices: advanced.indices,
-            palette: pending.palette,
-            width: template.width,
-            height: template.height,
-            source: template.indices,
-            paletteKey: null,
-            paletteMoving: false,
-            palettePreparedForOverlay: false,
-            lastUsed: renderGeneration,
-          }
-          pendingGpu.delete(template.id)
-          gpu.set(template.id, entry)
+          entry = advanced.entry
           // The outline layer already ran earlier in this frame and could not see this entry.
           animating = true
         }
+        if (entry === null) continue
         entry.lastUsed = renderGeneration
-
-        const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
-        const transitioned = appearanceTransitions.advance(
-          template.id,
-          targetAppearance,
-          now,
-          reducedMotion,
-          hasAppearancePreview(template.id),
-        )
-        const appearance = transitioned.appearance
-        if (!transitioned.done) animating = true
-        const hidden = hiddenColoursFor(appearance)
-        // Re-uploaded while anything in it is still moving, not only when the filter changes: the
-        // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
-        if (preparePalette(gl, entry, template.id, hidden, now, 'overlay')) animating = true
+        if (palette === null) continue
+        store.uploadPalette(entry, palette)
 
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, entry.palette)
         gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
-        gl.uniform1f(uniform(gl, 'u_fade'), fade)
+        gl.uniform1f(uniform(gl, 'u_fade'), fade * peek.opacity)
         gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
         gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
         gl.uniform1f(uniform(gl, 'u_stampRadius'), appearance.radius)
@@ -987,11 +527,12 @@ export const outlineLayer = {
   },
 
   draw(gl: WebGL2RenderingContext, _args: unknown): void {
-    if (outlineProgram === null || outlineVao === null || outlineQuad === null) return
-    // This pass is always before the overlay. Clear any preparation the overlay did not consume in
-    // an earlier partial frame, then mark only entries actually prepared below.
-    for (const entry of gpu.values()) entry.palettePreparedForOverlay = false
-    if (isOverlayPeekActive() || !isDrawingTiles()) return
+    if (outlineProgram === null || outlineVao === null || outlineQuad === null || gpu === null)
+      return
+    const store = gpu
+    const now = performance.now()
+    const peek = overlayPeekFade(now)
+    if ((peek.opacity <= 0 && peek.done) || !isDrawingTiles()) return
     const map = getMap() as { triggerRepaint?: () => void } | null
     // MapLibre exposes the same current tile matrices its raster layer will upload later in this
     // frame. The coordinate module reads those early, with the intercepted previous frame only as
@@ -1020,41 +561,33 @@ export const outlineLayer = {
 
     const bufferWidth = gl.drawingBufferWidth
     const bufferHeight = gl.drawingBufferHeight
-    const now = performance.now()
     const reducedMotion = prefersReducedMotion()
     let drawIntersections = 0
     let visibleTemplates = 0
-    let animating = false
-    for (const template of displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE)) {
-      const entry = gpu.get(template.id)
-      if (entry === undefined) continue
-      const fade = templateFades.advance(
-        template.id,
-        isTemplateVisible(template) ? 1 : 0,
-        now,
-      ).value
-      if (fade <= 0) continue
-      const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
-      const appearance = appearanceTransitions.advance(
-        template.id,
-        targetAppearance,
-        now,
-        reducedMotion,
-        hasAppearancePreview(template.id),
-      ).appearance
-      const outlineFade = outlineFades.advance(template.id, appearance.contrastOutline ? 1 : 0, now)
-      if (!outlineFade.done) animating = true
-      if (outlineFade.value <= 0) continue
+    const scene = worldRenderScene.advanceTemplates(
+      displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE),
+      WORLD_TEMPLATE_SURFACE,
+      now,
+      reducedMotion,
+    )
+    for (const rendered of scene.templates) {
+      const { template, appearance, fade, outlineFade, palette } = rendered
+      const entry = store.entry(template.id)
+      if (entry === null) continue
+      if (fade <= 0 || outlineFade <= 0 || palette === null) continue
       const spans = horizontalSpans(template)
       if (!intersectsTiles(template, spans, tiles)) continue
       visibleTemplates++
 
-      preparePalette(gl, entry, template.id, hiddenColoursFor(appearance), now, 'outline')
+      store.uploadPalette(entry, palette)
 
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(outlineUniform(gl, 'u_palette'), 1)
-      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity * outlineFade.value)
+      gl.uniform1f(
+        outlineUniform(gl, 'u_fade'),
+        fade * appearance.opacity * outlineFade * peek.opacity,
+      )
       // Keep the persisted control scale, but render it as 3.125%..25% of a canvas pixel. Unlike a
       // device-pixel width, this grows and shrinks with Wplace's pixels as the map zooms.
       gl.uniform1f(outlineUniform(gl, 'u_outlineWidth'), appearance.contrastOutlineSize / 8)
@@ -1090,7 +623,7 @@ export const outlineLayer = {
       recordProfileWorkload('Outline visible templates', visibleTemplates)
       recordProfileWorkload('Outline draw intersections', drawIntersections)
     }
-    if (animating) map?.triggerRepaint?.()
+    if (scene.animating || !peek.done) map?.triggerRepaint?.()
   },
 }
 

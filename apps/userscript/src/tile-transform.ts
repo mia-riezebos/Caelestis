@@ -1731,10 +1731,15 @@ const installPutImageDataTaps = (
         runObservedCall(
           () => Reflect.apply(nativePutImageData, this, args),
           () => {
-            announceCanvasWrite(this.canvas)
+            const [image, dx, dy, dirtyX = 0, dirtyY = 0, dirtyWidth, dirtyHeight] = args
+            announceCanvasWrite(this.canvas, {
+              x: dx + dirtyX,
+              y: dy + dirtyY,
+              width: dirtyWidth ?? image.width,
+              height: dirtyHeight ?? image.height,
+            })
             const canvas = this.canvas as { width?: number; height?: number }
             if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
-            const [image, dx, dy] = args
             if (image.width > PATCH_LIMIT || image.height > PATCH_LIMIT) {
               markCanvasDirty(this.canvas)
               return
@@ -1761,10 +1766,10 @@ const installPutImageDataTaps = (
         runObservedCall(
           () => Reflect.apply(nativeClearRect, this, args),
           () => {
-            announceCanvasWrite(this.canvas)
+            const [x, y, width, height] = args
+            announceCanvasWrite(this.canvas, { x, y, width, height })
             const canvas = this.canvas as { width?: number; height?: number }
             if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
-            const [x, y, width, height] = args
             if (
               !Number.isInteger(x) ||
               !Number.isInteger(y) ||

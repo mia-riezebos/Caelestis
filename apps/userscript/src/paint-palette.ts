@@ -6,7 +6,7 @@ import { activeAllianceSurface } from './alliance-surface.js'
 import { onCanvasWrite } from './canvas-write.js'
 import { count, warn } from './debug.js'
 import { artboardColourProgress, artboardColourTargets } from './gl/artboard-markers.js'
-import { readArtboardPixels } from './gl/artboard-pixels.js'
+import { onArtboardPixelsChange, readArtboardPixels } from './gl/artboard-pixels.js'
 import { getMap } from './map-handle.js'
 import { type ConnectedServer, getState, onStateChange, serverConnectionIdentity } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
@@ -28,6 +28,7 @@ import {
   onTilePixelsEvicted,
   type PaintSubmission,
 } from './tile-transform.js'
+import { canvasWriteTouchesArtboard } from './ui/panel-progress.js'
 import { applyColourProgressDelta } from './ui/progress.js'
 import {
   isPaintOpen,
@@ -533,17 +534,6 @@ const render = (): void => {
     const existing = element.querySelector<CaelestisPaletteProgress>(
       ':scope > caelestis-palette-progress',
     )
-    if (entry !== undefined && entry.known < entry.total) {
-      const label =
-        originalLabels.get(element) ?? element.getAttribute('aria-label') ?? `Colour ${index + 1}`
-      originalLabels.set(element, label)
-      element.setAttribute('aria-label', `${label}. Checking progress for the focused template.`)
-      const badge = existing ?? document.createElement('caelestis-palette-progress')
-      badge.className = 'caelestis-palette-progress'
-      if (badge.model?.value !== '…') badge.model = { value: '…' }
-      if (existing === null) element.appendChild(badge)
-      continue
-    }
     const remaining = entry === undefined ? 0 : Math.max(0, entry.total - entry.completed)
     if (remaining === 0) {
       existing?.remove()
@@ -648,13 +638,10 @@ export const installPaintPaletteProgress = (): void => {
   })
   onStateChange(queueRender)
   onLocalChange(queueRender)
+  onArtboardPixelsChange(queueRender)
   onCanvasWrite((canvas) => {
     const active = activeAllianceSurface()
-    try {
-      if (active?.frame.contains(canvas as Node)) queueRender()
-    } catch {
-      // An offscreen or foreign-realm canvas cannot belong to the active DOM artboard.
-    }
+    if (active !== null && canvasWriteTouchesArtboard(active, canvas)) queueRender()
   })
   // This watcher already crosses the userscript/page realm reliably and fires when Wplace mounts
   // or replaces its drawer. Keep the local observer as a second line for same-selection remounts.

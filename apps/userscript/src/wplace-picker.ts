@@ -1,10 +1,16 @@
-import { type TemplateSurface, TRANSPARENT_INDEX, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import {
+  type TemplateSurface,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { allianceBounds, alliancePointAt } from './alliance-coordinates.js'
 import { type ActiveAllianceSurface, activeAllianceSurface } from './alliance-surface.js'
 import { log } from './debug.js'
-import { artboardPixelIndexAt, readArtboardPixels } from './gl/artboard-pixels.js'
+import { readArtboardPixels } from './gl/artboard-pixels.js'
 import { canvasPixelAt } from './main.js'
-import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
+import { nativePixelAt } from './native-pixels.js'
+import { pickerIndex } from './picker-source.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
 import {
   appearanceOf,
@@ -12,7 +18,8 @@ import {
   isTemplateVisible,
 } from './templates/local-store.js'
 import { sourceXAt } from './templates/placement.js'
-import { ensureTilePixels, tilePixels } from './tile-transform.js'
+import { ensureTilePixels } from './tile-transform.js'
+import { worldNativePixels } from './world-native-pixels.js'
 import { isPaintOpen, selectPaintColour } from './wplace-paint.js'
 
 /**
@@ -78,11 +85,16 @@ const overlayIndexAt = (surface: TemplateSurface, x: number, y: number): number 
 }
 
 /** The exact base tile index. A cache miss starts a fetch and deliberately returns no colour. */
-const placedIndexAt = (x: number, y: number): number | null =>
-  pixelArtIndexAt(Math.floor(x), Math.floor(y), (tile) => {
-    ensureTilePixels(tile)
-    return tilePixels(tile)
-  })
+const placedIndexAt = (x: number, y: number): number | null => {
+  const column = Math.floor(x)
+  const row = Math.floor(y)
+  const tile = {
+    x: Math.floor(column / TILE_SIZE),
+    y: Math.floor(row / TILE_SIZE),
+  }
+  ensureTilePixels(tile)
+  return nativePixelAt(worldNativePixels(tile), column, row, false)?.index ?? null
+}
 
 /** The colour the picker is allowed to offer at one canvas pixel. */
 interface PickerPoint {
@@ -114,7 +126,7 @@ const pickedIndexAt = ({ surface, x, y, alliance }: PickerPoint): number | null 
     width: bounds.maxX - bounds.minX,
     height: bounds.maxY - bounds.minY,
   })
-  return pickerIndex({ template, pixelArt: artboardPixelIndexAt(regions, x, y) })
+  return pickerIndex({ template, pixelArt: nativePixelAt(regions, x, y, false)?.index ?? null })
 }
 
 /**

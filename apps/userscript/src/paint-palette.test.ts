@@ -50,13 +50,24 @@ const harness = vi.hoisted(() => ({
     stage: HTMLElement
     frame: HTMLElement
   },
-  artboardPixels: [] as Array<{
-    x: number
-    y: number
-    width: number
-    height: number
-    pixels: Uint8Array
-  }>,
+  artboardPixels: {
+    committed: [] as Array<{
+      x: number
+      y: number
+      width: number
+      height: number
+      pixels: Uint8Array
+      emptyIndex: number
+    }>,
+    draft: [] as Array<{
+      x: number
+      y: number
+      width: number
+      height: number
+      pixels: Uint8Array
+      emptyIndex: number
+    }>,
+  },
   draftPixelDeltas: [] as Array<{
     key: string
     basis: string
@@ -117,6 +128,7 @@ vi.mock('./canvas-write.js', () => ({
   },
 }))
 vi.mock('./gl/artboard-pixels.js', () => ({
+  onArtboardPixelsChange: () => vi.fn(),
   readArtboardPixels: () => harness.artboardPixels,
 }))
 vi.mock('./map-handle.js', () => ({
@@ -223,7 +235,7 @@ beforeEach(() => {
   harness.paintOpen = true
   harness.selectedColour = 0
   harness.activeAlliance = null
-  harness.artboardPixels = []
+  harness.artboardPixels = { committed: [], draft: [] }
   harness.draftPixelDeltas = []
   harness.serverIdentity = {}
   harness.navigationTargets.unpainted = {
@@ -236,9 +248,9 @@ beforeEach(() => {
 })
 
 describe('Wplace paint palette progress', () => {
-  it('shows pixels left for only the focused template and hides a completed colour', async () => {
+  it('shows pixels left for only the focused template while progress is still loading', async () => {
     harness.localProgress = [
-      { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 112 },
+      { index: 0, completed: 12, mismatched: 0, unpainted: 0, known: 12, total: 112 },
     ]
     const swatch = document.createElement('button')
     swatch.id = 'color-1'
@@ -253,9 +265,8 @@ describe('Wplace paint palette progress', () => {
       swatch.querySelector<HTMLElement & { model?: { value: string } }>(
         'caelestis-palette-progress',
       )?.model?.value,
-    ).toBe('…')
-    expect(swatch.getAttribute('aria-label')).toContain('Checking progress')
-    expect(swatch.getAttribute('aria-label')).not.toContain('112 pixels left')
+    ).toBe('100')
+    expect(swatch.getAttribute('aria-label')).toContain('100 pixels left')
 
     harness.localProgress = [
       { index: 0, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
@@ -412,10 +423,15 @@ describe('Wplace paint palette progress', () => {
     expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
   })
 
-  it('refreshes alliance palette progress when Wplace writes its artboard canvas', async () => {
+  it('refreshes alliance palette progress when Wplace writes a transparent-draft crosshair', async () => {
+    const stage = document.createElement('div')
     const frame = document.createElement('div')
+    const crosshairLayer = document.createElement('div')
+    crosshairLayer.className = 'paint-crosshair-layer'
     const canvas = document.createElement('canvas')
-    frame.append(canvas)
+    canvas.className = 'paint-crosshair-tile'
+    crosshairLayer.append(canvas)
+    stage.append(frame, crosshairLayer)
     harness.focused = {
       id: 'alliance-progress',
       surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
@@ -428,10 +444,15 @@ describe('Wplace paint palette progress', () => {
     harness.activeAlliance = {
       surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
       bounds: { minX: -125, minY: -125, maxX: 125, maxY: 125 },
-      stage: document.createElement('div'),
+      stage,
       frame,
     }
-    harness.artboardPixels = [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([63]) }]
+    harness.artboardPixels = {
+      committed: [
+        { x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([63]), emptyIndex: 63 },
+      ],
+      draft: [],
+    }
     const swatch = document.createElement('button')
     swatch.setAttribute('aria-label', 'Black')
     swatch.setAttribute('aria-pressed', 'true')
@@ -442,7 +463,10 @@ describe('Wplace paint palette progress', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(swatch.querySelector('caelestis-palette-progress')).not.toBeNull()
 
-    harness.artboardPixels = [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([0]) }]
+    harness.artboardPixels = {
+      committed: [{ x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([0]), emptyIndex: 63 }],
+      draft: [],
+    }
     harness.canvasWriteListeners.at(-1)?.(canvas)
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -841,7 +865,12 @@ describe('Wplace paint palette progress', () => {
       stage,
       frame,
     }
-    harness.artboardPixels = [{ x: -1, y: -1, width: 1, height: 1, pixels: new Uint8Array([63]) }]
+    harness.artboardPixels = {
+      committed: [
+        { x: -1, y: -1, width: 1, height: 1, pixels: new Uint8Array([63]), emptyIndex: 63 },
+      ],
+      draft: [],
+    }
 
     await expect(navigateFocusedSelectedColour()).resolves.toBe(true)
     expect(harness.nearestColourTarget).not.toHaveBeenCalled()

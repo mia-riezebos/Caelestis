@@ -77,6 +77,7 @@ import {
   type AppearanceUpdater as Updater,
 } from './overlay-appearance-state.js'
 import { type OverlayFailureKey as FailureKey, overlayFailures } from './overlay-failures.js'
+import { allianceRailTop } from './panel-scope.js'
 import { createRangeGestures } from './range-gestures.js'
 import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID } from './toast.js'
@@ -166,12 +167,6 @@ const localControlsRightEdge = (): number => {
     VIEWPORT_EDGE + MENU_BUTTON_SIZE,
     Math.min(railEdge, panel.getBoundingClientRect().left - RAIL_GAP),
   )
-}
-
-const alignWithAlliancePanelButton = (top: number): number => {
-  const button = document.getElementById('caelestis-alliance-rail-button')?.getBoundingClientRect()
-  if (button === undefined || button.height <= 0) return top
-  return top < button.bottom && top + MENU_BUTTON_SIZE > button.top ? button.top : top
 }
 
 /**
@@ -1739,13 +1734,14 @@ const worldControlViewport = (): ControlViewport => ({
 
 const allianceControlViewport = (stage: HTMLElement): ControlViewport | null => {
   const box = stage.getBoundingClientRect()
+  const safeTop = box.top + allianceRailTop(stage, VIEWPORT_EDGE, GAP)
   const viewport = {
     clipLeft: Math.max(0, box.left),
     clipTop: Math.max(0, box.top),
     clipRight: Math.min(window.innerWidth, box.right),
     clipBottom: Math.min(window.innerHeight, box.bottom),
     left: Math.max(4, box.left + 4),
-    top: Math.max(VIEWPORT_EDGE, box.top + VIEWPORT_EDGE),
+    top: Math.max(VIEWPORT_EDGE, safeTop),
     right: Math.min(localControlsRightEdge(), box.right - 4),
     bottom: Math.min(window.innerHeight - VIEWPORT_EDGE, box.bottom - VIEWPORT_EDGE),
   }
@@ -2057,11 +2053,9 @@ const renderControls = (
     }
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
-    const buttonTop = alignWithAlliancePanelButton(
-      Math.min(
-        Math.max(corner.y, viewport.top),
-        Math.max(viewport.top, viewport.bottom - railHeight),
-      ),
+    const buttonTop = Math.min(
+      Math.max(corner.y, viewport.top),
+      Math.max(viewport.top, viewport.bottom - railHeight),
     )
     const buttonLeft = Math.min(
       Math.max(corner.x + 6, viewport.left),

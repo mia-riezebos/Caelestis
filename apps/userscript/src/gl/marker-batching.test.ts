@@ -4,6 +4,7 @@ import {
   batchMarkerWork,
   beginMarkerBatchFrame,
   endMarkerBatchFrame,
+  MarkerBatchStore,
   markerBatchMemoryBytes,
 } from './marker-batching.js'
 
@@ -98,5 +99,26 @@ describe('marker draw batching', () => {
     beginMarkerBatchFrame()
     endMarkerBatchFrame()
     expect(markerBatchMemoryBytes()).toBe(0)
+  })
+
+  it('keeps adapter caches isolated while sharing the batching implementation', () => {
+    const world = new MarkerBatchStore()
+    const artboard = new MarkerBatchStore()
+    const at = tile(1)
+    const sources = [work(at, new Uint32Array([1])), work(at, new Uint32Array([2]))]
+
+    world.beginFrame()
+    artboard.beginFrame()
+    expect(world.batch(sources)[0]?.marks).toEqual(new Uint32Array([1, 2]))
+    expect(artboard.batch(sources)[0]?.marks).toEqual(new Uint32Array([1, 2]))
+    world.endFrame()
+    artboard.endFrame()
+
+    expect(world.memoryBytes()).toBe(8)
+    expect(artboard.memoryBytes()).toBe(8)
+    world.beginFrame()
+    world.endFrame()
+    expect(world.memoryBytes()).toBe(0)
+    expect(artboard.memoryBytes()).toBe(8)
   })
 })

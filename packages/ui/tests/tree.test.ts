@@ -108,7 +108,32 @@ describe('template tree', () => {
     void unmount(component)
   })
 
-  it('uses roving focus and exposes progress detail on demand', () => {
+  it('swaps compact progress and row actions in the same fixed-width tail', () => {
+    const entries: TemplateTreeModel['entries'] = model.entries.map((entry) =>
+      entry.type === 'row' && entry.key === 'local:city'
+        ? {
+            ...entry,
+            actions: [{ id: 'download', label: 'Download', icon: 'download' }],
+          }
+        : entry,
+    )
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: { model: { ...model, entries } },
+    })
+    flushSync()
+
+    const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local:city"]')
+    const tail = row?.querySelector<HTMLElement>(':scope > .row-tail')
+    expect(tail?.querySelector(':scope > .progress')).not.toBeNull()
+    expect(tail?.querySelector(':scope > .actions [aria-label="Download"]')).not.toBeNull()
+    expect(tail?.querySelector(':scope > .actions [aria-label="Expand progress"]')).not.toBeNull()
+    expect(row?.querySelector(':scope > .progress')).toBeNull()
+    expect(row?.querySelector(':scope > .actions')).toBeNull()
+    void unmount(component)
+  })
+
+  it('uses roving focus and exposes progress detail on demand', async () => {
     const component = mount(TemplateTree, { target: document.body, props: { model } })
     flushSync()
     const local = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
@@ -116,15 +141,68 @@ describe('template tree', () => {
     local?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
     expect(document.activeElement?.getAttribute('data-caelestis-tree-key')).toBe('local:city')
 
-    document.querySelector<HTMLButtonElement>('[aria-label="75% complete"]')?.click()
+    const expand = document.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')
+    expand?.focus()
+    expand?.click()
     flushSync()
-    expect(document.body.textContent).toContain('75 completed')
-    expect(
-      document.querySelector('[data-caelestis-tree-key="local:city"] .connector'),
-    ).not.toBeNull()
-    document.querySelector<HTMLButtonElement>('.progress-detail button')?.click()
+    await vi.waitFor(() =>
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Collapse progress'),
+    )
+    expect(document.querySelector('.progress-legend .completed')?.textContent).toBe('75')
+    expect(document.querySelector('.progress-legend .mismatched')?.textContent).toBe('5')
+    expect(document.querySelector('.progress-legend .unpainted')?.textContent).toBe('20')
+    const connector = document.querySelector<HTMLElement>(
+      '[data-caelestis-tree-key="local:city"] .connector',
+    )
+    expect(connector?.tagName).toBe('SPAN')
+    expect(getComputedStyle(connector?.querySelector('.connector-elbow') as Element).top).toBe(
+      '20px',
+    )
+    expect(getComputedStyle(connector?.closest('.row') as Element).alignContent).toBe('flex-start')
+    const disclosure = document.querySelector<HTMLElement>('.progress-disclosure')
+    const detailPercent = disclosure?.querySelector<HTMLElement>('.percent')
+    const detailAction = disclosure?.querySelector<HTMLElement>('.progress-detail-action')
+    expect(disclosure).not.toBeNull()
+    expect(disclosure?.querySelector('.progress-summary > .progress-legend')).not.toBeNull()
+    expect(getComputedStyle(detailPercent as Element).fontSize).toBe('10px')
+    expect(getComputedStyle(detailAction as Element).position).toBe('absolute')
+    expect(document.querySelector('[aria-label="Collapse progress"]')).not.toBeNull()
+    const showColours = document.querySelector<HTMLButtonElement>(
+      '[aria-label="Show colour progress"]',
+    )
+    showColours?.focus()
+    showColours?.click()
     flushSync()
-    expect(document.querySelector<HTMLElement>('.colours span')?.title).toBe('Black')
+    await vi.waitFor(() =>
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Hide colour progress'),
+    )
+    const colour = document.querySelector<HTMLElement>('.colour-progress-row')
+    expect(colour?.textContent).toContain('Black')
+    expect(colour?.querySelector('.meter-wrap')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Hide colour progress"]')).not.toBeNull()
+    void unmount(component)
+  })
+
+  it('anchors compact connectors to the actual heading height', () => {
+    const plain = {
+      ...model.entries[1],
+      key: 'local:plain',
+      name: 'Plain',
+      progress: undefined,
+      colourProgress: undefined,
+      renamable: false,
+      draggable: false,
+      positionInSet: 2,
+    } satisfies TemplateTreeModel['entries'][number]
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: { model: { ...model, entries: [...model.entries, plain] } },
+    })
+    flushSync()
+
+    const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local:plain"]')
+    expect(row?.classList.contains('tall-heading')).toBe(false)
+    expect(getComputedStyle(row?.querySelector('.connector-elbow') as Element).top).toBe('16px')
     void unmount(component)
   })
 
