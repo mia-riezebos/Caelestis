@@ -27,6 +27,7 @@ const harness = vi.hoisted(() => ({
 
 const coordinator = vi.hoisted(() => ({
   liveHealthy: false,
+  revision: undefined as string | undefined,
   liveTileOffer: vi.fn<
     (
       server: ConnectedServer,
@@ -43,11 +44,16 @@ const coordinator = vi.hoisted(() => ({
         reason: 'connect' | 'manifest-applied',
         transport: SyncTransport,
       ) => Promise<unknown>
+      applyLiveEvent?: (server: ConnectedServer, event: unknown) => boolean
     }
   >(),
 }))
 
 const debug = vi.hoisted(() => ({ count: vi.fn(), warn: vi.fn() }))
+const mismatch = vi.hoisted(() => ({
+  invalidateServer: vi.fn(),
+  invalidateTile: vi.fn(),
+}))
 const account = vi.hoisted(() => ({
   identity: { wplaceUserId: 42, displayName: 'Mía 🎨' } as {
     wplaceUserId: number
@@ -58,6 +64,10 @@ const account = vi.hoisted(() => ({
 }))
 
 vi.mock('./debug.js', () => debug)
+vi.mock('./server-mismatch.js', () => ({
+  invalidateServerMismatches: mismatch.invalidateServer,
+  invalidateServerMismatchTile: mismatch.invalidateTile,
+}))
 vi.mock('./state.js', () => ({
   activeServerToken: (server: ConnectedServer) =>
     server.tokenUsable === false ? null : server.token,
@@ -98,7 +108,7 @@ vi.mock('./server-sync-coordinator.js', () => ({
     apply()
     return 'applied'
   },
-  serverSyncRevision: () => undefined,
+  serverSyncRevision: () => coordinator.revision,
   serverLiveSyncHealthy: () => coordinator.liveHealthy,
   requestLiveTileOfferCache: coordinator.liveTileOffer,
   registerServerSyncResource: (resource: {
@@ -185,6 +195,7 @@ beforeEach(() => {
   harness.retiredServers = new WeakSet<object>()
   coordinator.resources.clear()
   coordinator.liveHealthy = false
+  coordinator.revision = undefined
   coordinator.liveTileOffer.mockReset()
   coordinator.liveTileOffer.mockResolvedValue(null)
   coordinator.snapshots = []
@@ -226,6 +237,68 @@ describe('server telemetry client', () => {
         revision: '12',
       },
     ])
+    expect(mismatch.invalidateServer).not.toHaveBeenCalled()
+  })
+
+  it('invalidates every mismatch mask after a confirmed status revision change', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    coordinator.revision = '11'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ revision: 12, templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    const resource = coordinator.resources.get('telemetry-status')
+    await resource?.refresh(server, 'connect', 'recovery')
+
+    expect(mismatch.invalidateServer).toHaveBeenCalledWith(server.url)
+  })
+
+  it('invalidates mismatch masks from exact live status tiles', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ revision: 1, templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    const resource = coordinator.resources.get('telemetry-status')
+    expect(
+      resource?.applyLiveEvent?.(server, {
+        baseRevision: 1,
+        revision: 2,
+        templates: [],
+        removedTemplateIds: [],
+        invalidatedTiles: ['1/2'],
+      }),
+    ).toBe(true)
+    expect(mismatch.invalidateTile).toHaveBeenCalledWith(server.url, { x: 1, y: 2 })
+  })
+
+  it('invalidates every mismatch mask when a live status gap has unknown tiles', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ revision: 1, templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    const resource = coordinator.resources.get('telemetry-status')
+    expect(
+      resource?.applyLiveEvent?.(server, {
+        baseRevision: 1,
+        revision: 3,
+        templates: [],
+        removedTemplateIds: [],
+        invalidateAllTiles: true,
+      }),
+    ).toBe(true)
+    expect(mismatch.invalidateServer).toHaveBeenCalledWith(server.url)
+    expect(mismatch.invalidateTile).not.toHaveBeenCalled()
   })
 
   it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
@@ -336,6 +409,7 @@ describe('server telemetry client', () => {
       templates: [{ ...template }],
     })
     releaseBody?.({
+      version: 'a'.repeat(64),
       alarms: [
         {
           id: '01890f3e-7b2c-7abc-8def-0123456789ac',
@@ -381,6 +455,7 @@ describe('server telemetry client', () => {
       templates: [{ ...template }],
     })
     releaseBody?.({
+      version: 'a'.repeat(64),
       alarms: [
         {
           id: '01890f3e-7b2c-7abc-8def-0123456789ac',
@@ -393,7 +468,7 @@ describe('server telemetry client', () => {
       ],
     })
 
-    await expect(refreshing).resolves.toEqual({ status: 'changed' })
+    await expect(refreshing).resolves.toEqual({ status: 'changed', revision: 'a'.repeat(64) })
     expect(serverAlarmFor(server, template)?.pixelsLost).toBe(12)
   })
 

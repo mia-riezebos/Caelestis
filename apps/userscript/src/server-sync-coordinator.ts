@@ -1,7 +1,10 @@
 import {
+  type LiveProjectionResource,
+  type LiveProjectionState,
   type LiveSyncServerEvent,
   type LiveTileOfferBatch,
   type LiveTileOfferCacheResponse,
+  MAX_LIVE_PROJECTIONS,
   type ReconciliationReason,
   type SyncTransport,
   type TemplateSurface,
@@ -117,6 +120,8 @@ interface LiveConnection {
   heartbeatTimeout: ReturnType<typeof setTimeout> | null
   attempts: number
   healthy: boolean
+  reconciled: boolean
+  stateRequestId: string | null
   manifestRevision: number | null
   readonly pendingTileOffers: Map<
     string,
@@ -149,12 +154,29 @@ const activeDocument = (): boolean =>
 const scheduleKey = (server: ConnectedServer, scope: string, resource: string): string =>
   `${server.url}\u0000${server.season ?? ''}\u0000${scope}\u0000${resource}`
 
+const scheduleFor = (
+  server: ConnectedServer,
+  scope: string,
+  resource: string,
+): Schedule | undefined => {
+  const schedule = schedules.get(scheduleKey(server, scope, resource))
+  return schedule !== undefined &&
+    serverConnectionIdentity(schedule.server) === serverConnectionIdentity(server)
+    ? schedule
+    : undefined
+}
+
 const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
   server.isAdmin ? 'admin' : 'public'
 
 const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
-  return liveCapable(server) && held?.healthy === true && isCurrentServerConnection(server)
+  return (
+    liveCapable(server) &&
+    held?.healthy === true &&
+    held.reconciled &&
+    isCurrentServerConnection(server)
+  )
 }
 
 const liveCapable = (server: ConnectedServer): boolean =>
@@ -203,7 +225,7 @@ const applyResult = (
 ): void => {
   if (!isCurrentServerConnection(server) || result.status === 'skipped') return
   const key = scheduleKey(server, scope, resource)
-  const previous = schedules.get(key)
+  const previous = scheduleFor(server, scope, resource)
   const revisionChanged = result.revision !== undefined && result.revision !== previous?.revision
   const changed = result.status === 'changed' || revisionChanged
   const unchanged = result.status === 'failed' || changed ? 0 : (previous?.unchanged ?? 0) + 1
@@ -233,7 +255,7 @@ const deferHealthyLiveSchedules = (server: ConnectedServer): void => {
     const scope = resource.scope(server)
     if (scope === null) continue
     const key = scheduleKey(server, scope, resource.id)
-    const schedule = schedules.get(key)
+    const schedule = scheduleFor(server, scope, resource.id)
     if (schedule === undefined || schedule.failed) continue
     schedules.set(key, {
       ...schedule,
@@ -290,7 +312,7 @@ const sweep = async (
       const targeted = explicit?.servers.get(serverConnectionIdentity(server))
       if (requested !== null && explicit?.allReason === undefined && targeted === undefined)
         continue
-      const scheduled = schedules.get(key)
+      const scheduled = scheduleFor(server, scope, resource.id)
       if (requested === null && scheduled !== undefined && scheduled.dueAt > now) continue
       const reason = targeted ?? explicit?.allReason ?? 'interval'
       work.push(() =>
@@ -383,7 +405,35 @@ export const serverSyncRevision = (
   server: ConnectedServer,
   scope: string,
   resource: string,
-): string | undefined => schedules.get(scheduleKey(server, scope, resource))?.revision
+): string | undefined => scheduleFor(server, scope, resource)?.revision
+
+const liveProjectionResource = (resource: string): resource is LiveProjectionResource =>
+  resource === 'world-manifest' ||
+  resource === 'alliance-manifest' ||
+  resource === 'telemetry-alarms'
+
+const liveStateVector = (server: ConnectedServer) => ({
+  type: 'state-vector' as const,
+  requestId: uuidV7(),
+  revision: revisionNumber(server, 'world', 'telemetry-status'),
+  projections: [...resources.values()]
+    .filter(
+      (resource): resource is ServerSyncResource & { readonly id: LiveProjectionResource } =>
+        resource.live === true && liveProjectionResource(resource.id),
+    )
+    .flatMap((resource): LiveProjectionState[] => {
+      const scope = resource.scope(server)
+      if (scope === null) return []
+      return [
+        {
+          resource: resource.id,
+          scope,
+          version: serverSyncRevision(server, scope, resource.id) ?? null,
+        },
+      ]
+    })
+    .slice(0, MAX_LIVE_PROJECTIONS),
+})
 
 const revisionNumber = (
   server: ConnectedServer,
@@ -495,6 +545,49 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
   })()
   if (typeof parsed !== 'object' || parsed === null || !('type' in parsed)) return null
   const candidate = parsed as Record<string, unknown>
+  if (candidate.type === 'state-correction') {
+    if (
+      typeof candidate.requestId !== 'string' ||
+      !UUID_V7.test(candidate.requestId) ||
+      (candidate.mode !== 'correction' && candidate.mode !== 'snapshot') ||
+      !Number.isSafeInteger(candidate.revision) ||
+      Number(candidate.revision) < 0 ||
+      !Array.isArray(candidate.projections) ||
+      candidate.projections.length > MAX_LIVE_PROJECTIONS
+    )
+      return null
+    const projections: LiveProjectionState[] = []
+    const keys = new Set<string>()
+    for (const raw of candidate.projections) {
+      if (typeof raw !== 'object' || raw === null) return null
+      const projection = raw as Record<string, unknown>
+      if (
+        typeof projection.resource !== 'string' ||
+        !liveProjectionResource(projection.resource) ||
+        typeof projection.scope !== 'string' ||
+        projection.scope.length === 0 ||
+        projection.scope.length > 64 ||
+        (projection.version !== null &&
+          (typeof projection.version !== 'string' || !/^[0-9a-f]{64}$/.test(projection.version)))
+      )
+        return null
+      const key = `${projection.resource}\u0000${projection.scope}`
+      if (keys.has(key)) return null
+      keys.add(key)
+      projections.push({
+        resource: projection.resource,
+        scope: projection.scope,
+        version: projection.version,
+      })
+    }
+    return {
+      type: 'state-correction',
+      requestId: candidate.requestId,
+      mode: candidate.mode,
+      revision: Number(candidate.revision),
+      projections,
+    }
+  }
   if (candidate.type === 'manifest-reconcile') {
     const revision = !('revision' in candidate)
       ? null
@@ -550,11 +643,46 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
   return null
 }
 
+const completeLiveReconciliation = (connection: LiveConnection): void => {
+  connection.reconciled = true
+  connection.fallbackReadRequested = false
+  if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
+  connection.bootstrapFallbackTimer = null
+  deferHealthyLiveSchedules(connection.server)
+}
+
 const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
   if (!isCurrentServerConnection(server)) return
   const event = parseLiveServerEvent(raw)
   if (event === null) {
     requestServerSync('revision-gap', 'telemetry-status', server)
+    return
+  }
+  if (event.type === 'state-correction') {
+    const live = liveConnections.get(serverConnectionIdentity(server))
+    if (live === undefined || live.stateRequestId !== event.requestId) return
+    live.stateRequestId = null
+    completeLiveReconciliation(live)
+    const currentRevision = revisionNumber(server, 'world', 'telemetry-status')
+    const refreshStatus =
+      currentRevision === null ||
+      currentRevision < event.revision ||
+      (event.mode === 'snapshot' && currentRevision === event.revision)
+    if (refreshStatus) {
+      requestServerSync('reconnect', 'telemetry-status', server)
+    }
+    for (const projection of event.projections) {
+      const resource = resources.get(projection.resource)
+      if (resource?.live !== true || resource.scope(server) !== projection.scope) continue
+      const current = serverSyncRevision(server, projection.scope, projection.resource)
+      if (
+        event.mode === 'snapshot' ||
+        projection.version === null ||
+        current !== projection.version
+      ) {
+        requestServerSync('reconnect', projection.resource, server)
+      }
+    }
     return
   }
   if (event.type === 'manifest-reconcile') {
@@ -617,6 +745,8 @@ const closeLiveConnection = (connection: LiveConnection, preserveReconnect = fal
   connection.heartbeatTimer = null
   connection.heartbeatTimeout = null
   connection.healthy = false
+  connection.reconciled = false
+  connection.stateRequestId = null
   const socket = connection.socket
   connection.socket = null
   if (socket !== null && socket.readyState < 2) socket.close(1000, 'retired')
@@ -636,6 +766,18 @@ const armLiveHeartbeat = (connection: LiveConnection): void => {
       if (connection.socket === socket) socket.close(1001, 'live sync heartbeat timeout')
     }, LIVE_HEARTBEAT_TIMEOUT_MS)
   }, LIVE_HEARTBEAT_MS)
+}
+
+const probeLiveConnection = (connection: LiveConnection): void => {
+  const socket = connection.socket
+  if (socket === null || socket.readyState !== 1 || connection.heartbeatTimeout !== null) return
+  if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
+  connection.heartbeatTimer = null
+  socket.send('ping')
+  connection.heartbeatTimeout = setTimeout(() => {
+    connection.heartbeatTimeout = null
+    if (connection.socket === socket) socket.close(1001, 'live sync resume timeout')
+  }, LIVE_HEARTBEAT_TIMEOUT_MS)
 }
 
 const confirmLiveConnection = (connection: LiveConnection): void => {
@@ -664,11 +806,14 @@ const armLiveBootstrapFallback = (connection: LiveConnection): void => {
     connection.bootstrapFallbackTimer = null
     if (
       !isCurrentServerConnection(connection.server) ||
-      connection.healthy ||
+      connection.reconciled ||
       connection.fallbackReadRequested
     )
       return
     connection.fallbackReadRequested = true
+    connection.reconciled = true
+    connection.stateRequestId = null
+    deferHealthyLiveSchedules(connection.server)
     requestLiveServerSync('reconnect', connection.server)
   }, LIVE_BOOTSTRAP_FALLBACK_MS)
 }
@@ -691,6 +836,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
   endpoint.searchParams.set('scope', liveScope(server))
   endpoint.searchParams.set('client', 'userscript')
   endpoint.searchParams.set('clientVersion', userscriptVersion)
+  endpoint.searchParams.set('stateVector', '1')
   const authenticated = server.token !== null && server.tokenUsable !== false
   if (!authenticated) endpoint.searchParams.set('clientId', liveClientId(server.url))
   const revision = serverSyncRevision(server, 'world', 'telemetry-status')
@@ -712,12 +858,12 @@ const openLiveConnection = (connection: LiveConnection): void => {
   socket.addEventListener('open', () => {
     if (connection.socket !== socket || !isCurrentServerConnection(server)) return
     connection.healthy = true
-    if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
-    connection.bootstrapFallbackTimer = null
-    deferHealthyLiveSchedules(server)
+    connection.reconciled = false
     armLiveHeartbeat(connection)
-    requestLiveServerSync(connection.attempts === 0 ? 'connect' : 'reconnect', server)
     connection.fallbackReadRequested = false
+    const state = liveStateVector(server)
+    connection.stateRequestId = state.requestId
+    socket.send(JSON.stringify(state))
     armTimer()
   })
   socket.addEventListener('message', (message) => {
@@ -734,6 +880,8 @@ const openLiveConnection = (connection: LiveConnection): void => {
     if (connection.socket !== socket) return
     connection.socket = null
     connection.healthy = false
+    connection.reconciled = false
+    connection.stateRequestId = null
     if (connection.heartbeatTimer !== null) clearTimeout(connection.heartbeatTimer)
     if (connection.heartbeatTimeout !== null) clearTimeout(connection.heartbeatTimeout)
     connection.heartbeatTimer = null
@@ -763,6 +911,8 @@ const reconcileLiveConnections = (): void => {
         heartbeatTimeout: null,
         attempts: 0,
         healthy: false,
+        reconciled: false,
+        stateRequestId: null,
         manifestRevision: null,
         pendingTileOffers: new Map(),
       }
@@ -781,6 +931,8 @@ const recover = (reason: 'focus' | 'online'): void => {
   if (activeDocument()) {
     reconcileLiveConnections()
     for (const server of connected()) {
+      const connection = liveConnections.get(serverConnectionIdentity(server))
+      if (connection !== undefined && liveHealthy(server)) probeLiveConnection(connection)
       for (const resource of resources.values()) {
         if (resource.live === true && liveHealthy(server)) continue
         requestServerSync(reason, resource.id, server)

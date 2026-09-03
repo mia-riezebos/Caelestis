@@ -53,6 +53,11 @@ export interface SeasonManifestReadModel {
   readonly read: (input: ManifestProjectionInput) => Promise<ManifestProjectionRead>
   readonly invalidate: (surface?: TemplateSurface) => Promise<number>
   readonly revision: () => Promise<number>
+  /** Current unexpired version, or null when an authoritative manifest read is required. */
+  readonly knownVersion: (
+    scope: ManifestVisibilityScope,
+    surface: TemplateSurface,
+  ) => Promise<string | null>
 }
 
 export const MANIFEST_READ_MODEL_TTL_MILLISECONDS = 3 * 60_000
@@ -198,5 +203,13 @@ export const createSeasonManifestReadModel = (options: {
       }
       return exclusive(async () => (await load()).revision)
     },
+    knownVersion: (scope, surface) =>
+      exclusive(async () => {
+        const current = await load()
+        const entry = current.entries.find(
+          (candidate) => candidate.key === projectionKey(scope, surface),
+        )
+        return entry !== undefined && entry.expiresAt > now() ? entry.manifest.version : null
+      }),
   }
 }

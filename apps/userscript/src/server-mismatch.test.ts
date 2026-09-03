@@ -15,11 +15,13 @@ const harness = vi.hoisted(() => ({
     write: vi.fn<(key: string, bytes: Uint8Array) => Promise<void>>(),
     deleteOne: vi.fn<(key: string) => Promise<void>>(),
     deleteTile: vi.fn<(serverUrl: string, tile: { x: number; y: number }) => Promise<void>>(),
+    deleteServer: vi.fn<(serverUrl: string) => Promise<void>>(),
   },
 }))
 
 vi.mock('./server-mismatch-cache.js', () => ({
   deleteCachedServerMismatch: harness.cache.deleteOne,
+  deleteCachedServerMismatches: harness.cache.deleteServer,
   deleteCachedServerMismatchTile: harness.cache.deleteTile,
   readCachedServerMismatch: harness.cache.read,
   writeCachedServerMismatch: harness.cache.write,
@@ -44,6 +46,7 @@ beforeEach(() => {
   harness.cache.write.mockResolvedValue()
   harness.cache.deleteOne.mockResolvedValue()
   harness.cache.deleteTile.mockResolvedValue()
+  harness.cache.deleteServer.mockResolvedValue()
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -142,6 +145,55 @@ describe('server mismatch masks', () => {
     invalidateServerMismatchTile(harness.server.url, { x: 3, y: 4 })
 
     expect(harness.cache.deleteTile).toHaveBeenCalledWith(harness.server.url, { x: 3, y: 4 })
+  })
+
+  it('discards every server mask after a missed live revision', async () => {
+    const { invalidateServerMismatches } = await import('./server-mismatch.js')
+
+    invalidateServerMismatches(harness.server.url)
+
+    expect(harness.cache.deleteServer).toHaveBeenCalledWith(harness.server.url)
+  })
+
+  it('wakes rendering when server invalidation removes a cached miss', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 204 })),
+    )
+    const { invalidateServerMismatches, onServerMismatchesChanged, serverMismatchMaskFor } =
+      await import('./server-mismatch.js')
+    const changed = vi.fn()
+    onServerMismatchesChanged(changed)
+
+    expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).toBeNull()
+    await vi.waitFor(() => expect(harness.cache.deleteOne).toHaveBeenCalledOnce())
+    invalidateServerMismatches(harness.server.url)
+
+    expect(changed).toHaveBeenCalledOnce()
+  })
+
+  it('wakes rendering after an invalidated pending read stops blocking replacement', async () => {
+    let finishFetch!: (response: Response) => void
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            finishFetch = resolve
+          }),
+      )
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetch)
+    const { invalidateServerMismatches, onServerMismatchesChanged, serverMismatchMaskFor } =
+      await import('./server-mismatch.js')
+    onServerMismatchesChanged(() => serverMismatchMaskFor(template, { x: 3, y: 4 }))
+
+    expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).toBeNull()
+    await vi.waitFor(() => expect(finishFetch).toBeTypeOf('function'))
+    invalidateServerMismatches(harness.server.url)
+    finishFetch(new Response(null, { status: 204 }))
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
   })
 
   it('rejects a response body that finishes after its tile was invalidated', async () => {

@@ -8,6 +8,12 @@ const PRUNE_EVERY_WRITES = 16
 
 let writesUntilPrune = PRUNE_EVERY_WRITES
 const tileOperations = new Map<string, Promise<void>>()
+const serverOperations = new Map<string, Promise<void>>()
+
+const serverUrlFor = (key: string): string => {
+  const separator = key.indexOf('\u0000')
+  return separator < 0 ? key : key.slice(0, separator)
+}
 
 const operationKeyFor = (key: string): string => {
   const first = key.indexOf('\u0000')
@@ -29,6 +35,23 @@ const serialize = <Result>(key: string, operation: () => Promise<Result>): Promi
   tileOperations.set(key, settled)
   void settled.then(() => {
     if (tileOperations.get(key) === settled) tileOperations.delete(key)
+  })
+  return result
+}
+
+const serializeServer = <Result>(
+  serverUrl: string,
+  operation: () => Promise<Result>,
+): Promise<Result> => {
+  const previous = serverOperations.get(serverUrl) ?? Promise.resolve()
+  const result = previous.then(operation, operation)
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  serverOperations.set(serverUrl, settled)
+  void settled.then(() => {
+    if (serverOperations.get(serverUrl) === settled) serverOperations.delete(serverUrl)
   })
   return result
 }
@@ -62,8 +85,9 @@ const prune = async (cache: Cache): Promise<void> => {
 
 /** A stale mask is enough to draw immediately; the caller still refreshes it from the server. */
 export const readCachedServerMismatch = async (key: string): Promise<Uint8Array | null> => {
-  // Reads for separate templates on the same tile stay concurrent. They only wait for an older
-  // write or invalidation, so a read started after a paint cannot overtake the deletion barrier.
+  // Reads stay concurrent across tiles. They wait only for an older server-wide purge or work on
+  // their tile, so a read started after invalidation cannot overtake its deletion barrier.
+  await serverOperations.get(serverUrlFor(key))
   await tileOperations.get(operationKeyFor(key))
   const cache = await open()
   if (cache === null) return null
@@ -81,6 +105,7 @@ export const readCachedServerMismatch = async (key: string): Promise<Uint8Array 
 
 export const writeCachedServerMismatch = async (key: string, bytes: Uint8Array): Promise<void> => {
   if (bytes.length === 0 || bytes.length > MAX_RESPONSE_BYTES) return
+  await serverOperations.get(serverUrlFor(key))
   await serialize(operationKeyFor(key), async () => {
     const cache = await open()
     if (cache === null) return
@@ -104,6 +129,7 @@ export const writeCachedServerMismatch = async (key: string, bytes: Uint8Array):
 }
 
 export const deleteCachedServerMismatch = async (key: string): Promise<void> => {
+  await serverOperations.get(serverUrlFor(key))
   await serialize(operationKeyFor(key), async () => {
     const cache = await open()
     if (cache === null) return
@@ -117,6 +143,7 @@ export const deleteCachedServerMismatchTile = async (
   serverUrl: string,
   tile: TileCoord,
 ): Promise<void> => {
+  await serverOperations.get(serverUrl)
   await serialize(tileOperationKeyFor(serverUrl, tile), async () => {
     const cache = await open()
     if (cache === null) return
@@ -128,6 +155,28 @@ export const deleteCachedServerMismatchTile = async (
         requests.map((request) => {
           const key = keyFrom(request)
           return key?.startsWith(prefix) && key.endsWith(suffix) ? cache.delete(request) : false
+        }),
+      )
+    } catch {}
+  })
+}
+
+export const deleteCachedServerMismatches = async (serverUrl: string): Promise<void> => {
+  const prefix = `${serverUrl}\u0000`
+  await serializeServer(serverUrl, async () => {
+    await Promise.all(
+      [...tileOperations].flatMap(([key, operation]) =>
+        key.startsWith(prefix) ? [operation] : [],
+      ),
+    )
+    const cache = await open()
+    if (cache === null) return
+    try {
+      const requests = await cache.keys()
+      await Promise.all(
+        requests.map((request) => {
+          const key = keyFrom(request)
+          return key?.startsWith(prefix) ? cache.delete(request) : false
         }),
       )
     } catch {}

@@ -4,6 +4,7 @@ import {
   type StatusResponse,
   sha256Hex,
   type TemplateStatus,
+  type TileKey,
 } from '@caelestis/shared'
 
 export type StatusVisibilityScope = 'public' | 'admin'
@@ -88,6 +89,9 @@ export interface StatusTileValue {
 export interface StatusProjectionMutation {
   readonly baseRevision: number
   readonly revision: number
+  /** Rebuild from the authoritative source when a batch contains a revision gap. */
+  readonly forceReconcile?: true
+  readonly invalidatedTiles?: readonly TileKey[]
   readonly changes: readonly {
     readonly templateId: string
     readonly published: boolean
@@ -117,6 +121,8 @@ const deltaFor = (
   previous: PersistedStatusReadModel,
   next: PersistedStatusReadModel,
   scope: StatusVisibilityScope,
+  invalidatedTiles?: readonly TileKey[],
+  invalidateAllTiles = false,
 ): StatusDelta => {
   const before = new Map(
     (scope === 'admin' ? previous.adminTemplates : previous.publicTemplates).map((status) => [
@@ -133,6 +139,11 @@ const deltaFor = (
       (status) => JSON.stringify(before.get(status.templateId)) !== JSON.stringify(status),
     ),
     removedTemplateIds: [...before.keys()].filter((templateId) => !afterIds.has(templateId)),
+    ...(invalidateAllTiles
+      ? { invalidateAllTiles: true as const }
+      : invalidatedTiles === undefined
+        ? {}
+        : { invalidatedTiles }),
   }
 }
 
@@ -269,6 +280,8 @@ export const createSeasonStatusReadModel = (options: {
 
   const reconcile = async (
     force: boolean,
+    invalidatedTiles?: readonly TileKey[],
+    invalidateAllTiles = false,
   ): Promise<{
     readonly state: PersistedStatusReadModel
     readonly cacheOutcome: 'hit' | 'miss' | 'stale'
@@ -337,8 +350,8 @@ export const createSeasonStatusReadModel = (options: {
           previous === null
             ? null
             : {
-                public: deltaFor(previous, next, 'public'),
-                admin: deltaFor(previous, next, 'admin'),
+                public: deltaFor(previous, next, 'public', invalidatedTiles, invalidateAllTiles),
+                admin: deltaFor(previous, next, 'admin', invalidatedTiles, invalidateAllTiles),
               },
       }
     }
@@ -349,6 +362,9 @@ export const createSeasonStatusReadModel = (options: {
     mutation: StatusProjectionMutation,
   ): Promise<StatusProjectionChange | null> => {
     await load()
+    if (mutation.forceReconcile === true) {
+      return (await reconcile(true, undefined, true)).change
+    }
     if (state === null || mutation.baseRevision !== state.revision) {
       if (state !== null && mutation.revision <= state.revision) {
         const unchanged = {
@@ -359,11 +375,12 @@ export const createSeasonStatusReadModel = (options: {
         }
         return { public: unchanged, admin: unchanged }
       }
-      return (await reconcile(true)).change
+      return (await reconcile(true, undefined, true)).change
     }
     const publicTemplates = applyScopeMutation(state.publicTemplates, mutation, 'public')
     const adminTemplates = applyScopeMutation(state.adminTemplates, mutation, 'admin')
-    if (publicTemplates === null || adminTemplates === null) return (await reconcile(true)).change
+    if (publicTemplates === null || adminTemplates === null)
+      return (await reconcile(true, undefined, true)).change
     const previous = state
     const next: PersistedStatusReadModel = {
       season: options.season,
@@ -376,8 +393,8 @@ export const createSeasonStatusReadModel = (options: {
     state = next
     await publish(next)
     return {
-      public: deltaFor(previous, next, 'public'),
-      admin: deltaFor(previous, next, 'admin'),
+      public: deltaFor(previous, next, 'public', mutation.invalidatedTiles),
+      admin: deltaFor(previous, next, 'admin', mutation.invalidatedTiles),
     }
   }
 

@@ -9,6 +9,7 @@ import {
   type Seconds,
   type StatusResponse,
   seconds,
+  sha256Hex,
   type TileCoord,
   type TileHistoryFrame,
   type TileHistoryResponse,
@@ -192,7 +193,10 @@ export const readAlarms = (
     const alarms = yield* sqlRead('readActiveAlarms', () =>
       sql.readActiveAlarms(season, includeUnpublished),
     )
-    return { alarms }
+    const version = yield* Effect.promise(() =>
+      sha256Hex(new TextEncoder().encode(JSON.stringify(alarms))),
+    )
+    return { version, alarms }
   })
 
 export const readStatus = (

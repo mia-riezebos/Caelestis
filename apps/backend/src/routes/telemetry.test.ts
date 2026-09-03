@@ -350,6 +350,7 @@ describe('telemetry routes', () => {
     })
     expect(active.status).toBe(200)
     await expect(active.json()).resolves.toEqual({
+      version: expect.stringMatching(/^[0-9a-f]{64}$/),
       alarms: [
         expect.objectContaining({
           id: EVENT_ID,
@@ -364,11 +365,15 @@ describe('telemetry routes', () => {
     const hidden = await app.request('/telemetry/alarms?season=0', {
       headers: bearer(readToken),
     })
-    await expect(hidden.json()).resolves.toEqual({ alarms: [] })
+    await expect(hidden.json()).resolves.toEqual({
+      version: expect.stringMatching(/^[0-9a-f]{64}$/),
+      alarms: [],
+    })
     const admin = await app.request('/telemetry/alarms?season=0', {
       headers: bearer(BOOTSTRAP),
     })
     await expect(admin.json()).resolves.toEqual({
+      version: expect.stringMatching(/^[0-9a-f]{64}$/),
       alarms: [expect.objectContaining({ id: EVENT_ID })],
     })
   })
@@ -430,6 +435,7 @@ describe('telemetry routes', () => {
       status: {
         baseRevision: 1,
         revision: 2,
+        invalidatedTiles: ['0/0'],
         templates: [
           {
             templateId,

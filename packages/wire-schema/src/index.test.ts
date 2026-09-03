@@ -9,6 +9,7 @@ import {
   ContributionsResponse,
   HistoryResponse,
   LeaderboardResponse,
+  LiveSyncClientEvent,
   Manifest,
   Node,
   NodeStatus,
@@ -111,6 +112,7 @@ const encoders = [
   Schema.encodeSync(PaintTile),
   Schema.encodeSync(PaintEvent),
   Schema.encodeSync(TileOffer),
+  Schema.encodeSync(LiveSyncClientEvent),
   Schema.encodeSync(TileOfferResponse),
   Schema.encodeSync(TileUploadResponse),
   Schema.encodeSync(TemplateStatus),
@@ -121,7 +123,30 @@ const encoders = [
 ]
 
 it('exposes every exported wire schema as a bidirectional codec', () => {
-  expect(encoders).toHaveLength(16)
+  expect(encoders).toHaveLength(17)
+})
+
+describe('live state vectors', () => {
+  const state = {
+    type: 'state-vector' as const,
+    requestId: EVENT_ID,
+    revision: 7,
+    projections: [
+      { resource: 'world-manifest' as const, scope: 'world', version: HASH },
+      { resource: 'telemetry-alarms' as const, scope: 'world', version: null },
+    ],
+  }
+
+  it('accepts a bounded state vector with unknown projections', () => {
+    expect(Schema.decodeUnknownSync(LiveSyncClientEvent)(state)).toEqual(state)
+  })
+
+  it('rejects duplicate projection identities', () => {
+    expectRejected(LiveSyncClientEvent, {
+      ...state,
+      projections: [state.projections[0], state.projections[0]],
+    })
+  })
 })
 
 describe('tile and template schemas', () => {
@@ -1417,6 +1442,10 @@ describe('cross-field and time-unit schemas', () => {
       removedTemplateIds: [TEMPLATE_ID],
     }
     expect(Schema.decodeUnknownSync(StatusDelta)(delta)).toEqual(delta)
+    expect(Schema.decodeUnknownSync(StatusDelta)({ ...delta, invalidateAllTiles: true })).toEqual({
+      ...delta,
+      invalidateAllTiles: true,
+    })
     expect(
       Schema.decodeUnknownSync(TileOfferResponse)({
         wanted: [],

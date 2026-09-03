@@ -14,6 +14,7 @@ import {
   TILE_SIZE,
   type TileCoord,
   TRANSPARENT_INDEX,
+  tileKey,
   WORLD_PIXELS,
   WRONG,
 } from '@caelestis/shared'
@@ -81,13 +82,18 @@ const applyStatusProjectionMutations = async (
   const contiguous = mutations.every(
     (mutation, index) => index === 0 || mutation.baseRevision === mutations[index - 1]?.revision,
   )
-  return contiguous
-    ? repairCommittedStatusProjection(readModel, season, {
-        baseRevision: first.baseRevision,
-        revision: last.revision,
-        changes: mutations.flatMap((mutation) => mutation.changes),
-      })
-    : repairCommittedStatusProjection(readModel, season)
+  return repairCommittedStatusProjection(readModel, season, {
+    baseRevision: first.baseRevision,
+    revision: last.revision,
+    ...(contiguous
+      ? {
+          invalidatedTiles: [
+            ...new Set(mutations.flatMap((mutation) => mutation.invalidatedTiles ?? [])),
+          ],
+          changes: mutations.flatMap((mutation) => mutation.changes),
+        }
+      : { forceReconcile: true, changes: [] }),
+  })
 }
 
 export interface StatusProjectionBatch {
@@ -446,6 +452,7 @@ const recordObservationPromise = async (
       : {
           baseRevision: committed.revision - 1,
           revision: committed.revision,
+          invalidatedTiles: [tileKey(metadata.tile)],
           changes: committed.statusChanges.map(
             ({ published, totalPixels, colourTotals, previous, current }) => {
               const value = (status: TemplateTileStatusRecord) => ({

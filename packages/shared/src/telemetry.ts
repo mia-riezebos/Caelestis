@@ -94,11 +94,29 @@ export interface LiveTileOfferCacheResponse {
   readonly error?: 'forbidden' | 'invalid'
 }
 
-export type LiveSyncClientEvent = {
-  readonly type: 'tile-offer-cache'
-  readonly requestId: string
-  readonly batch: LiveTileOfferBatch
+export const MAX_LIVE_PROJECTIONS = 16
+
+export type LiveProjectionResource = 'world-manifest' | 'alliance-manifest' | 'telemetry-alarms'
+
+/** One client-held projection version. Null means this connection needs a complete snapshot. */
+export interface LiveProjectionState {
+  readonly resource: LiveProjectionResource
+  readonly scope: string
+  readonly version: string | null
 }
+
+export type LiveSyncClientEvent =
+  | {
+      readonly type: 'state-vector'
+      readonly requestId: string
+      readonly revision: number | null
+      readonly projections: readonly LiveProjectionState[]
+    }
+  | {
+      readonly type: 'tile-offer-cache'
+      readonly requestId: string
+      readonly batch: LiveTileOfferBatch
+    }
 
 export interface TileOfferResponse {
   /** Tiles the server does not already have and wants the bytes for. */
@@ -117,12 +135,23 @@ export interface StatusDelta {
   readonly revision: number
   readonly templates: readonly TemplateStatus[]
   readonly removedTemplateIds: readonly string[]
+  /** Every cached mismatch artifact may be stale because the delta crosses an unknown revision. */
+  readonly invalidateAllTiles?: true
+  /** Canvas tiles whose immutable mismatch artifacts changed with this revision. */
+  readonly invalidatedTiles?: readonly TileKey[]
 }
 
 export type LiveSyncServerEvent =
   | { readonly type: 'ready'; readonly revision: number }
   | { readonly type: 'status-delta'; readonly delta: StatusDelta }
   | { readonly type: 'status-reconcile'; readonly revision: number }
+  | {
+      readonly type: 'state-correction'
+      readonly requestId: string
+      readonly mode: 'correction' | 'snapshot'
+      readonly revision: number
+      readonly projections: readonly LiveProjectionState[]
+    }
   | {
       readonly type: 'manifest-reconcile'
       readonly revision: number
@@ -299,5 +328,7 @@ export interface Alarm {
 
 /** Active server-owned alarms for templates visible to the caller. */
 export interface AlarmsResponse {
+  /** Hash of the complete caller-visible alarm projection; absent on older servers. */
+  readonly version?: string
   readonly alarms: readonly Alarm[]
 }
