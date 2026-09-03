@@ -961,9 +961,11 @@ describe('telemetry routes', () => {
         body: JSON.stringify(event),
       })
 
-    vi.spyOn(sql, 'applyPaintEvent').mockRejectedValueOnce(
-      new Error('D1 unavailable after the counter write'),
-    )
+    const applyPaintEvent = sql.applyPaintEvent.bind(sql)
+    vi.spyOn(sql, 'applyPaintEvent').mockImplementationOnce(async (...args) => {
+      await applyPaintEvent(...args)
+      throw new Error('D1 response lost after commit')
+    })
     expect((await report()).status).toBe(500)
     expect((await report()).status).toBe(200)
     const duplicate = await report()

@@ -3,6 +3,7 @@ import { type Millis, millis, type Seconds, seconds } from '@caelestis/shared'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import {
   addCounters,
+  COUNTER_IDEMPOTENCY_RETENTION_SECONDS,
   type CounterDelta,
   type CounterValues,
   canAccumulateCounters,
@@ -95,6 +96,10 @@ export class TelemetryShard extends DurableObject<Env> {
     this.pruneRetained(nowSeconds)
 
     this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        'DELETE FROM applied_counter_events WHERE seen_at_ms <= ?1',
+        bindMillis(millis(nowMilliseconds - COUNTER_IDEMPOTENCY_RETENTION_SECONDS * 1_000)),
+      )
       if (idempotencyKey !== undefined) {
         const claimed = this.ctx.storage.sql.exec(
           `INSERT OR IGNORE INTO applied_counter_events (event_id, seen_at_ms) VALUES (?1, ?2)`,
@@ -450,6 +455,8 @@ export class TelemetryShard extends DurableObject<Env> {
         event_id TEXT PRIMARY KEY,
         seen_at_ms INTEGER NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS applied_counter_events_seen_at_idx
+        ON applied_counter_events (seen_at_ms);
     `)
   }
 

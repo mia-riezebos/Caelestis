@@ -630,11 +630,16 @@ const recordPaintPromise = async (
   includeUnpublished: boolean,
 ): Promise<'duplicate' | 'partial' | 'recorded'> => {
   const seenAt = millis(Date.now())
-  await ports.sql.rememberPainter(event.wplaceUserId, event.displayName, seenAt)
   const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
   if (event.painted === null || event.painted !== submitted) {
-    const applied = await ports.sql.applyPaintEvent(event.eventId, event.wplaceUserId, seenAt, [])
-    return applied ? 'partial' : 'duplicate'
+    const application = await ports.sql.applyPaintEvent(
+      event.eventId,
+      event.wplaceUserId,
+      event.displayName,
+      seenAt,
+      { counters: [], contributions: [] },
+    )
+    return application.applied ? 'partial' : 'duplicate'
   }
 
   const totals = new Map<string, { placed: number; correct: number; repairs: number }>()
@@ -689,14 +694,16 @@ const recordPaintPromise = async (
       ...total,
     })
   }
-  await ports.counters.record(counters, event.eventId)
-  const applied = await ports.sql.applyPaintEvent(
+  const application = await ports.sql.applyPaintEvent(
     event.eventId,
     event.wplaceUserId,
+    event.displayName,
     seenAt,
-    contributions,
+    { counters, contributions },
   )
-  return applied ? 'recorded' : 'duplicate'
+  if (application.accounting === null) return 'duplicate'
+  await ports.counters.record(application.accounting.counters, event.eventId)
+  return application.applied ? 'recorded' : 'duplicate'
 }
 
 const storage = <A>(operation: string, run: () => Promise<A>) =>

@@ -6,6 +6,7 @@ export {
   isValidCounterDelta,
 } from './counter-delta.js'
 export {
+  COUNTER_IDEMPOTENCY_RETENTION_SECONDS,
   type CounterDelta,
   type CounterStore,
   type CounterValues,
@@ -60,6 +61,8 @@ export {
   NodePathTooLongError,
   type NodeRecord,
   NodeSubtreeChangedError,
+  type PaintEventAccounting,
+  type PaintEventApplication,
   READ_BUCKETS_CHUNK_SIZE,
   type ServerSettings,
   type SqlStore,

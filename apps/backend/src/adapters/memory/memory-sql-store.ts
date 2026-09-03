@@ -49,6 +49,8 @@ import {
   NodePathTooLongError,
   type NodeRecord,
   NodeSubtreeChangedError,
+  type PaintEventAccounting,
+  type PaintEventApplication,
   type ServerSettings,
   type SqlStore,
   TELEMETRY_DECAY_EDGES,
@@ -145,7 +147,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
   private readonly serverOwnedTemplateStatuses = new Set<string>()
   private readonly templateAlarmTileStatuses = new Map<string, TemplateTileStatusRecord>()
-  private readonly appliedEvents = new Set<string>()
+  private readonly appliedEvents = new Map<string, PaintEventAccounting>()
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
   private readonly tileHistory = new Map<string, TileHistoryRow>()
@@ -1385,14 +1387,17 @@ export class MemorySqlStore implements SqlStore {
 
   async applyPaintEvent(
     eventId: string,
-    _wplaceUserId: number,
-    _seenAt: Millis,
-    deltas: readonly ContributionDelta[],
-  ): Promise<boolean> {
-    if (this.appliedEvents.has(eventId)) return false
-    this.appliedEvents.add(eventId)
-    await this.addContributions(deltas)
-    return true
+    wplaceUserId: number,
+    displayName: string,
+    seenAt: Millis,
+    accounting: PaintEventAccounting,
+  ): Promise<PaintEventApplication> {
+    const held = this.appliedEvents.get(eventId)
+    if (held !== undefined) return { applied: false, accounting: held }
+    this.appliedEvents.set(eventId, accounting)
+    await this.addContributions(accounting.contributions)
+    await this.rememberPainter(wplaceUserId, displayName, seenAt)
+    return { applied: true, accounting }
   }
 
   async rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void> {

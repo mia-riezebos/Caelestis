@@ -7,6 +7,7 @@ import { type Millis, millis, seconds } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import {
+  COUNTER_IDEMPOTENCY_RETENTION_SECONDS,
   EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
   FLUSHABLE_AFTER_SECONDS,
@@ -386,6 +387,21 @@ describe('TelemetryShard', () => {
     await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
       { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
     ])
+  })
+
+  it('prunes counter idempotency rows after the supported retry window', async () => {
+    const clock = { now: millis(150_000) }
+    const harness = await makeHarness(clock)
+    await harness.shard.record([], 'old-event')
+    clock.now = millis(clock.now + COUNTER_IDEMPOTENCY_RETENTION_SECONDS * 1_000 + 1)
+
+    await harness.shard.record([], 'new-event')
+
+    expect(
+      harness.storageDatabase
+        .prepare('SELECT event_id FROM applied_counter_events ORDER BY event_id')
+        .all(),
+    ).toEqual([{ event_id: 'new-event' }])
   })
 
   it('schedules the alarm for when the next bucket becomes flushable, not for now', async () => {

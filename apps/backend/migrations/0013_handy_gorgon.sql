@@ -1,0 +1,1 @@
+ALTER TABLE `applied_events` ADD `accounting_json` text;

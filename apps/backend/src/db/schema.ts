@@ -447,12 +447,11 @@ export const contributions = sqliteTable(
  * property of the design with nowhere in the schema to hold it.
  *
  * This table is that place, and it is not the guarantee. The counters it protects live in a Durable
- * The counter store independently deduplicates this id. D1 applies this claim and the contribution
- * increments in one batch, so either side can be retried after the other succeeds without losing or
- * double-counting the paint.
+ * D1 stores the classification beside the claim and applies contribution increments in one batch.
+ * A retry replays that exact classification into the independently idempotent counter store.
  *
- * `seen_at_ms` is what a sweeper prunes on. The row only has to outlive the window in which a retry
- * is plausible, not the event itself.
+ * D1 retains the claim with the aggregate it protects. Pruning it would let an old retry increment
+ * lifetime contributions again; the shorter-lived counter copy can expire with its time bucket.
  */
 export const appliedEvents = sqliteTable(
   'applied_events',
@@ -460,6 +459,8 @@ export const appliedEvents = sqliteTable(
     eventId: text('event_id').primaryKey(),
     wplaceUserId: integer('wplace_user_id').notNull(),
     seenAtMs: integer('seen_at_ms').$type<Millis>().notNull(),
+    // Null only for claims created before classifications were persisted.
+    accountingJson: text('accounting_json'),
   },
   (table) => [
     index('applied_events_seen_at_idx').on(table.seenAtMs),

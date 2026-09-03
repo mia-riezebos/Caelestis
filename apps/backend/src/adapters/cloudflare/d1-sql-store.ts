@@ -31,6 +31,7 @@ import {
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
+  appliedEvents,
   canvasTiles,
   contributions,
   nodes,
@@ -80,6 +81,8 @@ import {
   NodePathTooLongError,
   type NodeRecord,
   NodeSubtreeChangedError,
+  type PaintEventAccounting,
+  type PaintEventApplication,
   READ_BUCKETS_CHUNK_SIZE,
   type ServerSettings,
   type SqlStore,
@@ -2544,48 +2547,75 @@ export class D1SqlStore implements SqlStore {
   async applyPaintEvent(
     eventId: string,
     wplaceUserId: number,
+    displayName: string,
     seenAt: Millis,
-    deltas: readonly ContributionDelta[],
-  ): Promise<boolean> {
+    accounting: PaintEventAccounting,
+  ): Promise<PaintEventApplication> {
+    const encodedAccounting = JSON.stringify(accounting)
     const claim = this.client
       .prepare(
-        `INSERT INTO applied_events (event_id, wplace_user_id, seen_at_ms)
-         VALUES (?, ?, ?)
+        `INSERT INTO applied_events (event_id, wplace_user_id, seen_at_ms, accounting_json)
+         VALUES (?, ?, ?, ?)
          ON CONFLICT DO NOTHING`,
       )
-      .bind(eventId, wplaceUserId, seenAt)
-    if (deltas.length === 0) {
-      const result = await claim.run()
-      return Number(result.meta.changes) > 0
-    }
-
-    const incoming = JSON.stringify(deltas)
-    const contributionWrite = this.client
-      .prepare(
-        `INSERT INTO contributions (
-           wplace_user_id, template_id, day_s, reported_with_token, reported_by_user_id,
-           placed, correct, repairs
-         )
-         SELECT
-           json_extract(value, '$.wplaceUserId'),
-           json_extract(value, '$.templateId'),
-           json_extract(value, '$.day'),
-           json_extract(value, '$.reportedWithToken'),
-           json_extract(value, '$.reportedByUserId'),
-           json_extract(value, '$.placed'),
-           json_extract(value, '$.correct'),
-           json_extract(value, '$.repairs')
-         FROM json_each(?)
-         WHERE changes() > 0
-         ON CONFLICT(wplace_user_id, template_id, day_s, reported_by_user_id) DO UPDATE SET
-           reported_with_token = excluded.reported_with_token,
-           placed = contributions.placed + excluded.placed,
-           correct = contributions.correct + excluded.correct,
-           repairs = contributions.repairs + excluded.repairs`,
+      .bind(eventId, wplaceUserId, seenAt, encodedAccounting)
+    const statements: D1PreparedStatement[] = [claim]
+    if (accounting.contributions.length > 0) {
+      statements.push(
+        this.client
+          .prepare(
+            `INSERT INTO contributions (
+               wplace_user_id, template_id, day_s, reported_with_token, reported_by_user_id,
+               placed, correct, repairs
+             )
+             SELECT
+               json_extract(value, '$.wplaceUserId'),
+               json_extract(value, '$.templateId'),
+               json_extract(value, '$.day'),
+               json_extract(value, '$.reportedWithToken'),
+               json_extract(value, '$.reportedByUserId'),
+               json_extract(value, '$.placed'),
+               json_extract(value, '$.correct'),
+               json_extract(value, '$.repairs')
+             FROM json_each(?)
+             WHERE changes() > 0
+             ON CONFLICT(wplace_user_id, template_id, day_s, reported_by_user_id) DO UPDATE SET
+               reported_with_token = excluded.reported_with_token,
+               placed = contributions.placed + excluded.placed,
+               correct = contributions.correct + excluded.correct,
+               repairs = contributions.repairs + excluded.repairs`,
+          )
+          .bind(JSON.stringify(accounting.contributions)),
       )
-      .bind(incoming)
-    const results = await this.client.batch([claim, contributionWrite])
-    return Number(results[0]?.meta.changes) > 0
+    }
+    statements.push(
+      this.client
+        .prepare(
+          `INSERT INTO painters (wplace_user_id, display_name, seen_at_ms)
+           SELECT ?, ?, ?
+           WHERE changes() > 0
+           ON CONFLICT(wplace_user_id) DO UPDATE SET
+             display_name = excluded.display_name,
+             seen_at_ms = excluded.seen_at_ms
+           WHERE painters.seen_at_ms <= excluded.seen_at_ms`,
+        )
+        .bind(wplaceUserId, displayName, seenAt),
+    )
+    const results = await this.client.batch(statements)
+    if (Number(results[0]?.meta.changes) > 0) return { applied: true, accounting }
+
+    const [stored] = await this.database
+      .select({ accountingJson: appliedEvents.accountingJson })
+      .from(appliedEvents)
+      .where(eq(appliedEvents.eventId, eventId))
+      .limit(1)
+    return {
+      applied: false,
+      accounting:
+        stored?.accountingJson === null || stored?.accountingJson === undefined
+          ? null
+          : (JSON.parse(stored.accountingJson) as PaintEventAccounting),
+    }
   }
 
   async rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void> {

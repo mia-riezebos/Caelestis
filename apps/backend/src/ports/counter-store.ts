@@ -32,6 +32,10 @@ export const RETENTION_SECONDS: Seconds = seconds(3_600)
  */
 export const FLUSHABLE_AFTER_SECONDS: Seconds = seconds(RESOLUTION_SECONDS + GRACE_SECONDS)
 export const EXPIRES_AFTER_SECONDS: Seconds = seconds(FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS)
+/** Event keys outlive every counter timestamp that could have been valid when first received. */
+export const COUNTER_IDEMPOTENCY_RETENTION_SECONDS: Seconds = seconds(
+  EXPIRES_AFTER_SECONDS + GRACE_SECONDS,
+)
 
 /** Prevent unbounded identifiers from creating permanent rows in the shared stores. */
 export const MAX_TEMPLATE_ID_LENGTH = 64
