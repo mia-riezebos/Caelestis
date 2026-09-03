@@ -19,6 +19,8 @@ import { isServerUrlConfigured, resolveSelectedServerUrl, resolveServerUrl } fro
 const SERVER_KEY = 'caelestis:server'
 const TOKEN_KEY = 'caelestis:token'
 const API_VERSION_PATH = '/v1'
+type ApiVersionPath = typeof API_VERSION_PATH | ''
+let apiVersionPath: ApiVersionPath = API_VERSION_PATH
 const configuredServer = import.meta.env.VITE_CAELESTIS_SERVER as string | undefined
 
 export const serverUrlIsConfigured = isServerUrlConfigured(configuredServer)
@@ -67,7 +69,11 @@ const fetchWithTransientRetry = async (url: string, init: RequestInit): Promise<
   return fetch(url, init)
 }
 
-const request = async (path: string, init?: RequestInit): Promise<Response> => {
+const request = async (
+  path: string,
+  init?: RequestInit,
+  versionPath: ApiVersionPath = apiVersionPath,
+): Promise<Response> => {
   const token = readToken()
   const headers = new Headers(init?.headers)
   const reconciles =
@@ -82,7 +88,7 @@ const request = async (path: string, init?: RequestInit): Promise<Response> => {
     reconciles ? frontendClientAccept('recovery', 'connect') : frontendClientAccept(),
   )
   if (token !== null) headers.set('authorization', `Bearer ${token}`)
-  const response = await fetchWithTransientRetry(`${readServerUrl()}${API_VERSION_PATH}${path}`, {
+  const response = await fetchWithTransientRetry(`${readServerUrl()}${versionPath}${path}`, {
     ...init,
     headers,
   })
@@ -99,9 +105,20 @@ const request = async (path: string, init?: RequestInit): Promise<Response> => {
   return response
 }
 
-const json = async <T>(path: string): Promise<T> => (await request(path)).json() as Promise<T>
+const json = async <T>(path: string, versionPath?: ApiVersionPath): Promise<T> =>
+  (await request(path, undefined, versionPath)).json() as Promise<T>
 
-export const getServer = (): Promise<ServerInfo> => json('/server')
+export const getServer = async (): Promise<ServerInfo> => {
+  apiVersionPath = API_VERSION_PATH
+  try {
+    return await json('/server', API_VERSION_PATH)
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) throw error
+  }
+  const server = await json<ServerInfo>('/server', '')
+  apiVersionPath = ''
+  return server
+}
 
 export const getManifest = (season?: number): Promise<Manifest> =>
   json(season === undefined ? '/manifest' : `/manifest?season=${season}`)

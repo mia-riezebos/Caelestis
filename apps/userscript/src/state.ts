@@ -29,7 +29,12 @@ import {
   requestServerUpload,
   serverManifestSequence,
 } from './server-transport.js'
-import { canonicalServerUrl, serverEndpoint } from './server-url.js'
+import {
+  canonicalServerUrl,
+  rememberServerApiVersion,
+  type ServerApiVersion,
+  serverEndpoint,
+} from './server-url.js'
 import {
   APPEARANCE_GROUPS,
   type Appearance,
@@ -891,10 +896,19 @@ export const probeServer = async (
   activeServerProbes.set(base, probeController)
   let observedInfo: ServerInfo | null = null
   try {
-    const { response, body } = await requestServerMetadata(serverEndpoint(base, '/server'), {
+    let apiVersion: ServerApiVersion = 'v1'
+    let metadata = await requestServerMetadata(serverEndpoint(base, '/server', apiVersion), {
       headers: token === null ? {} : { authorization: `Bearer ${token}` },
       signal: probeController.signal,
     })
+    if (metadata.response.status === 404) {
+      apiVersion = 'legacy'
+      metadata = await requestServerMetadata(serverEndpoint(base, '/server', apiVersion), {
+        headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        signal: probeController.signal,
+      })
+    }
+    const { response, body } = metadata
     if (!response.ok) {
       return {
         url: base,
@@ -908,6 +922,7 @@ export const probeServer = async (
     }
     const info = parseServerInfo(body)
     if (info === null) throw new TypeError('server returned invalid metadata')
+    rememberServerApiVersion(base, apiVersion)
     observedInfo = info
     log('install', `probed ${base}`, { name: info.name, auth: info.auth })
 

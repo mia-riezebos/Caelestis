@@ -10,7 +10,9 @@ version.
 The unversioned application paths are aliases for v1. Both prefixes mount the same Hono router, so
 methods, authentication, bodies, responses, caching, CORS, and WebSocket behavior cannot drift.
 Bundled clients use `/v1`; the aliases exist for older userscripts, frontends, and self-hosted
-clients.
+clients. On connection, bundled clients probe `/v1/server` and fall back to the unversioned server
+metadata route after a 404. That choice applies to the rest of the connection, so automatic client
+updates do not strand a self-hosted backend that has not added `/v1` yet.
 
 Do not remove an alias while a supported client release still calls it. Before removal:
 
