@@ -1,14 +1,22 @@
 // @vitest-environment happy-dom
 
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
-import { expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
 import { nativePixelAt } from '../native-pixels.js'
+import { artboardTemplateProgress } from './artboard-markers.js'
 import {
   artboardCanvasWriteRect,
   patchArtboardPixels,
   readArtboardPixels,
+  refreshArtboardPixels,
+  resetArtboardPixelCache,
 } from './artboard-pixels.js'
+
+afterEach(() => {
+  resetArtboardPixelCache()
+  vi.restoreAllMocks()
+})
 
 const image = (indices: readonly number[]): ImageData => {
   const data = new Uint8ClampedArray(indices.length * 4)
@@ -27,6 +35,134 @@ const crosshairImage = (width: number, height: number, cellX: number, cellY: num
   }
   return { data, width, height, colorSpace: 'srgb' } as ImageData
 }
+
+const hqSnapshot = (
+  tileSize: number,
+  tiles: readonly {
+    readonly x: number
+    readonly y: number
+    readonly version: number
+    readonly pixels: readonly number[]
+  }[],
+): ArrayBuffer => {
+  const buffer = new ArrayBuffer(19 + tiles.length * (12 + tileSize * tileSize))
+  const bytes = new Uint8Array(buffer)
+  bytes.set(new TextEncoder().encode('WHQS1'))
+  const view = new DataView(buffer)
+  view.setUint16(5, tileSize, true)
+  view.setBigInt64(7, 1n, true)
+  view.setUint16(15, tiles.length, true)
+  let at = 19
+  for (const tile of tiles) {
+    view.setInt16(at, tile.x, true)
+    view.setInt16(at + 2, tile.y, true)
+    view.setBigInt64(at + 4, BigInt(tile.version), true)
+    bytes.set(tile.pixels, at + 12)
+    at += 12 + tileSize * tileSize
+  }
+  return buffer
+}
+
+it('retains complete HQ bounds after loading the bounded snapshot', async () => {
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  stage.append(frame)
+  const active: ActiveAllianceSurface = {
+    surface: { kind: 'alliance-headquarters', allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: null,
+    bounds: { minX: 0, minY: 0, maxX: 4, maxY: 2 },
+  }
+  const geometry = { originX: 0, originY: 0, width: 4, height: 2 }
+  const response = (body: ArrayBuffer): Response =>
+    new Response(body, {
+      headers: { 'content-type': 'application/x-wplace-alliance-hq-snapshot' },
+    })
+  const fetch = vi
+    .spyOn(window, 'fetch')
+    .mockResolvedValueOnce(
+      response(hqSnapshot(2, [{ x: 0, y: 0, version: 7, pixels: [5, 0, 0, 0] }])),
+    )
+    .mockResolvedValueOnce(response(hqSnapshot(2, [])))
+
+  await refreshArtboardPixels(active, geometry)
+  const pixels = readArtboardPixels(active, geometry)
+  const template = {
+    originX: 0,
+    originY: 0,
+    width: 4,
+    height: 2,
+    indices: new Uint8Array(8).fill(4),
+  }
+
+  expect(artboardTemplateProgress(template, pixels)).toEqual({
+    completed: 1,
+    mismatched: 0,
+    unpainted: 7,
+    known: 8,
+    total: 8,
+  })
+  expect(fetch).toHaveBeenCalledWith(
+    'https://backend.wplace.live/alliances/535245/headquarters/snapshot',
+    expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+      body: JSON.stringify({ minX: 0, minY: 0, maxX: 3, maxY: 1, knownTiles: [] }),
+    }),
+  )
+
+  await refreshArtboardPixels(active, geometry)
+  expect(fetch).toHaveBeenLastCalledWith(
+    'https://backend.wplace.live/alliances/535245/headquarters/snapshot',
+    expect.objectContaining({
+      body: JSON.stringify({
+        minX: 0,
+        minY: 0,
+        maxX: 3,
+        maxY: 1,
+        knownTiles: [{ x: 0, y: 0, version: 7 }],
+      }),
+    }),
+  )
+  expect(artboardTemplateProgress(template, readArtboardPixels(active, geometry)).known).toBe(8)
+})
+
+it.each([
+  ['alliance-picture', 64, 64],
+  ['alliance-banner', 384, 128],
+] as const)('treats the complete %s canvas as known', (kind, width, height) => {
+  const stage = document.createElement('div')
+  const frame = document.createElement('div')
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  canvas.getContext = (() => ({
+    getImageData: () => ({
+      data: new Uint8ClampedArray(width * height * 4),
+      width,
+      height,
+      colorSpace: 'srgb',
+    }),
+  })) as unknown as typeof canvas.getContext
+  frame.append(canvas)
+  stage.append(frame)
+  const active: ActiveAllianceSurface = {
+    surface: { kind, allianceId: 535_245 },
+    stage,
+    frame,
+    draftId: 129,
+    bounds: null,
+  }
+
+  const pixels = readArtboardPixels(active, { originX: 0, originY: 0, width, height })
+  expect(pixels.committed).toHaveLength(1)
+  expect(pixels.committed[0]?.pixels).toHaveLength(width * height)
+  expect(nativePixelAt(pixels, width - 1, height - 1)).toEqual({
+    index: TRANSPARENT_INDEX,
+    source: 'committed',
+  })
+})
 
 it('reads signed HQ tile canvases back into palette indices', () => {
   const stage = document.createElement('div')

@@ -48,7 +48,7 @@ Status:
 
 | Behavior | HQ | Picture | Banner | Status |
 | --- | --- | --- | --- | --- |
-| Committed, draft, unknown, and unpainted pixels have one source contract | Native snapshot | Native snapshot | Native snapshot | Done |
+| Complete bounded committed art plus draft, unknown, and unpainted pixels have one source contract | Full HQ snapshot | Full 64x64 canvas | Full 384x128 canvas | Done |
 | Mismatch and selected-colour semantics | Shared rules | Shared rules | Shared rules | Done |
 | Marker styling, CSS size, density budget, stable sampling, and draw priority | Shared renderer | Shared renderer | Shared renderer | Done |
 | Marker work batching and retained accounting | Retained and patched | Retained and patched | Retained and patched | Done |
@@ -76,7 +76,7 @@ Status:
 | Detach releases observers, DOM canvases, WebGL programs, buffers, and textures | Released | Released | Released | Done |
 | Peek clears output without discarding warm resources | Retained | Retained | Retained | Done |
 | CPU, GPU, memory, workload, upload, and marker metrics feed the profiler | Reported | Reported | Reported | Done |
-| Native-canvas work is incremental and bounded | Retained tile, draft, and marker data | Retained draft and marker data | Retained draft and marker data | Done |
+| Native-canvas work is incremental and bounded | Retained 2000x2000 snapshot, tile deltas, draft, and marker data | Retained full canvas, draft, and marker data | Retained full canvas, draft, and marker data | Done |
 
 ## Proof
 

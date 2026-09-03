@@ -6,7 +6,7 @@ import { activeAllianceSurface } from './alliance-surface.js'
 import { onCanvasWrite } from './canvas-write.js'
 import { count, warn } from './debug.js'
 import { artboardColourProgress, artboardColourTargets } from './gl/artboard-markers.js'
-import { readArtboardPixels } from './gl/artboard-pixels.js'
+import { onArtboardPixelsChange, readArtboardPixels } from './gl/artboard-pixels.js'
 import { getMap } from './map-handle.js'
 import { type ConnectedServer, getState, onStateChange, serverConnectionIdentity } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
@@ -638,6 +638,7 @@ export const installPaintPaletteProgress = (): void => {
   })
   onStateChange(queueRender)
   onLocalChange(queueRender)
+  onArtboardPixelsChange(queueRender)
   onCanvasWrite((canvas) => {
     const active = activeAllianceSurface()
     if (active !== null && canvasWriteTouchesArtboard(active, canvas)) queueRender()

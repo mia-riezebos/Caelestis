@@ -128,6 +128,7 @@ vi.mock('./canvas-write.js', () => ({
   },
 }))
 vi.mock('./gl/artboard-pixels.js', () => ({
+  onArtboardPixelsChange: () => vi.fn(),
   readArtboardPixels: () => harness.artboardPixels,
 }))
 vi.mock('./map-handle.js', () => ({

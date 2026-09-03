@@ -8,6 +8,12 @@ import {
   NO_NATIVE_DRAFT,
 } from '../native-pixels.js'
 import { buildExactRgbIndex, canvasRgbIndex } from '../rgb-index.js'
+import {
+  headquartersPixels,
+  onHeadquartersPixelsChange,
+  refreshHeadquartersPixels,
+  resetHeadquartersPixelCache,
+} from './headquarters-pixels.js'
 
 export interface ArtboardPixelGeometry {
   readonly originX: number
@@ -469,14 +475,36 @@ const draftPixels = (
   return [draft, ...crosshairDraftRegions(active, geometry, draft)]
 }
 
+/** Notify progress, marker, and palette consumers when the complete HQ snapshot changes. */
+export const onArtboardPixelsChange = onHeadquartersPixelsChange
+
+/** Load or update the complete bounded native canvas for the active alliance surface. */
+export const refreshArtboardPixels = (
+  active: ActiveAllianceSurface,
+  geometry: ArtboardPixelGeometry,
+): Promise<void> => {
+  if (active.surface.kind !== 'alliance-headquarters') return Promise.resolve()
+  return refreshHeadquartersPixels(active.surface.allianceId, geometry)
+}
+
+/** Test-only reset for the retained bounded snapshot. */
+export const resetArtboardPixelCache = resetHeadquartersPixelCache
+
 /** Read Wplace's committed and draft art canvases without compositing Caelestis or feedback. */
 export const readArtboardPixels = (
   active: ActiveAllianceSurface,
   geometry: ArtboardPixelGeometry,
-): NativePixelSnapshot => ({
-  committed:
+): NativePixelSnapshot => {
+  const visible =
     active.surface.kind === 'alliance-headquarters'
       ? hqPixels(active, geometry)
-      : assetPixels(active, geometry),
-  draft: draftPixels(active, geometry),
-})
+      : assetPixels(active, geometry)
+  const committed =
+    active.surface.kind === 'alliance-headquarters'
+      ? (headquartersPixels(active.surface.allianceId, geometry, visible) ?? visible)
+      : visible
+  return {
+    committed,
+    draft: draftPixels(active, geometry),
+  }
+}

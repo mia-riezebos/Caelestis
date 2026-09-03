@@ -28,8 +28,10 @@ import {
 import {
   artboardCanvasWriteRect,
   isArtboardCrosshairCanvas,
+  onArtboardPixelsChange,
   patchArtboardPixels,
   readArtboardPixels,
+  refreshArtboardPixels,
 } from './artboard-pixels.js'
 import { isDarkMapTheme } from './contrast-outline.js'
 import { MarkerBatchStore } from './marker-batching.js'
@@ -686,6 +688,12 @@ class ArtboardRenderer {
     }
   }
 
+  nativePixelsChanged(): void {
+    this.markerPixelsDirty = true
+    this.markerDirtyRects.length = 0
+    this.requestRender()
+  }
+
   private draw(): void {
     const viewport = this.syncViewport()
     if (
@@ -919,6 +927,7 @@ const reconcileRenderer = (): void => {
   if (geometry === null || geometry.width <= 0 || geometry.height <= 0) return
   renderer = ArtboardRenderer.create(active, geometry)
   renderer?.requestRender()
+  void refreshArtboardPixels(active, geometry)
 }
 
 export const repaintAllianceOverlayLayer = (): void => renderer?.requestRender()
@@ -931,6 +940,7 @@ export const installAllianceOverlayLayer = (): void => {
   onOverlayPeekChange(repaintAllianceOverlayLayer)
   onStateChange(repaintAllianceOverlayLayer)
   onPaintSelectionChange(() => renderer?.requestRender())
+  onArtboardPixelsChange(() => renderer?.nativePixelsChanged())
   onCanvasWrite((canvas, dirty) => renderer?.nativeCanvasWritten(canvas, dirty))
   reconcileRenderer()
 }

@@ -53,6 +53,7 @@ import {
 } from '../application/tree-server-state.js'
 import { onCanvasWrite } from '../canvas-write.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
+import { onArtboardPixelsChange } from '../gl/artboard-pixels.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
 import {
@@ -1351,6 +1352,9 @@ export const installPanel = (): void => {
   onStateChange(refreshView)
   onAllianceManifestChange(refreshView)
   onActiveAllianceSurfaceChange(selectAlliancePanelSurface)
+  onArtboardPixelsChange(() => {
+    if (currentView() === 'tree' && panelSurface.kind !== 'world') refreshView()
+  })
   selectAlliancePanelSurface(activeAllianceSurface())
   onLocalChange(
     frameQueue(() => {
