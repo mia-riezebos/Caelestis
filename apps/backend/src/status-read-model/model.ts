@@ -4,6 +4,7 @@ import {
   type StatusResponse,
   sha256Hex,
   type TemplateStatus,
+  type TileKey,
 } from '@caelestis/shared'
 
 export type StatusVisibilityScope = 'public' | 'admin'
@@ -88,6 +89,7 @@ export interface StatusTileValue {
 export interface StatusProjectionMutation {
   readonly baseRevision: number
   readonly revision: number
+  readonly invalidatedTiles?: readonly TileKey[]
   readonly changes: readonly {
     readonly templateId: string
     readonly published: boolean
@@ -117,6 +119,7 @@ const deltaFor = (
   previous: PersistedStatusReadModel,
   next: PersistedStatusReadModel,
   scope: StatusVisibilityScope,
+  invalidatedTiles?: readonly TileKey[],
 ): StatusDelta => {
   const before = new Map(
     (scope === 'admin' ? previous.adminTemplates : previous.publicTemplates).map((status) => [
@@ -133,6 +136,7 @@ const deltaFor = (
       (status) => JSON.stringify(before.get(status.templateId)) !== JSON.stringify(status),
     ),
     removedTemplateIds: [...before.keys()].filter((templateId) => !afterIds.has(templateId)),
+    ...(invalidatedTiles === undefined ? {} : { invalidatedTiles }),
   }
 }
 
@@ -376,8 +380,8 @@ export const createSeasonStatusReadModel = (options: {
     state = next
     await publish(next)
     return {
-      public: deltaFor(previous, next, 'public'),
-      admin: deltaFor(previous, next, 'admin'),
+      public: deltaFor(previous, next, 'public', mutation.invalidatedTiles),
+      admin: deltaFor(previous, next, 'admin', mutation.invalidatedTiles),
     }
   }
 

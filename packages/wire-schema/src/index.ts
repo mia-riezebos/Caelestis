@@ -1,5 +1,6 @@
 import type * as Shared from '@caelestis/shared'
 import {
+  MAX_LIVE_PROJECTIONS,
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   TILE_SIZE,
@@ -634,11 +635,34 @@ export const LiveTileOfferBatch = Schema.Struct({
   offers: boundedArray(LiveTileOffer, MAX_TILE_OFFERS),
 })
 
-export const LiveSyncClientEvent = Schema.Struct({
-  type: Schema.Literal('tile-offer-cache'),
-  requestId: Identifier,
-  batch: LiveTileOfferBatch,
+const LiveProjectionState = Schema.Struct({
+  resource: Schema.Literals(['world-manifest', 'alliance-manifest', 'telemetry-alarms']),
+  scope: VersionToken,
+  version: Schema.NullOr(Hash),
 })
+
+export const LiveSyncClientEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal('state-vector'),
+    requestId: Identifier,
+    revision: Schema.NullOr(NonNegativeInteger),
+    projections: boundedArray(LiveProjectionState, MAX_LIVE_PROJECTIONS),
+  }).pipe(
+    Schema.check(
+      booleanFilter(
+        (event) =>
+          new Set(event.projections.map(({ resource, scope }) => `${resource}\u0000${scope}`))
+            .size === event.projections.length,
+        'state-vector projections must be unique',
+      ),
+    ),
+  ),
+  Schema.Struct({
+    type: Schema.Literal('tile-offer-cache'),
+    requestId: Identifier,
+    batch: LiveTileOfferBatch,
+  }),
+])
 
 export const TileOfferBatch = Schema.Struct({
   wplaceUserId: NonNegativeInteger,
@@ -694,6 +718,7 @@ export const StatusDelta: Schema.Codec<Shared.StatusDelta> = Schema.Struct({
   revision: NonNegativeInteger,
   templates: boundedArray(TemplateStatus, MAX_MANIFEST_TEMPLATES),
   removedTemplateIds: boundedArray(Identifier, MAX_MANIFEST_TEMPLATES),
+  invalidatedTiles: Schema.optionalKey(boundedArray(TileKey, MAX_MANIFEST_TILES)),
 }).pipe(
   Schema.check(
     booleanFilter(
@@ -970,6 +995,7 @@ export const Alarm = AlarmStruct.pipe(
 )
 
 export const AlarmsResponse = Schema.Struct({
+  version: Schema.optionalKey(Hash),
   alarms: boundedArray(Alarm, MAX_MANIFEST_TEMPLATES),
 })
 

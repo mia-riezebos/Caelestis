@@ -1,12 +1,19 @@
 import { DurableObject } from 'cloudflare:workers'
 import type {
+  LiveProjectionState,
   LiveSyncClientEvent,
   LiveSyncServerEvent,
   Manifest,
   StatusDelta,
   TemplateSurface,
 } from '@caelestis/shared'
-import { parseTileKey, type TileCoord } from '@caelestis/shared'
+import {
+  parseTileKey,
+  sha256Hex,
+  type TileCoord,
+  templateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { LiveSyncClientEvent as LiveSyncClientEventSchema } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
@@ -521,6 +528,60 @@ export class StatusReadModelObject extends DurableObject<Env> {
     }
   }
 
+  private async liveProjectionVersion(
+    season: number,
+    scope: StatusVisibilityScope,
+    projection: LiveProjectionState,
+  ): Promise<string | null> {
+    if (projection.resource === 'telemetry-alarms') {
+      if (projection.scope !== 'world') return null
+      const alarms = await this.sql.readActiveAlarms(season, scope === 'admin')
+      return sha256Hex(new TextEncoder().encode(JSON.stringify(alarms)))
+    }
+    const surface = (() => {
+      if (projection.scope === 'world') return WORLD_TEMPLATE_SURFACE
+      const match = /^(alliance-headquarters|alliance-picture|alliance-banner):([1-9]\d*)$/.exec(
+        projection.scope,
+      )
+      return match === null ? null : templateSurface(match[1], Number(match[2]))
+    })()
+    if (
+      surface === null ||
+      (projection.resource === 'world-manifest') !== (surface.kind === 'world')
+    )
+      return null
+    return this.manifestModel(season).knownVersion(scope, surface)
+  }
+
+  private async reconcileLiveState(
+    socket: WebSocket,
+    attachment: LiveSubscriberAttachment,
+    event: Extract<LiveSyncClientEvent, { readonly type: 'state-vector' }>,
+  ): Promise<void> {
+    const read = await this.model(attachment.season).reconcileSnapshot(attachment.scope)
+    const authoritative = await Promise.all(
+      event.projections.map(async (projection) => ({
+        ...projection,
+        version: await this.liveProjectionVersion(attachment.season, attachment.scope, projection),
+      })),
+    )
+    const usable =
+      event.revision !== null &&
+      event.projections.every((projection) => projection.version !== null) &&
+      authoritative.every((projection) => projection.version !== null)
+    this.send(socket, {
+      type: 'state-correction',
+      requestId: event.requestId,
+      mode: usable ? 'correction' : 'snapshot',
+      revision: read.snapshot.revision,
+      projections: usable
+        ? authoritative.filter(
+            (projection, index) => projection.version !== event.projections[index]?.version,
+          )
+        : authoritative,
+    })
+  }
+
   private subscribers(scope?: StatusVisibilityScope): readonly WebSocket[] {
     return this.objectState.getWebSockets('status').filter((socket) => {
       const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
@@ -703,6 +764,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     const revocableHeader = request.headers.get('x-caelestis-revocable')
     const revisionHeader = request.headers.get('x-caelestis-revision')
     const lastRevision = revisionHeader === null ? null : Number(revisionHeader)
+    const stateVector = new URL(request.url).searchParams.get('stateVector') === '1'
     if (!Number.isSafeInteger(season)) return new Response('Invalid season', { status: 400 })
     if (scope !== 'public' && scope !== 'admin')
       return new Response('Invalid scope', { status: 400 })
@@ -782,6 +844,13 @@ export class StatusReadModelObject extends DurableObject<Env> {
       if (capacityExceeded) return { kind: 'capacity' as const }
       if (response === null) return { kind: 'revoked' as const }
       try {
+        if (stateVector) {
+          return {
+            kind: 'connected' as const,
+            ...response,
+            cacheOutcome: undefined,
+          }
+        }
         const read = await this.model(season).reconcileSnapshot(scope)
         this.send(
           response.server,
@@ -816,7 +885,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     })
   }
 
-  override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
+  override async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const startedAt = performance.now()
     const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
     if (attachment?.revoked === true) {
@@ -845,6 +914,20 @@ export class StatusReadModelObject extends DurableObject<Env> {
       }
     })()
     if (event === null) return
+    if (event.type === 'state-vector') {
+      if (
+        attachment === null ||
+        !Number.isSafeInteger(attachment.season) ||
+        attachment.season < 0 ||
+        (attachment.scope !== 'public' && attachment.scope !== 'admin')
+      ) {
+        socket.close(1008, 'invalid live state scope')
+        return
+      }
+      this.bindSeason(attachment.season)
+      await this.reconcileLiveState(socket, attachment, event)
+      return
+    }
     const unresolvedDeliveryIds = event.batch.offers.map((offer) => offer.deliveryId)
     if (
       attachment === null ||

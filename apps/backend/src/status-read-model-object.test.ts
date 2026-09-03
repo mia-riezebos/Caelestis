@@ -1,4 +1,4 @@
-import { type Manifest, millis } from '@caelestis/shared'
+import { type Manifest, millis, sha256Hex, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import { createSeasonManifestReadModel } from './manifest/read-model.js'
@@ -112,6 +112,83 @@ describe('status read-model Durable Object', () => {
     expect(state.setWebSocketAutoResponse).toHaveBeenCalledWith(
       expect.objectContaining({ request: 'ping', response: 'pong' }),
     )
+  })
+
+  it('returns only divergent projections and falls back to one state snapshot', async () => {
+    database = new SqliteD1Database()
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const manifest = await object.readManifestProjection({
+      server: {
+        id: '01890f3e-7b2c-7abc-8def-000000000008',
+        name: 'Server',
+        auth: 'none',
+      },
+      season: 8,
+      surface: WORLD_TEMPLATE_SURFACE,
+      scope: 'public',
+      ifNoneMatch: [],
+    })
+    const alarmVersion = await sha256Hex(new TextEncoder().encode('[]'))
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'read',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        revoked: false,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+
+    await object.webSocketMessage(
+      socket,
+      JSON.stringify({
+        type: 'state-vector',
+        requestId: '01890f3e-7b2c-7abc-8def-000000000001',
+        revision: 1,
+        projections: [
+          { resource: 'world-manifest', scope: 'world', version: 'f'.repeat(64) },
+          { resource: 'telemetry-alarms', scope: 'world', version: alarmVersion },
+        ],
+      }),
+    )
+
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toEqual({
+      type: 'state-correction',
+      requestId: '01890f3e-7b2c-7abc-8def-000000000001',
+      mode: 'correction',
+      revision: 1,
+      projections: [{ resource: 'world-manifest', scope: 'world', version: manifest.version }],
+    })
+
+    send.mockClear()
+    await object.webSocketMessage(
+      socket,
+      JSON.stringify({
+        type: 'state-vector',
+        requestId: '01890f3e-7b2c-7abc-8def-000000000002',
+        revision: null,
+        projections: [
+          { resource: 'world-manifest', scope: 'world', version: null },
+          { resource: 'telemetry-alarms', scope: 'world', version: null },
+        ],
+      }),
+    )
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toEqual({
+      type: 'state-correction',
+      requestId: '01890f3e-7b2c-7abc-8def-000000000002',
+      mode: 'snapshot',
+      revision: 1,
+      projections: [
+        { resource: 'world-manifest', scope: 'world', version: manifest.version },
+        { resource: 'telemetry-alarms', scope: 'world', version: alarmVersion },
+      ],
+    })
   })
 
   it('fans one committed status update out to five clients within two seconds', async () => {
