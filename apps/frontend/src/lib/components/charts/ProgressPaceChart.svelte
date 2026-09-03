@@ -61,6 +61,7 @@
   }
 
   const points = $derived.by<Point[]>(() => {
+    if (buckets.length === 0) return []
     const byStart = new Map<number, { placed: number; correct: number; repairs: number }>()
     for (const bucket of buckets) {
       const entry = byStart.get(bucket.bucketStart) ?? { placed: 0, correct: 0, repairs: 0 }
@@ -254,8 +255,13 @@
       rangeStart.getFullYear() !== rangeEnd.getFullYear() ||
       rangeStart.getMonth() !== rangeEnd.getMonth() ||
       rangeStart.getDate() !== rangeEnd.getDate()
+    const crossesOffset = rangeStart.getTimezoneOffset() !== rangeEnd.getTimezoneOffset()
     if (!crossesDay) {
-      return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      return date.toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        ...(crossesOffset ? { timeZoneName: 'shortOffset' } : {}),
+      })
     }
     const crossesYear = rangeStart.getFullYear() !== rangeEnd.getFullYear()
     return date.toLocaleString(undefined, {
@@ -263,6 +269,7 @@
       month: 'short',
       day: 'numeric',
       ...(tickStep < DAY_SECONDS ? { hour: '2-digit', minute: '2-digit' } : {}),
+      ...(tickStep < DAY_SECONDS && crossesOffset ? { timeZoneName: 'shortOffset' } : {}),
     })
   }
 

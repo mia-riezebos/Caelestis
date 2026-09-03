@@ -22,6 +22,7 @@ afterEach(async () => {
   mounted = null
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   document.body.replaceChildren()
 })
 
@@ -204,14 +205,59 @@ describe('rolling pace retention', () => {
     expect(new Set(labels).size).toBe(labels.length)
   })
 
-  it('includes years on multi-year lifecycle ticks', () => {
+  it('distinguishes the repeated local hour during DST fall-back', () => {
+    vi.stubEnv('TZ', 'America/New_York')
+    const from = Date.parse('2026-11-01T03:00:00Z') / 1_000
+    expect(new Date(from * 1_000).getTimezoneOffset()).not.toBe(
+      new Date((from + 6 * 3_600) * 1_000).getTimezoneOffset(),
+    )
+
     mounted = mount(ProgressPaceChart, {
       target: document.body,
       props: {
-        buckets: [bucket(21_600, 0)],
-        resolution: 21_600,
+        buckets: [bucket(3_600, from)],
+        resolution: 3_600,
+        from,
+        to: from + 6 * 3_600,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const labels = [...document.querySelectorAll('text[data-axis="time"]')].map((label) =>
+      label.textContent?.trim(),
+    )
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+
+  it('does not synthesize progress points for empty lifecycle history', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [],
+        resolution: 900,
         from: 0,
-        to: 3 * 365 * 86_400,
+        to: 10 * 365 * 86_400,
+        anchorCorrect: 0,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    expect(document.body.textContent).toContain('No paint activity reported in this window.')
+    expect(document.querySelector('svg[role="img"]')).toBeNull()
+  })
+
+  it('includes years on multi-year lifecycle ticks', () => {
+    const from = Date.UTC(2020, 6, 1, 12) / 1_000
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(21_600, from)],
+        resolution: 21_600,
+        from,
+        to: from + 3 * 365 * 86_400,
         anchorCorrect: 1,
         anchorMismatched: 0,
       },
@@ -222,6 +268,6 @@ describe('rolling pace retention', () => {
       (label) => label.textContent?.trim() ?? '',
     )
     expect(labels.length).toBeGreaterThan(1)
-    expect(labels.every((label) => /19(?:70|71|72|73)/.test(label))).toBe(true)
+    expect(labels.every((label) => /202(?:0|1|2|3)/.test(label))).toBe(true)
   })
 })
