@@ -9,18 +9,24 @@
     completedColour?: string
     class?: string
   } = $props()
+  const wholePercent = (value: number): number => {
+    if (progress.total <= 0) return 0
+    const rounded = Math.round(Math.min(1, Math.max(0, value / progress.total)) * 100)
+    return value < progress.total ? Math.min(99, rounded) : rounded
+  }
   const percent = $derived(progress.total === 0 ? 0 : (progress.completed / progress.total) * 100)
-  const scanned = $derived(progress.total === 0 ? 0 : (progress.known / progress.total) * 100)
+  const paintedPercent = $derived(wholePercent(progress.completed))
+  const scannedPercent = $derived(wholePercent(progress.known))
   const width = (value: number): string => progress.total === 0 ? '0%' : `${(value / progress.total) * 100}%`
 </script>
 
 <div class={`meter-wrap ${className}`} style={completedColour === undefined ? undefined : `--caelestis-progress-completed: ${completedColour}`}>
-  <div class:small={size === 'sm'} class="track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(percent)} aria-label={`painted ${Math.round(percent)}%, scanned ${Math.round(scanned)}%`}>
+  <div class:small={size === 'sm'} class="track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow={paintedPercent} aria-label={`painted ${paintedPercent}%, scanned ${scannedPercent}%`}>
     <span class:alarm={griefWatch && progress.mismatched > 0} class="completed" style:width={width(progress.completed)}></span>
     <span class="mismatched" style:width={width(progress.mismatched)}></span>
     <span class="unpainted" style:width={width(progress.unpainted)}></span>
   </div>
-  {#if showPercent}<span class:alarm-text={griefWatch && progress.mismatched > 0} class:small={size === 'sm'} class="percent">{Math.round(percent)}%</span>{/if}
+  {#if showPercent}<span class:alarm-text={griefWatch && progress.mismatched > 0} class:small={size === 'sm'} class="percent">{paintedPercent}%</span>{/if}
 </div>
 
 <style>

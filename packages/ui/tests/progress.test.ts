@@ -25,4 +25,18 @@ describe('progress meter', () => {
 
     void unmount(component)
   })
+
+  it('does not round incomplete progress up to 100%', () => {
+    const component = mount(ProgressMeter, {
+      target: document.body,
+      props: {
+        progress: { completed: 999, mismatched: 0, unpainted: 1, known: 1000, total: 1000 },
+      },
+    })
+    flushSync()
+
+    expect(document.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('99')
+    expect(document.querySelector('.percent')?.textContent).toBe('99%')
+    void unmount(component)
+  })
 })

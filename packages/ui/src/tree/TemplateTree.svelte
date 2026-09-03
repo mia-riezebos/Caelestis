@@ -2,6 +2,7 @@
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import ProgressMeter from '../progress/ProgressMeter.svelte'
+  import { tick } from 'svelte'
   import { SvelteMap } from 'svelte/reactivity'
   import type {
     TemplateTreeIntent,
@@ -66,10 +67,22 @@
   })
 
   const emit = (intent: TemplateTreeIntent): void => onIntent?.(intent)
-  const percent = (progress: TreeProgressModel): number =>
-    progress.total <= 0 ? 0 : Math.round(Math.min(1, Math.max(0, progress.completed / progress.total)) * 100)
-  const scannedPercent = (progress: TreeProgressModel): number =>
-    progress.total <= 0 ? 0 : Math.round(Math.min(1, Math.max(0, progress.known / progress.total)) * 100)
+  const wholePercent = (value: number, total: number): number => {
+    if (total <= 0) return 0
+    const rounded = Math.round(Math.min(1, Math.max(0, value / total)) * 100)
+    return value < total ? Math.min(99, rounded) : rounded
+  }
+  const percent = (progress: TreeProgressModel): number => wholePercent(progress.completed, progress.total)
+  const scannedPercent = (progress: TreeProgressModel): number => wholePercent(progress.known, progress.total)
+
+  const focusRowAction = async (key: string, label: string): Promise<void> => {
+    await tick()
+    const row = Array.from(
+      treeElement?.querySelectorAll<HTMLElement>('[data-caelestis-tree-key]') ?? [],
+    )
+      .find((candidate) => candidate.dataset.caelestisTreeKey === key)
+    row?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.focus()
+  }
 
   const paths: Record<TreeIcon, string> = {
     folder: 'M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Z',
@@ -265,8 +278,10 @@
         {@const requestedDisclosure = disclosures.get(entry.key)}
         {@const canShowExpandedProgress = entry.progress !== undefined && (!entry.container || entry.expanded)}
         {@const disclosure = !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
+        {@const tallHeading = entry.progress !== undefined || (entry.actions?.length ?? 0) > 0 || (entry.leadingActions?.length ?? 0) > 0}
         {@const connectorWidth = (entry.branches?.length ?? 0) * 18 + (entry.container ? 0 : 20)}
         <div
+          class:tall-heading={tallHeading}
           class:muted={entry.muted}
           class:dragging={draggingKey === entry.key}
           class:drop-before={dropTarget?.key === entry.key && dropTarget.position === 'before'}
@@ -324,7 +339,7 @@
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
                   </button>
                 {/each}
-                <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded') }}>
+                <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
                   <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
                 </button>
               </span>
@@ -337,7 +352,7 @@
                 </button>
               {/each}
               {#if entry.progress !== undefined && disclosure !== undefined}
-                <button class="icon-action" type="button" title="Collapse progress" aria-label="Collapse progress" onclick={(event) => { event.stopPropagation(); disclosures.delete(entry.key) }}>
+                <button class="icon-action" type="button" title="Collapse progress" aria-label="Collapse progress" onclick={(event) => { event.stopPropagation(); disclosures.delete(entry.key); void focusRowAction(entry.key, 'Expand progress') }}>
                   <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandLess} /></svg>
                 </button>
               {/if}
@@ -360,7 +375,7 @@
                   </div>
                 </div>
                 {#if entry.colourProgress !== undefined}
-                  <button class="icon-action progress-detail-action" type="button" title={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} aria-label={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} onclick={(event) => { event.stopPropagation(); disclosures.set(entry.key, disclosure === 'colours' ? 'expanded' : 'colours') }}>
+                  <button class="icon-action progress-detail-action" type="button" title={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} aria-label={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} onclick={(event) => { event.stopPropagation(); const next = disclosure === 'colours' ? 'expanded' : 'colours'; disclosures.set(entry.key, next); void focusRowAction(entry.key, next === 'colours' ? 'Hide colour progress' : 'Show colour progress') }}>
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.palette} /></svg>
                   </button>
                 {/if}
@@ -407,8 +422,10 @@
   .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; opacity: 0.28; pointer-events: none; }
   .connector-vertical, .connector-current { position: absolute; inset-block-start: 0; border-inline-start: 1px solid currentColor; }
   .connector-vertical, .connector-current.continues { inset-block-end: 0; }
-  .connector-current:not(.continues) { block-size: 20px; }
-  .connector-elbow { position: absolute; top: 20px; inset-inline-end: 4px; border-block-start: 1px solid currentColor; }
+  .connector-current:not(.continues) { block-size: 16px; }
+  .connector-elbow { position: absolute; top: 16px; inset-inline-end: 4px; border-block-start: 1px solid currentColor; }
+  .row.tall-heading .connector-current:not(.continues) { block-size: 20px; }
+  .row.tall-heading .connector-elbow { top: 20px; }
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
   .row:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .row.muted { opacity: 0.55; }
