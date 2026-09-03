@@ -11,6 +11,7 @@
   import {
     PACE_WINDOWS,
     type PaceHistorySource,
+    averagePace,
   } from '$lib/components/charts/progress-pace'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
@@ -112,18 +113,13 @@
 
   // Show the last 24 hours as pixels per hour.
   const pace = $derived.by(() => {
-    if (history === null) return null
-    const cutoff = to - 86_400
-    let placed = 0
-    let correct = 0
-    for (const bucket of history) {
-      if (bucket.bucketStart >= cutoff) {
-        placed += bucket.placed
-        correct += bucket.correct
-      }
-    }
-    return { placed: placed / 24, correct: correct / 24 }
+    const source = paceHistories.find((candidate) => candidate.window === '1d')
+    return source === undefined ? null : averagePace(source.history, to, DAY_SECONDS)
   })
+
+  const pacePeriod = $derived(
+    pace !== null && pace.hours < 23 ? `over ${pace.hours} h within the last day` : 'over the last day',
+  )
 
   const eta = $derived.by(() => {
     if (pace === null || pace.correct <= 0 || remainingPixels <= 0) return null
@@ -144,7 +140,7 @@
       <h2 class="font-semibold">Progress &amp; pace</h2>
       <div class="text-xs tabular-nums text-base-content/60">
         {#if pace !== null}
-          {Math.round(pace.placed).toLocaleString()} px/h over the last day
+          {Math.round(pace.placed).toLocaleString()} px/h {pacePeriod}
           {#if eta !== null}
             · done in {formatEta(eta)} at this pace
           {/if}
