@@ -126,7 +126,7 @@ const exactRoutes = new Set([
 ])
 
 const unversionedMetricPath = (pathname: string): string =>
-  pathname.startsWith('/v1/') ? pathname.slice('/v1'.length) : pathname
+  pathname.startsWith('/v1/') && pathname !== '/v1/health' ? pathname.slice('/v1'.length) : pathname
 
 /** A finite route vocabulary: request paths containing ids, hashes, or tokens never reach metrics. */
 export const normalizeMetricRoute = (method: string, pathname: string): string => {

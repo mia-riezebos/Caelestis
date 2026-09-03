@@ -86,6 +86,7 @@ describe('request capacity metrics', () => {
     expect(normalizeMetricRoute('POST', '/v1/telemetry/tiles/offers')).toBe(
       'POST /telemetry/tiles/offers',
     )
+    expect(normalizeMetricRoute('GET', '/v1/health')).toBe('GET other')
   })
 
   it('bounds caller-controlled live client dimensions', () => {
