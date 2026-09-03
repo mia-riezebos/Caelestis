@@ -75,6 +75,17 @@ export interface ArtboardViewport {
   readonly frameHeight: number
 }
 
+/** Geometry identity for focus and movement work that depends on both the stage and frame. */
+export const artboardViewportKey = (viewport: ArtboardViewport): string =>
+  [
+    viewport.bufferWidth,
+    viewport.bufferHeight,
+    viewport.frameLeft,
+    viewport.frameTop,
+    viewport.frameWidth,
+    viewport.frameHeight,
+  ].join(':')
+
 /** Keep fixed template controls in lockstep with whether the artboard has usable geometry. */
 export const reconcileAllianceControlsForViewport = (
   viewport: ArtboardViewport | null,
@@ -647,12 +658,7 @@ class ArtboardRenderer {
   }
 
   private viewportIsMoving(viewport: ArtboardViewport | null): boolean {
-    const key =
-      viewport === null
-        ? null
-        : [viewport.frameLeft, viewport.frameTop, viewport.frameWidth, viewport.frameHeight].join(
-            ':',
-          )
+    const key = viewport === null ? null : artboardViewportKey(viewport)
     const changed = key !== this.lastViewportKey
     const moving = this.lastViewportKey !== undefined && key !== null && changed
     this.lastViewportKey = key

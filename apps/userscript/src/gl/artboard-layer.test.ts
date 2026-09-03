@@ -19,6 +19,7 @@ import {
   artboardGeometry,
   artboardGpuTilePlacement,
   artboardPlacement,
+  artboardViewportKey,
   insertAllianceArtboardCanvases,
   reconcileAllianceControlsForViewport,
   visibleArtboardMarkerPoints,
@@ -45,6 +46,24 @@ const active = (
 }
 
 describe('alliance artboard projection', () => {
+  it('changes viewport identity when only the stage backing size changes', () => {
+    const viewport: ArtboardViewport = {
+      bufferWidth: 500,
+      bufferHeight: 500,
+      frameLeft: 0,
+      frameTop: 0,
+      frameWidth: 500,
+      frameHeight: 500,
+    }
+
+    expect(artboardViewportKey({ ...viewport, bufferWidth: 400 })).not.toBe(
+      artboardViewportKey(viewport),
+    )
+    expect(artboardViewportKey({ ...viewport, bufferHeight: 400 })).not.toBe(
+      artboardViewportKey(viewport),
+    )
+  })
+
   it('projects signed HQ coordinates relative to the current centred bounds', () => {
     const small = artboardGeometry(
       active('alliance-headquarters', { minX: -125, minY: -125, maxX: 125, maxY: 125 }),
