@@ -7,7 +7,7 @@ import StatsPanel from '$lib/components/StatsPanel.svelte'
 import TemplateCard from '$lib/components/TemplateCard.svelte'
 import { Skeleton } from '$lib/components/ui/skeleton'
 import { app } from '$lib/state/app.svelte'
-import { folderColourStatuses, folderTemplateIds, type TreeFolder } from '$lib/tree'
+import { folderColourStatuses, folderTemplates, type TreeFolder } from '$lib/tree'
 
 const findFolder = (folders: readonly TreeFolder[], id: string): TreeFolder | null => {
   for (const folder of folders) {
@@ -21,7 +21,7 @@ const findFolder = (folders: readonly TreeFolder[], id: string): TreeFolder | nu
 const folder = $derived(
   app.tree === null ? null : findFolder(app.tree.folders, page.params.id ?? ''),
 )
-const templateIds = $derived(folder === null ? [] : folderTemplateIds(folder))
+const templates = $derived(folder === null ? [] : folderTemplates(folder))
 const colours = $derived(folder === null ? null : folderColourStatuses(folder))
 
 // Build linked breadcrumbs from the root to this folder.
@@ -84,8 +84,8 @@ const ancestors = $derived.by(() => {
       <p class="text-sm text-base-content/50">No published templates yet.</p>
     {/if}
 
-    {#if templateIds.length > 0 && app.manifest !== null}
-      <StatsPanel {templateIds} season={app.manifest.season} progress={folder.progress} />
+    {#if templates.length > 0 && app.manifest !== null}
+      <StatsPanel {templates} season={app.manifest.season} progress={folder.progress} />
     {/if}
 
     {#if colours !== null && colours.length > 0}
