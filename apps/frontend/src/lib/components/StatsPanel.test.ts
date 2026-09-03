@@ -50,6 +50,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (mounted !== null) await unmount(mounted)
   mounted = null
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   document.body.replaceChildren()
@@ -124,5 +125,29 @@ describe('retained history range', () => {
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain('over 10.5 h within the last day'),
     )
+  })
+})
+
+describe('live counts', () => {
+  it('refreshes contributions and the leaderboard while the panel is visible', async () => {
+    vi.useFakeTimers()
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(api.getContributions).toHaveBeenCalledTimes(1)
+    expect(api.getLeaderboard).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(api.getContributions).toHaveBeenCalledTimes(2)
+    expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
   })
 })
