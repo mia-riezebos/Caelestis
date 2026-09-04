@@ -103,8 +103,7 @@ export const assertPendingChangesetImmutable = ({ current, base, path }) => {
 }
 
 export const validatePendingUserscriptChangeset = ({ current, base, path }) => {
-  const baseIsUserscript = base !== undefined && changesetBody(base, path) !== null
-  if (baseIsUserscript) assertPendingChangesetImmutable({ current, base, path })
+  assertPendingChangesetImmutable({ current, base, path })
   return validateUserscriptChangeset(current, path)
 }
 
