@@ -1,5 +1,22 @@
 # @caelestis/userscript
 
+## 0.7.0
+
+### Minor Changes
+
+- 3fde6cf: Notify users when a newer stable userscript is available.
+- 8f88ca4: Highlight the focused template in the main-menu tree.
+
+### Patch Changes
+
+- 769ac2b: Align expanded folder and template progress details in the template tree.
+- 2bdedf3: Keep older self-hosted servers connected while the versioned API rolls out.
+- faa8b8e: Keep an unavailable theme shortcut scoped to the active alliance editor.
+- 89ec226: Keep folder visibility controls from expanding or collapsing tree rows.
+- de7f042: Reconcile live progress and mismatch markers after sleep or offline gaps.
+- c4c1bc9: Keep the L theme shortcut available while an alliance editor is loading.
+- ee96c4f: Route backend requests through the versioned `/v1` API.
+
 ## 0.6.0
 
 ### Minor Changes
