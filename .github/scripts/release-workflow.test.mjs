@@ -33,6 +33,26 @@ describe('app release workflow', () => {
     assert.doesNotMatch(workflow, /Announce backend release/)
   })
 
+  it('releases deployed apps only after the same commit passes deployment', () => {
+    const deployedApps = workflow.indexOf('deployed-apps:')
+    const deploymentGate = workflow.indexOf("Wait for this commit's production deployment")
+    const frontendRelease = workflow.indexOf('Create frontend GitHub release')
+    const backendRelease = workflow.indexOf('Create backend GitHub release')
+
+    assert.ok(deployedApps >= 0)
+    assert.ok(deploymentGate > deployedApps)
+    assert.ok(frontendRelease > deploymentGate)
+    assert.ok(backendRelease > deploymentGate)
+    assert.match(workflow, /gh run list --workflow deploy\.yml --commit "\$GITHUB_SHA"/)
+    assert.match(workflow, /gh run watch "\$run_id" --exit-status/)
+  })
+
+  it('isolates userscript and frontend announcement retries', () => {
+    assert.match(workflow, /userscript:\n[\s\S]*?name: Release userscript/)
+    assert.match(workflow, /deployed-apps:\n[\s\S]*?name: Release deployed frontend and backend/)
+    assert.match(workflow, /has_changesets: \$\{\{ steps\.changesets\.outputs\.has-changesets \}\}/)
+  })
+
   it('keeps production build identity tied to the deployment commit', () => {
     assert.match(deployWorkflow, /CAELESTIS_BUILD_ID: \$\{\{ github\.sha \}\}/)
     assert.match(deployWorkflow, /__CAELESTIS_DEPLOYMENT_VERSION__:\\"\$CAELESTIS_BUILD_ID\\"/)
