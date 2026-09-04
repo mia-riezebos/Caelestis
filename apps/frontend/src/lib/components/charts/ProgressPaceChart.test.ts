@@ -10,6 +10,8 @@ const stored = new Map<string, string>()
 beforeEach(() => {
   stored.clear()
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(640)
+  // Tweens and transitions become cuts, so every assertion below sees the settled chart.
+  vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
   vi.stubGlobal('localStorage', {
     getItem: (key: string) => stored.get(key) ?? null,
     setItem: (key: string, value: string) => stored.set(key, value),
@@ -495,5 +497,61 @@ describe('time window', () => {
     const d = line?.getAttribute('d') ?? ''
     expect(Number(/^M([^,]+)/.exec(d)?.[1])).toBeCloseTo(PLOT_LEFT, 0)
     expect(Number(/L([^,]+),[^L]*$/.exec(d)?.[1])).toBeCloseTo(PLOT_LEFT + PLOT_WIDTH, 0)
+  })
+})
+
+describe('motion', () => {
+  const DAY = 86_400
+  const THREE_DAYS = 3 * DAY
+  const mountThreeDays = (): void => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: Array.from({ length: 72 }, (_, hour) => bucket(3_600, hour * 3_600)),
+        resolution: 3_600,
+        from: 0,
+        to: THREE_DAYS,
+        anchorCorrect: 72,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+  }
+  const timeLabels = (): (string | undefined)[] =>
+    [...document.querySelectorAll('text[data-axis="time"]')].map((label) =>
+      label.textContent?.trim(),
+    )
+
+  it('wipes the series in on load and adds a switched-on pace line at once under reduced motion', () => {
+    mountThreeDays()
+
+    expect(document.querySelector('svg[role="img"] g.chart-reveal')).not.toBeNull()
+    expect(document.querySelector('path[data-pace-window="2h"]')).toBeNull()
+
+    paceToggle('2h').click()
+    flushSync()
+    expect(document.querySelector('path[data-pace-window="2h"]')).not.toBeNull()
+
+    paceToggle('2h').click()
+    flushSync()
+    expect(document.querySelector('path[data-pace-window="2h"]')).toBeNull()
+  })
+
+  it('tweens the window into place instead of snapping when motion is allowed', async () => {
+    vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: false } as MediaQueryList)
+    mountThreeDays()
+    const before = timeLabels()
+    const head = document.querySelector('[data-handle="head"]')
+
+    document.querySelector<HTMLButtonElement>('button[data-range-preset="1d"]')?.click()
+    flushSync()
+
+    // The controls report the target immediately; the drawing catches up over the tween.
+    expect(head?.getAttribute('aria-valuenow')).toBe(String(2 * DAY))
+    expect(timeLabels()).toEqual(before)
+
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    flushSync()
+    expect(timeLabels()).not.toEqual(before)
   })
 })
