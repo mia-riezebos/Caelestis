@@ -1,3 +1,4 @@
+import type { Manifest } from './manifest.js'
 import type { TemplateSurface } from './template-surface.js'
 import type { TileKey } from './tiles.js'
 import type { Millis, Seconds } from './time.js'
@@ -95,6 +96,10 @@ export interface LiveTileOfferCacheResponse {
 }
 
 export const MAX_LIVE_PROJECTIONS = 16
+export const MAX_LIVE_TEMPLATE_IDS = 90
+
+export const LIVE_PROTOCOL_V1 = 'caelestis.live.v1'
+export const LIVE_PROTOCOL_V2 = 'caelestis.live.v2'
 
 export type LiveProjectionResource = 'world-manifest' | 'alliance-manifest' | 'telemetry-alarms'
 
@@ -103,6 +108,26 @@ export interface LiveProjectionState {
   readonly resource: LiveProjectionResource
   readonly scope: string
   readonly version: string | null
+}
+
+/** Dashboard reads kept current by one live subscription after the SSR snapshot. */
+export interface LiveDashboardSubscription {
+  readonly subscriptionId: string
+  readonly templateIds: readonly string[]
+  readonly contributionsFrom: Seconds
+  readonly leaderboardLimit: number
+}
+
+/** Metadata prepended to one binary tile-upload message. The remaining bytes are the PNG. */
+export interface LiveTileUpload extends PainterIdentity {
+  readonly type: 'tile-upload'
+  readonly requestId: string
+  readonly deliveryId: string
+  readonly season: number
+  readonly tile: TileKey
+  readonly sha256: string
+  readonly ts: Seconds
+  readonly coverageToken?: string
 }
 
 export type LiveSyncClientEvent =
@@ -117,6 +142,38 @@ export type LiveSyncClientEvent =
       readonly requestId: string
       readonly batch: LiveTileOfferBatch
     }
+  | {
+      readonly type: 'tile-offer'
+      readonly requestId: string
+      readonly batch: LiveTileOfferBatch
+    }
+  | {
+      readonly type: 'paint-report'
+      readonly requestId: string
+      readonly event: PaintEvent
+    }
+  | {
+      readonly type: 'dashboard-subscribe'
+      readonly requestId: string
+      readonly subscription: LiveDashboardSubscription
+    }
+  | {
+      readonly type: 'dashboard-unsubscribe'
+      readonly subscriptionId: string
+    }
+
+export interface LiveWantedTile {
+  readonly deliveryId: string
+  readonly coverageToken?: string
+}
+
+export interface LiveTileOfferResponse {
+  readonly acknowledgedDeliveryIds: readonly string[]
+  readonly wanted: readonly LiveWantedTile[]
+  readonly rejectedDeliveryIds: readonly string[]
+}
+
+export type LiveMutationError = 'forbidden' | 'invalid' | 'unavailable'
 
 export interface TileOfferResponse {
   /** Tiles the server does not already have and wants the bytes for. */
@@ -163,6 +220,47 @@ export type LiveSyncServerEvent =
       readonly type: 'tile-offer-cache-result'
       readonly requestId: string
       readonly response: LiveTileOfferCacheResponse
+    }
+  | {
+      readonly type: 'manifest-snapshot'
+      readonly resource: 'world-manifest' | 'alliance-manifest'
+      readonly scope: string
+      readonly manifest: Manifest
+    }
+  | { readonly type: 'status-snapshot'; readonly status: StatusResponse }
+  | { readonly type: 'alarms-snapshot'; readonly alarms: AlarmsResponse }
+  | {
+      readonly type: 'dashboard-snapshot'
+      readonly subscriptionId: string
+      readonly contributions: ContributionsResponse
+      readonly leaderboard: LeaderboardResponse
+    }
+  | {
+      readonly type: 'paint-result'
+      readonly requestId: string
+      readonly eventId: string
+      readonly result: 'recorded' | 'partial' | 'duplicate'
+      readonly error?: LiveMutationError
+    }
+  | {
+      readonly type: 'tile-offer-result'
+      readonly requestId: string
+      readonly response: LiveTileOfferResponse
+      readonly error?: LiveMutationError
+    }
+  | {
+      readonly type: 'tile-upload-result'
+      readonly requestId: string
+      readonly deliveryId: string
+      readonly accepted: boolean
+      readonly error?: LiveMutationError
+    }
+  | {
+      readonly type: 'snapshot-part'
+      readonly messageId: string
+      readonly index: number
+      readonly total: number
+      readonly chunk: string
     }
 
 /** Successful tile uploads carry their authoritative progress change instead of requiring a read. */
