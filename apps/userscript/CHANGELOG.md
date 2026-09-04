@@ -1,5 +1,18 @@
 # @caelestis/userscript
 
+## 0.7.1
+
+### Patch Changes
+
+- 04a41af: Reduce GPU profiler polling and report draft capture time and chronological sample percentiles accurately.
+- 9ac4318: Batch native draft notifications after crosshair updates so undo does not briefly create transparent drafts.
+- c91393c: Avoid rereading unchanged draft canvases every frame while preserving copied pixels and readback recovery.
+- fcf3ffd: Keep completed GPU timings in execution order so recent profiler percentiles discard the oldest samples correctly.
+- f1769bc: Reuse settled template scenes and skip empty outline passes without changing custom styles or fades.
+- 552dbbb: Reconcile transparent drafts after dense-cache eviction without rebuilding cold pixel arrays.
+- 593c547: Keep transparent drafts stable and preserve active draft pixels when their dense cache entries are evicted.
+- 265e2c1: Restore the pre-refactor button styling for importing templates and adding servers.
+
 ## 0.7.0
 
 ### Minor Changes
