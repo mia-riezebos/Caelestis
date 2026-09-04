@@ -4,6 +4,10 @@ Wplace does not work in the T3 Code browser. Use `Chromium.app` in debug mode fo
 browser work. The `pnpm dev` command starts this browser, but the user likely already has one
 running. Check for an existing debug Chromium browser before starting another one.
 
+For background CDP profiles, hold a persistent session with
+`Emulation.setFocusEmulationEnabled({ enabled: true })` so `requestAnimationFrame` stays active.
+Chromium removes the override when that session closes.
+
 # Userscript release notes
 
 Add one new Changeset file for each atomic, user-visible userscript change. Use one short summary
