@@ -1,5 +1,5 @@
 import { TRANSPARENT_INDEX } from '@caelestis/shared'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const occupancy = vi.hoisted(() => ({ offsets: [] as number[] }))
 vi.mock('./templates/drafted.js', () => ({ draftedPixelsIn: () => occupancy.offsets }))
@@ -8,6 +8,8 @@ beforeEach(() => {
   vi.resetModules()
   occupancy.offsets = []
 })
+
+afterEach(() => vi.restoreAllMocks())
 
 it('does not announce removal and replacement of unchanged transparent drafts', async () => {
   const api = await import('./tile-transform.js')
@@ -43,4 +45,26 @@ it('retains all active draft pixels beyond the dense cache limit and cancels the
   api.clearDraftPixels()
   expect(changed).toHaveBeenCalledTimes(65)
   expect(api.draftPixels({ x: 0, y: 1 })).toBeNull()
+})
+
+it('reconciles transparent drafts after native preview removal without rebuilding evicted arrays', async () => {
+  const api = await import('./tile-transform.js')
+  occupancy.offsets = [5]
+  for (let x = 0; x < 65; x++) {
+    api.captureDraftPixels({ x, y: 1 }, new Uint8Array(1_000_000).fill(api.UNPAINTED))
+  }
+  const retained = api.draftPixels({ x: 1, y: 1 })
+  const changed = vi.fn()
+  api.onTilePixels(changed)
+
+  // Wplace's keep-painting submission removes preview sources and crosshair patches,
+  // without clearing their canvases or closing the drawer.
+  occupancy.offsets = []
+  vi.spyOn(performance, 'now').mockReturnValue(10_000)
+  api.reconcileDrafts()
+
+  expect(changed).toHaveBeenCalledTimes(65)
+  expect(changed).toHaveBeenCalledWith({ x: 0, y: 1 }, [5, 0, api.UNPAINTED], 'draft')
+  expect(api.draftPixels({ x: 0, y: 1 })).toBeNull()
+  expect(api.draftPixels({ x: 1, y: 1 })).toBe(retained)
 })

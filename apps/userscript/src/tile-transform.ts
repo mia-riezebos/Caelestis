@@ -1289,21 +1289,18 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
  */
 const reconcileDraftedTile = (tile: TileCoord, before?: Map<number, number>): void => {
   const key = tileKey(tile)
-  let draft = draftPixels(tile)
-  if (draft === null) {
-    if (before === undefined) return
-    draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
-    rememberDraft(key, draft)
-  }
+  const draft = draftOfTile.get(key)
+  if (draft === undefined && !draftedOffsets.has(key) && before === undefined) return
 
   const held = transparentOfTile.get(key)
   const now = new Set<number>()
   const changed: number[] = []
   for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
+    const index = draft?.[p] ?? draftedOffsets.get(key)?.get(p) ?? UNPAINTED
     // A drafted pixel the canvas gave us no colour for was drafted transparent.
-    if (draft[p] === UNPAINTED) {
+    if (index === UNPAINTED) {
       if (before !== undefined && !before.has(p)) before.set(p, UNPAINTED)
-      draft[p] = TRANSPARENT_INDEX
+      if (draft !== undefined) draft[p] = TRANSPARENT_INDEX
       rememberDraftedOffset(key, p, TRANSPARENT_INDEX)
       if (before === undefined) {
         notifyPixel(tile, p, TRANSPARENT_INDEX)
@@ -1311,14 +1308,15 @@ const reconcileDraftedTile = (tile: TileCoord, before?: Map<number, number>): vo
       }
       count('pixels:drafted transparent')
     }
-    if (draft[p] === TRANSPARENT_INDEX) now.add(p)
+    if (index === UNPAINTED || index === TRANSPARENT_INDEX) now.add(p)
   }
   if (held !== undefined) {
     for (const p of held) {
-      if (now.has(p) || draft[p] !== TRANSPARENT_INDEX) continue
+      const index = draft?.[p] ?? draftedOffsets.get(key)?.get(p) ?? UNPAINTED
+      if (now.has(p) || index !== TRANSPARENT_INDEX) continue
       // The crosshair is gone, so the pixel is undrafted — back to whatever the server has.
       if (before !== undefined && !before.has(p)) before.set(p, TRANSPARENT_INDEX)
-      draft[p] = UNPAINTED
+      if (draft !== undefined) draft[p] = UNPAINTED
       rememberDraftedOffset(key, p, UNPAINTED)
       if (before === undefined) {
         notifyPixel(tile, p, UNPAINTED)
@@ -1346,7 +1344,8 @@ export const reconcileDrafts = (): void => {
   const now = performance.now()
   if (now - lastReconcile < RECONCILE_INTERVAL_MS) return
   lastReconcile = now
-  for (const key of [...draftOfTile.keys()]) {
+  // Sparse active state outlives the dense cache. Reconciliation must not rehydrate cold arrays.
+  for (const key of new Set([...draftOfTile.keys(), ...draftedOffsets.keys()])) {
     const [x, y] = key.split('/').map(Number)
     if (x === undefined || y === undefined) continue
     reconcileDraftedTile({ x, y })
