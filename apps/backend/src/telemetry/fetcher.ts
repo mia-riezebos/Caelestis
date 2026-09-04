@@ -44,8 +44,8 @@ export const FETCHER_USER_ID = 0
 
 /**
  * Subrequest budget per run: each tile is one upstream fetch plus a handful of storage calls, and
- * Workers cap subrequests per invocation. The oldest planned tiles go first, so work beyond the
- * budget rotates through later runs instead of permanently starving the same context suffix.
+ * Workers cap subrequests per invocation. Template tiles stay first for alarm freshness. Within
+ * template and context work, the oldest observation goes first so deferred tiles rotate.
  */
 export const MAX_FETCH_TILES_PER_RUN = 100
 export const MAX_ALARM_PROBES_PER_RUN = 25
@@ -163,8 +163,8 @@ export const fetchCanvasTiles = async (
   })
   work.sort(
     (left, right) =>
-      (left.observedAt ?? -1) - (right.observedAt ?? -1) ||
       Number(right.template) - Number(left.template) ||
+      (left.observedAt ?? -1) - (right.observedAt ?? -1) ||
       left.tile.y - right.tile.y ||
       left.tile.x - right.tile.x,
   )
@@ -267,7 +267,7 @@ export const fetchCanvasTiles = async (
   }
   const statuses = await ports.sql.readTemplateStatuses(season, true, { serverOwnedOnly: true })
   const statusesById = new Map(statuses.map((status) => [status.templateId, status]))
-  const scanCycleBatches = Math.max(1, Math.ceil(work.length / maxTiles))
+  const scanCycleBatches = Math.max(1, Math.ceil(templateTiles.size / maxTiles))
   const freshnessCutoff =
     (now - scanCycleBatches * ALARM_SCAN_INTERVAL_SECONDS - ALARM_SCAN_JITTER_SECONDS) * 1_000
   let followUpScheduled = false

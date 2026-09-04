@@ -132,21 +132,25 @@ describe('the 6-hour tile fetcher', () => {
 
   it('rotates a bounded run through every deferred context tile', async () => {
     const { ports, sql, requested, fetchImpl } = harness()
-    await sql.insertTemplateVersion(
-      version('wide', [
-        { x: 10, y: 10 },
-        { x: 11, y: 10 },
-        { x: 12, y: 10 },
-      ]),
-    )
+    const templateTiles = [
+      { x: 10, y: 10 },
+      { x: 11, y: 10 },
+      { x: 12, y: 10 },
+    ]
+    await sql.insertTemplateVersion(version('wide', templateTiles))
 
-    for (let run = 0; run < 3; run += 1) {
+    for (let run = 0; run < 6; run += 1) {
+      const requestedBeforeRun = requested.length
       await fetchCanvasTiles(ports, {
         season: 0,
         now: seconds(NOW + run * 21_600),
         fetchImpl,
         maxTiles: 4,
       })
+      const runRequests = requested.slice(requestedBeforeRun)
+      for (const tile of templateTiles) {
+        expect(runRequests.some((url) => url.endsWith(`/tiles/${tile.x}/${tile.y}.png`))).toBe(true)
+      }
     }
 
     expect(new Set(requested).size).toBe(9)
