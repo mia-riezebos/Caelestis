@@ -1,4 +1,11 @@
-import { type Manifest, millis, sha256Hex, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import {
+  encodeLiveTileUpload,
+  type Manifest,
+  millis,
+  seconds,
+  sha256Hex,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import { createSeasonManifestReadModel } from './manifest/read-model.js'
@@ -8,6 +15,7 @@ import {
   createChunkedStatusPersistence,
   createLiveSessionFence,
   MAX_LIVE_ANONYMOUS_SUBSCRIBERS,
+  MAX_LIVE_CLIENT_BINARY_BYTES,
   MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS,
   MAX_LIVE_SUBSCRIBERS,
   MAX_LIVE_SUBSCRIBERS_PER_CLIENT,
@@ -200,6 +208,146 @@ describe('status read-model Durable Object', () => {
     await object.webSocketMessage(correction.socket, JSON.stringify(firstStateVector))
     expect(correction.send).toHaveBeenCalledOnce()
     expect(correction.close).toHaveBeenCalledWith(1008, 'state vector already received')
+  })
+
+  it('delivers a v2 status snapshot over the resumed socket', async () => {
+    database = new SqliteD1Database()
+    let attachment: unknown = {
+      season: 8,
+      scope: 'public',
+      credentialScope: 'read',
+      tokenHash: 'a'.repeat(64),
+      revocable: true,
+      revoked: false,
+      protocol: 2,
+    }
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => attachment,
+      serializeAttachment: (next: unknown) => {
+        attachment = next
+      },
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+
+    await object.webSocketMessage(
+      socket,
+      JSON.stringify({
+        type: 'state-vector',
+        requestId: '01890f3e-7b2c-7abc-8def-000000000003',
+        revision: null,
+        projections: [],
+      }),
+    )
+
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toEqual({
+      type: 'status-snapshot',
+      status: { revision: 1, templates: [] },
+    })
+    expect(JSON.parse(String(send.mock.calls[1]?.[0]))).toMatchObject({
+      type: 'state-correction',
+      mode: 'snapshot',
+      revision: 1,
+    })
+  })
+
+  it('accepts a paint once and acknowledges its retry as a duplicate', async () => {
+    database = new SqliteD1Database()
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'report',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        revoked: false,
+        protocol: 2,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+      BLOBS: {},
+      TELEMETRY: { getByName: () => ({}) },
+    } as unknown as Env)
+    const report = {
+      type: 'paint-report',
+      requestId: '01890f3e-7b2c-7abc-8def-000000000004',
+      event: {
+        eventId: '01890f3e-7b2c-7abc-8def-000000000005',
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 8,
+        ts: seconds(1_750_000_000),
+        tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+        painted: null,
+      },
+    }
+
+    await object.webSocketMessage(socket, JSON.stringify(report))
+    await object.webSocketMessage(
+      socket,
+      JSON.stringify({ ...report, requestId: '01890f3e-7b2c-7abc-8def-000000000006' }),
+    )
+
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toMatchObject({
+      type: 'paint-result',
+      result: 'partial',
+    })
+    expect(JSON.parse(String(send.mock.calls[1]?.[0]))).toMatchObject({
+      type: 'paint-result',
+      result: 'duplicate',
+    })
+  })
+
+  it('scope-checks binary tile uploads before reading their bytes', async () => {
+    database = new SqliteD1Database()
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'read',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        revoked: false,
+        protocol: 2,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const framed = encodeLiveTileUpload(
+      {
+        type: 'tile-upload',
+        requestId: '01890f3e-7b2c-7abc-8def-000000000007',
+        deliveryId: '01890f3e-7b2c-7abc-8def-000000000008',
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 8,
+        tile: '1/2',
+        sha256: 'a'.repeat(64),
+        ts: seconds(1_750_000_000),
+      },
+      new Uint8Array([1, 2, 3]),
+    )
+
+    await object.webSocketMessage(socket, framed.buffer as ArrayBuffer)
+
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toMatchObject({
+      type: 'tile-upload-result',
+      accepted: false,
+      error: 'forbidden',
+    })
   })
 
   it('fans one committed status update out to five clients within two seconds', async () => {
@@ -996,7 +1144,7 @@ describe('status read-model Durable Object', () => {
       close: vi.fn(),
     } as unknown as WebSocket
 
-    object.webSocketMessage(socket, new ArrayBuffer(MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS + 1))
+    object.webSocketMessage(socket, new ArrayBuffer(MAX_LIVE_CLIENT_BINARY_BYTES + 1))
 
     expect(socket.close).toHaveBeenCalledWith(1009, 'live message too large')
     expect(socket.send).not.toHaveBeenCalled()

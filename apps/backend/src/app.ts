@@ -44,6 +44,7 @@ export interface AppOptions {
           readonly lastRevision: number | null
           readonly metricClient: string
           readonly metricClientVersion: string
+          readonly protocol: 1 | 2
         },
       ) => Promise<Response>)
     | undefined
@@ -79,7 +80,7 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
     auth: options.openAccess === true ? 'none' : 'access_token',
     ...(options.connectStatusLive === undefined
       ? {}
-      : { liveSync: 1 as const, liveTileOffers: 1 as const }),
+      : { liveSync: 2 as const, liveSyncMin: 1 as const, liveTileOffers: 1 as const }),
   } as const
   const server: ServerInfo =
     options.serverDescription === undefined

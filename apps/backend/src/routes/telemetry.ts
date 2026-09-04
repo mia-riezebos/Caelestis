@@ -60,7 +60,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 /** Larger leaderboards stop being leaderboards; page by narrowing the window instead. */
 const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
-const LIVE_PROTOCOL = 'caelestis.live.v1'
+const LIVE_PROTOCOLS = ['caelestis.live.v2', 'caelestis.live.v1'] as const
 const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
 const MAX_MUTATION_STATUS_BYTES = 32 * 1024
 const MAX_TILE_OFFER_BODY_BYTES = 64 * 1024
@@ -86,16 +86,28 @@ const decodeLiveCredential = (encoded: string): string | null => {
 
 const liveAuthorization = (
   header: string | undefined,
-): { readonly authorization?: string } | null => {
+  authorizationHeader?: string,
+): { readonly authorization?: string; readonly protocol: 1 | 2 } | null => {
   if (header === undefined) return null
   const protocols = header.split(',').map((protocol) => protocol.trim())
-  if (!protocols.includes(LIVE_PROTOCOL)) return null
+  const selected = LIVE_PROTOCOLS.find((protocol) => protocols.includes(protocol))
+  if (selected === undefined) return null
   const credentials = protocols.filter((protocol) => protocol.startsWith(LIVE_AUTH_PREFIX))
   if (credentials.length > 1) return null
   const credential = credentials[0]
-  if (credential === undefined) return {}
+  if (credential === undefined) {
+    return {
+      ...(authorizationHeader === undefined ? {} : { authorization: authorizationHeader }),
+      protocol: selected === LIVE_PROTOCOLS[0] ? 2 : 1,
+    }
+  }
   const token = decodeLiveCredential(credential.slice(LIVE_AUTH_PREFIX.length))
-  return token === null ? null : { authorization: `Bearer ${token}` }
+  return token === null
+    ? null
+    : {
+        authorization: `Bearer ${token}`,
+        protocol: selected === LIVE_PROTOCOLS[0] ? 2 : 1,
+      }
 }
 
 const wholeNumber = (value: string | undefined): number | null => {
@@ -203,6 +215,7 @@ export const createTelemetryRoutes = (
         readonly lastRevision: number | null
         readonly metricClient: string
         readonly metricClientVersion: string
+        readonly protocol: 1 | 2
       },
     ) => Promise<Response>
   },
@@ -215,7 +228,10 @@ export const createTelemetryRoutes = (
       if (c.req.header('upgrade')?.toLowerCase() !== 'websocket') {
         return c.json({ error: 'websocket upgrade required' }, 426)
       }
-      const credentials = liveAuthorization(c.req.header('sec-websocket-protocol'))
+      const credentials = liveAuthorization(
+        c.req.header('sec-websocket-protocol'),
+        c.req.header('authorization'),
+      )
       if (credentials === null) return c.json({ error: 'invalid websocket protocol' }, 400)
       return runBackendMiddleware(
         c,
@@ -229,6 +245,11 @@ export const createTelemetryRoutes = (
     },
     async (c) => {
       if (options.connectStatusLive === undefined) return c.json({ error: 'not found' }, 404)
+      const credentials = liveAuthorization(
+        c.req.header('sec-websocket-protocol'),
+        c.req.header('authorization'),
+      )
+      if (credentials === null) return c.json({ error: 'invalid websocket protocol' }, 400)
       const season = wholeNumber(c.req.query('season'))
       const requestedScope = c.req.query('scope')
       const lastRevisionRaw = c.req.query('revision')
@@ -269,6 +290,7 @@ export const createTelemetryRoutes = (
         lastRevision,
         metricClient: metricClient.client,
         metricClientVersion: metricClient.clientVersion,
+        protocol: credentials.protocol,
       })
     },
   )
