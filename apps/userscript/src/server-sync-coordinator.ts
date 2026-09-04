@@ -120,6 +120,7 @@ interface PendingResourceRequest {
 interface LiveConnection {
   readonly server: ConnectedServer
   socket: WebSocket | null
+  negotiatedProtocol: 1 | 2 | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
   bootstrapFallbackTimer: ReturnType<typeof setTimeout> | null
   fallbackReadRequested: boolean
@@ -206,6 +207,10 @@ const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
 const liveProtocolVersion = (server: ConnectedServer): 1 | 2 | undefined =>
   server.info?.liveSyncMax ?? server.info?.liveSync
 
+const activeLiveProtocolVersion = (server: ConnectedServer): 1 | 2 | undefined =>
+  liveConnections.get(serverConnectionIdentity(server))?.negotiatedProtocol ??
+  liveProtocolVersion(server)
+
 const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
   return (
@@ -220,7 +225,7 @@ const liveCapable = (server: ConnectedServer): boolean =>
   liveProtocolVersion(server) !== undefined && typeof WebSocket !== 'undefined'
 
 const socketOnly = (server: ConnectedServer, resource: ServerSyncResource): boolean =>
-  liveProtocolVersion(server) === 2 && resource.live === true
+  activeLiveProtocolVersion(server) === 2 && resource.live === true
 
 const liveCredentialProtocol = (token: string): string => {
   const bytes = new TextEncoder().encode(token)
@@ -731,7 +736,7 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
   const event = parseLiveServerEvent(raw)
   if (event === null) {
     const live = liveConnections.get(serverConnectionIdentity(server))
-    if (liveProtocolVersion(server) === 2) live?.socket?.close(1002, 'invalid live event')
+    if (activeLiveProtocolVersion(server) === 2) live?.socket?.close(1002, 'invalid live event')
     else requestServerSync('revision-gap', 'telemetry-status', server)
     return
   }
@@ -740,7 +745,7 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
     if (live === undefined || live.stateRequestId !== event.requestId) return
     live.stateRequestId = null
     completeLiveReconciliation(live)
-    if (liveProtocolVersion(server) === 2) return
+    if (activeLiveProtocolVersion(server) === 2) return
     const currentRevision = revisionNumber(server, 'world', 'telemetry-status')
     const refreshStatus =
       currentRevision === null ||
@@ -786,11 +791,11 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
     return
   }
   if (event.type === 'alarms-reconcile') {
-    if (liveProtocolVersion(server) === 2) return
+    if (activeLiveProtocolVersion(server) === 2) return
     requestServerSync('revision-gap', 'telemetry-alarms', server)
     return
   }
-  if (event.type === 'status-reconcile' && liveProtocolVersion(server) === 2) {
+  if (event.type === 'status-reconcile' && activeLiveProtocolVersion(server) === 2) {
     liveConnections
       .get(serverConnectionIdentity(server))
       ?.socket?.close(1011, 'status snapshot required')
@@ -801,7 +806,7 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
       (await resources.get('telemetry-status')?.applyLiveEvent?.(server, event.delta)) ?? false
     if (!applied) {
       const live = liveConnections.get(serverConnectionIdentity(server))
-      if (liveProtocolVersion(server) === 2) live?.socket?.close(1011, 'status revision gap')
+      if (activeLiveProtocolVersion(server) === 2) live?.socket?.close(1011, 'status revision gap')
       else requestServerSync('revision-gap', 'telemetry-status', server)
     }
     return
@@ -929,7 +934,11 @@ const scheduleLiveReconnect = (connection: LiveConnection): void => {
 }
 
 const armLiveBootstrapFallback = (connection: LiveConnection): void => {
-  if (liveProtocolVersion(connection.server) === 2) return
+  if (activeLiveProtocolVersion(connection.server) === 2) {
+    if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
+    connection.bootstrapFallbackTimer = null
+    return
+  }
   if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
   connection.bootstrapFallbackTimer = setTimeout(() => {
     connection.bootstrapFallbackTimer = null
@@ -987,6 +996,12 @@ const openLiveConnection = (connection: LiveConnection): void => {
   armLiveBootstrapFallback(connection)
   socket.addEventListener('open', () => {
     if (connection.socket !== socket || !isCurrentServerConnection(server)) return
+    connection.negotiatedProtocol =
+      socket.protocol === LIVE_PROTOCOL_V2 ? 2 : socket.protocol === LIVE_PROTOCOL_V1 ? 1 : null
+    if (connection.negotiatedProtocol === null) {
+      socket.close(1002, 'live protocol not negotiated')
+      return
+    }
     connection.healthy = true
     connection.reconciled = false
     armLiveHeartbeat(connection)
@@ -994,6 +1009,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
     const state = liveStateVector(server)
     connection.stateRequestId = state.requestId
     socket.send(JSON.stringify(state))
+    armLiveBootstrapFallback(connection)
     armTimer()
   })
   socket.addEventListener('message', (message) => {
@@ -1004,7 +1020,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
     }
     const parsed = parseLiveMessage(connection, message.data)
     if (parsed.status === 'invalid') {
-      if (liveProtocolVersion(server) === 2) socket.close(1002, 'invalid live event')
+      if (activeLiveProtocolVersion(server) === 2) socket.close(1002, 'invalid live event')
       else requestServerSync('revision-gap', 'telemetry-status', server)
       return
     }
@@ -1043,6 +1059,7 @@ const reconcileLiveConnections = (): void => {
       connection = {
         server,
         socket: null,
+        negotiatedProtocol: null,
         reconnectTimer: null,
         bootstrapFallbackTimer: null,
         fallbackReadRequested: false,
@@ -1121,6 +1138,9 @@ export const installServerSyncCoordinator = (): void => {
 
 export const serverLiveSyncHealthy = (server: ConnectedServer): boolean => liveHealthy(server)
 
+export const serverLiveSyncVersion = (server: ConnectedServer): 1 | 2 | undefined =>
+  activeLiveProtocolVersion(server)
+
 export const requestLiveTileOfferCache = (
   server: ConnectedServer,
   batch: LiveTileOfferBatch,
@@ -1156,7 +1176,7 @@ const requestLiveCommand = (
 ): Promise<LiveCommandResponse | null> => {
   const connection = liveConnections.get(serverConnectionIdentity(server))
   if (
-    liveProtocolVersion(server) !== 2 ||
+    activeLiveProtocolVersion(server) !== 2 ||
     !liveHealthy(server) ||
     connection === undefined ||
     connection.socket === null

@@ -90,7 +90,7 @@ const ancestors = $derived.by(() => {
       <StatsPanel
         {templates}
         season={app.manifest.season}
-        liveDashboard={(app.server?.liveSyncMax ?? app.server?.liveSync) === 2}
+        liveDashboard={app.liveProtocol === 2}
         progress={folder.progress}
         subscribeDashboard={app.subscribeDashboard}
       />

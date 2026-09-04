@@ -154,6 +154,8 @@ vi.mock('./server-sync-coordinator.js', () => ({
   },
   serverSyncRevision: () => coordinator.revision,
   serverLiveSyncHealthy: () => coordinator.liveHealthy,
+  serverLiveSyncVersion: (server: ConnectedServer) =>
+    server.info?.liveSyncMax ?? server.info?.liveSync,
   requestLiveTileOfferCache: coordinator.liveTileOffer,
   requestLivePaint: coordinator.livePaint,
   requestLiveTileOffer: coordinator.liveFullTileOffer,

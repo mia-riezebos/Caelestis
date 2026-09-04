@@ -36,6 +36,7 @@ import {
   requestServerSync,
   type ServerSyncResult,
   serverLiveSyncHealthy,
+  serverLiveSyncVersion,
   serverSyncRevision,
 } from './server-sync-coordinator.js'
 import { serverEndpoint } from './server-url.js'
@@ -485,7 +486,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     trimUnsettledOffers(server.url)
     tileOfferMetric('requested', entries.length)
     let accepted = 0
-    if ((server.info?.liveSyncMax ?? server.info?.liveSync) === 2) {
+    if (serverLiveSyncVersion(server) === 2) {
       let offered: Awaited<ReturnType<typeof requestLiveTileOffer>> = null
       for (let attempt = 0; attempt < RETRIES && offered === null; attempt++)
         offered = await requestLiveTileOffer(server, {
@@ -888,7 +889,7 @@ const deliverPaint = async (
   eventId: string,
   event: PaintEvent,
 ): Promise<void> => {
-  if ((server.info?.liveSyncMax ?? server.info?.liveSync) === 2) {
+  if (serverLiveSyncVersion(server) === 2) {
     let result: Awaited<ReturnType<typeof requestLivePaint>> = null
     for (let attempt = 0; attempt < RETRIES && result === null; attempt++)
       result = await requestLivePaint(server, event)

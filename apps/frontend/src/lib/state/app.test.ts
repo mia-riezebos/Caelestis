@@ -8,6 +8,7 @@ class FakeWebSocket extends EventTarget {
   static readonly CLOSING = 2
   static readonly instances: FakeWebSocket[] = []
   readonly sent: string[] = []
+  protocol: string
   readyState = 0
 
   constructor(
@@ -15,10 +16,12 @@ class FakeWebSocket extends EventTarget {
     readonly protocols: readonly string[],
   ) {
     super()
+    this.protocol = protocols[0] ?? ''
     FakeWebSocket.instances.push(this)
   }
 
-  open(): void {
+  open(protocol = this.protocol): void {
+    this.protocol = protocol
     this.readyState = FakeWebSocket.OPEN
     this.dispatchEvent(new Event('open'))
   }
@@ -157,5 +160,17 @@ describe('frontend live state', () => {
         { resource: 'telemetry-alarms', version: null },
       ],
     })
+  })
+
+  it('keeps dashboard polling when an advertised v2 server negotiates v1', () => {
+    const app = new AppState(bootstrap)
+    app.subscribeDashboard([], 1_800_000_000, vi.fn())
+    app.startLive()
+    const socket = FakeWebSocket.instances[0]
+
+    socket?.open('caelestis.live.v1')
+
+    expect(app.liveProtocol).toBe(1)
+    expect(socket?.sent).toEqual([])
   })
 })
