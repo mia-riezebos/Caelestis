@@ -165,7 +165,8 @@ export const installKeyboardShortcuts = (
       shortcut !== 'undo-paint' &&
       shortcut !== 'redo-paint' &&
       shortcut !== 'paint-action' &&
-      shortcut !== 'cancel-paint'
+      shortcut !== 'cancel-paint' &&
+      shortcut !== 'toggle-theme'
     ) {
       claim()
       return

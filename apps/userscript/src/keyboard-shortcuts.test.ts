@@ -226,7 +226,7 @@ describe('keyboard shortcut actions', () => {
     expect(harness.toggleTheme).toHaveBeenCalledOnce()
   })
 
-  it('isolates every surface action while alliance asset metadata is unresolved', () => {
+  it('isolates surface actions while alliance metadata is unresolved but keeps theme global', () => {
     harness.allianceEditorActive = true
     const dialog = document.createElement('dialog')
     dialog.setAttribute('open', '')
@@ -247,7 +247,7 @@ describe('keyboard shortcut actions', () => {
     expect(harness.setAppearance).not.toHaveBeenCalled()
     expect(harness.setSurfaceAppearance).not.toHaveBeenCalled()
     expect(harness.setPeek).not.toHaveBeenCalled()
-    expect(harness.toggleTheme).not.toHaveBeenCalled()
+    expect(harness.toggleTheme).toHaveBeenCalledOnce()
   })
 
   it('claims native shortcuts from the editor snapshot when controls vanish or are absent', () => {
