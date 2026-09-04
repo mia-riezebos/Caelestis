@@ -7,12 +7,14 @@ import {
 } from '@caelestis/shared'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './templates/local-store.js'
+import { type ScanJob, type ScanOutcome, scanTile } from './templates/mismatch-scan.js'
 
 afterEach(() => vi.unstubAllGlobals())
 
 /** Drive the installed page hooks through native canvas writes, uploads, and raster draws. */
 const setup = async () => {
   vi.resetModules()
+  vi.doUnmock('./tile-transform.js')
   const occupancy: number[] = []
   vi.doMock('./templates/drafted.js', () => ({ draftedPixelsIn: () => occupancy }))
   const reads = vi.fn()
@@ -268,11 +270,18 @@ it('flushes a coalesced draft before taking the native submission snapshot', asy
   expect(submitted).toHaveBeenCalledOnce()
 })
 
-it.each([1, 33])(
-  'restores accounting when cancellation interrupts %i pending native clears',
-  async (width) => {
-    const { api, source, tile, pixel } = await setup()
-    const template: PlacedTemplate = {
+it.each([
+  { width: 1, transparent: false, pendingClear: true, worker: false },
+  { width: 33, transparent: false, pendingClear: true, worker: false },
+  { width: 1, transparent: true, pendingClear: true, worker: false },
+  { width: 33, transparent: true, pendingClear: false, worker: false },
+  { width: 1, transparent: false, pendingClear: true, worker: true },
+  { width: 33, transparent: true, pendingClear: true, worker: true },
+])(
+  'restores cancelled drafts: $width pixels, transparent=$transparent, pendingClear=$pendingClear, worker=$worker',
+  async ({ width, transparent, pendingClear, worker }) => {
+    const { api, source, tile, pixel, occupancy } = await setup()
+    let template: PlacedTemplate = {
       id: 'cancelled-draft',
       name: 'Cancelled draft',
       source: 'image',
@@ -298,6 +307,16 @@ it.each([1, 33])(
     const mask = decodeMismatchMask(
       encodeMismatchMask({ left: 0, top: 996, width: width + 2, height: 1 }, classes),
     )
+    // Supply the committed tile while keeping the installed draft hooks and listeners real.
+    const committed = new Uint8Array(1_000_000)
+    committed[996_000 + width] = 1
+    committed[996_001 + width] = 1
+    const loadPixels = vi.fn(async () => committed)
+    vi.doMock('./tile-transform.js', () => ({
+      ...api,
+      tilePixels: () => committed,
+      loadTilePixels: loadPixels,
+    }))
     vi.doMock('./server-mismatch.js', () => ({
       beginServerMismatchFrame: vi.fn(),
       endServerMismatchFrame: vi.fn(),
@@ -312,22 +331,53 @@ it.each([1, 33])(
       onLocalChange: vi.fn(),
       templateTileKeys: () => template.tiles.keys(),
     }))
+    let workerAvailable = false
+    let finish: (() => void) | undefined
+    const workerScan = vi.fn((job: ScanJob, indices: Uint8Array) => {
+      const outcome = scanTile(job, indices)
+      return new Promise<ScanOutcome>((resolve) => {
+        finish = () => resolve(outcome)
+      })
+    })
     vi.doMock('./templates/mismatch-worker.js', () => ({
-      hasWorker: () => false,
+      hasWorker: () => workerAvailable,
       forgetInWorker: vi.fn(),
+      scanInWorker: workerScan,
     }))
     const { pixelAccounting } = await import('./templates/mismatch.js')
     const { markLocalX } = await import('./templates/mismatch-marks.js')
     const read = () => pixelAccounting.frame(() => pixelAccounting.read(template).tile(tile))
     expect(read()?.markers.length).toBe(2)
-    for (let x = 0; x < width; x++) source.context.putImageData(pixel(1), x, 3)
+    for (let x = 0; x < width; x++) {
+      source.context.putImageData(
+        transparent ? { ...pixel(1), data: new Uint8ClampedArray(4) } : pixel(1),
+        x,
+        3,
+      )
+      occupancy.push(996_000 + x)
+    }
     source.context.putImageData(pixel(0), width, 3)
     await Promise.resolve()
     expect(read()?.markers.length).toBe(width + 1)
 
-    for (let x = 0; x <= width; x++) source.context.clearRect(x, 3, 1, 1)
+    if (worker) {
+      // A placement revision starts a scan whose copied draft must not survive cancellation.
+      template = { ...template, moved: template.moved + 1 }
+      workerAvailable = true
+      read()
+      expect(workerScan).toHaveBeenCalledOnce()
+    }
+    if (pendingClear) {
+      for (let x = 0; x <= width; x++) source.context.clearRect(x, 3, 1, 1)
+    }
+    occupancy.length = 0
     api.clearDraftPixels()
     await Promise.resolve()
+    if (worker) {
+      finish?.()
+      await Promise.resolve()
+      workerAvailable = false
+    }
 
     const restored = read()
     expect(restored && [...restored.markers].map(markLocalX)).toEqual([width, width + 1])
@@ -336,5 +386,13 @@ it.each([1, 33])(
       completed: width,
       mismatched: 2,
     })
+    expect(pixelAccounting.read(template).draftPixelDeltas).toEqual([])
+    expect(
+      await pixelAccounting.read(template).nearest(0, 'mismatched', {
+        x: template.originX,
+        y: template.originY,
+      }),
+    ).toMatchObject({ x: template.originX + width, y: template.originY })
+    expect(loadPixels).not.toHaveBeenCalled()
   },
 )

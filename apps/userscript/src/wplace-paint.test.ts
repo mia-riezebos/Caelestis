@@ -249,6 +249,23 @@ describe('Wplace paint controls', () => {
     expect(cancelClick).toHaveBeenCalledOnce()
   })
 
+  it('publishes drawer closure after native cancellation removes the palette', async () => {
+    const { cancel, drawer } = paintDrawer()
+    document.body.appendChild(drawer)
+    cancel.addEventListener('click', () => drawer.remove())
+    const { cancelPaintDraft, isPaintOpen, onPaintSelectionChange, watchPaintSelection } =
+      await import('./wplace-paint.js')
+    watchPaintSelection()
+    expect(isPaintOpen()).toBe(true)
+    const closed = vi.fn(isPaintOpen)
+    onPaintSelectionChange(closed)
+
+    expect(cancelPaintDraft()).toBe(true)
+
+    await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce())
+    expect(closed).toHaveReturnedWith(false)
+  })
+
   it('toggles Wplace theme through its native light or dark mode control', async () => {
     const theme = document.createElement('button')
     theme.setAttribute('aria-label', 'Dark mode')
