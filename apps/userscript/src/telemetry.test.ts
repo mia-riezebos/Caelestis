@@ -1384,6 +1384,48 @@ describe('server telemetry client', () => {
     expect(mutationHttp).toEqual([])
   })
 
+  it('retries one v2 paint with the same event id after its acknowledgement is lost', async () => {
+    vi.useFakeTimers()
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 2 as const, liveSyncMin: 1 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.livePaint
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockImplementation(async (_server, event) => ({
+        type: 'paint-result',
+        eventId: event.eventId,
+        result: 'duplicate',
+      }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ revision: 1, templates: [] })
+        if (url.includes('/telemetry/alarms'))
+          return Response.json({ version: 'a'.repeat(64), alarms: [] })
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    harness.acceptedPaint?.({
+      season: 0,
+      observedAt: 1_800_000_000,
+      painted: 1,
+      tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(coordinator.livePaint).toHaveBeenCalledTimes(4)
+    const eventIds = coordinator.livePaint.mock.calls.map(([, event]) => event.eventId)
+    expect(new Set(eventIds).size).toBe(1)
+  })
+
   it('falls back to the HTTP offer when the live request disconnects', async () => {
     const liveServer = {
       ...server,
