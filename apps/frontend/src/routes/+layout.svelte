@@ -17,7 +17,14 @@ let connectOpen = $state(false)
 
 onMount(() => {
   // SSR supplied the public read model. A browser-held credential may upgrade it to admin.
-  if (readToken() !== null || !usesServerReadProxy() || app.manifest === null) void app.load()
+  if (
+    readToken() !== null ||
+    !usesServerReadProxy() ||
+    data.bootstrap.needsRecovery ||
+    app.manifest === null
+  ) {
+    void app.load()
+  }
 })
 
 // An auth failure opens the connect dialog. A valid token fixes it.

@@ -31,6 +31,8 @@ export interface AppBootstrap {
   readonly statuses: readonly TemplateStatus[]
   readonly alarms: readonly Alarm[]
   readonly canvas: readonly CanvasTileSummary[]
+  /** True when SSR returned a useful partial model that the browser must refresh. */
+  readonly needsRecovery: boolean
   readonly error: string | null
 }
 

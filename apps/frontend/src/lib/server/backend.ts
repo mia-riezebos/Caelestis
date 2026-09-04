@@ -3,8 +3,14 @@ import { frontendClientAccept } from '$lib/api/client-metrics.js'
 
 type BackendEvent = Pick<RequestEvent, 'fetch' | 'platform' | 'url'>
 
-const backendBase = ({ platform, url }: BackendEvent): string =>
-  (platform?.env.CAELESTIS_SERVER ?? new URL('/backend', url).href).replace(/\/+$/, '')
+const backendBase = ({ platform, url }: BackendEvent): string => {
+  const buildTimeBackend = import.meta.env.VITE_CAELESTIS_SERVER
+  return (
+    platform?.env.CAELESTIS_SERVER ??
+    buildTimeBackend ??
+    new URL('/backend', url).href
+  ).replace(/\/+$/, '')
+}
 
 const readToken = ({ platform }: BackendEvent): string => {
   const token = platform?.env.CAELESTIS_READ_TOKEN?.trim()

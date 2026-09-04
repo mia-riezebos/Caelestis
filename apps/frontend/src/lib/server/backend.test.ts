@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchBackend } from './backend.js'
 
 const event = (token?: string) => {
@@ -15,6 +15,10 @@ const event = (token?: string) => {
 }
 
 describe('frontend backend reads', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
   it('keeps the Worker read token on the server-side request', async () => {
     const harness = event('worker-read-token')
 
@@ -37,5 +41,17 @@ describe('frontend backend reads', () => {
       'missing CAELESTIS_READ_TOKEN',
     )
     expect(harness.fetch).not.toHaveBeenCalled()
+  })
+
+  it('uses the existing build-time backend when no runtime override is configured', async () => {
+    vi.stubEnv('VITE_CAELESTIS_SERVER', 'https://custom.example/backend/')
+    const harness = event('custom-server-read-token')
+
+    await fetchBackend(harness.event, '/v1/manifest')
+
+    expect(harness.fetch).toHaveBeenCalledWith(
+      'https://custom.example/backend/v1/manifest',
+      expect.any(Object),
+    )
   })
 })

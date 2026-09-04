@@ -15,6 +15,7 @@ const emptyBootstrap = (error: unknown): AppBootstrap => ({
   statuses: [],
   alarms: [],
   canvas: [],
+  needsRecovery: true,
   error: error instanceof Error ? error.message : String(error),
 })
 
@@ -33,6 +34,7 @@ export const load: LayoutServerLoad = async (event) => {
       statuses: status.status === 'fulfilled' ? status.value.templates : [],
       alarms: alarms.status === 'fulfilled' ? alarms.value.alarms : [],
       canvas: canvas.status === 'fulfilled' ? canvas.value.tiles : [],
+      needsRecovery: [status, alarms, canvas].some((result) => result.status === 'rejected'),
       error: null,
     }
     return { bootstrap }
