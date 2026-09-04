@@ -847,8 +847,12 @@ const rememberTile = (entry: OfferedTile): void => {
     const tileCounts = new Map<string, number>()
     for (const recent of recentTiles.values())
       tileCounts.set(recent.tile, (tileCounts.get(recent.tile) ?? 0) + 1)
-    const duplicate = [...recentTiles].find(([, recent]) => (tileCounts.get(recent.tile) ?? 0) > 1)
-    const eviction = duplicate ?? recentTiles.entries().next().value
+    const entries = [...recentTiles]
+    const duplicates = entries.filter(([, recent]) => (tileCounts.get(recent.tile) ?? 0) > 1)
+    // Monotonic UUIDv7 IDs preserve observation order when hashing finishes out of order.
+    const eviction = (duplicates.length > 0 ? duplicates : entries).reduce((oldest, candidate) =>
+      candidate[0] < oldest[0] ? candidate : oldest,
+    )
     if (eviction === undefined) break
     recentTiles.delete(eviction[0])
     recentTileBytes -= eviction[1].bytes.byteLength

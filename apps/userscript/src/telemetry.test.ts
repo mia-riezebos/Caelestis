@@ -1620,6 +1620,26 @@ describe('server telemetry client', () => {
 
   it('restores recent retries trimmed from a failed active batch', async () => {
     vi.useFakeTimers()
+    const digestCompletions: Array<() => void> = []
+    const nativeCrypto = globalThis.crypto
+    vi.stubGlobal('crypto', {
+      getRandomValues: nativeCrypto.getRandomValues.bind(nativeCrypto),
+      subtle: {
+        digest: vi.fn((_algorithm: AlgorithmIdentifier, data: BufferSource) => {
+          const bytes = ArrayBuffer.isView(data)
+            ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            : new Uint8Array(data)
+          const value = bytes[0] ?? 0
+          return new Promise<ArrayBuffer>((resolve) => {
+            digestCompletions[value] = () => {
+              const digest = new Uint8Array(32)
+              digest[0] = value
+              resolve(digest.buffer)
+            }
+          })
+        }),
+      },
+    })
     const mirror = { ...server, url: 'https://mirror.example' }
     harness.state = { ...harness.state, servers: [server, mirror] }
     const attempts = new Map<string, Array<{ offers: Array<{ tile: string }> }>>()
@@ -1669,6 +1689,9 @@ describe('server telemetry client', () => {
       bytes[0] = index
       harness.fetchedTile?.({ x: index, y: 11 }, bytes, 1_800_000_000 + index)
     }
+    expect(digestCompletions).toHaveLength(observationCount)
+    for (let index = observationCount - 1; index >= 0; index--) digestCompletions[index]?.()
+    await vi.advanceTimersByTimeAsync(0)
     await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(1), { timeout: 2_000 })
 
     await vi.advanceTimersByTimeAsync(60_000)
