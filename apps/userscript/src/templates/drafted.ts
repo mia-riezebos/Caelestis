@@ -20,9 +20,8 @@ import { getMap } from '../map-handle.js'
  * page with two pixels drafted, the patch keyed `1626,8908` held exactly two non-zero entries, at
  * canvas (325269, 1781754) and (325204, 1781757) — the two that had been drafted.
  *
- * Enumerated rather than asked per pixel. Only drafted pixels are interesting and there are rarely
- * many, so this costs the number of answers rather than the size of a tile — and a patch only
- * exists where something has been drafted, so the empty case reads nothing at all.
+ * Cache each patch's sparse offsets until Wplace marks it dirty. Unknown renderer versions fall
+ * back to scanning, and a periodic refresh also recovers mutations outside that notification.
  */
 
 /** wplace's crosshair patches are this many pixels a side. */
@@ -33,10 +32,38 @@ const CROSSHAIR_LAYER = 'paint-crosshair-annotations'
 
 interface CrosshairLayer {
   style?: {
-    _layers?: Record<
-      string,
-      { implementation?: { tiles?: Map<string, { annotations?: Uint8Array }> } }
-    >
+    _layers?: Record<string, { implementation?: CrosshairRenderer }>
+  }
+}
+
+interface CrosshairRenderer {
+  tiles?: Map<string, { annotations?: Uint8Array }>
+  markDirty?: (key: string) => unknown
+}
+
+const RECOVERY_INTERVAL_MS = 1_000
+const watched = new WeakMap<CrosshairRenderer, NonNullable<CrosshairRenderer['markDirty']>>()
+const patches = new WeakMap<Uint8Array, { offsets: readonly number[]; checkedAt: number }>()
+
+const observeWrites = (renderer: CrosshairRenderer): boolean => {
+  const native = renderer.markDirty
+  if (native === undefined) return false
+  if (watched.get(renderer) === native) return true
+  const wrapped = function (this: CrosshairRenderer, key: string): unknown {
+    try {
+      return native.call(this, key)
+    } finally {
+      const pixels = this.tiles?.get(key)?.annotations
+      if (pixels !== undefined) patches.delete(pixels)
+    }
+  }
+  try {
+    renderer.markDirty = wrapped
+    if (renderer.markDirty !== wrapped) return false
+    watched.set(renderer, wrapped)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -48,8 +75,11 @@ interface CrosshairLayer {
  */
 export const draftedPixelsIn = (tile: TileCoord, tileSize: number): number[] => {
   const map = getMap() as CrosshairLayer | null
-  const tiles = map?.style?._layers?.[CROSSHAIR_LAYER]?.implementation?.tiles
+  const renderer = map?.style?._layers?.[CROSSHAIR_LAYER]?.implementation
+  const tiles = renderer?.tiles
   if (tiles === undefined || tiles.size === 0) return []
+  const observed = renderer !== undefined && observeWrites(renderer)
+  const now = performance.now()
 
   const found: number[] = []
   const across = tileSize / PATCH
@@ -63,8 +93,14 @@ export const draftedPixelsIn = (tile: TileCoord, tileSize: number): number[] => 
       if (annotations === undefined) continue
       const offsetX = column * PATCH
       const offsetY = row * PATCH
-      for (let i = 0; i < annotations.length; i++) {
-        if (annotations[i] === 0) continue
+      let cached = patches.get(annotations)
+      if (!observed || cached === undefined || now - cached.checkedAt >= RECOVERY_INTERVAL_MS) {
+        const offsets: number[] = []
+        for (let i = 0; i < annotations.length; i++) if (annotations[i] !== 0) offsets.push(i)
+        cached = { offsets, checkedAt: now }
+        if (observed) patches.set(annotations, cached)
+      }
+      for (const i of cached.offsets) {
         found.push((offsetY + Math.floor(i / PATCH)) * tileSize + offsetX + (i % PATCH))
       }
     }

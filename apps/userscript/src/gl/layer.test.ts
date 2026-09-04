@@ -444,8 +444,10 @@ describe('overlay layer', () => {
     harness.moving = false
     harness.contrastOutline = false
     harness.outlineFade = { value: 0, done: true }
+    vi.mocked(context.useProgram).mockClear()
     outlineLayer.draw(context, null)
     expect(context.drawArrays).not.toHaveBeenCalled()
+    expect(context.useProgram).not.toHaveBeenCalled()
   })
 
   it('fades outline visibility and requests frames until the ramp settles', async () => {

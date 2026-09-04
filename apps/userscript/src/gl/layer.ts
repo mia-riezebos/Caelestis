@@ -534,6 +534,25 @@ export const outlineLayer = {
     const peek = overlayPeekFade(now)
     if ((peek.opacity <= 0 && peek.done) || !isDrawingTiles()) return
     const map = getMap() as { triggerRepaint?: () => void } | null
+    const scene = worldRenderScene.advanceTemplates(
+      displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE),
+      WORLD_TEMPLATE_SURFACE,
+      now,
+      prefersReducedMotion(),
+    )
+    if (
+      !scene.templates.some(
+        ({ fade, outlineFade, palette }) => fade > 0 && outlineFade > 0 && palette !== null,
+      )
+    ) {
+      if (isProfileEnabled()) {
+        recordProfileWorkload('Outline host tiles', 0)
+        recordProfileWorkload('Outline visible templates', 0)
+        recordProfileWorkload('Outline draw intersections', 0)
+      }
+      if (scene.animating || !peek.done) map?.triggerRepaint?.()
+      return
+    }
     // MapLibre exposes the same current tile matrices its raster layer will upload later in this
     // frame. The coordinate module reads those early, with the intercepted previous frame only as
     // a compatibility fallback when private MapLibre state is unavailable.
@@ -561,15 +580,8 @@ export const outlineLayer = {
 
     const bufferWidth = gl.drawingBufferWidth
     const bufferHeight = gl.drawingBufferHeight
-    const reducedMotion = prefersReducedMotion()
     let drawIntersections = 0
     let visibleTemplates = 0
-    const scene = worldRenderScene.advanceTemplates(
-      displayTemplatesForSurface(WORLD_TEMPLATE_SURFACE),
-      WORLD_TEMPLATE_SURFACE,
-      now,
-      reducedMotion,
-    )
     for (const rendered of scene.templates) {
       const { template, appearance, fade, outlineFade, palette } = rendered
       const entry = store.entry(template.id)

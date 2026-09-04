@@ -6,7 +6,7 @@ import {
   tileKey,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
-import { announceCanvasWrite } from './canvas-write.js'
+import { announceCanvasWrite, type CanvasWriteRect } from './canvas-write.js'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
@@ -692,6 +692,7 @@ const observedPaintFrom = (
 }
 
 const notifyPaintSubmission = (submission: PaintSubmission): void => {
+  flushDraftWrites()
   for (const listener of paintSubmissionListeners) {
     try {
       listener(submission)
@@ -1135,11 +1136,24 @@ const indexTable = (): Uint32Array => {
  * wplace redraws a paint-preview tile only when a pixel changes, but MapLibre *draws* it every
  * frame. Without this the capture below would run on every frame of every tile on screen.
  */
-const dirtyCanvases = new WeakSet<object>()
+const dirtyCanvases = new WeakMap<object, CanvasWriteRect | null>()
 
 /** Note that a tile-sized canvas has been written to, so the next draw re-reads it. */
-export const markCanvasDirty = (canvas: object): void => {
-  dirtyCanvases.add(canvas)
+export const markCanvasDirty = (canvas: object, rect: CanvasWriteRect | null = null): void => {
+  const held = dirtyCanvases.get(canvas)
+  if (held === null) return
+  if (held === undefined || rect === null) {
+    dirtyCanvases.set(canvas, rect)
+    return
+  }
+  const x = Math.min(held.x, rect.x)
+  const y = Math.min(held.y, rect.y)
+  dirtyCanvases.set(canvas, {
+    x,
+    y,
+    width: Math.max(held.x + held.width, rect.x + rect.width) - x,
+    height: Math.max(held.y + held.height, rect.y + rect.height) - y,
+  })
 }
 
 /** Which tile a paint-preview canvas belongs to, once a draw has told us. */
@@ -1164,8 +1178,8 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
  * drafted on it.
  */
 const draftOfTile = new Map<string, Uint8Array>()
-/** Non-empty offsets in each draft, so closing Paint can discard them without scanning 1M cells. */
-const draftedOffsets = new Map<string, Set<number>>()
+/** Active draft truth survives eviction of the dense arrays used by pixel consumers. */
+const draftedOffsets = new Map<string, Map<number, number>>()
 const KEEP_DRAFT_TILES = 64
 
 export const capturedPixelMemoryBytes = (): number => {
@@ -1182,8 +1196,6 @@ const rememberDraft = (key: string, draft: Uint8Array): void => {
     const oldest = draftOfTile.keys().next()
     if (oldest.done) break
     draftOfTile.delete(oldest.value)
-    transparentOfTile.delete(oldest.value)
-    draftedOffsets.delete(oldest.value)
   }
 }
 
@@ -1194,20 +1206,25 @@ const rememberDraftedOffset = (key: string, offset: number, index: number): void
     if (held?.size === 0) draftedOffsets.delete(key)
     return
   }
-  if (held === undefined) draftedOffsets.set(key, new Set([offset]))
-  else held.add(offset)
+  if (held === undefined) draftedOffsets.set(key, new Map([[offset, index]]))
+  else held.set(offset, index)
 }
 
 /** Sparse native Wplace draft offsets for one tile, without exposing the mutable retained set. */
 export function* draftedPixelOffsets(tile: TileCoord): IterableIterator<number> {
-  yield* draftedOffsets.get(tileKey(tile)) ?? []
+  yield* draftedOffsets.get(tileKey(tile))?.keys() ?? []
 }
 
 /** The draft layer for a tile, or null if nothing has been drafted on it. */
 export const draftPixels = (tile: TileCoord): Uint8Array | null => {
   const key = tileKey(tile)
-  const draft = draftOfTile.get(key)
-  if (draft === undefined) return null
+  let draft = draftOfTile.get(key)
+  if (draft === undefined) {
+    const sparse = draftedOffsets.get(key)
+    if (sparse === undefined) return null
+    draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
+    for (const [offset, index] of sparse) draft[offset] = index
+  }
   rememberDraft(key, draft)
   return draft
 }
@@ -1260,7 +1277,6 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
       count('pixels:listener-failed')
     }
   }
-  notifyPixelBatch(tile, [x, y, index], 'draft')
 }
 
 /**
@@ -1271,35 +1287,47 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
  * moves. The crosshair is the only evidence it happened. Reconciling in both directions here is what
  * turns it into a change like any other, announced through the same listener as a placed pixel.
  */
-const reconcileDraftedTile = (tile: TileCoord): void => {
+const reconcileDraftedTile = (tile: TileCoord, before?: Map<number, number>): void => {
   const key = tileKey(tile)
   const draft = draftOfTile.get(key)
-  if (draft === undefined) return
+  if (draft === undefined && !draftedOffsets.has(key) && before === undefined) return
 
   const held = transparentOfTile.get(key)
   const now = new Set<number>()
+  const changed: number[] = []
   for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
+    const index = draft?.[p] ?? draftedOffsets.get(key)?.get(p) ?? UNPAINTED
     // A drafted pixel the canvas gave us no colour for was drafted transparent.
-    if (draft[p] === UNPAINTED) {
-      draft[p] = TRANSPARENT_INDEX
+    if (index === UNPAINTED) {
+      if (before !== undefined && !before.has(p)) before.set(p, UNPAINTED)
+      if (draft !== undefined) draft[p] = TRANSPARENT_INDEX
       rememberDraftedOffset(key, p, TRANSPARENT_INDEX)
-      notifyPixel(tile, p, TRANSPARENT_INDEX)
+      if (before === undefined) {
+        notifyPixel(tile, p, TRANSPARENT_INDEX)
+        changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), TRANSPARENT_INDEX)
+      }
       count('pixels:drafted transparent')
     }
-    if (draft[p] === TRANSPARENT_INDEX) now.add(p)
+    if (index === UNPAINTED || index === TRANSPARENT_INDEX) now.add(p)
   }
   if (held !== undefined) {
     for (const p of held) {
-      if (now.has(p) || draft[p] !== TRANSPARENT_INDEX) continue
+      const index = draft?.[p] ?? draftedOffsets.get(key)?.get(p) ?? UNPAINTED
+      if (now.has(p) || index !== TRANSPARENT_INDEX) continue
       // The crosshair is gone, so the pixel is undrafted — back to whatever the server has.
-      draft[p] = UNPAINTED
+      if (before !== undefined && !before.has(p)) before.set(p, TRANSPARENT_INDEX)
+      if (draft !== undefined) draft[p] = UNPAINTED
       rememberDraftedOffset(key, p, UNPAINTED)
-      notifyPixel(tile, p, UNPAINTED)
+      if (before === undefined) {
+        notifyPixel(tile, p, UNPAINTED)
+        changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), UNPAINTED)
+      }
       count('pixels:undrafted a transparent pixel')
     }
   }
   if (now.size > 0) transparentOfTile.set(key, now)
   else transparentOfTile.delete(key)
+  notifyPixelBatch(tile, changed, 'draft')
 }
 
 /**
@@ -1316,7 +1344,8 @@ export const reconcileDrafts = (): void => {
   const now = performance.now()
   if (now - lastReconcile < RECONCILE_INTERVAL_MS) return
   lastReconcile = now
-  for (const key of draftOfTile.keys()) {
+  // Sparse active state outlives the dense cache. Reconciliation must not rehydrate cold arrays.
+  for (const key of new Set([...draftOfTile.keys(), ...draftedOffsets.keys()])) {
     const [x, y] = key.split('/').map(Number)
     if (x === undefined || y === undefined) continue
     reconcileDraftedTile({ x, y })
@@ -1338,6 +1367,7 @@ export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
   const known = tileOfPaintCanvas.get(canvas)
   if (known !== undefined && known.x === tile.x && known.y === tile.y) return
   tileOfPaintCanvas.set(canvas, tile)
+  markCanvasDirty(canvas)
   count('paint:named a draft canvas')
   const held = queuedWrites.get(canvas)
   if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
@@ -1384,14 +1414,39 @@ const PATCH_LIMIT = 32
  */
 const flipRow = (y: number): number => TILE_SIZE - 1 - y
 
-const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
+const pendingDraftWrites = new Map<string, { tile: TileCoord; before: Map<number, number> }>()
+
+/** Publish the final native colour/occupancy transaction before rendering or submitting it. */
+const flushDraftWrites = (): void => {
+  const pending = [...pendingDraftWrites.values()]
+  pendingDraftWrites.clear()
+  for (const { tile, before } of pending) {
+    reconcileDraftedTile(tile, before)
+    const draft = draftPixels(tile)
+    const triples: number[] = []
+    for (const [p, previous] of before) {
+      const index = draft?.[p] ?? UNPAINTED
+      if (index === previous) continue
+      notifyPixel(tile, p, index)
+      triples.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), index)
+    }
+    notifyPixelBatch(tile, triples, 'draft')
+  }
+}
+
+const readWrite = (
+  image: ImageData,
+  dx: number,
+  dy: number,
+  rect: CanvasWriteRect = { x: dx, y: dy, width: image.width, height: image.height },
+): number[] => {
   const table = indexTable()
-  const { data, width, height } = image
+  const { data, width } = image
   const triples: number[] = []
-  for (let j = 0; j < height; j++) {
+  for (let j = rect.y - dy; j < rect.y - dy + rect.height; j++) {
     const y = flipRow(dy + j)
     if (y < 0 || y >= TILE_SIZE) continue
-    for (let i = 0; i < width; i++) {
+    for (let i = rect.x - dx; i < rect.x - dx + rect.width; i++) {
       const x = dx + i
       if (x < 0 || x >= TILE_SIZE) continue
       const at = (j * width + i) * 4
@@ -1417,36 +1472,32 @@ const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
  */
 const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
   const key = tileKey(tile)
-  let draft = draftOfTile.get(key)
-  if (draft === undefined) {
+  let draft = draftPixels(tile)
+  if (draft === null) {
     draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
   }
   rememberDraft(key, draft)
+  let pending = pendingDraftWrites.get(key)
+  if (pending === undefined) {
+    if (pendingDraftWrites.size === 0) queueMicrotask(flushDraftWrites)
+    pending = { tile, before: new Map() }
+    pendingDraftWrites.set(key, pending)
+  }
   let changed = 0
-  const changedTriples: number[] = []
   for (let i = 0; i < triples.length; i += 3) {
     const x = triples[i] as number
     const y = triples[i + 1] as number
     const index = triples[i + 2] as number
     const p = y * TILE_SIZE + x
     if (draft[p] === index) continue
+    if (!pending.before.has(p)) pending.before.set(p, draft[p] ?? UNPAINTED)
     draft[p] = index
     rememberDraftedOffset(key, p, index)
     changed++
-    changedTriples.push(x, y, index)
-    for (const listener of pixelListeners) {
-      try {
-        listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
-      } catch {
-        count('pixels:listener-failed')
-      }
-    }
   }
-  notifyPixelBatch(tile, changedTriples, 'draft')
   if (changed > 0) count('pixels:patched a draft write')
-  // The write that lands on a pixel drafted Transparent is a no-op — see `reconcileDraftedTile`.
-  // Asking now rather than waiting for the throttled pass is what makes that marker appear at once.
-  reconcileDraftedTile(tile)
+  // Wplace updates crosshair occupancy after the canvas write. Reconcile once at the end of that
+  // task so undo cannot momentarily turn a removed opaque draft into a transparent draft.
   return true
 }
 
@@ -1494,18 +1545,31 @@ export const captureDraftPixels = (
   indices: Uint8Array,
   firstChanges?: readonly number[],
 ): void => {
+  flushDraftWrites()
   const key = tileKey(tile)
-  const existing = draftOfTile.get(key)
-  if (existing !== undefined && existing.length === indices.length) {
+  // Resolve zero-alpha occupancy before diffing. Otherwise an unchanged transparent draft emits
+  // a removal followed by a replacement on every fallback readback.
+  const transparent = new Set<number>()
+  const transparentChanges: number[] = []
+  for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
+    if (indices[p] !== UNPAINTED) continue
+    indices[p] = TRANSPARENT_INDEX
+    transparent.add(p)
+    transparentChanges.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), TRANSPARENT_INDEX)
+  }
+  if (transparent.size > 0) transparentOfTile.set(key, transparent)
+  else transparentOfTile.delete(key)
+  const existing = draftPixels(tile)
+  if (existing !== null && existing.length === indices.length) {
     rememberDraft(key, existing)
     apply(tile, existing, indices, 'draft')
     count('pixels:draft re-read')
-    reconcileDraftedTile(tile)
     return
   }
 
   rememberDraft(key, indices)
-  let changedTriples = firstChanges
+  let changedTriples =
+    firstChanges === undefined ? undefined : [...firstChanges, ...transparentChanges]
   if (changedTriples === undefined) {
     const discovered: number[] = []
     for (let p = 0; p < indices.length; p++) {
@@ -1529,17 +1593,17 @@ export const captureDraftPixels = (
   }
   notifyPixelBatch(tile, changedTriples, 'draft')
   count('pixels:draft captured')
-  reconcileDraftedTile(tile)
 }
 
 /** Discard Wplace's local draft state when its Paint drawer closes or cancels. */
 export const clearDraftPixels = (): void => {
+  pendingDraftWrites.clear()
   const changed: Array<{ tile: TileCoord; triples: number[] }> = []
   for (const [key, offsets] of draftedOffsets) {
     const [x, y] = key.split('/').map(Number)
     if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) continue
     const triples: number[] = []
-    for (const offset of offsets) {
+    for (const offset of offsets.keys()) {
       const localX = offset % TILE_SIZE
       triples.push(localX, (offset - localX) / TILE_SIZE, UNPAINTED)
     }
@@ -1567,9 +1631,10 @@ const capture = (
   tile: TileCoord,
   bitmap: CanvasImageSource & { width: number; height: number },
   from: 'tile' | 'preview' = 'tile',
-): void =>
-  measureProfile('Tile pixel capture', () => {
-    if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return
+  dirty: CanvasWriteRect | null = null,
+): boolean =>
+  measureProfile(from === 'preview' ? 'Draft pixel capture' : 'Tile pixel capture', () => {
+    if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return false
     /**
      * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
      *
@@ -1581,9 +1646,20 @@ const capture = (
      * that were never coming. An empty tile is a real answer and gets recorded as one.
      */
     const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
-    if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return
+    if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return false
     try {
       const key = tileKey(tile)
+      if (from === 'preview' && dirty !== null && draftOfTile.has(key)) {
+        const context = reusableCaptureContext()
+        if (context === null) return false
+        context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
+        context.drawImage(bitmap, 0, 0)
+        const image = context.getImageData(dirty.x, dirty.y, dirty.width, dirty.height)
+        count('pixels:draft readback pixels', dirty.width * dirty.height)
+        applyWrite(tile, readWrite(image, dirty.x, dirty.y))
+        count('pixels:draft region read')
+        return true
+      }
       const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
       const firstDraftChanges: number[] | null =
         from === 'preview' && !draftOfTile.has(key) ? [] : null
@@ -1591,13 +1667,17 @@ const capture = (
         indices.fill(UNPAINTED)
       } else {
         const context = reusableCaptureContext()
-        if (context === null) return
+        if (context === null) return false
         // The context is reused, and source-over leaves old RGB behind wherever the new bitmap is
         // transparent. Clear first so transparent pixels stay unpainted instead of inheriting the
         // previous tile or draft.
         context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
         context.drawImage(bitmap, 0, 0)
         const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
+        count(
+          from === 'preview' ? 'pixels:draft readback pixels' : 'pixels:tile readback pixels',
+          TILE_SIZE * TILE_SIZE,
+        )
         const table = indexTable()
         for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
           // Fully transparent is unpainted. Opaque pixels are palette colours, allowing for bounded
@@ -1619,7 +1699,7 @@ const capture = (
       }
       if (from === 'preview') {
         captureDraftPixels(tile, indices, firstDraftChanges ?? [])
-        return
+        return true
       }
 
       /**
@@ -1634,13 +1714,15 @@ const capture = (
       if (existing === undefined || existing.length !== indices.length) {
         rememberTilePixels(key, indices)
         count('pixels:captured')
-        return
+        return true
       }
       rememberTilePixels(key, existing)
       apply(tile, existing, indices, 'server')
       count('pixels:re-read as a diff')
+      return true
     } catch (error) {
       warn('bitmap', 'could not read tile pixels', String(error))
+      return false
     }
   })
 
@@ -1721,6 +1803,7 @@ const installPutImageDataTaps = (
     (prototype): prototype is CanvasRenderingContext2D => prototype !== undefined,
   )
   const hooks: InstalledValueHook[] = []
+  const clipped = new WeakSet<object>()
   try {
     for (const prototype of prototypes) {
       const nativePutImageData = prototype.putImageData
@@ -1732,19 +1815,45 @@ const installPutImageDataTaps = (
           () => Reflect.apply(nativePutImageData, this, args),
           () => {
             const [image, dx, dy, dirtyX = 0, dirtyY = 0, dirtyWidth, dirtyHeight] = args
-            announceCanvasWrite(this.canvas, {
-              x: dx + dirtyX,
-              y: dy + dirtyY,
-              width: dirtyWidth ?? image.width,
-              height: dirtyHeight ?? image.height,
-            })
-            const canvas = this.canvas as { width?: number; height?: number }
-            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
-            if (image.width > PATCH_LIMIT || image.height > PATCH_LIMIT) {
+            const values = [
+              dx,
+              dy,
+              dirtyX,
+              dirtyY,
+              dirtyWidth ?? image.width,
+              dirtyHeight ?? image.height,
+            ]
+            if (
+              !values.every((value) => Number.isInteger(value) && Math.abs(value) <= 0x7fffffff)
+            ) {
               markCanvasDirty(this.canvas)
+              announceCanvasWrite(this.canvas)
               return
             }
-            const triples = readWrite(image, dx, dy)
+            const width = dirtyWidth ?? image.width
+            const height = dirtyHeight ?? image.height
+            const left = Math.max(0, -dx, Math.min(dirtyX, dirtyX + width))
+            const top = Math.max(0, -dy, Math.min(dirtyY, dirtyY + height))
+            const right = Math.min(
+              image.width,
+              this.canvas.width - dx,
+              Math.max(dirtyX, dirtyX + width),
+            )
+            const bottom = Math.min(
+              image.height,
+              this.canvas.height - dy,
+              Math.max(dirtyY, dirtyY + height),
+            )
+            if (right <= left || bottom <= top) return
+            const rect = { x: dx + left, y: dy + top, width: right - left, height: bottom - top }
+            announceCanvasWrite(this.canvas, rect)
+            const canvas = this.canvas as { width?: number; height?: number }
+            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
+            if (rect.width > PATCH_LIMIT || rect.height > PATCH_LIMIT) {
+              markCanvasDirty(this.canvas, rect)
+              return
+            }
+            const triples = readWrite(image, dx, dy, rect)
             const tile = tileOfPaintCanvas.get(this.canvas)
             if (tile === undefined || !applyWrite(tile, triples)) {
               const queue = queuedWrites.get(this.canvas)
@@ -1767,6 +1876,21 @@ const installPutImageDataTaps = (
           () => Reflect.apply(nativeClearRect, this, args),
           () => {
             const [x, y, width, height] = args
+            const transform = this.getTransform?.()
+            if (
+              clipped.has(this) ||
+              transform === undefined ||
+              transform.a !== 1 ||
+              transform.b !== 0 ||
+              transform.c !== 0 ||
+              transform.d !== 1 ||
+              transform.e !== 0 ||
+              transform.f !== 0
+            ) {
+              markCanvasDirty(this.canvas)
+              announceCanvasWrite(this.canvas)
+              return
+            }
             announceCanvasWrite(this.canvas, { x, y, width, height })
             const canvas = this.canvas as { width?: number; height?: number }
             if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
@@ -1806,6 +1930,87 @@ const installPutImageDataTaps = (
       const clearHook = installValueHook(prototype, 'clearRect', wrappedClearRect)
       if (clearHook === null) throw new Error('clearRect is not hookable')
       hooks.push(clearHook)
+
+      // These operations can copy, transform, clip, or reset pixels. Recover from the resulting
+      // canvas once, not from every upload of that unchanged canvas.
+      for (const name of [
+        'drawImage',
+        'fillRect',
+        'strokeRect',
+        'fill',
+        'stroke',
+        'fillText',
+        'strokeText',
+        'reset',
+        'clip',
+      ] as const) {
+        const native = prototype[name]
+        if (typeof native !== 'function') continue
+        const wrapped = function (this: CanvasRenderingContext2D, ...args: unknown[]) {
+          return runObservedCall(
+            () => Reflect.apply(native, this, args),
+            () => {
+              if (name === 'clip') {
+                clipped.add(this)
+                return
+              }
+              if (name === 'reset') clipped.delete(this)
+              markCanvasDirty(this.canvas)
+              announceCanvasWrite(this.canvas)
+            },
+          )
+        }
+        const hook = installValueHook(prototype, name, wrapped)
+        if (hook === null) throw new Error(`${name} is not hookable`)
+        hooks.push(hook)
+      }
+    }
+    for (const prototype of new Set([
+      realm.HTMLCanvasElement?.prototype,
+      realm.OffscreenCanvas?.prototype,
+    ])) {
+      if (prototype === undefined) continue
+      for (const name of ['width', 'height'] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
+        const nativeSet = descriptor?.set
+        if (descriptor === undefined || nativeSet === undefined) continue
+        Object.defineProperty(prototype, name, {
+          ...descriptor,
+          set(this: HTMLCanvasElement | OffscreenCanvas, value: number) {
+            runObservedCall(
+              () => nativeSet.call(this, value),
+              () => {
+                markCanvasDirty(this)
+                announceCanvasWrite(this)
+              },
+            )
+          },
+        })
+        hooks.push({
+          restore: () => {
+            Object.defineProperty(prototype, name, descriptor)
+          },
+        })
+      }
+    }
+    const offscreen = realm.OffscreenCanvas?.prototype
+    if (offscreen?.transferToImageBitmap !== undefined) {
+      const native = offscreen.transferToImageBitmap
+      const hook = installValueHook(
+        offscreen,
+        'transferToImageBitmap',
+        function (this: OffscreenCanvas) {
+          return runObservedCall(
+            () => native.call(this),
+            () => {
+              markCanvasDirty(this)
+              announceCanvasWrite(this)
+            },
+          )
+        },
+      )
+      if (hook === null) throw new Error('transferToImageBitmap is not hookable')
+      hooks.push(hook)
     }
     return hooks
   } catch {
@@ -1966,7 +2171,7 @@ export const install = (
         WebGLTexture,
         CanvasImageSource & { width: number; height: number }
       >()
-      const capturedAt = new WeakMap<WebGLTexture, number>()
+      const capturedAt = new WeakMap<object, number>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
       let activeProgram: WebGLProgram | null = null
@@ -2239,14 +2444,11 @@ export const install = (
           source.width === TILE_SIZE &&
           source.height === TILE_SIZE
         ) {
+          if (canvasOfTexture.get(texture) !== source) markCanvasDirty(source)
           canvasOfTexture.set(texture, source)
           tileOfTexture.delete(texture)
-          // A CanvasSource upload is the canonical evidence that its pixels changed. The 1x1
-          // putImageData tap normally patches a paint immediately, but Wplace may upload a copied
-          // OffscreenCanvas whose identity is not the canvas it wrote. Mark every uploaded canvas
-          // dirty so the following draft-layer draw re-reads it and corrects any missed or stale
-          // fast-path state. MapLibre uploads these preview canvases only when they change.
-          markCanvasDirty(source)
+          // Animated CanvasSources upload every frame. Only real writes or source replacement
+          // invalidate pixels; upload itself is attribution, not evidence of mutation.
           return
         }
         if (
@@ -2516,11 +2718,11 @@ export const install = (
         // Do not stamp a preview that capture() will reject. Interest can expand while capture stays
         // enabled; leaving this texture unstamped makes that unchanged preview eligible then.
         if (captureInterest !== null && !captureInterest(tile)) return
-        const stale = capturedAt.get(texture) !== captureGeneration
+        const stale = capturedAt.get(source) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
+        if (!capture(tile, source, 'preview', stale ? null : dirtyCanvases.get(source))) return
         dirtyCanvases.delete(source)
-        capturedAt.set(texture, captureGeneration)
-        capture(tile, source, 'preview')
+        capturedAt.set(source, captureGeneration)
         queuedWrites.delete(source)
       }
 
