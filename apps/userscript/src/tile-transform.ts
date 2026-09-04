@@ -1597,13 +1597,22 @@ export const captureDraftPixels = (
 
 /** Discard Wplace's local draft state when its Paint drawer closes or cancels. */
 export const clearDraftPixels = (): void => {
+  // Native clears remove sparse offsets immediately but publish their changes in a microtask.
+  // Cancellation must retain those coordinates too, before discarding the pending transaction.
+  const affected = new Map<string, Set<number>>()
+  for (const [key, offsets] of draftedOffsets) affected.set(key, new Set(offsets.keys()))
+  for (const [key, { before }] of pendingDraftWrites) {
+    const offsets = affected.get(key) ?? new Set<number>()
+    for (const offset of before.keys()) offsets.add(offset)
+    affected.set(key, offsets)
+  }
   pendingDraftWrites.clear()
   const changed: Array<{ tile: TileCoord; triples: number[] }> = []
-  for (const [key, offsets] of draftedOffsets) {
+  for (const [key, offsets] of affected) {
     const [x, y] = key.split('/').map(Number)
     if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) continue
     const triples: number[] = []
-    for (const offset of offsets.keys()) {
+    for (const offset of offsets) {
       const localX = offset % TILE_SIZE
       triples.push(localX, (offset - localX) / TILE_SIZE, UNPAINTED)
     }

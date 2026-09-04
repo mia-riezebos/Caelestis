@@ -1,5 +1,12 @@
-import { WPLACE_PALETTE } from '@caelestis/shared'
+import {
+  decodeMismatchMask,
+  encodeMismatchMask,
+  MATCH,
+  WPLACE_PALETTE,
+  WRONG,
+} from '@caelestis/shared'
 import { afterEach, expect, it, vi } from 'vitest'
+import type { PlacedTemplate } from './templates/local-store.js'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -260,3 +267,74 @@ it('flushes a coalesced draft before taking the native submission snapshot', asy
   await realm.fetch('https://backend.wplace.live/paint', { method: 'POST', body: '{}' })
   expect(submitted).toHaveBeenCalledOnce()
 })
+
+it.each([1, 33])(
+  'restores accounting when cancellation interrupts %i pending native clears',
+  async (width) => {
+    const { api, source, tile, pixel } = await setup()
+    const template: PlacedTemplate = {
+      id: 'cancelled-draft',
+      name: 'Cancelled draft',
+      source: 'image',
+      originX: tile.x * 1_000,
+      originY: tile.y * 1_000 + 996,
+      width: width + 2,
+      height: 1,
+      indices: new Uint8Array(width + 2),
+      moved: 0,
+      opaque: width + 2,
+      tiles: new Set(['8/9']),
+      visible: true,
+      everPlaced: true,
+      appearance: null,
+      revision: 1,
+      owns: [],
+      folderId: null,
+      serverUrl: 'https://templates.example',
+    }
+    const classes = new Uint8Array(width + 2).fill(MATCH)
+    classes[width] = WRONG
+    classes[width + 1] = WRONG
+    const mask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 996, width: width + 2, height: 1 }, classes),
+    )
+    vi.doMock('./server-mismatch.js', () => ({
+      beginServerMismatchFrame: vi.fn(),
+      endServerMismatchFrame: vi.fn(),
+      onServerMismatchesChanged: vi.fn(),
+      serverMismatchMaskFor: () => mask,
+    }))
+    vi.doMock('./templates/colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
+    vi.doMock('./templates/local-store.js', () => ({
+      appearanceOf: () => ({ markMismatch: true, markUnpainted: true }),
+      displayTemplates: () => [template],
+      isTemplateVisible: () => true,
+      onLocalChange: vi.fn(),
+      templateTileKeys: () => template.tiles.keys(),
+    }))
+    vi.doMock('./templates/mismatch-worker.js', () => ({
+      hasWorker: () => false,
+      forgetInWorker: vi.fn(),
+    }))
+    const { pixelAccounting } = await import('./templates/mismatch.js')
+    const { markLocalX } = await import('./templates/mismatch-marks.js')
+    const read = () => pixelAccounting.frame(() => pixelAccounting.read(template).tile(tile))
+    expect(read()?.markers.length).toBe(2)
+    for (let x = 0; x < width; x++) source.context.putImageData(pixel(1), x, 3)
+    source.context.putImageData(pixel(0), width, 3)
+    await Promise.resolve()
+    expect(read()?.markers.length).toBe(width + 1)
+
+    for (let x = 0; x <= width; x++) source.context.clearRect(x, 3, 1, 1)
+    api.clearDraftPixels()
+    await Promise.resolve()
+
+    const restored = read()
+    expect(restored && [...restored.markers].map(markLocalX)).toEqual([width, width + 1])
+    expect(restored?.disagreements).toEqual(restored?.markers)
+    expect(pixelAccounting.read(template).progress).toMatchObject({
+      completed: width,
+      mismatched: 2,
+    })
+  },
+)
