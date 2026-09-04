@@ -8,6 +8,7 @@ declare global {
     // interface PageState {}
     interface Platform {
       env: {
+        CAELESTIS_BACKEND?: { fetch(request: Request): Promise<Response> }
         CAELESTIS_READ_TOKEN?: string
         CAELESTIS_SERVER?: string
       }

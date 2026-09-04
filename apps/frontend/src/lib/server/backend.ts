@@ -3,15 +3,6 @@ import { frontendClientAccept } from '$lib/api/client-metrics.js'
 
 type BackendEvent = Pick<RequestEvent, 'fetch' | 'platform' | 'url'>
 
-const backendBase = ({ platform, url }: BackendEvent): string => {
-  const buildTimeBackend = import.meta.env.VITE_CAELESTIS_SERVER
-  return (
-    platform?.env.CAELESTIS_SERVER ??
-    buildTimeBackend ??
-    new URL('/backend', url).href
-  ).replace(/\/+$/, '')
-}
-
 const readToken = ({ platform }: BackendEvent): string => {
   const token = platform?.env.CAELESTIS_READ_TOKEN?.trim()
   if (token === undefined || token.length === 0) {
@@ -26,11 +17,20 @@ export const fetchBackend = (
   path: string,
   init: RequestInit = {},
 ): Promise<Response> => {
+  const configuredBase =
+    event.platform?.env.CAELESTIS_SERVER ?? import.meta.env.VITE_CAELESTIS_SERVER
+  const base = (configuredBase ?? new URL('/backend', event.url).href).replace(/\/+$/, '')
   const headers = new Headers(init.headers)
   headers.delete('cookie')
   headers.set('authorization', `Bearer ${readToken(event)}`)
   if (!headers.has('accept')) headers.set('accept', frontendClientAccept('recovery', 'connect'))
-  return event.fetch(`${backendBase(event)}/${path.replace(/^\/+/, '')}`, { ...init, headers })
+  const target = `${base}/${path.replace(/^\/+/, '')}`
+  const requestInit = { ...init, headers }
+  const backend = event.platform?.env.CAELESTIS_BACKEND
+  if (configuredBase === undefined && backend !== undefined) {
+    return backend.fetch(new Request(target, requestInit))
+  }
+  return event.fetch(target, requestInit)
 }
 
 export const readBackendJson = async <T>(event: BackendEvent, path: string): Promise<T> => {

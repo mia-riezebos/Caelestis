@@ -54,4 +54,29 @@ describe('frontend backend reads', () => {
       expect.any(Object),
     )
   })
+
+  it('uses the backend service binding instead of same-origin SvelteKit fetch', async () => {
+    const frontendFetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('404'))
+    const backendFetch = vi
+      .fn<(request: Request) => Promise<Response>>()
+      .mockResolvedValue(new Response('{}'))
+    const backendEvent = {
+      fetch: frontendFetch,
+      platform: {
+        env: {
+          CAELESTIS_READ_TOKEN: 'worker-read-token',
+          CAELESTIS_BACKEND: { fetch: backendFetch },
+        },
+      },
+      url: new URL('https://caelestis.mia.cx/template/example'),
+    } as unknown as Parameters<typeof fetchBackend>[0]
+
+    await fetchBackend(backendEvent, '/v1/manifest')
+
+    expect(frontendFetch).not.toHaveBeenCalled()
+    expect(backendFetch).toHaveBeenCalledOnce()
+    const request = backendFetch.mock.calls[0]?.[0]
+    expect(request?.url).toBe('https://caelestis.mia.cx/backend/v1/manifest')
+    expect(request?.headers.get('authorization')).toBe('Bearer worker-read-token')
+  })
 })
