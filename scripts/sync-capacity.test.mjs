@@ -9,29 +9,27 @@ test('five healthy clients retain a ninety-percent steady-state invocation reduc
   assert.equal(report.scenario.clients, 5)
   assert.equal(report.baseline.avoidableWorkerRequests, 12_570)
   assert.equal(report.baseline.requiredTileOfferBatches, 2_075)
-  assert.equal(report.projected.avoidableWorkerRequests, 400)
+  assert.equal(report.projected.avoidableWorkerRequests, 5)
   assert.ok(report.projected.reductionPercent >= 90)
-  assert.equal(report.projected.reductionPercent, 96.8178)
-  assert.deepEqual(report.cache.outcomes, { miss: 2, stale: 48, hit: 200 })
-  assert.equal(report.cache.projectionReads, 250)
-  assert.equal(report.cache.authoritativeRebuilds, 50)
+  assert.equal(report.projected.reductionPercent, 99.9602)
+  assert.equal(report.storage.initialProjectionSnapshots, 15)
+  assert.equal(report.storage.dashboardSnapshotQueries, 10)
   assert.equal(report.durableObject.incomingHeartbeatMessages, 480)
-  assert.equal(report.durableObject.projectedBillableRequestUnits, 283)
+  assert.equal(report.durableObject.projectedBillableRequestUnits, 33)
   assert.equal(report.durableObject.heartbeatWakeups, 0)
 })
 
-test('required tile offers do not consume the avoidable synchronization budget', () => {
-  const report = projectSyncCapacity({ projectedTileOfferBatches: 100_000 })
+test('live telemetry volume stays off the Worker request budget', () => {
+  const report = projectSyncCapacity({
+    projectedTileOfferBatches: 100_000,
+    projectedPaintReports: 20_000,
+    projectedTileUploads: 10_000,
+  })
 
-  assert.equal(report.projected.requiredTileOfferBatches, 100_000)
-  assert.equal(report.projected.avoidableWorkerRequests, 400)
-  assert.equal(report.projected.reductionPercent, 96.8178)
-})
-
-test('data-dependent alarm reads remain avoidable synchronization work', () => {
-  const report = projectSyncCapacity({ projectedExtraAlarmReads: 100 })
-  assert.equal(report.projected.avoidableWorkerRequests, 500)
-  assert.equal(report.projected.reductionPercent, 96.0223)
+  assert.equal(report.projected.liveTileOfferBatches, 100_000)
+  assert.equal(report.durableObject.incomingTelemetryMessages, 130_000)
+  assert.equal(report.projected.avoidableWorkerRequests, 5)
+  assert.equal(report.projected.reductionPercent, 99.9602)
 })
 
 test('the Effect beta is exactly pinned for both runtime importers', async () => {
