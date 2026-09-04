@@ -165,7 +165,8 @@ export const installKeyboardShortcuts = (
       shortcut !== 'undo-paint' &&
       shortcut !== 'redo-paint' &&
       shortcut !== 'paint-action' &&
-      shortcut !== 'cancel-paint'
+      shortcut !== 'cancel-paint' &&
+      shortcut !== 'toggle-theme'
     ) {
       claim()
       return
@@ -251,7 +252,8 @@ export const installKeyboardShortcuts = (
       return
     }
     if (shortcut === 'toggle-theme') {
-      if (toggleWplaceTheme()) claim()
+      const handled = toggleWplaceTheme()
+      if (allianceEditorStage !== null || handled) claim()
       return
     }
 
