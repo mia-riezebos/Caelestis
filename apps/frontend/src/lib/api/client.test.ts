@@ -4,6 +4,7 @@ import {
   getAlarms,
   getHistory,
   getServer,
+  openLiveSocket,
   patchTemplateLifecycle,
   probeAdminScope,
 } from './client.js'
@@ -24,6 +25,23 @@ afterEach(() => {
 })
 
 describe('API request recovery', () => {
+  it('opens proxied live reads without putting the Worker token in the browser', () => {
+    const sockets: Array<{ url: string; protocols: readonly string[] }> = []
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        constructor(url: URL, protocols: readonly string[]) {
+          sockets.push({ url: String(url), protocols })
+        }
+      },
+    )
+
+    openLiveSocket(7, false)
+
+    expect(sockets[0]?.url).toContain('/api/v1/telemetry/live?season=7&scope=public')
+    expect(sockets[0]?.protocols).toEqual(['caelestis.live.v2', 'caelestis.live.v1'])
+  })
+
   it('retries one transient server failure before failing template loading', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
