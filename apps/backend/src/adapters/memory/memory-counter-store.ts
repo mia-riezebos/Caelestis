@@ -2,6 +2,7 @@ import { type Millis, millis, type Seconds, seconds } from '@caelestis/shared'
 import {
   addCounters,
   type BucketStore,
+  COUNTER_IDEMPOTENCY_RETENTION_SECONDS,
   type CounterDelta,
   type CounterStore,
   type CounterValues,
@@ -56,6 +57,7 @@ const flushRetryDelay = (failureCount: number): number =>
  * Tests may call `alarm` at the injected time to emulate delivery of `nextAlarmAt`.
  */
 export class MemoryCounterStore implements CounterStore {
+  private readonly appliedEvents = new Map<string, Millis>()
   private readonly pending = new Map<string, BucketCounters>()
   private readonly flushBatch = new Map<string, BucketCounters>()
   private readonly retained = new Map<string, BucketCounters>()
@@ -69,8 +71,15 @@ export class MemoryCounterStore implements CounterStore {
     private readonly clock: () => Millis = () => millis(Date.now()),
   ) {}
 
-  async record(deltas: readonly CounterDelta[]): Promise<void> {
+  async record(deltas: readonly CounterDelta[], idempotencyKey?: string): Promise<void> {
     const nowMilliseconds = this.clock()
+    const idempotencyCutoff = nowMilliseconds - COUNTER_IDEMPOTENCY_RETENTION_SECONDS * 1_000
+    for (const [eventId, seenAt] of this.appliedEvents)
+      if (seenAt <= idempotencyCutoff) this.appliedEvents.delete(eventId)
+    if (idempotencyKey !== undefined) {
+      if (this.appliedEvents.has(idempotencyKey)) return
+      this.appliedEvents.set(idempotencyKey, nowMilliseconds)
+    }
     const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
 
     // A successful flush leaves retained reconciliation state but no alarm. The next write is a

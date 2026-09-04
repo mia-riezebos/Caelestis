@@ -18,6 +18,7 @@ import {
   WORLD_TILES,
 } from '@caelestis/shared'
 import { SCOPES, type Scope } from '../auth/tokens.js'
+import type { CounterDelta } from './counter-store.js'
 
 /**
  * Relational storage. D1 today, Postgres later.
@@ -727,6 +728,18 @@ export interface ContributionDelta {
   readonly repairs: number
 }
 
+/** The immutable classification both stores replay for one paint event. */
+export interface PaintEventAccounting {
+  readonly counters: readonly CounterDelta[]
+  readonly contributions: readonly ContributionDelta[]
+}
+
+export interface PaintEventApplication {
+  readonly applied: boolean
+  /** Null identifies a pre-cutover claim whose original classification was never stored. */
+  readonly accounting: PaintEventAccounting | null
+}
+
 export class NodePathConflictError extends Error {
   override readonly name = 'NodePathConflictError'
 }
@@ -1070,8 +1083,14 @@ export interface SqlStore {
     retryAt: Millis,
   ): Promise<void>
 
-  /** Claims an idempotency key. False means this paint event was already accepted. */
-  claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>
+  /** Atomically store one classification and apply its contributions, then replay it on retries. */
+  applyPaintEvent(
+    eventId: string,
+    wplaceUserId: number,
+    displayName: string,
+    seenAt: Millis,
+    accounting: PaintEventAccounting,
+  ): Promise<PaintEventApplication>
 
   rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void>
 

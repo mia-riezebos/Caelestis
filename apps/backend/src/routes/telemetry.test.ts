@@ -927,7 +927,7 @@ describe('telemetry routes', () => {
   })
 
   it('classifies accepted paints once and rejects read-only reporting', async () => {
-    const { app, counters } = await harness()
+    const { app, counters, sql } = await harness()
     const templateId = await createPublishedTemplate(app)
     const reportToken = await mintToken(app, 'report')
     const readToken = await mintToken(app, 'read')
@@ -961,6 +961,12 @@ describe('telemetry routes', () => {
         body: JSON.stringify(event),
       })
 
+    const applyPaintEvent = sql.applyPaintEvent.bind(sql)
+    vi.spyOn(sql, 'applyPaintEvent').mockImplementationOnce(async (...args) => {
+      await applyPaintEvent(...args)
+      throw new Error('D1 response lost after commit')
+    })
+    expect((await report()).status).toBe(500)
     expect((await report()).status).toBe(200)
     const duplicate = await report()
     await expect(duplicate.json()).resolves.toMatchObject({

@@ -7,6 +7,7 @@ import { type Millis, millis, seconds } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import {
+  COUNTER_IDEMPOTENCY_RETENTION_SECONDS,
   EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
   FLUSHABLE_AFTER_SECONDS,
@@ -369,6 +370,40 @@ afterEach(() => {
 })
 
 describe('TelemetryShard', () => {
+  it('records an idempotency key once across cold starts', async () => {
+    const harness = await makeHarness(millis(150_000))
+    const delta = {
+      templateId: 'template-a',
+      occurredAt: seconds(100),
+      placed: 4,
+      correct: 3,
+      repairs: 1,
+    }
+
+    await harness.shard.record([delta], 'event-1')
+    await harness.coldRestart()
+    await harness.shard.record([delta], 'event-1')
+
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
+    ])
+  })
+
+  it('prunes counter idempotency rows after the supported retry window', async () => {
+    const clock = { now: millis(150_000) }
+    const harness = await makeHarness(clock)
+    await harness.shard.record([], 'old-event')
+    clock.now = millis(clock.now + COUNTER_IDEMPOTENCY_RETENTION_SECONDS * 1_000 + 1)
+
+    await harness.shard.record([], 'new-event')
+
+    expect(
+      harness.storageDatabase
+        .prepare('SELECT event_id FROM applied_counter_events ORDER BY event_id')
+        .all(),
+    ).toEqual([{ event_id: 'new-event' }])
+  })
+
   it('schedules the alarm for when the next bucket becomes flushable, not for now', async () => {
     // Every other test freezes the clock at or past the flushable instant, so Math.max(now, ...)
     // collapses to `now` and the arithmetic never matters. Here the clock sits well before it, so a

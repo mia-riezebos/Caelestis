@@ -33,6 +33,7 @@
 
   const DAY_SECONDS = 86_400
   const RESOLUTION = 900
+  const LIVE_STATS_REFRESH_MS = 15_000
 
   const now = Math.floor(Date.now() / 1_000)
   // Start at a day boundary so every retained tier can return the bucket containing creation.
@@ -95,19 +96,38 @@
     if (templateIds.length === 0) return
     const ids = [...templateIds]
     const generation = { cancelled: false }
-    const contributionFrom = now - 86_400 * 7 * 16
-    getContributions(ids, contributionFrom, now)
-      .then((response) => {
-        if (!generation.cancelled) contributions = response.days
+    let refreshPending = false
+    const refresh = (): void => {
+      if (refreshPending) return
+      refreshPending = true
+      const requestedAt = Math.floor(Date.now() / 1_000)
+      const contributionFrom = requestedAt - 86_400 * 7 * 16
+      void Promise.all([
+        getContributions(ids, contributionFrom, requestedAt)
+          .then((response) => {
+            if (!generation.cancelled) contributions = response.days
+          })
+          .catch(() => {}),
+        getLeaderboard(season, { templateIds: ids })
+          .then((response) => {
+            if (!generation.cancelled) leaderboard = response.entries
+          })
+          .catch(() => {}),
+      ]).finally(() => {
+        refreshPending = false
       })
-      .catch(() => {})
-    getLeaderboard(season, { templateIds: ids })
-      .then((response) => {
-        if (!generation.cancelled) leaderboard = response.entries
-      })
-      .catch(() => {})
+    }
+    const refreshWhenVisible = (): void => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+
+    refresh()
+    const interval = setInterval(refreshWhenVisible, LIVE_STATS_REFRESH_MS)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       generation.cancelled = true
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
   })
 

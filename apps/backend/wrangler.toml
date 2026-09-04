@@ -56,8 +56,8 @@ SERVER_DESCRIPTION = "The official Caelestis template server"
 # The canvas season this deployment serves. /manifest is season-scoped and ServerInfo carries no
 # season, so a later-season server has to say so here or it answers with season 0's.
 SEASON = "0"
-# "true" serves the read surface without a token and makes /server advertise auth: 'none'.
-OPEN_ACCESS = "true"
+# Keep every backend surface authenticated. The frontend Worker holds its read token server-side.
+OPEN_ACCESS = "false"
 # Mount the runtime adapter here while keeping the portable Hono app root-relative.
 BASE_PATH = "/backend"
 # The first production rollout only inventories candidates. Change this only after its logs have

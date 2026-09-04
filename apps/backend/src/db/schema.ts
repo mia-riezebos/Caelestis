@@ -447,19 +447,11 @@ export const contributions = sqliteTable(
  * property of the design with nowhere in the schema to hold it.
  *
  * This table is that place, and it is not the guarantee. The counters it protects live in a Durable
- * Object and `CounterStore.record` takes no event id, so the check and the increment are two writes
- * to two systems and no constraint here can make them one. What the schema provides is a durable,
- * uniquely-keyed record of what has been applied; what the ingest route must provide is the order.
+ * D1 stores the classification beside the claim and applies contribution increments in one batch.
+ * A retry replays that exact classification into the independently idempotent counter store.
  *
- * Insert here *first*, then record the counters. That way a crash between the two loses one event's
- * counts, which is the recoverable direction — the row exists, so the retry is refused and the
- * counters stay truthful about every other event. Recording first and inserting second fails the
- * other way: the retry is admitted and the counts inflate permanently, which is the bug this table
- * was added to prevent. Making the two atomic needs the event id to reach the counter store, which
- * is a port change and belongs with the route that will need it.
- *
- * `seen_at_ms` is what a sweeper prunes on. The row only has to outlive the window in which a retry
- * is plausible, not the event itself.
+ * D1 retains the claim with the aggregate it protects. Pruning it would let an old retry increment
+ * lifetime contributions again; the shorter-lived counter copy can expire with its time bucket.
  */
 export const appliedEvents = sqliteTable(
   'applied_events',
@@ -467,6 +459,8 @@ export const appliedEvents = sqliteTable(
     eventId: text('event_id').primaryKey(),
     wplaceUserId: integer('wplace_user_id').notNull(),
     seenAtMs: integer('seen_at_ms').$type<Millis>().notNull(),
+    // Null only for claims created before classifications were persisted.
+    accountingJson: text('accounting_json'),
   },
   (table) => [
     index('applied_events_seen_at_idx').on(table.seenAtMs),

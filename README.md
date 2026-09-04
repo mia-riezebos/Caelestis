@@ -115,6 +115,13 @@ pnpm --dir apps/backend exec wrangler deploy
 pnpm --dir apps/frontend deploy
 ```
 
+The SSR frontend also needs a backend token with exactly `read` scope. Store it directly on the
+frontend Worker without writing it to disk:
+
+```sh
+./scripts/set-frontend-read-token.sh
+```
+
 Keep the bootstrap token somewhere safe. It can create normal admin and read tokens, but the server
 never returns its value through the API.
 

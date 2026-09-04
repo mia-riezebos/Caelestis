@@ -32,6 +32,10 @@ export const RETENTION_SECONDS: Seconds = seconds(3_600)
  */
 export const FLUSHABLE_AFTER_SECONDS: Seconds = seconds(RESOLUTION_SECONDS + GRACE_SECONDS)
 export const EXPIRES_AFTER_SECONDS: Seconds = seconds(FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS)
+/** Event keys outlive every counter timestamp that could have been valid when first received. */
+export const COUNTER_IDEMPOTENCY_RETENTION_SECONDS: Seconds = seconds(
+  EXPIRES_AFTER_SECONDS + GRACE_SECONDS,
+)
 
 /** Prevent unbounded identifiers from creating permanent rows in the shared stores. */
 export const MAX_TEMPLATE_ID_LENGTH = 64
@@ -84,7 +88,13 @@ export interface PendingCounters {
 }
 
 export interface CounterStore {
-  record(deltas: readonly CounterDelta[]): Promise<void>
+  /**
+   * Atomically record deltas once for an optional idempotency key.
+   *
+   * Paint ingestion supplies its event id so a retry after an ambiguous cross-store failure cannot
+   * increment this buffer twice. Internal callers and focused adapter tests may omit the key.
+   */
+  record(deltas: readonly CounterDelta[], idempotencyKey?: string): Promise<void>
 
   /**
    * Unflushed counters for these templates, reflecting anything recorded up to this moment.

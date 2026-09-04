@@ -862,9 +862,88 @@ describe('D1SqlStore', () => {
     ])
   })
 
-  it('claims paint event ids once', async () => {
-    await expect(store.claimPaintEvent('event-1', 42, millis(1_000))).resolves.toBe(true)
-    await expect(store.claimPaintEvent('event-1', 42, millis(2_000))).resolves.toBe(false)
+  it('applies paint contributions once when a committed response is lost', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    const contribution = {
+      wplaceUserId: 42,
+      templateId: 'template-1',
+      day: seconds(0),
+      reportedWithToken: 'a'.repeat(64),
+      reportedByUserId: 42,
+      placed: 3,
+      correct: 2,
+      repairs: 1,
+    }
+    const accounting = {
+      counters: [
+        {
+          templateId: 'template-1',
+          occurredAt: seconds(1),
+          placed: 3,
+          correct: 2,
+          repairs: 1,
+        },
+      ],
+      contributions: [contribution],
+    }
+
+    d1.failNextBatchAt('after-commit')
+    await expect(
+      store.applyPaintEvent('event-1', 42, 'Mia', millis(1_000), accounting),
+    ).rejects.toThrow('D1 response lost after commit')
+    await expect(
+      store.applyPaintEvent('event-1', 42, 'Old name', millis(2_000), {
+        counters: [],
+        contributions: [],
+      }),
+    ).resolves.toEqual({ applied: false, accounting })
+    await expect(
+      store.readContributions({
+        templateIds: ['template-1'],
+        fromSeconds: seconds(0),
+        toSeconds: seconds(86_400),
+        includeUnpublished: true,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ day: seconds(0), placed: 3, correct: 2, repairs: 1 }),
+    ])
+    expect(
+      d1.sqlite.prepare('SELECT display_name FROM painters WHERE wplace_user_id = 42').get(),
+    ).toEqual({ display_name: 'Mia' })
+  })
+
+  it('does not replay a pre-cutover claim into an empty counter store', async () => {
+    d1.sqlite
+      .prepare(
+        `INSERT INTO applied_events (event_id, wplace_user_id, seen_at_ms)
+         VALUES ('legacy-event', 42, 1000)`,
+      )
+      .run()
+
+    await expect(
+      store.applyPaintEvent('legacy-event', 42, 'Mia', millis(2_000), {
+        counters: [
+          {
+            templateId: 'template-1',
+            occurredAt: seconds(1),
+            placed: 3,
+            correct: 2,
+            repairs: 1,
+          },
+        ],
+        contributions: [],
+      }),
+    ).resolves.toEqual({ applied: false, accounting: null })
   })
 
   it('issues one statement per parameter chunk when reading a large template set', async () => {
@@ -1161,9 +1240,15 @@ describe('D1SqlStore', () => {
   it('rejects a replayed event id regardless of the claimed user', () => {
     // The replay guard has to key on the event id alone. Keying it with the attacker-supplied user
     // would let one captured event be replayed once per fabricated identity.
-    d1.sqlite.exec("INSERT INTO applied_events VALUES ('e1', 100, 1000)")
+    d1.sqlite.exec(
+      "INSERT INTO applied_events (event_id, wplace_user_id, seen_at_ms) VALUES ('e1', 100, 1000)",
+    )
     expect(() =>
-      d1.sqlite.prepare("INSERT INTO applied_events VALUES ('e1', 200, 2000)").run(),
+      d1.sqlite
+        .prepare(
+          "INSERT INTO applied_events (event_id, wplace_user_id, seen_at_ms) VALUES ('e1', 200, 2000)",
+        )
+        .run(),
     ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/)
   })
 
