@@ -101,7 +101,9 @@ export class AppState {
     // manifest as if it were this server's — that reads as "my template is missing".
     this.manifest = null
     this.statuses = new Map()
+    this.statusRevision = null
     this.alarms = new Map()
+    this.alarmsVersion = null
     this.canvas = new Map()
     this.isAdmin = false
     this.retireLiveSocket()

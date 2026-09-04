@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { millis } from '@caelestis/shared'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AppState } from './app.svelte.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { type AppBootstrap, AppState } from './app.svelte.js'
 
 class FakeWebSocket extends EventTarget {
   static readonly OPEN = 1
@@ -47,36 +47,44 @@ beforeEach(() => {
   })
 })
 
+afterEach(() => vi.unstubAllGlobals())
+
+const liveServer = {
+  id: '01890f3e-7b2c-7abc-8def-000000000001',
+  name: 'Caelestis',
+  auth: 'access_token' as const,
+  liveSync: 2 as const,
+  liveSyncMin: 1 as const,
+}
+
+const manifest = {
+  version: 'a'.repeat(64),
+  season: 7,
+  server: {
+    id: liveServer.id,
+    name: liveServer.name,
+    auth: liveServer.auth,
+  },
+  nodes: [],
+  templates: [],
+  tiles: [],
+}
+
+const bootstrap: AppBootstrap = {
+  server: liveServer,
+  manifest,
+  statuses: [],
+  statusRevision: 1,
+  alarms: [],
+  alarmsVersion: 'b'.repeat(64),
+  canvas: [],
+  needsRecovery: false,
+  error: null,
+}
+
 describe('frontend live state', () => {
   it('hydrates shared and dashboard state from one proxied socket', () => {
-    const app = new AppState({
-      server: {
-        id: '01890f3e-7b2c-7abc-8def-000000000001',
-        name: 'Caelestis',
-        auth: 'access_token',
-        liveSync: 2,
-        liveSyncMin: 1,
-      },
-      manifest: {
-        version: 'a'.repeat(64),
-        season: 7,
-        server: {
-          id: '01890f3e-7b2c-7abc-8def-000000000001',
-          name: 'Caelestis',
-          auth: 'access_token',
-        },
-        nodes: [],
-        templates: [],
-        tiles: [],
-      },
-      statuses: [],
-      statusRevision: 1,
-      alarms: [],
-      alarmsVersion: 'b'.repeat(64),
-      canvas: [],
-      needsRecovery: false,
-      error: null,
-    })
+    const app = new AppState(bootstrap)
     const dashboard = vi.fn()
     app.subscribeDashboard([], 1_800_000_000, dashboard)
     app.startLive()
@@ -116,5 +124,38 @@ describe('frontend live state', () => {
       leaderboard: { entries: [] },
     })
     expect(socket?.url.pathname).toBe('/api/v1/telemetry/live')
+  })
+
+  it('advertises cleared projections when recovery reads fail', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/server')) return Response.json(liveServer)
+        if (url.endsWith('/manifest')) return Response.json(manifest)
+        if (url.includes('/telemetry/status') || url.includes('/telemetry/alarms'))
+          return Response.json({ error: 'unavailable' }, { status: 503 })
+        if (url.includes('/telemetry/canvas')) return Response.json({ tiles: [] })
+        if (url.includes('/admin/nodes')) return new Response(null, { status: 403 })
+        throw new Error(`unexpected request: ${url}`)
+      }),
+    )
+    const app = new AppState(bootstrap)
+
+    await app.load()
+    app.startLive()
+    const socket = FakeWebSocket.instances[0]
+    socket?.open()
+    const stateVector = socket?.sent
+      .map((message) => JSON.parse(message) as Record<string, unknown>)
+      .find((message) => message.type === 'state-vector')
+
+    expect(stateVector).toMatchObject({
+      revision: null,
+      projections: [
+        { resource: 'world-manifest', version: manifest.version },
+        { resource: 'telemetry-alarms', version: null },
+      ],
+    })
   })
 })
