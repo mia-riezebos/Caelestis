@@ -46,16 +46,19 @@ class FakeWebSocket extends EventTarget {
   readonly url: string
   readonly protocols: string[]
   readonly sent: string[] = []
+  protocol: string
   readyState = 0
 
   constructor(url: string | URL, protocols: string | string[]) {
     super()
     this.url = String(url)
     this.protocols = typeof protocols === 'string' ? [protocols] : protocols
+    this.protocol = this.protocols[0] ?? ''
     FakeWebSocket.instances.push(this)
   }
 
-  open(): void {
+  open(protocol = this.protocol): void {
+    this.protocol = protocol
     this.readyState = 1
     this.dispatchEvent(new Event('open'))
   }
@@ -606,6 +609,38 @@ describe('server sync coordinator', () => {
     expect(refresh).toHaveBeenCalledWith(liveServer, 'state-change', 'recovery')
     await vi.advanceTimersByTimeAsync(60 * 60_000)
     expect(refresh).toHaveBeenCalledOnce()
+  })
+
+  it('uses v1 behavior when an advertised v2 server negotiates v1', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, requestLivePaint, serverLiveSyncVersion } = await import(
+      './server-sync-coordinator.js'
+    )
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open('caelestis.live.v1')
+    reconcileSocket(socket, 0, 'correction', [])
+    socket.sent.length = 0
+
+    const result = await requestLivePaint(liveServer, {
+      eventId: '01890f3e-7b2c-7abc-8def-000000000012',
+      wplaceUserId: 42,
+      displayName: 'Mia',
+      season: 0,
+      ts: seconds(1_800_000_000),
+      tiles: [],
+      painted: 0,
+    })
+
+    expect(serverLiveSyncVersion(liveServer)).toBe(1)
+    expect(result).toBeNull()
+    expect(socket.sent).toEqual([])
   })
 
   it('reconnects rejected v2 frames but accepts incomplete snapshot parts', async () => {

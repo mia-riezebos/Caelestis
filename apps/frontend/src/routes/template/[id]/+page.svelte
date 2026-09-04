@@ -344,7 +344,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     <StatsPanel
       templates={[template]}
       season={app.manifest?.season ?? 0}
-      liveDashboard={(app.server?.liveSyncMax ?? app.server?.liveSync) === 2}
+      liveDashboard={app.liveProtocol === 2}
       {progress}
       subscribeDashboard={app.subscribeDashboard}
     />
