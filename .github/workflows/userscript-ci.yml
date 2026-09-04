@@ -6,7 +6,8 @@ on:
       - apps/userscript/**
       - packages/shared/**
       - .changeset/**
-      - .github/scripts/*userscript-release*.mjs
+      - .github/scripts/*release*.mjs
+      - .github/workflows/app-release.yml
       - .github/workflows/userscript-ci.yml
       - package.json
       - pnpm-lock.yaml
@@ -19,7 +20,8 @@ on:
       - apps/userscript/**
       - packages/shared/**
       - .changeset/**
-      - .github/scripts/*userscript-release*.mjs
+      - .github/scripts/*release*.mjs
+      - .github/workflows/app-release.yml
       - .github/workflows/userscript-ci.yml
       - package.json
       - pnpm-lock.yaml
