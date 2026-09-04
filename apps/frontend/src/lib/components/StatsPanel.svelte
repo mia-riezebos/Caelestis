@@ -185,6 +185,7 @@
         {to}
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
+        live={templates.some((template) => template.finishedAt === null)}
       />
     {/if}
   </section>
