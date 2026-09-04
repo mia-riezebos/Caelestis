@@ -346,13 +346,14 @@ describe('telemetry routes', () => {
     })
 
     await expect((await app.request('/server')).json()).resolves.toMatchObject({
-      liveSync: 1,
+      liveSync: 2,
+      liveSyncMin: 1,
       liveTileOffers: 1,
     })
     await expect(
       (await app.request('/manifest', { headers: bearer(readToken) })).json(),
     ).resolves.toMatchObject({
-      server: { liveSync: 1, liveTileOffers: 1 },
+      server: { liveSync: 2, liveSyncMin: 1, liveTileOffers: 1 },
     })
     expect(
       (
@@ -388,6 +389,7 @@ describe('telemetry routes', () => {
       lastRevision: 4,
       metricClient: 'userscript',
       metricClientVersion: '0.5.4',
+      protocol: 1,
     })
 
     const adminResponse = await app.request('/telemetry/live?season=7&scope=admin', {
@@ -405,6 +407,7 @@ describe('telemetry routes', () => {
       lastRevision: null,
       metricClient: 'unknown',
       metricClientVersion: 'unknown',
+      protocol: 1,
     })
 
     const downgradedResponse = await app.request('/telemetry/live?season=7&scope=public', {
@@ -422,7 +425,21 @@ describe('telemetry routes', () => {
       lastRevision: null,
       metricClient: 'unknown',
       metricClientVersion: 'unknown',
+      protocol: 1,
     })
+
+    const workerProxyResponse = await app.request('/telemetry/live?season=7&scope=public', {
+      headers: {
+        authorization: `Bearer ${readToken}`,
+        upgrade: 'websocket',
+        'sec-websocket-protocol': 'caelestis.live.v2',
+      },
+    })
+    expect(workerProxyResponse.status).toBe(204)
+    expect(connectStatusLive).toHaveBeenLastCalledWith(
+      expect.any(Request),
+      expect.objectContaining({ protocol: 2, credentialScope: 'read' }),
+    )
   })
 
   it('uses a browser client id instead of the network address for anonymous live capacity', async () => {

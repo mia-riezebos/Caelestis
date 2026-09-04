@@ -78,6 +78,7 @@ describe('Durable Object status read-model adapter', () => {
         lastRevision: 4,
         metricClient: 'userscript',
         metricClientVersion: '0.5.4',
+        protocol: 1,
       },
     )
 
@@ -145,6 +146,7 @@ describe('Durable Object status read-model adapter', () => {
           lastRevision: null,
           metricClient: 'userscript',
           metricClientVersion: '0.5.4',
+          protocol: 1,
         }),
     )
 
