@@ -15,11 +15,12 @@ import { count } from '../debug.js'
 import { measureProfile } from '../profile.js'
 import {
   beginServerMismatchFrame,
+  serverMismatchMaskFor as currentServerMismatchMaskFor,
   endServerMismatchFrame,
   onServerMismatchesChanged,
-  serverMismatchMaskFor,
 } from '../server-mismatch.js'
 import {
+  comparisonDraftPixels,
   draftedPixelOffsets,
   draftPixels,
   ensureTilePixels,
@@ -48,6 +49,13 @@ const worldTemplates = (): readonly PlacedTemplate[] =>
   displayTemplates().filter((template) =>
     sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, WORLD_TEMPLATE_SURFACE),
   )
+
+// A native observation replaces the mask held at that moment, not future server corrections.
+const observedMasks = new WeakSet<Uint8Array>()
+const serverMismatchMaskFor = (template: PlacedTemplate, tile: TileCoord): MismatchMask | null => {
+  const mask = currentServerMismatchMaskFor(template, tile)
+  return mask !== null && observedMasks.has(mask.packed) ? null : mask
+}
 
 /**
  * Which pixels of a template the canvas disagrees with, per tile.
@@ -945,7 +953,7 @@ const scanCandidate = (
   let distance = previousDistance
   let desiredPixels = 0
   let matchingPixels = 0
-  const draft = draftPixels(candidate.tile)
+  const draft = comparisonDraftPixels(candidate.tile)
   const tileLeft = candidate.tile.x * TILE_SIZE
   const tileTop = candidate.tile.y * TILE_SIZE
   for (let y = candidate.top; y < candidate.bottom; y++) {
@@ -1105,7 +1113,7 @@ const buildJob = (
     // The draft layer, kept beside the server's pixels rather than merged into them. A pixel placed
     // and not submitted is not on the server, so comparing against the server alone says a pixel
     // just fixed is still wrong; the comparison resolves the two rather than either owning the other.
-    draft: band(draftPixels(tile)),
+    draft: band(comparisonDraftPixels(tile)),
     // A pixel we are not claiming cannot be wrong: the wildcard asserts no colour, a filtered colour
     // is one the user has said to stop caring about, and the sentinel is a state rather than a hue.
     ignored: [TRANSPARENT_INDEX, UNPAINTED, ...assertedHidden(template)],
@@ -1138,7 +1146,7 @@ const buildMaskJob = (
   const bandBottom = forWorker
     ? Math.max(bandTop, Math.min(TILE_SIZE, bottom - tileTop))
     : TILE_SIZE
-  const draft = draftPixels(tile)
+  const draft = comparisonDraftPixels(tile)
   return {
     kind: 'mask',
     templateKey: template.id,
@@ -1629,7 +1637,7 @@ const tileAccountingFor = (
  * between thousands and a million.
  */
 const patchTile = (tile: TileCoord, x: number, y: number): void => {
-  const draft = draftPixels(tile)
+  const draft = comparisonDraftPixels(tile)
   const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
   const drafted = draft === null ? UNPAINTED : (draft[at] as number)
   // Counted whether or not this patch changes anything, so a scan in flight can see that the ground
@@ -1864,6 +1872,12 @@ const draftSourceBasis = (source: Uint8Array, tile: string): string => {
 }
 
 onTilePixels((tile, triples, source) => {
+  if (source === 'observed') {
+    for (const template of worldTemplates()) {
+      const mask = currentServerMismatchMaskFor(template, tile)
+      if (mask !== null) observedMasks.add(mask.packed)
+    }
+  }
   if (source === 'server' && triples.length > 0) {
     serverTileRevisions.set(`${tile.x}/${tile.y}`, nextServerTileRevision++)
   }

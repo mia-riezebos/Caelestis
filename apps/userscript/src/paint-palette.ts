@@ -642,7 +642,12 @@ export const installPaintPaletteProgress = (): void => {
   pixelAccounting.onDraftChange(queueRender)
   onPaintSubmission(snapshotSubmittedDraft)
   onTilePixels((tile, triples, source) => {
-    if (source === 'server' && triples.length > 0 && forgetRebasedTile(tile)) queueRender()
+    if (
+      (source === 'server' || source === 'observed') &&
+      triples.length > 0 &&
+      forgetRebasedTile(tile)
+    )
+      queueRender()
   })
   onTilePixelsEvicted((tile) => {
     if (forgetRebasedTile(tile)) queueRender()

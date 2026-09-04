@@ -59,6 +59,7 @@ vi.mock('./templates/placement.js', () => ({
 }))
 vi.mock('./tile-transform.js', () => ({
   draftPixels: () => null,
+  comparisonDraftPixels: () => null,
   ensureTilePixels: vi.fn(),
   tilePixels: () => harness.basePixels,
   UNPAINTED: 255,

@@ -703,6 +703,7 @@ const notifyPaintSubmission = (submission: PaintSubmission): void => {
 }
 
 const notifyAcceptedPaint = (paint: AcceptedPaint): void => {
+  retainAcceptedPaint(paint)
   for (const listener of acceptedPaintListeners) {
     try {
       listener(paint)
@@ -730,6 +731,7 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
         if (url !== null) {
           tile = tileFromUrl(url)
           if (tile !== null) {
+            tileRequestOrder.set(tile, ++paintObservationOrder)
             tileUrlShape = url.replace(`/${tile.x}/${tile.y}.png`, '/{x}/{y}.png')
             shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
           }
@@ -744,6 +746,7 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
               : new realm.Request(input, args[1])
             if (request.method.toUpperCase() === 'POST') {
               paintSubmission = { identity: {} }
+              submissionOrder.set(paintSubmission.identity, ++paintObservationOrder)
               notifyPaintSubmission(paintSubmission)
               paintBody = request.json().catch(() => null)
             }
@@ -932,6 +935,74 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
  * drawer's source-only colour picker.
  */
 const pixelsOfTile = new Map<string, Uint8Array>()
+// Object identity carries request order through the existing buffer/blob/bitmap attribution taps.
+let paintObservationOrder = 0
+const submissionOrder = new WeakMap<object, number>()
+const tileRequestOrder = new WeakMap<TileCoord, number>()
+const observedTileOrder = new Map<string, number>()
+interface AcceptedPixel {
+  readonly colour: number
+  readonly submitted: number
+  readonly accepted: number
+  pending: boolean
+}
+// Observed entries also fence late responses from older, overlapping submissions.
+const acceptedPixels = new Map<string, { pixels: Map<number, AcceptedPixel>; pending: number }>()
+const comparisonDrafts = new Map<string, Uint8Array>()
+
+const retainAcceptedPaint = (paint: AcceptedPaint): void => {
+  const submitted = submissionOrder.get(paint.submission.identity)
+  if (submitted === undefined) return
+  let total = 0
+  for (const tile of paint.tiles) {
+    const { x, y, colors } = tile.pixels
+    if (x.length !== y.length || x.length !== colors.length) return
+    if (x.some((value) => value < 0 || value >= TILE_SIZE)) return
+    if (y.some((value) => value < 0 || value >= TILE_SIZE)) return
+    if (colors.some((value) => value < 0 || value >= WPLACE_PALETTE.length)) return
+    total += x.length
+  }
+  // A count alone cannot identify which pixels succeeded in a partial submission.
+  if (total === 0 || paint.painted !== total) return
+  const accepted = ++paintObservationOrder
+  for (const tile of paint.tiles) {
+    const key = tileKey(tile)
+    let held = acceptedPixels.get(key)
+    if (held === undefined) {
+      held = { pixels: new Map(), pending: 0 }
+      acceptedPixels.set(key, held)
+    }
+    const triples: number[] = []
+    for (let i = 0; i < tile.pixels.x.length; i++) {
+      const x = tile.pixels.x[i] as number
+      const y = tile.pixels.y[i] as number
+      const offset = y * TILE_SIZE + x
+      const previous = held.pixels.get(offset)
+      if ((previous?.submitted ?? -1) >= submitted) continue
+      const colour = tile.pixels.colors[i] as number
+      if (previous?.pending !== true) held.pending++
+      held.pixels.set(offset, { colour, submitted, accepted, pending: true })
+      triples.push(x, y, colour)
+    }
+    notifyPixelBatch(tile, triples, 'accepted')
+  }
+}
+
+/** Native drafts take precedence over confirmed paint awaiting a newer tile observation. */
+export const comparisonDraftPixels = (tile: TileCoord): Uint8Array | null => {
+  const key = tileKey(tile)
+  const native = draftPixels(tile)
+  const held = acceptedPixels.get(key)
+  if (held === undefined || held.pending === 0) return native
+  const cached = comparisonDrafts.get(key)
+  if (cached !== undefined) return cached
+  const combined = native?.slice() ?? new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
+  for (const [offset, pixel] of held.pixels) {
+    if (pixel.pending && combined[offset] === UNPAINTED) combined[offset] = pixel.colour
+  }
+  comparisonDrafts.set(key, combined)
+  return combined
+}
 const tilePixelAvailabilityListeners = new Set<(tile: TileCoord) => void>()
 const tilePixelEvictionListeners = new Set<(tile: TileCoord) => void>()
 const KEEP_TILE_PIXELS = tilePixelCacheLimit(
@@ -998,6 +1069,12 @@ const rememberTilePixels = (key: string, pixels: Uint8Array): void => {
     const oldest = pixelsOfTile.keys().next()
     if (oldest.done) break
     pixelsOfTile.delete(oldest.value)
+    const accepted = acceptedPixels.get(oldest.value)
+    if (accepted?.pending === 0) {
+      acceptedPixels.delete(oldest.value)
+    }
+    comparisonDrafts.delete(oldest.value)
+    observedTileOrder.delete(oldest.value)
     const evicted = parseTileKey(oldest.value)
     if (evicted !== null) {
       for (const listener of tilePixelEvictionListeners) listener(evicted)
@@ -1244,7 +1321,7 @@ export const draftPixels = (tile: TileCoord): Uint8Array | null => {
 const transparentOfTile = new Map<string, Set<number>>()
 
 type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
-export type PixelChangeSource = 'draft' | 'server'
+export type PixelChangeSource = 'draft' | 'server' | 'accepted' | 'observed'
 type PixelBatchListener = (
   tile: TileCoord,
   triples: readonly number[],
@@ -1258,6 +1335,7 @@ const notifyPixelBatch = (
   triples: readonly number[],
   source: PixelChangeSource,
 ): void => {
+  comparisonDrafts.delete(tileKey(tile))
   if (triples.length === 0) return
   for (const listener of pixelBatchListeners) {
     try {
@@ -1677,7 +1755,20 @@ const capture = (
   dirty: CanvasWriteRect | null = null,
 ): boolean =>
   measureProfile(from === 'preview' ? 'Draft pixel capture' : 'Tile pixel capture', () => {
-    if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return false
+    const key = tileKey(tile)
+    const retained = from === 'tile' ? acceptedPixels.get(key) : undefined
+    if (
+      retained === undefined &&
+      (!capturePixels || (captureInterest !== null && !captureInterest(tile)))
+    )
+      return false
+    const observation = tileRequestOrder.get(tile)
+    if (
+      from === 'tile' &&
+      observation !== undefined &&
+      observation < (observedTileOrder.get(key) ?? 0)
+    )
+      return false
     /**
      * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
      *
@@ -1691,7 +1782,6 @@ const capture = (
     const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
     if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return false
     try {
-      const key = tileKey(tile)
       if (from === 'preview' && dirty !== null && draftOfTile.has(key)) {
         const context = reusableCaptureContext()
         if (context === null) return false
@@ -1745,6 +1835,19 @@ const capture = (
         return true
       }
 
+      const retired: number[] = []
+      if (observation !== undefined) {
+        observedTileOrder.set(key, observation)
+        for (const [offset, pixel] of retained?.pixels ?? []) {
+          if (observation <= pixel.accepted) continue
+          if (pixel.pending && retained !== undefined) retained.pending--
+          pixel.pending = false
+          const x = offset % TILE_SIZE
+          retired.push(x, (offset - x) / TILE_SIZE, indices[offset] as number)
+        }
+      }
+      comparisonDrafts.delete(key)
+
       /**
        * A re-read of a tile we already hold becomes a diff, not a replacement.
        *
@@ -1756,11 +1859,13 @@ const capture = (
       const existing = pixelsOfTile.get(key)
       if (existing === undefined || existing.length !== indices.length) {
         rememberTilePixels(key, indices)
+        notifyPixelBatch(tile, retired, 'observed')
         count('pixels:captured')
         return true
       }
       rememberTilePixels(key, existing)
       apply(tile, existing, indices, 'server')
+      notifyPixelBatch(tile, retired, 'observed')
       count('pixels:re-read as a diff')
       return true
     } catch (error) {
