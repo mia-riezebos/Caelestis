@@ -1177,8 +1177,8 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
  * drafted on it.
  */
 const draftOfTile = new Map<string, Uint8Array>()
-/** Non-empty offsets in each draft, so closing Paint can discard them without scanning 1M cells. */
-const draftedOffsets = new Map<string, Set<number>>()
+/** Active draft truth survives eviction of the dense arrays used by pixel consumers. */
+const draftedOffsets = new Map<string, Map<number, number>>()
 const KEEP_DRAFT_TILES = 64
 
 export const capturedPixelMemoryBytes = (): number => {
@@ -1195,8 +1195,6 @@ const rememberDraft = (key: string, draft: Uint8Array): void => {
     const oldest = draftOfTile.keys().next()
     if (oldest.done) break
     draftOfTile.delete(oldest.value)
-    transparentOfTile.delete(oldest.value)
-    draftedOffsets.delete(oldest.value)
   }
 }
 
@@ -1207,20 +1205,25 @@ const rememberDraftedOffset = (key: string, offset: number, index: number): void
     if (held?.size === 0) draftedOffsets.delete(key)
     return
   }
-  if (held === undefined) draftedOffsets.set(key, new Set([offset]))
-  else held.add(offset)
+  if (held === undefined) draftedOffsets.set(key, new Map([[offset, index]]))
+  else held.set(offset, index)
 }
 
 /** Sparse native Wplace draft offsets for one tile, without exposing the mutable retained set. */
 export function* draftedPixelOffsets(tile: TileCoord): IterableIterator<number> {
-  yield* draftedOffsets.get(tileKey(tile)) ?? []
+  yield* draftedOffsets.get(tileKey(tile))?.keys() ?? []
 }
 
 /** The draft layer for a tile, or null if nothing has been drafted on it. */
 export const draftPixels = (tile: TileCoord): Uint8Array | null => {
   const key = tileKey(tile)
-  const draft = draftOfTile.get(key)
-  if (draft === undefined) return null
+  let draft = draftOfTile.get(key)
+  if (draft === undefined) {
+    const sparse = draftedOffsets.get(key)
+    if (sparse === undefined) return null
+    draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
+    for (const [offset, index] of sparse) draft[offset] = index
+  }
   rememberDraft(key, draft)
   return draft
 }
@@ -1273,7 +1276,6 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
       count('pixels:listener-failed')
     }
   }
-  notifyPixelBatch(tile, [x, y, index], 'draft')
 }
 
 /**
@@ -1291,12 +1293,14 @@ const reconcileDraftedTile = (tile: TileCoord): void => {
 
   const held = transparentOfTile.get(key)
   const now = new Set<number>()
+  const changed: number[] = []
   for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
     // A drafted pixel the canvas gave us no colour for was drafted transparent.
     if (draft[p] === UNPAINTED) {
       draft[p] = TRANSPARENT_INDEX
       rememberDraftedOffset(key, p, TRANSPARENT_INDEX)
       notifyPixel(tile, p, TRANSPARENT_INDEX)
+      changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), TRANSPARENT_INDEX)
       count('pixels:drafted transparent')
     }
     if (draft[p] === TRANSPARENT_INDEX) now.add(p)
@@ -1308,11 +1312,13 @@ const reconcileDraftedTile = (tile: TileCoord): void => {
       draft[p] = UNPAINTED
       rememberDraftedOffset(key, p, UNPAINTED)
       notifyPixel(tile, p, UNPAINTED)
+      changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), UNPAINTED)
       count('pixels:undrafted a transparent pixel')
     }
   }
   if (now.size > 0) transparentOfTile.set(key, now)
   else transparentOfTile.delete(key)
+  notifyPixelBatch(tile, changed, 'draft')
 }
 
 /**
@@ -1436,8 +1442,8 @@ const readWrite = (
  */
 const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
   const key = tileKey(tile)
-  let draft = draftOfTile.get(key)
-  if (draft === undefined) {
+  let draft = draftPixels(tile)
+  if (draft === null) {
     draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
   }
   rememberDraft(key, draft)
@@ -1514,17 +1520,29 @@ export const captureDraftPixels = (
   firstChanges?: readonly number[],
 ): void => {
   const key = tileKey(tile)
-  const existing = draftOfTile.get(key)
-  if (existing !== undefined && existing.length === indices.length) {
+  // Resolve zero-alpha occupancy before diffing. Otherwise an unchanged transparent draft emits
+  // a removal followed by a replacement on every fallback readback.
+  const transparent = new Set<number>()
+  const transparentChanges: number[] = []
+  for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
+    if (indices[p] !== UNPAINTED) continue
+    indices[p] = TRANSPARENT_INDEX
+    transparent.add(p)
+    transparentChanges.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), TRANSPARENT_INDEX)
+  }
+  if (transparent.size > 0) transparentOfTile.set(key, transparent)
+  else transparentOfTile.delete(key)
+  const existing = draftPixels(tile)
+  if (existing !== null && existing.length === indices.length) {
     rememberDraft(key, existing)
     apply(tile, existing, indices, 'draft')
     count('pixels:draft re-read')
-    reconcileDraftedTile(tile)
     return
   }
 
   rememberDraft(key, indices)
-  let changedTriples = firstChanges
+  let changedTriples =
+    firstChanges === undefined ? undefined : [...firstChanges, ...transparentChanges]
   if (changedTriples === undefined) {
     const discovered: number[] = []
     for (let p = 0; p < indices.length; p++) {
@@ -1548,7 +1566,6 @@ export const captureDraftPixels = (
   }
   notifyPixelBatch(tile, changedTriples, 'draft')
   count('pixels:draft captured')
-  reconcileDraftedTile(tile)
 }
 
 /** Discard Wplace's local draft state when its Paint drawer closes or cancels. */
@@ -1558,7 +1575,7 @@ export const clearDraftPixels = (): void => {
     const [x, y] = key.split('/').map(Number)
     if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) continue
     const triples: number[] = []
-    for (const offset of offsets) {
+    for (const offset of offsets.keys()) {
       const localX = offset % TILE_SIZE
       triples.push(localX, (offset - localX) / TILE_SIZE, UNPAINTED)
     }
