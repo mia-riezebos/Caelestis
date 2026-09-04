@@ -6,6 +6,8 @@ afterEach(() => vi.unstubAllGlobals())
 /** Drive the installed page hooks through native canvas writes, uploads, and raster draws. */
 const setup = async () => {
   vi.resetModules()
+  const occupancy: number[] = []
+  vi.doMock('./templates/drafted.js', () => ({ draftedPixelsIn: () => occupancy }))
   const reads = vi.fn()
   class Pixels {
     constructor(readonly canvas: Canvas) {}
@@ -109,7 +111,7 @@ const setup = async () => {
     Request,
     URL,
     Response,
-    fetch: globalThis.fetch,
+    fetch: vi.fn(async () => new Response('{}')),
     Blob,
     createImageBitmap: vi.fn(),
     HTMLCanvasElement: Canvas,
@@ -147,7 +149,7 @@ const setup = async () => {
     colorSpace: 'srgb',
     data: new Uint8ClampedArray([...(WPLACE_PALETTE[index]?.rgb ?? []), 255]),
   })
-  return { api, source, tile, draw, pixel, reads, Canvas }
+  return { api, source, tile, draw, pixel, reads, Canvas, occupancy, realm }
 }
 
 it('does not reread an unchanged draft uploaded on every frame', async () => {
@@ -228,4 +230,33 @@ it.each(['resize', 'reset'] as const)('recaptures a canvas cleared by %s', async
   expect(api.draftPixels(tile)?.[996_002]).toBe(api.UNPAINTED)
   draw()
   expect(reads).toHaveBeenCalledTimes(2)
+})
+
+it('notifies once after native undo updates both colour and crosshair occupancy', async () => {
+  const { api, source, tile, draw, pixel, occupancy } = await setup()
+  source.context.putImageData(pixel(1), 2, 3)
+  occupancy.push(996_002)
+  draw()
+  await Promise.resolve()
+  const changed = vi.fn()
+  api.onTilePixels(changed)
+  source.context.clearRect(2, 3, 1, 1)
+  occupancy.length = 0
+  await Promise.resolve()
+  expect(changed).toHaveBeenCalledExactlyOnceWith(tile, [2, 996, api.UNPAINTED], 'draft')
+})
+
+it('flushes a coalesced draft before taking the native submission snapshot', async () => {
+  const { api, source, tile, pixel, realm } = await setup()
+  const changed = vi.fn()
+  api.onTilePixels(changed)
+  source.context.putImageData(pixel(1), 2, 3)
+  source.context.putImageData(pixel(2), 2, 3)
+  expect(changed).not.toHaveBeenCalled()
+  const submitted = vi.fn(() => {
+    expect(changed).toHaveBeenCalledExactlyOnceWith(tile, [2, 996, 2], 'draft')
+  })
+  api.onPaintSubmission(submitted)
+  await realm.fetch('https://backend.wplace.live/paint', { method: 'POST', body: '{}' })
+  expect(submitted).toHaveBeenCalledOnce()
 })

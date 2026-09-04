@@ -692,6 +692,7 @@ const observedPaintFrom = (
 }
 
 const notifyPaintSubmission = (submission: PaintSubmission): void => {
+  flushDraftWrites()
   for (const listener of paintSubmissionListeners) {
     try {
       listener(submission)
@@ -1286,10 +1287,14 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
  * moves. The crosshair is the only evidence it happened. Reconciling in both directions here is what
  * turns it into a change like any other, announced through the same listener as a placed pixel.
  */
-const reconcileDraftedTile = (tile: TileCoord): void => {
+const reconcileDraftedTile = (tile: TileCoord, before?: Map<number, number>): void => {
   const key = tileKey(tile)
-  const draft = draftOfTile.get(key)
-  if (draft === undefined) return
+  let draft = draftPixels(tile)
+  if (draft === null) {
+    if (before === undefined) return
+    draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
+    rememberDraft(key, draft)
+  }
 
   const held = transparentOfTile.get(key)
   const now = new Set<number>()
@@ -1297,10 +1302,13 @@ const reconcileDraftedTile = (tile: TileCoord): void => {
   for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
     // A drafted pixel the canvas gave us no colour for was drafted transparent.
     if (draft[p] === UNPAINTED) {
+      if (before !== undefined && !before.has(p)) before.set(p, UNPAINTED)
       draft[p] = TRANSPARENT_INDEX
       rememberDraftedOffset(key, p, TRANSPARENT_INDEX)
-      notifyPixel(tile, p, TRANSPARENT_INDEX)
-      changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), TRANSPARENT_INDEX)
+      if (before === undefined) {
+        notifyPixel(tile, p, TRANSPARENT_INDEX)
+        changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), TRANSPARENT_INDEX)
+      }
       count('pixels:drafted transparent')
     }
     if (draft[p] === TRANSPARENT_INDEX) now.add(p)
@@ -1309,10 +1317,13 @@ const reconcileDraftedTile = (tile: TileCoord): void => {
     for (const p of held) {
       if (now.has(p) || draft[p] !== TRANSPARENT_INDEX) continue
       // The crosshair is gone, so the pixel is undrafted — back to whatever the server has.
+      if (before !== undefined && !before.has(p)) before.set(p, TRANSPARENT_INDEX)
       draft[p] = UNPAINTED
       rememberDraftedOffset(key, p, UNPAINTED)
-      notifyPixel(tile, p, UNPAINTED)
-      changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), UNPAINTED)
+      if (before === undefined) {
+        notifyPixel(tile, p, UNPAINTED)
+        changed.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), UNPAINTED)
+      }
       count('pixels:undrafted a transparent pixel')
     }
   }
@@ -1335,7 +1346,7 @@ export const reconcileDrafts = (): void => {
   const now = performance.now()
   if (now - lastReconcile < RECONCILE_INTERVAL_MS) return
   lastReconcile = now
-  for (const key of draftOfTile.keys()) {
+  for (const key of [...draftOfTile.keys()]) {
     const [x, y] = key.split('/').map(Number)
     if (x === undefined || y === undefined) continue
     reconcileDraftedTile({ x, y })
@@ -1404,6 +1415,26 @@ const PATCH_LIMIT = 32
  */
 const flipRow = (y: number): number => TILE_SIZE - 1 - y
 
+const pendingDraftWrites = new Map<string, { tile: TileCoord; before: Map<number, number> }>()
+
+/** Publish the final native colour/occupancy transaction before rendering or submitting it. */
+const flushDraftWrites = (): void => {
+  const pending = [...pendingDraftWrites.values()]
+  pendingDraftWrites.clear()
+  for (const { tile, before } of pending) {
+    reconcileDraftedTile(tile, before)
+    const draft = draftPixels(tile)
+    const triples: number[] = []
+    for (const [p, previous] of before) {
+      const index = draft?.[p] ?? UNPAINTED
+      if (index === previous) continue
+      notifyPixel(tile, p, index)
+      triples.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), index)
+    }
+    notifyPixelBatch(tile, triples, 'draft')
+  }
+}
+
 const readWrite = (
   image: ImageData,
   dx: number,
@@ -1447,31 +1478,27 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
     draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
   }
   rememberDraft(key, draft)
+  let pending = pendingDraftWrites.get(key)
+  if (pending === undefined) {
+    if (pendingDraftWrites.size === 0) queueMicrotask(flushDraftWrites)
+    pending = { tile, before: new Map() }
+    pendingDraftWrites.set(key, pending)
+  }
   let changed = 0
-  const changedTriples: number[] = []
   for (let i = 0; i < triples.length; i += 3) {
     const x = triples[i] as number
     const y = triples[i + 1] as number
     const index = triples[i + 2] as number
     const p = y * TILE_SIZE + x
     if (draft[p] === index) continue
+    if (!pending.before.has(p)) pending.before.set(p, draft[p] ?? UNPAINTED)
     draft[p] = index
     rememberDraftedOffset(key, p, index)
     changed++
-    changedTriples.push(x, y, index)
-    for (const listener of pixelListeners) {
-      try {
-        listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
-      } catch {
-        count('pixels:listener-failed')
-      }
-    }
   }
-  notifyPixelBatch(tile, changedTriples, 'draft')
   if (changed > 0) count('pixels:patched a draft write')
-  // The write that lands on a pixel drafted Transparent is a no-op — see `reconcileDraftedTile`.
-  // Asking now rather than waiting for the throttled pass is what makes that marker appear at once.
-  reconcileDraftedTile(tile)
+  // Wplace updates crosshair occupancy after the canvas write. Reconcile once at the end of that
+  // task so undo cannot momentarily turn a removed opaque draft into a transparent draft.
   return true
 }
 
@@ -1519,6 +1546,7 @@ export const captureDraftPixels = (
   indices: Uint8Array,
   firstChanges?: readonly number[],
 ): void => {
+  flushDraftWrites()
   const key = tileKey(tile)
   // Resolve zero-alpha occupancy before diffing. Otherwise an unchanged transparent draft emits
   // a removal followed by a replacement on every fallback readback.
@@ -1570,6 +1598,7 @@ export const captureDraftPixels = (
 
 /** Discard Wplace's local draft state when its Paint drawer closes or cancels. */
 export const clearDraftPixels = (): void => {
+  pendingDraftWrites.clear()
   const changed: Array<{ tile: TileCoord; triples: number[] }> = []
   for (const [key, offsets] of draftedOffsets) {
     const [x, y] = key.split('/').map(Number)
