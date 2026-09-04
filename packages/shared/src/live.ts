@@ -3,8 +3,10 @@ import { uuidV7 } from './uuid.js'
 
 export const MAX_LIVE_BINARY_HEADER_BYTES = 64 * 1024
 export const MAX_LIVE_BINARY_PAYLOAD_BYTES = 8 * 1024 * 1024
+export const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 export const MAX_LIVE_SNAPSHOT_BYTES = 24 * 1024 * 1024
-const SNAPSHOT_CHUNK_CODE_UNITS = 24 * 1024
+// JSON text costs at most three UTF-8 bytes per code unit. Keep 4 KiB for the part envelope.
+const SNAPSHOT_CHUNK_CODE_UNITS = 20 * 1024
 const MAX_SNAPSHOT_PARTS = Math.ceil(MAX_LIVE_SNAPSHOT_BYTES / SNAPSHOT_CHUNK_CODE_UNITS)
 
 /** Frame upload metadata and PNG bytes as one retryable WebSocket message. */
@@ -97,7 +99,7 @@ export class LiveSnapshotAssembler {
       typeof part.chunk !== 'string' ||
       part.chunk.length > SNAPSHOT_CHUNK_CODE_UNITS
     ) {
-      return null
+      throw new TypeError('invalid live snapshot part')
     }
     const total = Number(part.total)
     const index = Number(part.index)
@@ -112,11 +114,7 @@ export class LiveSnapshotAssembler {
     }
     if (snapshot.received !== total) return null
     this.pending.delete(part.messageId)
-    try {
-      return JSON.parse(snapshot.chunks.join(''))
-    } catch {
-      return null
-    }
+    return JSON.parse(snapshot.chunks.join(''))
   }
 
   clear(): void {

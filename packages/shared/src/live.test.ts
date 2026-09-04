@@ -4,6 +4,7 @@ import {
   encodeLiveServerEvent,
   encodeLiveTileUpload,
   LiveSnapshotAssembler,
+  MAX_LIVE_MESSAGE_BYTES,
 } from './live.js'
 import type { LiveTileUpload } from './telemetry.js'
 
@@ -31,15 +32,21 @@ describe('live framing', () => {
     expect(decodeLiveTileUpload(new Uint8Array([0, 0, 0, 8, 1]).buffer)).toBeNull()
   })
 
-  it('reassembles a large snapshot in order', () => {
+  it('bounds and reassembles a multibyte snapshot', () => {
+    const padding = '漢'.repeat(100_000)
     const messages = encodeLiveServerEvent({
       type: 'alarms-snapshot',
       alarms: { alarms: [], version: 'a'.repeat(64) },
-      padding: 'x'.repeat(100_000),
+      padding,
     } as never)
     const assembler = new LiveSnapshotAssembler()
     let decoded: unknown = null
-    for (const message of messages) decoded = assembler.push(JSON.parse(message)) ?? decoded
-    expect(decoded).toMatchObject({ type: 'alarms-snapshot', padding: 'x'.repeat(100_000) })
+    for (const message of messages) {
+      expect(new TextEncoder().encode(message).byteLength).toBeLessThanOrEqual(
+        MAX_LIVE_MESSAGE_BYTES,
+      )
+      decoded = assembler.push(JSON.parse(message)) ?? decoded
+    }
+    expect(decoded).toMatchObject({ type: 'alarms-snapshot', padding })
   })
 })

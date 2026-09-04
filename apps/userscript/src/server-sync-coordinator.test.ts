@@ -575,6 +575,40 @@ describe('server sync coordinator', () => {
     expect(refresh).not.toHaveBeenCalled()
   })
 
+  it('reconnects rejected v2 frames but accepts incomplete snapshot parts', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 2 as const, liveSyncMin: 1 as const },
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, serverLiveSyncHealthy } = await import(
+      './server-sync-coordinator.js'
+    )
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    reconcileSocket(socket, 0, 'correction', [])
+    await vi.advanceTimersByTimeAsync(0)
+
+    socket.receive({
+      type: 'snapshot-part',
+      messageId: 'snapshot',
+      index: 0,
+      total: 2,
+      chunk: '{"type":"status-snapshot",',
+    })
+    expect(socket.readyState).toBe(1)
+    expect(serverLiveSyncHealthy(liveServer)).toBe(true)
+
+    socket.receiveRaw('{')
+    expect(socket.readyState).toBe(3)
+    expect(serverLiveSyncHealthy(liveServer)).toBe(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
   it('reconnects with cached versions and refreshes only divergent projections', async () => {
     const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
     state.current = { servers: [liveServer] }
