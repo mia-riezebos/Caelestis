@@ -5,7 +5,7 @@
     LeaderboardEntry,
     Template,
   } from '@caelestis/shared'
-  import { getHistory } from '$lib/api/client'
+  import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
@@ -20,10 +20,14 @@
 
   let {
     templates,
+    season,
+    liveDashboard,
     progress,
     subscribeDashboard,
   }: {
     templates: readonly Template[]
+    season: number
+    liveDashboard: boolean
     /** The scope's live status — the progress chart's anchor and the ETA's numerator. */
     progress: Progress
     subscribeDashboard: (
@@ -38,6 +42,7 @@
 
   const DAY_SECONDS = 86_400
   const RESOLUTION = 900
+  const COMPATIBILITY_REFRESH_MS = 15_000
 
   const now = Math.floor(Date.now() / 1_000)
   // Start at a day boundary so every retained tier can return the bucket containing creation.
@@ -101,14 +106,43 @@
     const ids = [...templateIds]
     contributions = null
     leaderboard = null
-    return subscribeDashboard(
-      ids,
-      Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16,
-      (snapshot) => {
+    const contributionsFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
+    if (liveDashboard)
+      return subscribeDashboard(ids, contributionsFrom, (snapshot) => {
         contributions = snapshot.contributions.days
         leaderboard = snapshot.leaderboard.entries
-      },
-    )
+      })
+
+    const generation = { cancelled: false }
+    let refreshPending = false
+    const refresh = (): void => {
+      if (refreshPending) return
+      refreshPending = true
+      const requestedAt = Math.floor(Date.now() / 1_000)
+      void Promise.all([
+        getContributions(ids, requestedAt - 86_400 * 7 * 16, requestedAt).then((response) => {
+          if (!generation.cancelled) contributions = response.days
+        }),
+        getLeaderboard(season, { templateIds: ids }).then((response) => {
+          if (!generation.cancelled) leaderboard = response.entries
+        }),
+      ])
+        .catch(() => {})
+        .finally(() => {
+          refreshPending = false
+        })
+    }
+    const refreshWhenVisible = (): void => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    refresh()
+    const interval = setInterval(refreshWhenVisible, COMPATIBILITY_REFRESH_MS)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      generation.cancelled = true
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
   })
 
   // Show the last 24 hours as pixels per hour.

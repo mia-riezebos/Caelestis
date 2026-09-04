@@ -64,6 +64,8 @@ describe('retained history range', () => {
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
+        season: 0,
+        liveDashboard: true,
         templates: [
           template('older', 1_000, finishedAt - 1_000),
           template('newer', 10 * DAY_SECONDS, finishedAt),
@@ -88,6 +90,8 @@ describe('retained history range', () => {
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
+        season: 0,
+        liveDashboard: true,
         templates: [
           template('finished', 0, NOW_SECONDS - DAY_SECONDS),
           template('live', DAY_SECONDS, null),
@@ -117,6 +121,8 @@ describe('retained history range', () => {
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
+        season: 0,
+        liveDashboard: true,
         templates: [template('live', 0, null)],
         subscribeDashboard: live.subscribe,
         progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
@@ -135,6 +141,8 @@ describe('live counts', () => {
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
+        season: 0,
+        liveDashboard: true,
         templates: [template('live', 0, null)],
         subscribeDashboard: live.subscribe,
         progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
@@ -157,6 +165,8 @@ describe('live counts', () => {
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
+        season: 0,
+        liveDashboard: true,
         templates: [template('live', 0, null)],
         subscribeDashboard: live.subscribe,
         progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
@@ -167,5 +177,29 @@ describe('live counts', () => {
     expect(live.subscribe).toHaveBeenCalledOnce()
     expect(api.getContributions).not.toHaveBeenCalled()
     expect(api.getLeaderboard).not.toHaveBeenCalled()
+  })
+
+  it('keeps compatibility reads for a server without live v2', async () => {
+    vi.useFakeTimers()
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 7,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(live.subscribe).not.toHaveBeenCalled()
+    expect(api.getContributions).toHaveBeenCalledOnce()
+    expect(api.getLeaderboard).toHaveBeenCalledWith(7, { templateIds: ['live'] })
+
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(api.getContributions).toHaveBeenCalledTimes(2)
+    expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
   })
 })
