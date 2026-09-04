@@ -35,6 +35,28 @@ export interface SceneMarkers {
   readonly animating: boolean
 }
 
+interface RetainedTemplate {
+  readonly visible: boolean
+  readonly target: Appearance
+  readonly hidden: readonly number[]
+  readonly reducedMotion: boolean
+  readonly interactive: boolean
+  readonly rendered: SceneTemplate
+  readonly done: boolean
+}
+
+const sameNumbers = (left: readonly number[], right: readonly number[]): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index])
+
+const sameAppearance = (left: Appearance, right: Appearance): boolean =>
+  left === right ||
+  Object.entries(left).every(([key, value]) => {
+    const other = right[key as keyof Appearance]
+    return Array.isArray(value) && Array.isArray(other)
+      ? sameNumbers(value, other)
+      : value === other
+  })
+
 /**
  * Owns every host-independent transition in one render scene.
  *
@@ -42,6 +64,8 @@ export interface SceneMarkers {
  * insertion, and frame scheduling. They do not maintain their own visibility or appearance state.
  */
 export class RenderScene {
+  private readonly retained = new Map<string, RetainedTemplate>()
+  private ids = new Set<string>()
   private readonly templateFades = ramps()
   private readonly colourFades = ramps({ startAt: 'target' })
   private readonly outlineFades = ramps({ startAt: 'target' })
@@ -78,49 +102,73 @@ export class RenderScene {
     now: number,
     reducedMotion: boolean,
   ): SceneTemplates {
-    const ids = new Set(templates.map(({ id }) => id))
-    this.templateFades.prune(ids)
-    this.outlineFades.prune(ids)
-    this.appearances.prune(ids)
-    this.colourFades.prune(
-      new Set(
-        templates.flatMap((template) =>
-          Array.from({ length: PALETTE_SIZE }, (_, index) => `${template.id}:${index}`),
+    if (templates.length !== this.ids.size || templates.some(({ id }) => !this.ids.has(id))) {
+      this.ids = new Set(templates.map(({ id }) => id))
+      this.templateFades.prune(this.ids)
+      this.outlineFades.prune(this.ids)
+      this.appearances.prune(this.ids)
+      for (const id of this.retained.keys()) if (!this.ids.has(id)) this.retained.delete(id)
+      this.colourFades.prune(
+        new Set(
+          templates.flatMap((template) =>
+            Array.from({ length: PALETTE_SIZE }, (_, index) => `${template.id}:${index}`),
+          ),
         ),
-      ),
-    )
+      )
+    }
 
     let animating = false
     const rendered = templates.map((template): SceneTemplate => {
-      const fade = this.templateFades.advance(template.id, isTemplateVisible(template) ? 1 : 0, now)
-      if (!fade.done) animating = true
+      const visible = isTemplateVisible(template)
       const target = appearanceWithPreview(template.id, appearanceOf(template))
+      const interactive = hasAppearancePreview(template.id)
+      const hidden = hiddenColoursFor(target, surface)
+      const held = this.retained.get(template.id)
+      if (
+        held?.done &&
+        held.rendered.template === template &&
+        held.visible === visible &&
+        held.reducedMotion === reducedMotion &&
+        held.interactive === interactive &&
+        sameAppearance(held.target, target) &&
+        sameNumbers(held.hidden, hidden)
+      )
+        return held.rendered
+
+      const fade = this.templateFades.advance(template.id, visible ? 1 : 0, now)
       const transitioned = this.appearances.advance(
         template.id,
         target,
         now,
         reducedMotion,
-        hasAppearancePreview(template.id),
+        interactive,
       )
-      if (!transitioned.done) animating = true
       const outline = this.outlineFades.advance(
         template.id,
         transitioned.appearance.contrastOutline ? 1 : 0,
         now,
       )
-      if (!outline.done) animating = true
-      const palette =
-        fade.value > 0
-          ? this.palette(template.id, hiddenColoursFor(transitioned.appearance, surface), now)
-          : null
-      if (palette !== null && !palette.done) animating = true
-      return {
+      const palette = fade.value > 0 ? this.palette(template.id, hidden, now) : null
+      const done =
+        fade.done && transitioned.done && outline.done && (palette === null || palette.done)
+      if (!done) animating = true
+      const rendered = {
         template,
         appearance: transitioned.appearance,
         fade: fade.value,
         outlineFade: outline.value,
         palette: palette?.data ?? null,
       }
+      this.retained.set(template.id, {
+        visible,
+        target,
+        hidden: hidden.slice(),
+        reducedMotion,
+        interactive,
+        rendered,
+        done,
+      })
+      return rendered
     })
     return { templates: rendered, animating }
   }

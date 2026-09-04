@@ -52,6 +52,19 @@ beforeEach(() => {
 })
 
 describe('shared render scene', () => {
+  it('retains settled scene entries and palettes across render passes', () => {
+    const scene = new RenderScene()
+    scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 0, false)
+    const settled = scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 300, false)
+    fixture.appearance = { ...DEFAULT_APPEARANCE }
+    const next = scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 301, false)
+    expect(next.templates[0]).toBe(settled.templates[0])
+    fixture.visible = false
+    expect(scene.advanceTemplates([template], WORLD_TEMPLATE_SURFACE, 302, false).animating).toBe(
+      true,
+    )
+  })
+
   it.each([
     { kind: 'alliance-headquarters', allianceId: 535_245 },
     { kind: 'alliance-picture', allianceId: 535_245 },
