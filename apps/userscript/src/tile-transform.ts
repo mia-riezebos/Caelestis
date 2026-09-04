@@ -6,7 +6,7 @@ import {
   tileKey,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
-import { announceCanvasWrite } from './canvas-write.js'
+import { announceCanvasWrite, type CanvasWriteRect } from './canvas-write.js'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
@@ -1135,11 +1135,24 @@ const indexTable = (): Uint32Array => {
  * wplace redraws a paint-preview tile only when a pixel changes, but MapLibre *draws* it every
  * frame. Without this the capture below would run on every frame of every tile on screen.
  */
-const dirtyCanvases = new WeakSet<object>()
+const dirtyCanvases = new WeakMap<object, CanvasWriteRect | null>()
 
 /** Note that a tile-sized canvas has been written to, so the next draw re-reads it. */
-export const markCanvasDirty = (canvas: object): void => {
-  dirtyCanvases.add(canvas)
+export const markCanvasDirty = (canvas: object, rect: CanvasWriteRect | null = null): void => {
+  const held = dirtyCanvases.get(canvas)
+  if (held === null) return
+  if (held === undefined || rect === null) {
+    dirtyCanvases.set(canvas, rect)
+    return
+  }
+  const x = Math.min(held.x, rect.x)
+  const y = Math.min(held.y, rect.y)
+  dirtyCanvases.set(canvas, {
+    x,
+    y,
+    width: Math.max(held.x + held.width, rect.x + rect.width) - x,
+    height: Math.max(held.y + held.height, rect.y + rect.height) - y,
+  })
 }
 
 /** Which tile a paint-preview canvas belongs to, once a draw has told us. */
@@ -1338,6 +1351,7 @@ export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
   const known = tileOfPaintCanvas.get(canvas)
   if (known !== undefined && known.x === tile.x && known.y === tile.y) return
   tileOfPaintCanvas.set(canvas, tile)
+  markCanvasDirty(canvas)
   count('paint:named a draft canvas')
   const held = queuedWrites.get(canvas)
   if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
@@ -1384,14 +1398,19 @@ const PATCH_LIMIT = 32
  */
 const flipRow = (y: number): number => TILE_SIZE - 1 - y
 
-const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
+const readWrite = (
+  image: ImageData,
+  dx: number,
+  dy: number,
+  rect: CanvasWriteRect = { x: dx, y: dy, width: image.width, height: image.height },
+): number[] => {
   const table = indexTable()
-  const { data, width, height } = image
+  const { data, width } = image
   const triples: number[] = []
-  for (let j = 0; j < height; j++) {
+  for (let j = rect.y - dy; j < rect.y - dy + rect.height; j++) {
     const y = flipRow(dy + j)
     if (y < 0 || y >= TILE_SIZE) continue
-    for (let i = 0; i < width; i++) {
+    for (let i = rect.x - dx; i < rect.x - dx + rect.width; i++) {
       const x = dx + i
       if (x < 0 || x >= TILE_SIZE) continue
       const at = (j * width + i) * 4
@@ -1567,9 +1586,10 @@ const capture = (
   tile: TileCoord,
   bitmap: CanvasImageSource & { width: number; height: number },
   from: 'tile' | 'preview' = 'tile',
-): void =>
+  dirty: CanvasWriteRect | null = null,
+): boolean =>
   measureProfile('Tile pixel capture', () => {
-    if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return
+    if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return false
     /**
      * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
      *
@@ -1581,9 +1601,19 @@ const capture = (
      * that were never coming. An empty tile is a real answer and gets recorded as one.
      */
     const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
-    if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return
+    if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return false
     try {
       const key = tileKey(tile)
+      if (from === 'preview' && dirty !== null && draftOfTile.has(key)) {
+        const context = reusableCaptureContext()
+        if (context === null) return false
+        context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
+        context.drawImage(bitmap, 0, 0)
+        const image = context.getImageData(dirty.x, dirty.y, dirty.width, dirty.height)
+        applyWrite(tile, readWrite(image, dirty.x, dirty.y))
+        count('pixels:draft region read')
+        return true
+      }
       const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
       const firstDraftChanges: number[] | null =
         from === 'preview' && !draftOfTile.has(key) ? [] : null
@@ -1591,7 +1621,7 @@ const capture = (
         indices.fill(UNPAINTED)
       } else {
         const context = reusableCaptureContext()
-        if (context === null) return
+        if (context === null) return false
         // The context is reused, and source-over leaves old RGB behind wherever the new bitmap is
         // transparent. Clear first so transparent pixels stay unpainted instead of inheriting the
         // previous tile or draft.
@@ -1619,7 +1649,7 @@ const capture = (
       }
       if (from === 'preview') {
         captureDraftPixels(tile, indices, firstDraftChanges ?? [])
-        return
+        return true
       }
 
       /**
@@ -1634,13 +1664,15 @@ const capture = (
       if (existing === undefined || existing.length !== indices.length) {
         rememberTilePixels(key, indices)
         count('pixels:captured')
-        return
+        return true
       }
       rememberTilePixels(key, existing)
       apply(tile, existing, indices, 'server')
       count('pixels:re-read as a diff')
+      return true
     } catch (error) {
       warn('bitmap', 'could not read tile pixels', String(error))
+      return false
     }
   })
 
@@ -1721,6 +1753,7 @@ const installPutImageDataTaps = (
     (prototype): prototype is CanvasRenderingContext2D => prototype !== undefined,
   )
   const hooks: InstalledValueHook[] = []
+  const clipped = new WeakSet<object>()
   try {
     for (const prototype of prototypes) {
       const nativePutImageData = prototype.putImageData
@@ -1732,19 +1765,45 @@ const installPutImageDataTaps = (
           () => Reflect.apply(nativePutImageData, this, args),
           () => {
             const [image, dx, dy, dirtyX = 0, dirtyY = 0, dirtyWidth, dirtyHeight] = args
-            announceCanvasWrite(this.canvas, {
-              x: dx + dirtyX,
-              y: dy + dirtyY,
-              width: dirtyWidth ?? image.width,
-              height: dirtyHeight ?? image.height,
-            })
-            const canvas = this.canvas as { width?: number; height?: number }
-            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
-            if (image.width > PATCH_LIMIT || image.height > PATCH_LIMIT) {
+            const values = [
+              dx,
+              dy,
+              dirtyX,
+              dirtyY,
+              dirtyWidth ?? image.width,
+              dirtyHeight ?? image.height,
+            ]
+            if (
+              !values.every((value) => Number.isInteger(value) && Math.abs(value) <= 0x7fffffff)
+            ) {
               markCanvasDirty(this.canvas)
+              announceCanvasWrite(this.canvas)
               return
             }
-            const triples = readWrite(image, dx, dy)
+            const width = dirtyWidth ?? image.width
+            const height = dirtyHeight ?? image.height
+            const left = Math.max(0, -dx, Math.min(dirtyX, dirtyX + width))
+            const top = Math.max(0, -dy, Math.min(dirtyY, dirtyY + height))
+            const right = Math.min(
+              image.width,
+              this.canvas.width - dx,
+              Math.max(dirtyX, dirtyX + width),
+            )
+            const bottom = Math.min(
+              image.height,
+              this.canvas.height - dy,
+              Math.max(dirtyY, dirtyY + height),
+            )
+            if (right <= left || bottom <= top) return
+            const rect = { x: dx + left, y: dy + top, width: right - left, height: bottom - top }
+            announceCanvasWrite(this.canvas, rect)
+            const canvas = this.canvas as { width?: number; height?: number }
+            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
+            if (rect.width > PATCH_LIMIT || rect.height > PATCH_LIMIT) {
+              markCanvasDirty(this.canvas, rect)
+              return
+            }
+            const triples = readWrite(image, dx, dy, rect)
             const tile = tileOfPaintCanvas.get(this.canvas)
             if (tile === undefined || !applyWrite(tile, triples)) {
               const queue = queuedWrites.get(this.canvas)
@@ -1767,6 +1826,21 @@ const installPutImageDataTaps = (
           () => Reflect.apply(nativeClearRect, this, args),
           () => {
             const [x, y, width, height] = args
+            const transform = this.getTransform?.()
+            if (
+              clipped.has(this) ||
+              transform === undefined ||
+              transform.a !== 1 ||
+              transform.b !== 0 ||
+              transform.c !== 0 ||
+              transform.d !== 1 ||
+              transform.e !== 0 ||
+              transform.f !== 0
+            ) {
+              markCanvasDirty(this.canvas)
+              announceCanvasWrite(this.canvas)
+              return
+            }
             announceCanvasWrite(this.canvas, { x, y, width, height })
             const canvas = this.canvas as { width?: number; height?: number }
             if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
@@ -1806,6 +1880,87 @@ const installPutImageDataTaps = (
       const clearHook = installValueHook(prototype, 'clearRect', wrappedClearRect)
       if (clearHook === null) throw new Error('clearRect is not hookable')
       hooks.push(clearHook)
+
+      // These operations can copy, transform, clip, or reset pixels. Recover from the resulting
+      // canvas once, not from every upload of that unchanged canvas.
+      for (const name of [
+        'drawImage',
+        'fillRect',
+        'strokeRect',
+        'fill',
+        'stroke',
+        'fillText',
+        'strokeText',
+        'reset',
+        'clip',
+      ] as const) {
+        const native = prototype[name]
+        if (typeof native !== 'function') continue
+        const wrapped = function (this: CanvasRenderingContext2D, ...args: unknown[]) {
+          return runObservedCall(
+            () => Reflect.apply(native, this, args),
+            () => {
+              if (name === 'clip') {
+                clipped.add(this)
+                return
+              }
+              if (name === 'reset') clipped.delete(this)
+              markCanvasDirty(this.canvas)
+              announceCanvasWrite(this.canvas)
+            },
+          )
+        }
+        const hook = installValueHook(prototype, name, wrapped)
+        if (hook === null) throw new Error(`${name} is not hookable`)
+        hooks.push(hook)
+      }
+    }
+    for (const prototype of new Set([
+      realm.HTMLCanvasElement?.prototype,
+      realm.OffscreenCanvas?.prototype,
+    ])) {
+      if (prototype === undefined) continue
+      for (const name of ['width', 'height'] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
+        const nativeSet = descriptor?.set
+        if (descriptor === undefined || nativeSet === undefined) continue
+        Object.defineProperty(prototype, name, {
+          ...descriptor,
+          set(this: HTMLCanvasElement | OffscreenCanvas, value: number) {
+            runObservedCall(
+              () => nativeSet.call(this, value),
+              () => {
+                markCanvasDirty(this)
+                announceCanvasWrite(this)
+              },
+            )
+          },
+        })
+        hooks.push({
+          restore: () => {
+            Object.defineProperty(prototype, name, descriptor)
+          },
+        })
+      }
+    }
+    const offscreen = realm.OffscreenCanvas?.prototype
+    if (offscreen?.transferToImageBitmap !== undefined) {
+      const native = offscreen.transferToImageBitmap
+      const hook = installValueHook(
+        offscreen,
+        'transferToImageBitmap',
+        function (this: OffscreenCanvas) {
+          return runObservedCall(
+            () => native.call(this),
+            () => {
+              markCanvasDirty(this)
+              announceCanvasWrite(this)
+            },
+          )
+        },
+      )
+      if (hook === null) throw new Error('transferToImageBitmap is not hookable')
+      hooks.push(hook)
     }
     return hooks
   } catch {
@@ -1966,7 +2121,7 @@ export const install = (
         WebGLTexture,
         CanvasImageSource & { width: number; height: number }
       >()
-      const capturedAt = new WeakMap<WebGLTexture, number>()
+      const capturedAt = new WeakMap<object, number>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
       let activeProgram: WebGLProgram | null = null
@@ -2239,14 +2394,11 @@ export const install = (
           source.width === TILE_SIZE &&
           source.height === TILE_SIZE
         ) {
+          if (canvasOfTexture.get(texture) !== source) markCanvasDirty(source)
           canvasOfTexture.set(texture, source)
           tileOfTexture.delete(texture)
-          // A CanvasSource upload is the canonical evidence that its pixels changed. The 1x1
-          // putImageData tap normally patches a paint immediately, but Wplace may upload a copied
-          // OffscreenCanvas whose identity is not the canvas it wrote. Mark every uploaded canvas
-          // dirty so the following draft-layer draw re-reads it and corrects any missed or stale
-          // fast-path state. MapLibre uploads these preview canvases only when they change.
-          markCanvasDirty(source)
+          // Animated CanvasSources upload every frame. Only real writes or source replacement
+          // invalidate pixels; upload itself is attribution, not evidence of mutation.
           return
         }
         if (
@@ -2516,11 +2668,11 @@ export const install = (
         // Do not stamp a preview that capture() will reject. Interest can expand while capture stays
         // enabled; leaving this texture unstamped makes that unchanged preview eligible then.
         if (captureInterest !== null && !captureInterest(tile)) return
-        const stale = capturedAt.get(texture) !== captureGeneration
+        const stale = capturedAt.get(source) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
+        if (!capture(tile, source, 'preview', stale ? null : dirtyCanvases.get(source))) return
         dirtyCanvases.delete(source)
-        capturedAt.set(texture, captureGeneration)
-        capture(tile, source, 'preview')
+        capturedAt.set(source, captureGeneration)
         queuedWrites.delete(source)
       }
 
