@@ -411,7 +411,7 @@ describe('time window', () => {
     expect(chart.querySelector('rect[data-plot-selection]')).toBeNull()
     expect(gripValue('head')).toBe(DAY / 2)
     expect(gripValue('tail')).toBe(1.5 * DAY)
-    expect(preset('all').getAttribute('aria-pressed')).toBe('false')
+    expect(preset('all').getAttribute('aria-selected')).toBe('false')
   })
 
   it('ignores a plain click on the plot', () => {
@@ -427,7 +427,7 @@ describe('time window', () => {
 
     expect(gripValue('head')).toBe(0)
     expect(gripValue('tail')).toBe(THREE_DAYS)
-    expect(preset('all').getAttribute('aria-pressed')).toBe('true')
+    expect(preset('all').getAttribute('aria-selected')).toBe('true')
   })
 
   it('offers presets narrower than the history and clears them with all', () => {
@@ -443,13 +443,13 @@ describe('time window', () => {
     flushSync()
     expect(gripValue('head')).toBe(2 * DAY)
     expect(gripValue('tail')).toBe(THREE_DAYS)
-    expect(preset('1d').getAttribute('aria-pressed')).toBe('true')
-    expect(preset('all').getAttribute('aria-pressed')).toBe('false')
+    expect(preset('1d').getAttribute('aria-selected')).toBe('true')
+    expect(preset('all').getAttribute('aria-selected')).toBe('false')
 
     preset('all').click()
     flushSync()
     expect(gripValue('head')).toBe(0)
-    expect(preset('all').getAttribute('aria-pressed')).toBe('true')
+    expect(preset('all').getAttribute('aria-selected')).toBe('true')
   })
 
   it('moves a grip with the keyboard', () => {
