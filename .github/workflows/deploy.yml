@@ -52,12 +52,14 @@ jobs:
       - name: Apply backend database migrations
         run: pnpm --dir apps/backend exec wrangler d1 migrations apply DB --remote
 
+      # The new frontend works against the old open backend. Deploy it first so a later backend
+      # failure leaves reads open, and a frontend failure never closes reads for the old frontend.
+      - name: Deploy frontend
+        run: pnpm --dir apps/frontend exec wrangler deploy
+
       - name: Deploy backend
         run: |
           userscript_versions_json="$(node .github/scripts/userscript-metric-versions.mjs)"
           pnpm --dir apps/backend exec wrangler deploy \
             --define "__CAELESTIS_DEPLOYMENT_VERSION__:\"$CAELESTIS_BUILD_ID\"" \
             --define "__CAELESTIS_USERSCRIPT_VERSIONS__:$userscript_versions_json"
-
-      - name: Deploy frontend
-        run: pnpm --dir apps/frontend exec wrangler deploy
