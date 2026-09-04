@@ -203,6 +203,9 @@ const scheduleFor = (
 const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
   server.isAdmin ? 'admin' : 'public'
 
+const liveProtocolVersion = (server: ConnectedServer): 1 | 2 | undefined =>
+  server.info?.liveSyncMax ?? server.info?.liveSync
+
 const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
   return (
@@ -214,10 +217,10 @@ const liveHealthy = (server: ConnectedServer): boolean => {
 }
 
 const liveCapable = (server: ConnectedServer): boolean =>
-  (server.info?.liveSync === 1 || server.info?.liveSync === 2) && typeof WebSocket !== 'undefined'
+  liveProtocolVersion(server) !== undefined && typeof WebSocket !== 'undefined'
 
 const socketOnly = (server: ConnectedServer, resource: ServerSyncResource): boolean =>
-  server.info?.liveSync === 2 && resource.live === true
+  liveProtocolVersion(server) === 2 && resource.live === true
 
 const liveCredentialProtocol = (token: string): string => {
   const bytes = new TextEncoder().encode(token)
@@ -345,9 +348,14 @@ const sweep = async (
       if (scope === null) continue
       const key = scheduleKey(server, scope, resource.id)
       liveKeys.add(key)
-      if (socketOnly(server, resource)) continue
       const explicit = requested?.get(resource.id)
       const targeted = explicit?.servers.get(serverConnectionIdentity(server))
+      if (
+        socketOnly(server, resource) &&
+        explicit?.allReason === undefined &&
+        targeted === undefined
+      )
+        continue
       if (requested !== null && explicit?.allReason === undefined && targeted === undefined)
         continue
       const scheduled = scheduleFor(server, scope, resource.id)
@@ -723,7 +731,7 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
   const event = parseLiveServerEvent(raw)
   if (event === null) {
     const live = liveConnections.get(serverConnectionIdentity(server))
-    if (server.info?.liveSync === 2) live?.socket?.close(1002, 'invalid live event')
+    if (liveProtocolVersion(server) === 2) live?.socket?.close(1002, 'invalid live event')
     else requestServerSync('revision-gap', 'telemetry-status', server)
     return
   }
@@ -732,7 +740,7 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
     if (live === undefined || live.stateRequestId !== event.requestId) return
     live.stateRequestId = null
     completeLiveReconciliation(live)
-    if (server.info?.liveSync === 2) return
+    if (liveProtocolVersion(server) === 2) return
     const currentRevision = revisionNumber(server, 'world', 'telemetry-status')
     const refreshStatus =
       currentRevision === null ||
@@ -778,11 +786,11 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
     return
   }
   if (event.type === 'alarms-reconcile') {
-    if (server.info?.liveSync === 2) return
+    if (liveProtocolVersion(server) === 2) return
     requestServerSync('revision-gap', 'telemetry-alarms', server)
     return
   }
-  if (event.type === 'status-reconcile' && server.info?.liveSync === 2) {
+  if (event.type === 'status-reconcile' && liveProtocolVersion(server) === 2) {
     liveConnections
       .get(serverConnectionIdentity(server))
       ?.socket?.close(1011, 'status snapshot required')
@@ -793,7 +801,7 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
       (await resources.get('telemetry-status')?.applyLiveEvent?.(server, event.delta)) ?? false
     if (!applied) {
       const live = liveConnections.get(serverConnectionIdentity(server))
-      if (server.info?.liveSync === 2) live?.socket?.close(1011, 'status revision gap')
+      if (liveProtocolVersion(server) === 2) live?.socket?.close(1011, 'status revision gap')
       else requestServerSync('revision-gap', 'telemetry-status', server)
     }
     return
@@ -921,7 +929,7 @@ const scheduleLiveReconnect = (connection: LiveConnection): void => {
 }
 
 const armLiveBootstrapFallback = (connection: LiveConnection): void => {
-  if (connection.server.info?.liveSync === 2) return
+  if (liveProtocolVersion(connection.server) === 2) return
   if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
   connection.bootstrapFallbackTimer = setTimeout(() => {
     connection.bootstrapFallbackTimer = null
@@ -944,7 +952,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
   if (
     !activeDocument() ||
     !isCurrentServerConnection(server) ||
-    (server.info?.liveSync !== 1 && server.info?.liveSync !== 2) ||
+    liveProtocolVersion(server) === undefined ||
     server.season === null ||
     typeof WebSocket === 'undefined' ||
     connection.socket !== null ||
@@ -963,7 +971,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
   const revision = serverSyncRevision(server, 'world', 'telemetry-status')
   if (revision !== undefined) endpoint.searchParams.set('revision', revision)
   const protocols =
-    server.info.liveSync === 2 ? [LIVE_PROTOCOL_V2, LIVE_PROTOCOL_V1] : [LIVE_PROTOCOL_V1]
+    liveProtocolVersion(server) === 2 ? [LIVE_PROTOCOL_V2, LIVE_PROTOCOL_V1] : [LIVE_PROTOCOL_V1]
   if (authenticated) {
     protocols.push(liveCredentialProtocol(server.token))
   }
@@ -996,7 +1004,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
     }
     const parsed = parseLiveMessage(connection, message.data)
     if (parsed.status === 'invalid') {
-      if (server.info?.liveSync === 2) socket.close(1002, 'invalid live event')
+      if (liveProtocolVersion(server) === 2) socket.close(1002, 'invalid live event')
       else requestServerSync('revision-gap', 'telemetry-status', server)
       return
     }
@@ -1148,7 +1156,7 @@ const requestLiveCommand = (
 ): Promise<LiveCommandResponse | null> => {
   const connection = liveConnections.get(serverConnectionIdentity(server))
   if (
-    server.info?.liveSync !== 2 ||
+    liveProtocolVersion(server) !== 2 ||
     !liveHealthy(server) ||
     connection === undefined ||
     connection.socket === null

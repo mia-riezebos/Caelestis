@@ -256,6 +256,36 @@ describe('status read-model Durable Object', () => {
     })
   })
 
+  it('refreshes public alarm snapshots after template publication changes', async () => {
+    database = new SqliteD1Database()
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'read',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        protocol: 2,
+        projections: [{ resource: 'telemetry-alarms', scope: 'world', version: null }],
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(
+      objectState(new Map(), Number.POSITIVE_INFINITY, [socket]),
+      {
+        DB: database,
+        BLOBS: {},
+        TELEMETRY: { getByName: () => ({}) },
+      } as unknown as Env,
+    )
+
+    await object.notifyManifestChange(8, { kind: 'alliance-picture', allianceId: 42 })
+
+    expect(send).toHaveBeenCalledWith(expect.stringContaining('"type":"alarms-snapshot"'))
+  })
+
   it('accepts a paint once and acknowledges its retry as a duplicate', async () => {
     database = new SqliteD1Database()
     const send = vi.fn()

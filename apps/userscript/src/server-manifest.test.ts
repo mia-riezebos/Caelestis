@@ -52,12 +52,13 @@ describe('server manifest template lifecycle', () => {
     })
     expect(parseServerInfo(server)).toEqual(server)
     expect(parseServerInfo({ ...server, liveSync: true })).toBeNull()
-    expect(parseServerInfo({ ...server, liveSync: 2, liveSyncMin: 1 })).toEqual({
+    expect(parseServerInfo({ ...server, liveSync: 1, liveSyncMax: 2 })).toEqual({
       ...server,
-      liveSync: 2,
-      liveSyncMin: 1,
+      liveSync: 1,
+      liveSyncMax: 2,
     })
-    expect(parseServerInfo({ ...server, liveSync: 1, liveSyncMin: 2 })).toBeNull()
+    expect(parseServerInfo({ ...server, liveSyncMax: 2 })).toBeNull()
+    expect(parseServerInfo({ ...server, liveSync: 2, liveSyncMax: 1 })).toBeNull()
     expect(parseServerInfo({ ...server, liveSync: 3 })).toBeNull()
     expect(parseServerInfo({ ...server, liveTileOffers: true })).toBeNull()
     expect(parseServerInfo({ ...server, liveTileOffers: 2 })).toBeNull()

@@ -346,12 +346,17 @@ describe('tile and template schemas', () => {
     }
     expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
     expect(
-      Schema.decodeUnknownSync(ServerInfo)({ ...server, liveSync: 2, liveSyncMin: 1 }),
-    ).toMatchObject({ liveSync: 2, liveSyncMin: 1 })
+      Schema.decodeUnknownSync(ServerInfo)({ ...server, liveSync: 1, liveSyncMax: 2 }),
+    ).toMatchObject({ liveSync: 1, liveSyncMax: 2 })
     expectRejected(ServerInfo, { ...server, liveSync: true })
     expectRejected(ServerInfo, { ...server, liveSync: 3 })
-    expectRejected(ServerInfo, { ...server, liveSyncMin: 2 })
-    expectRejected(ServerInfo, { ...server, liveSync: 1, liveSyncMin: 2 })
+    expectRejected(ServerInfo, {
+      id: SERVER_ID,
+      name: 'Server',
+      auth: 'none',
+      liveSyncMax: 2,
+    })
+    expectRejected(ServerInfo, { ...server, liveSync: 2, liveSyncMax: 1 })
     expectRejected(ServerInfo, { ...server, liveTileOffers: true })
     expectRejected(ServerInfo, { ...server, liveTileOffers: 2 })
   })

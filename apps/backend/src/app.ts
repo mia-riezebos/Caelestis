@@ -80,7 +80,7 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
     auth: options.openAccess === true ? 'none' : 'access_token',
     ...(options.connectStatusLive === undefined
       ? {}
-      : { liveSync: 2 as const, liveSyncMin: 1 as const, liveTileOffers: 1 as const }),
+      : { liveSync: 1 as const, liveSyncMax: 2 as const, liveTileOffers: 1 as const }),
   } as const
   const server: ServerInfo =
     options.serverDescription === undefined

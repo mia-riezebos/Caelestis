@@ -507,6 +507,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
         this.applyCommittedTileGeneration(season, generation),
       finishTileGenerationCommit: (season, tile, commit) =>
         this.finishTileGenerationCommit(season, tile, commit),
+      notifyDashboardChange: (season) => this.notifyDashboardChange(season),
     }
     this.runtime = createBackendRuntime(
       makeBackendContext(
@@ -603,8 +604,8 @@ export class StatusReadModelObject extends DurableObject<Env> {
         ? {}
         : { description: this.bindings.SERVER_DESCRIPTION }),
       auth: this.bindings.OPEN_ACCESS === 'true' ? 'none' : 'access_token',
-      liveSync: 2,
-      liveSyncMin: 1,
+      liveSync: 1,
+      liveSyncMax: 2,
       liveTileOffers: 1,
     }
   }
@@ -831,7 +832,10 @@ export class StatusReadModelObject extends DurableObject<Env> {
     const revision = await this.manifestModel(season).invalidate(surface, affectsTileCoverage)
     await this.loadTileGenerationCoverage(season)
     this.broadcastManifest(revision, surface)
-    await this.broadcastManifestSnapshots(surface)
+    await Promise.all([
+      this.broadcastManifestSnapshots(surface),
+      surface === undefined ? Promise.resolve() : this.broadcastAlarmSnapshots(),
+    ])
   }
 
   resolveCurrentTileOffers(
@@ -887,6 +891,10 @@ export class StatusReadModelObject extends DurableObject<Env> {
     this.bindSeason(season)
     const event: LiveSyncServerEvent = { type: 'alarms-reconcile' }
     for (const socket of this.subscribers()) this.send(socket, event)
+    await this.broadcastAlarmSnapshots()
+  }
+
+  private async broadcastAlarmSnapshots(): Promise<void> {
     await Promise.all(
       this.subscribers().map(async (socket) => {
         const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
@@ -945,6 +953,11 @@ export class StatusReadModelObject extends DurableObject<Env> {
     )
   }
 
+  async notifyDashboardChange(season: number): Promise<void> {
+    this.bindSeason(season)
+    await this.broadcastDashboardSnapshots()
+  }
+
   private canReport(attachment: LiveSubscriberAttachment | null, season: number): boolean {
     return (
       attachment !== null &&
@@ -980,7 +993,6 @@ export class StatusReadModelObject extends DurableObject<Env> {
         eventId: event.event.eventId,
         result,
       })
-      if (result === 'recorded') await this.broadcastDashboardSnapshots()
     } catch {
       this.send(socket, {
         type: 'paint-result',

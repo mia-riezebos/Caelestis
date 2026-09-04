@@ -105,6 +105,10 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     await this.scheduleAlarms?.()
   }
 
+  notifyDashboardChange(season: number): Promise<void> {
+    return this.shard(season).notifyDashboardChange(season)
+  }
+
   async closeCredential(currentSeason: number, tokenHash: string): Promise<void> {
     await Promise.all(
       Array.from({ length: currentSeason + 1 }, (_, season) =>

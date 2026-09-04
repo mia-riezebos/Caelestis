@@ -528,7 +528,7 @@ describe('server sync coordinator', () => {
   it('keeps v2 resources and paint delivery on the socket through a revision gap', async () => {
     const liveServer = {
       ...server,
-      info: { ...server.info, liveSync: 2 as const, liveSyncMin: 1 as const },
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
       token: 'ABCDEFGHJKMNPQRSTVWXYZ2345',
     }
     state.current = { servers: [liveServer] }
@@ -575,10 +575,43 @@ describe('server sync coordinator', () => {
     expect(refresh).not.toHaveBeenCalled()
   })
 
+  it('allows explicit v2 projection recovery without resuming interval polling', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource, requestServerSync } =
+      await import('./server-sync-coordinator.js')
+    const refresh = vi.fn(async () => ({ status: 'unchanged' as const }))
+    registerServerSyncResource({
+      id: 'alliance-manifest',
+      live: true,
+      scope: () => 'alliance-picture:42',
+      refresh,
+    })
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    reconcileSocket(socket, 0, 'correction', [])
+    await vi.advanceTimersByTimeAsync(0)
+    refresh.mockClear()
+
+    requestServerSync('state-change', 'alliance-manifest', liveServer)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(refresh).toHaveBeenCalledWith(liveServer, 'state-change', 'recovery')
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(refresh).toHaveBeenCalledOnce()
+  })
+
   it('reconnects rejected v2 frames but accepts incomplete snapshot parts', async () => {
     const liveServer = {
       ...server,
-      info: { ...server.info, liveSync: 2 as const, liveSyncMin: 1 as const },
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
     }
     state.current = { servers: [liveServer] }
     vi.stubGlobal('WebSocket', FakeWebSocket)

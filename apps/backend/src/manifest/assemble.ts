@@ -130,9 +130,9 @@ const assembleManifestWithSql = async (
           name: options.server.name,
           auth: options.server.auth,
           ...(options.server.liveSync === undefined ? {} : { liveSync: options.server.liveSync }),
-          ...(options.server.liveSyncMin === undefined
+          ...(options.server.liveSyncMax === undefined
             ? {}
-            : { liveSyncMin: options.server.liveSyncMin }),
+            : { liveSyncMax: options.server.liveSyncMax }),
           ...(options.server.liveTileOffers === undefined
             ? {}
             : { liveTileOffers: options.server.liveTileOffers }),
@@ -143,9 +143,9 @@ const assembleManifestWithSql = async (
           description: options.server.description,
           auth: options.server.auth,
           ...(options.server.liveSync === undefined ? {} : { liveSync: options.server.liveSync }),
-          ...(options.server.liveSyncMin === undefined
+          ...(options.server.liveSyncMax === undefined
             ? {}
-            : { liveSyncMin: options.server.liveSyncMin }),
+            : { liveSyncMax: options.server.liveSyncMax }),
           ...(options.server.liveTileOffers === undefined
             ? {}
             : { liveTileOffers: options.server.liveTileOffers }),
