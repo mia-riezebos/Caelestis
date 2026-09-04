@@ -51,6 +51,9 @@ describe('app release workflow', () => {
     assert.match(workflow, /userscript:\n[\s\S]*?name: Release userscript/)
     assert.match(workflow, /deployed-apps:\n[\s\S]*?name: Release deployed frontend and backend/)
     assert.match(workflow, /has_changesets: \$\{\{ steps\.changesets\.outputs\.has-changesets \}\}/)
+    assert.equal(workflow.match(/--json targetCommitish/g)?.length, 2)
+    assert.equal(workflow.match(/outputs\.matches_sha == 'true'/g)?.length, 3)
+    assert.doesNotMatch(workflow, /^\s+github\.run_attempt > 1 \|\|$/m)
   })
 
   it('keeps production build identity tied to the deployment commit', () => {

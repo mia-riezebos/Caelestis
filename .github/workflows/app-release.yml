@@ -128,8 +128,15 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
+            if [ "$target" = "$GITHUB_SHA" ]; then
+              echo "matches_sha=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "matches_sha=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "matches_sha=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create userscript GitHub release
@@ -153,7 +160,8 @@ jobs:
       - name: Verify published installers
         if: >-
           steps.userscript-existing.outputs.exists == 'false' ||
-          github.run_attempt > 1 ||
+          (steps.userscript-existing.outputs.matches_sha == 'true' &&
+          github.run_attempt > 1) ||
           inputs.retry_userscript_announcement
         env:
           GH_TOKEN: ${{ github.token }}
@@ -169,7 +177,8 @@ jobs:
       - name: Announce userscript release in Discord
         if: >-
           steps.userscript-existing.outputs.exists == 'false' ||
-          github.run_attempt > 1 ||
+          (steps.userscript-existing.outputs.matches_sha == 'true' &&
+          github.run_attempt > 1) ||
           inputs.retry_userscript_announcement
         env:
           DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
@@ -254,8 +263,15 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
+            if [ "$target" = "$GITHUB_SHA" ]; then
+              echo "matches_sha=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "matches_sha=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "matches_sha=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check whether this backend version already exists
@@ -301,7 +317,8 @@ jobs:
       - name: Announce frontend release in Discord
         if: >-
           steps.frontend-existing.outputs.exists == 'false' ||
-          github.run_attempt > 1 ||
+          (steps.frontend-existing.outputs.matches_sha == 'true' &&
+          github.run_attempt > 1) ||
           inputs.retry_frontend_announcement
         env:
           DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_FRONTEND_RELEASE_WEBHOOK_URL }}
