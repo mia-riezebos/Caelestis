@@ -81,9 +81,9 @@ export interface TilePlacement {
 export const tilesInRect = (rect: CanvasRect): TilePlacement[] => {
   const placements: TilePlacement[] = []
   const firstTileX = Math.floor(rect.x / TILE_SIZE)
-  const lastTileX = Math.floor((rect.x + rect.width - 1) / TILE_SIZE)
+  const lastTileX = Math.ceil((rect.x + rect.width) / TILE_SIZE) - 1
   const firstTileY = Math.floor(rect.y / TILE_SIZE)
-  const lastTileY = Math.floor((rect.y + rect.height - 1) / TILE_SIZE)
+  const lastTileY = Math.ceil((rect.y + rect.height) / TILE_SIZE) - 1
   for (let ty = firstTileY; ty <= lastTileY; ty++) {
     for (let tx = firstTileX; tx <= lastTileX; tx++) {
       const worldX =

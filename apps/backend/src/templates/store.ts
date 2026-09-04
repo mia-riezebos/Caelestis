@@ -2,6 +2,7 @@ import {
   decodePng,
   decodeWplaceIndexedPng,
   encodeIndexedPng,
+  MAX_TIMELAPSE_CAPTURE_TILES,
   millis,
   PALETTE_SIZE,
   type PixelBounds,
@@ -14,6 +15,7 @@ import {
   type TemplateSurface,
   TRANSPARENT_INDEX,
   tileKey,
+  timelapseCaptureTileCount,
   uuidV7,
   WORLD_PIXELS,
 } from '@caelestis/shared'
@@ -137,6 +139,14 @@ export const storeTemplate = async (
     throw new StoreTemplateError(
       `template covers ${sliced.chunks.length} tiles, more than the ${MAX_TEMPLATE_CHUNKS} one upload may carry`,
     )
+  }
+  if (input.surface.kind === 'world') {
+    const captureTiles = timelapseCaptureTileCount(sliced.bbox)
+    if (captureTiles > MAX_TIMELAPSE_CAPTURE_TILES) {
+      throw new StoreTemplateError(
+        `template timelapse covers ${captureTiles.toLocaleString()} tiles, more than the ${MAX_TIMELAPSE_CAPTURE_TILES.toLocaleString()} one viewer may load`,
+      )
+    }
   }
 
   if (input.templateId !== undefined) {

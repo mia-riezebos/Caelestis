@@ -1181,8 +1181,8 @@ export interface SqlStore {
   /**
    * The latest accepted observation of every observed tile in a season, ordered by x then y.
    *
-   * Unbounded on purpose: only observed tiles have rows, and reporters only observe tiles a
-   * template covers, so this is thousands of rows at the outside — not the canvas's four million.
+   * Unbounded on purpose: only observed tiles have rows, and reporters plus the scheduled capture
+   * plan stay near templates, so this is thousands of rows at the outside, not four million.
    */
   listLatestTiles(season: number): Promise<readonly LatestTileObservation[]>
 

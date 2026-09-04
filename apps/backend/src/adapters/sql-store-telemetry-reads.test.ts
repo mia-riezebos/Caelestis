@@ -534,24 +534,27 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     ).resolves.toEqual([{ bucketStart: seconds(targetStart), hash: 'c'.repeat(64), reporters: 2 }])
   })
 
-  it('exempts a frozen template tile ring from tile-history decay', async () => {
+  it('exempts a frozen template capture plan from tile-history decay', async () => {
     const now = seconds(1_800_000_000)
     const templateId = 'frozen-template'
-    await store.insertTemplateVersion(version(templateId))
+    await store.insertTemplateVersion({
+      ...version(templateId),
+      bbox: { minX: 0, minY: 0, maxX: 1_000, maxY: 10_000 },
+    })
     await store.updateTemplate(templateId, { timelapseFrozenAt: millis(now * 1_000) }, millis(1))
-    const ringTile = { x: 1, y: 0 }
+    const contextTile = { x: 3, y: 0 }
     const old = observation({
-      tile: ringTile,
+      tile: contextTile,
       reportedAt: seconds(now - 90_000),
       hash: 'e'.repeat(64),
     })
     await store.recordTileObservation(old, [])
 
-    await store.foldTileHistory(1, ringTile, now)
+    await store.foldTileHistory(1, contextTile, now)
     await expect(
       store.readTileHistory({
         season: 1,
-        tile: ringTile,
+        tile: contextTile,
         resolution: 0,
         fromSeconds: seconds(now - 100_000),
         toSeconds: now,

@@ -344,8 +344,8 @@ const readMismatchMaskPromise = async (
  *
  * Records unconditionally, even with zero covering templates. The reporter routes never reach here
  * uncovered — `uploadTile` refuses and `offerTile` answers `ignored` first — but the server's own
- * fetcher deliberately stores a ring of surrounding tiles no template covers, purely as timelapse
- * and viewer context.
+ * fetcher deliberately stores planned 16:9 context tiles no template covers, purely for the
+ * timelapse viewer.
  */
 const recordObservationPromise = async (
   ports: IngestStores,
