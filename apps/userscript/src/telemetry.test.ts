@@ -1326,7 +1326,7 @@ describe('server telemetry client', () => {
   it('delivers v2 paints, offers, and wanted tile bytes without HTTP fallback', async () => {
     const liveServer = {
       ...server,
-      info: { ...server.info, liveSync: 2 as const, liveSyncMin: 1 as const },
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
     }
     harness.state = { ...harness.state, servers: [liveServer] }
     coordinator.liveHealthy = true
@@ -1384,11 +1384,44 @@ describe('server telemetry client', () => {
     expect(mutationHttp).toEqual([])
   })
 
+  it('does not upload v2 tile bytes after sharing is disabled', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.liveHealthy = true
+    let answerOffer!: (value: Awaited<ReturnType<typeof coordinator.liveFullTileOffer>>) => void
+    coordinator.liveFullTileOffer.mockImplementation(
+      () => new Promise((resolve) => (answerOffer = resolve)),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+    await vi.waitFor(() => expect(coordinator.liveFullTileOffer).toHaveBeenCalledOnce())
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+    const deliveryId = coordinator.liveFullTileOffer.mock.calls[0]?.[1].offers[0]?.deliveryId
+    if (deliveryId === undefined) throw new Error('tile offer was not sent')
+    answerOffer({
+      type: 'tile-offer-result',
+      response: {
+        acknowledgedDeliveryIds: [],
+        wanted: [{ deliveryId, coverageToken: 'coverage' }],
+        rejectedDeliveryIds: [],
+      },
+    })
+    await Promise.resolve()
+    expect(coordinator.liveTileUpload).not.toHaveBeenCalled()
+  })
+
   it('retries one v2 paint with the same event id after its acknowledgement is lost', async () => {
     vi.useFakeTimers()
     const liveServer = {
       ...server,
-      info: { ...server.info, liveSync: 2 as const, liveSyncMin: 1 as const },
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
     }
     harness.state = { ...harness.state, servers: [liveServer] }
     coordinator.livePaint

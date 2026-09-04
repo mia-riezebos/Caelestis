@@ -18,7 +18,7 @@ export interface ServerInfo {
   readonly description?: string
   readonly auth: ServerAuthMode
   readonly liveSync?: 1 | 2
-  readonly liveSyncMin?: 1 | 2
+  readonly liveSyncMax?: 1 | 2
   readonly liveTileOffers?: 1
 }
 
@@ -67,12 +67,13 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
     return null
   if (value.auth !== 'none' && value.auth !== 'access_token') return null
   if (value.liveSync !== undefined && value.liveSync !== 1 && value.liveSync !== 2) return null
-  if (value.liveSyncMin !== undefined && value.liveSyncMin !== 1 && value.liveSyncMin !== 2)
+  if (value.liveSyncMax !== undefined && value.liveSyncMax !== 1 && value.liveSyncMax !== 2)
     return null
+  if (value.liveSyncMax !== undefined && typeof value.liveSync !== 'number') return null
   if (
     typeof value.liveSync === 'number' &&
-    typeof value.liveSyncMin === 'number' &&
-    value.liveSyncMin > value.liveSync
+    typeof value.liveSyncMax === 'number' &&
+    value.liveSyncMax < value.liveSync
   )
     return null
   if (value.liveTileOffers !== undefined && value.liveTileOffers !== 1) return null
@@ -89,8 +90,8 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
     ...(typeof value.description === 'string' ? { description: value.description } : {}),
     auth: value.auth,
     ...(value.liveSync === 1 || value.liveSync === 2 ? { liveSync: value.liveSync } : {}),
-    ...(value.liveSyncMin === 1 || value.liveSyncMin === 2
-      ? { liveSyncMin: value.liveSyncMin }
+    ...(value.liveSyncMax === 1 || value.liveSyncMax === 2
+      ? { liveSyncMax: value.liveSyncMax }
       : {}),
     ...(value.liveTileOffers === 1 ? { liveTileOffers: 1 as const } : {}),
   }

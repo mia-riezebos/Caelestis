@@ -49,4 +49,29 @@ describe('live framing', () => {
     }
     expect(decoded).toMatchObject({ type: 'alarms-snapshot', padding })
   })
+
+  it('evicts the oldest incomplete snapshot stream', () => {
+    const assembler = new LiveSnapshotAssembler()
+    for (let index = 0; index < 5; index++) {
+      expect(
+        assembler.push({
+          type: 'snapshot-part',
+          messageId: `stream-${index}`,
+          index: 0,
+          total: 2,
+          chunk: '{"value":',
+        }),
+      ).toBeNull()
+    }
+
+    expect(
+      assembler.push({
+        type: 'snapshot-part',
+        messageId: 'stream-0',
+        index: 1,
+        total: 2,
+        chunk: '0}',
+      }),
+    ).toBeNull()
+  })
 })

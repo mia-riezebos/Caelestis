@@ -53,8 +53,8 @@ const liveServer = {
   id: '01890f3e-7b2c-7abc-8def-000000000001',
   name: 'Caelestis',
   auth: 'access_token' as const,
-  liveSync: 2 as const,
-  liveSyncMin: 1 as const,
+  liveSync: 1 as const,
+  liveSyncMax: 2 as const,
 }
 
 const manifest = {

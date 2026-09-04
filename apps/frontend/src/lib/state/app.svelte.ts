@@ -208,7 +208,7 @@ export class AppState {
       !this.liveEnabled ||
       this.liveSocket !== null ||
       this.manifest === null ||
-      this.server?.liveSync !== 2
+      (this.server?.liveSyncMax ?? this.server?.liveSync) !== 2
     )
       return
     const socket = openLiveSocket(this.manifest.season, this.isAdmin)

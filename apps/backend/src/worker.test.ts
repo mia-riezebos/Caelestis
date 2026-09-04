@@ -125,14 +125,14 @@ it('forwards the configured identity, season and open access to the app', async 
     name: 'Second Season Server',
     description: 'Configured, not defaulted',
     auth: 'none',
-    liveSync: 2,
-    liveSyncMin: 1,
+    liveSync: 1,
+    liveSyncMax: 2,
     liveTileOffers: 1,
   })
   expect(manifest.status).toBe(200)
   await expect(manifest.json()).resolves.toMatchObject({
     season: 0,
-    server: { liveSync: 2, liveSyncMin: 1, liveTileOffers: 1 },
+    server: { liveSync: 1, liveSyncMax: 2, liveTileOffers: 1 },
   })
 })
 

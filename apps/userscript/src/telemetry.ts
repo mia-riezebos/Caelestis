@@ -485,7 +485,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     trimUnsettledOffers(server.url)
     tileOfferMetric('requested', entries.length)
     let accepted = 0
-    if (server.info?.liveSync === 2) {
+    if ((server.info?.liveSyncMax ?? server.info?.liveSync) === 2) {
       let offered: Awaited<ReturnType<typeof requestLiveTileOffer>> = null
       for (let attempt = 0; attempt < RETRIES && offered === null; attempt++)
         offered = await requestLiveTileOffer(server, {
@@ -509,6 +509,11 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
         if (!retryNeeded) tileOfferMetric('rejected', entries.length)
         return
       }
+      if (!getState().shareTiles) {
+        clearTileOfferDelivery()
+        return
+      }
+      if (!isCurrentServerConnection(server)) return
       const offeredIds = new Set(entries.map((entry) => entry.deliveryId))
       const acknowledged = new Set(
         offered.response.acknowledgedDeliveryIds.filter((id) => offeredIds.has(id)),
@@ -883,7 +888,7 @@ const deliverPaint = async (
   eventId: string,
   event: PaintEvent,
 ): Promise<void> => {
-  if (server.info?.liveSync === 2) {
+  if ((server.info?.liveSyncMax ?? server.info?.liveSync) === 2) {
     let result: Awaited<ReturnType<typeof requestLivePaint>> = null
     for (let attempt = 0; attempt < RETRIES && result === null; attempt++)
       result = await requestLivePaint(server, event)

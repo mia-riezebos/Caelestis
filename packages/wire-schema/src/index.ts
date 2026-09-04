@@ -191,15 +191,15 @@ export const ServerInfo = Schema.Struct({
   description: Schema.optionalKey(Description),
   auth: Schema.Literals(['none', 'access_token']),
   liveSync: Schema.optionalKey(Schema.Literals([1, 2])),
-  liveSyncMin: Schema.optionalKey(Schema.Literals([1, 2])),
+  liveSyncMax: Schema.optionalKey(Schema.Literals([1, 2])),
   liveTileOffers: Schema.optionalKey(Schema.Literal(1)),
 }).pipe(
   Schema.check(
     booleanFilter(
       (server) =>
-        server.liveSyncMin === undefined ||
-        (server.liveSync !== undefined && server.liveSyncMin <= server.liveSync),
-      'liveSyncMin requires an equal or newer liveSync version',
+        server.liveSyncMax === undefined ||
+        (server.liveSync !== undefined && server.liveSyncMax >= server.liveSync),
+      'liveSyncMax requires a liveSync version no newer than itself',
     ),
   ),
 )

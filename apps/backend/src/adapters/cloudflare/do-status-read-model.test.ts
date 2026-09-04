@@ -21,6 +21,7 @@ describe('Durable Object status read-model adapter', () => {
       })),
       notifyManifestChange: vi.fn(async () => undefined),
       notifyAlarmChange: vi.fn(async () => undefined),
+      notifyDashboardChange: vi.fn(async () => undefined),
       closeCredential: vi.fn(async () => undefined),
       prepareTileGenerationCommit: vi.fn(async () => ({
         coverageToken: 'coverage-token',
@@ -43,6 +44,7 @@ describe('Durable Object status read-model adapter', () => {
     const allianceSurface = { kind: 'alliance-banner' as const, allianceId: 42 }
     await model.notifyManifestChange(8, allianceSurface)
     await model.notifyAlarmChange(8)
+    await model.notifyDashboardChange(8)
     await model.closeCredential(8, 'b'.repeat(64))
     await expect(model.prepareTileGenerationCommit(8, { x: 1, y: 2 })).resolves.toEqual({
       coverageToken: 'coverage-token',
@@ -86,6 +88,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(stub.reconcileSnapshotMeasured).toHaveBeenCalledWith(8, 'admin')
     expect(stub.notifyManifestChange).toHaveBeenCalledWith(8, allianceSurface)
     expect(stub.notifyAlarmChange).toHaveBeenCalledWith(8)
+    expect(stub.notifyDashboardChange).toHaveBeenCalledWith(8)
     expect(stub.closeCredential).toHaveBeenCalledTimes(9)
     for (let season = 0; season <= 8; season++)
       expect(stub.closeCredential).toHaveBeenCalledWith(season, 'b'.repeat(64))
