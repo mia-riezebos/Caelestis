@@ -16,6 +16,7 @@ const app = untrack(() => provideApp(data.bootstrap))
 let connectOpen = $state(false)
 
 onMount(() => {
+  app.startLive()
   // SSR supplied the public read model. A browser-held credential may upgrade it to admin.
   if (
     readToken() !== null ||
@@ -25,6 +26,7 @@ onMount(() => {
   ) {
     void app.load()
   }
+  return () => app.stopLive()
 })
 
 // An auth failure opens the connect dialog. A valid token fixes it.

@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   getHistory: vi.fn(),
   getLeaderboard: vi.fn(),
 }))
+const live = vi.hoisted(() => ({ subscribe: vi.fn() }))
 
 vi.mock('$lib/api/client', () => api)
 
@@ -45,6 +46,7 @@ beforeEach(() => {
   api.getHistory.mockReset().mockResolvedValue({ buckets: [] })
   api.getContributions.mockReset().mockResolvedValue({ days: [] })
   api.getLeaderboard.mockReset().mockResolvedValue({ entries: [] })
+  live.subscribe.mockReset().mockReturnValue(() => undefined)
 })
 
 afterEach(async () => {
@@ -66,7 +68,7 @@ describe('retained history range', () => {
           template('older', 1_000, finishedAt - 1_000),
           template('newer', 10 * DAY_SECONDS, finishedAt),
         ],
-        season: 1,
+        subscribeDashboard: live.subscribe,
         progress: { completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
       },
     })
@@ -90,7 +92,7 @@ describe('retained history range', () => {
           template('finished', 0, NOW_SECONDS - DAY_SECONDS),
           template('live', DAY_SECONDS, null),
         ],
-        season: 1,
+        subscribeDashboard: live.subscribe,
         progress: { completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
       },
     })
@@ -116,7 +118,7 @@ describe('retained history range', () => {
       target: document.body,
       props: {
         templates: [template('live', 0, null)],
-        season: 1,
+        subscribeDashboard: live.subscribe,
         progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
       },
     })
@@ -129,61 +131,41 @@ describe('retained history range', () => {
 })
 
 describe('live counts', () => {
-  it('refreshes contributions and the leaderboard while the panel is visible', async () => {
-    vi.useFakeTimers()
+  it('applies contributions and leaderboard snapshots from one live subscription', async () => {
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
         templates: [template('live', 0, null)],
-        season: 1,
+        subscribeDashboard: live.subscribe,
         progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
       },
     })
     flushSync()
-    await vi.advanceTimersByTimeAsync(0)
-
-    expect(api.getContributions).toHaveBeenCalledTimes(1)
-    expect(api.getLeaderboard).toHaveBeenCalledTimes(1)
-
-    await vi.advanceTimersByTimeAsync(15_000)
-
-    expect(api.getContributions).toHaveBeenCalledTimes(2)
-    expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
+    expect(live.subscribe).toHaveBeenCalledOnce()
+    const listener = live.subscribe.mock.calls[0]?.[2]
+    listener?.({
+      contributions: { days: [] },
+      leaderboard: { entries: [] },
+    })
+    await vi.waitFor(() => expect(document.body.textContent).toContain('No contributions yet'))
+    expect(api.getContributions).not.toHaveBeenCalled()
+    expect(api.getLeaderboard).not.toHaveBeenCalled()
   })
 
-  it('does not supersede a slow refresh with overlapping timer requests', async () => {
+  it('does not add a polling fallback while the subscription stays quiet', async () => {
     vi.useFakeTimers()
-    let resolveContributions: (value: { days: never[] }) => void = () => {}
-    let resolveLeaderboard: (value: { entries: never[] }) => void = () => {}
-    api.getContributions.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveContributions = resolve
-      }),
-    )
-    api.getLeaderboard.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveLeaderboard = resolve
-      }),
-    )
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
         templates: [template('live', 0, null)],
-        season: 1,
+        subscribeDashboard: live.subscribe,
         progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
       },
     })
     flushSync()
-    await vi.advanceTimersByTimeAsync(30_000)
-
-    expect(api.getContributions).toHaveBeenCalledTimes(1)
-    expect(api.getLeaderboard).toHaveBeenCalledTimes(1)
-
-    resolveContributions({ days: [] })
-    resolveLeaderboard({ entries: [] })
-    await vi.advanceTimersByTimeAsync(15_000)
-
-    expect(api.getContributions).toHaveBeenCalledTimes(2)
-    expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(live.subscribe).toHaveBeenCalledOnce()
+    expect(api.getContributions).not.toHaveBeenCalled()
+    expect(api.getLeaderboard).not.toHaveBeenCalled()
   })
 })
