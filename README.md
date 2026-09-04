@@ -1,5 +1,7 @@
 # Caelestis
 
+https://github.com/user-attachments/assets/3cf4473d-d0cc-4b05-a60d-8f0f7f8d8ab1
+
 Caelestis is a fast, customisable template overlay for [wplace.live](https://wplace.live). It gives
 groups a shared template server, keeps local and shared templates in one tree, and tracks painting
 progress without making the browser scan the whole template first.
