@@ -11,6 +11,7 @@ import {
   type LiveTileOfferCacheResponse,
   type LiveTileOfferResponse,
   type LiveTileUpload,
+  MAX_LIVE_MESSAGE_BYTES,
   MAX_LIVE_PROJECTIONS,
   type PaintEvent,
   type ReconciliationReason,
@@ -35,7 +36,6 @@ const MAX_UNCHANGED_POLL_MS = 5 * 60_000
 const JITTER_RANGE_MS = 30_000
 const REFRESH_CONCURRENCY = 4
 const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
-const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_RECONNECT_MS = 30_000
 const MAX_FAST_RECONNECT_ATTEMPTS = 6
 const LIVE_HEARTBEAT_MS = 15 * 60_000
@@ -691,16 +691,22 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
   return null
 }
 
-const parseLiveMessage = (connection: LiveConnection, data: unknown): unknown | null => {
+type ParsedLiveMessage =
+  | { readonly status: 'event'; readonly value: unknown }
+  | { readonly status: 'pending' }
+  | { readonly status: 'invalid' }
+
+const parseLiveMessage = (connection: LiveConnection, data: unknown): ParsedLiveMessage => {
   if (
     typeof data !== 'string' ||
     new TextEncoder().encode(data).byteLength > MAX_LIVE_MESSAGE_BYTES
   )
-    return null
+    return { status: 'invalid' }
   try {
-    return connection.snapshots.push(JSON.parse(data))
+    const value = connection.snapshots.push(JSON.parse(data))
+    return value === null ? { status: 'pending' } : { status: 'event', value }
   } catch {
-    return null
+    return { status: 'invalid' }
   }
 }
 
@@ -989,10 +995,16 @@ const openLiveConnection = (connection: LiveConnection): void => {
       return
     }
     const parsed = parseLiveMessage(connection, message.data)
-    if (parsed !== null) {
-      void handleLiveEvent(server, parsed).catch(() => socket.close(1011, 'live event failed'))
+    if (parsed.status === 'invalid') {
+      if (server.info?.liveSync === 2) socket.close(1002, 'invalid live event')
+      else requestServerSync('revision-gap', 'telemetry-status', server)
+      return
     }
     confirmLiveConnection(connection)
+    if (parsed.status === 'event')
+      void handleLiveEvent(server, parsed.value).catch(() =>
+        socket.close(1011, 'live event failed'),
+      )
   })
   socket.addEventListener('error', () => socket.close())
   socket.addEventListener('close', () => {
