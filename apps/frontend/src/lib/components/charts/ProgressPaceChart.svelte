@@ -624,35 +624,86 @@
     { edge: 'tail', t: view.to, min: view.from + MIN_SELECTION, max: to },
   ])
 
+  // ── Range presets as a segmented control ────────────────────────────────────────────────────
+  // transitions.dev "Tabs sliding": JS measures the active tab and writes its offset and width
+  // onto the pill; CSS owns the tween. The first paint and every re-measure snap without a
+  // transition, and a window that matches no preset hides the pill instead of parking it.
+  let tabsBar = $state<HTMLDivElement | null>(null)
+  let tabsPill = $state<HTMLSpanElement | null>(null)
+  const activePreset = $derived(
+    zoomed ? (presets.find((preset) => presetActive(preset.seconds))?.key ?? null) : 'all',
+  )
+  let pillKey: string | null | undefined
+
+  const movePill = (pill: HTMLElement, tab: HTMLElement, animate: boolean): void => {
+    if (!animate) {
+      const previous = pill.style.transition
+      pill.style.transition = 'none'
+      pill.style.transform = `translateX(${tab.offsetLeft}px)`
+      pill.style.width = `${tab.offsetWidth}px`
+      void pill.offsetWidth
+      pill.style.transition = previous
+    } else {
+      pill.style.transform = `translateX(${tab.offsetLeft}px)`
+      pill.style.width = `${tab.offsetWidth}px`
+    }
+  }
+
+  $effect(() => {
+    const bar = tabsBar
+    const pill = tabsPill
+    const key = activePreset
+    if (bar === null || pill === null) return
+    const tab = key === null ? null : bar.querySelector<HTMLElement>(`[data-range-preset="${key}"]`)
+    const animate = pillKey !== undefined && pillKey !== null && pillKey !== key
+    pillKey = key
+    if (tab !== null) movePill(pill, tab, animate)
+  })
+
+  $effect(() => {
+    const bar = tabsBar
+    const pill = tabsPill
+    if (bar === null || pill === null || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      const tab =
+        activePreset === null
+          ? null
+          : bar.querySelector<HTMLElement>(`[data-range-preset="${activePreset}"]`)
+      if (tab !== null) movePill(pill, tab, false)
+    })
+    observer.observe(bar)
+    return () => observer.disconnect()
+  })
+
   const chartLabel = $derived(
     `Cumulative pixels painted and rolling pace from ${formatTime(view.from)} to ${formatTime(view.to)}. Use the arrow keys to read values.`,
   )
 </script>
 
-<div class="flex flex-col gap-2" bind:clientWidth={width}>
-  <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-    <div class="flex items-center gap-3 text-base-content/70">
-      <span class="inline-flex items-center gap-1.5">
+<div class="flex flex-col gap-3" bind:clientWidth={width}>
+  <div class="flex flex-wrap items-center gap-x-5 gap-y-2.5 text-xs">
+    <div class="flex items-center gap-4 text-base-content/70">
+      <span class="inline-flex items-center gap-2">
         <span
-          class="size-2.5 rounded-xs border-t-2"
+          class="size-3 rounded-xs border-t-2"
           style:background="color-mix(in oklab, var(--chart-correct) 35%, transparent)"
           style:border-color="var(--chart-correct)"
         ></span>
         correct
       </span>
-      <span class="inline-flex items-center gap-1.5">
-        <span class="size-2.5 rounded-xs bg-error/30"></span>
+      <span class="inline-flex items-center gap-2">
+        <span class="size-3 rounded-xs bg-error/30"></span>
         painted, mismatched
       </span>
     </div>
 
-    <div class="flex flex-wrap items-center gap-0.5" role="group" aria-label="rolling pace lines">
-      <span class="me-1 text-base-content/40">pace</span>
+    <div class="flex flex-wrap items-center gap-1" role="group" aria-label="rolling pace lines">
+      <span class="me-1 text-base-content/65">pace</span>
       {#each paceWindows as pace, index (pace.key)}
         {@const enabled = enabledWindows.has(pace.key)}
         <button
           type="button"
-          class="btn btn-xs {enabled && pace.usable ? 'btn-soft' : 'btn-ghost'} gap-1.5 px-1.5 tabular-nums"
+          class="btn btn-xs {enabled && pace.usable ? 'btn-soft' : 'btn-ghost'} gap-1.5 tabular-nums"
           aria-pressed={enabled && pace.usable}
           disabled={!pace.usable}
           data-pace-toggle={pace.key}
@@ -674,30 +725,41 @@
     </div>
 
     {#if hasActivity}
-      <div class="ms-auto flex items-center gap-0.5" role="group" aria-label="time range">
-        {#each presets as preset (preset.key)}
-          {@const active = presetActive(preset.seconds)}
+      <div class="ms-auto flex items-center gap-2">
+        <span class="text-base-content/65">range</span>
+        <div
+          class="t-tabs"
+          role="tablist"
+          aria-label="time range"
+          data-empty={activePreset === null ? '' : undefined}
+          bind:this={tabsBar}
+        >
+          <span class="t-tabs-pill" aria-hidden="true" bind:this={tabsPill}></span>
+          {#each presets as preset (preset.key)}
+            <button
+              type="button"
+              role="tab"
+              class="t-tab tabular-nums"
+              aria-selected={activePreset === preset.key}
+              data-range-preset={preset.key}
+              title="Show {preset.label}"
+              onclick={() => (selection = presetWindow(preset.seconds))}
+            >
+              {preset.key}
+            </button>
+          {/each}
           <button
             type="button"
-            class="btn btn-xs {active ? 'btn-primary' : 'btn-ghost'} px-1.5 tabular-nums"
-            aria-pressed={active}
-            data-range-preset={preset.key}
-            title="Show {preset.label}"
-            onclick={() => (selection = presetWindow(preset.seconds))}
+            role="tab"
+            class="t-tab"
+            aria-selected={activePreset === 'all'}
+            data-range-preset="all"
+            title="Show the whole history"
+            onclick={resetWindow}
           >
-            {preset.key}
+            all
           </button>
-        {/each}
-        <button
-          type="button"
-          class="btn btn-xs {zoomed ? 'btn-ghost' : 'btn-primary'} px-1.5"
-          aria-pressed={!zoomed}
-          data-range-preset="all"
-          title="Show the whole history"
-          onclick={resetWindow}
-        >
-          all
-        </button>
+        </div>
       </div>
     {/if}
   </div>
