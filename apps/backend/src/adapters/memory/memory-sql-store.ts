@@ -10,9 +10,9 @@ import {
   type TileCoord,
   type TileHistoryFrame,
   tileKey,
+  timelapseCaptureIncludesTile,
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
-  WORLD_TILES,
 } from '@caelestis/shared'
 import {
   type AccessToken,
@@ -1094,15 +1094,7 @@ export class MemorySqlStore implements SqlStore {
       }
       const version = this.templateVersions.get(template.currentVersionId)
       if (version === undefined) continue
-      if (
-        version.chunks.some((chunk) => {
-          const directX = Math.abs(chunk.tileX - tile.x)
-          const wrappedX = Math.min(directX, WORLD_TILES - directX)
-          return wrappedX <= 1 && Math.abs(chunk.tileY - tile.y) <= 1
-        })
-      ) {
-        return true
-      }
+      if (timelapseCaptureIncludesTile(version.bbox, tile)) return true
     }
     return false
   }

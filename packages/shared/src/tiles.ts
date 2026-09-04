@@ -101,6 +101,19 @@ export const timelapseCaptureTileCount = (bounds: BoundingBox): number => {
   return columns * rows
 }
 
+/** Whether a canvas tile intersects the template's 16:9 capture rectangle. */
+export const timelapseCaptureIncludesTile = (bounds: BoundingBox, tile: TileCoord): boolean => {
+  const rect = timelapseCaptureRect(bounds)
+  const firstTileY = Math.floor(rect.y / TILE_SIZE)
+  const lastTileY = Math.ceil((rect.y + rect.height) / TILE_SIZE) - 1
+  if (tile.y < firstTileY || tile.y > lastTileY) return false
+
+  const firstTileX = Math.floor(rect.x / TILE_SIZE)
+  const lastTileX = Math.ceil((rect.x + rect.width) / TILE_SIZE) - 1
+  const firstMatchingX = tile.x + Math.ceil((firstTileX - tile.x) / WORLD_TILES) * WORLD_TILES
+  return firstMatchingX <= lastTileX
+}
+
 /**
  * Plan one fetch per unique tile needed by every template's 16:9 timelapse rectangle.
  * Horizontal context wraps with the canvas. Vertical context shifts inside its fixed edges.

@@ -8,9 +8,9 @@ import {
   type TemplateSurface,
   type TileHistoryFrame,
   templateSurface,
+  timelapseCaptureIncludesTile,
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
-  WORLD_TILES,
 } from '@caelestis/shared'
 import {
   and,
@@ -2097,9 +2097,42 @@ export class D1SqlStore implements SqlStore {
     tile: { readonly x: number; readonly y: number },
     now: Seconds,
   ): Promise<void> {
+    const frozenTemplates = await this.database
+      .select({
+        frozenAt: templates.timelapseFrozenAt,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+      })
+      .from(templates)
+      .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
+      .where(
+        and(
+          eq(templates.season, season),
+          eq(templates.surfaceKind, 'world'),
+          isNotNull(templates.timelapseFrozenAt),
+        ),
+      )
+    const frozenThrough = Math.max(
+      -1,
+      ...frozenTemplates
+        .filter((template) =>
+          timelapseCaptureIncludesTile(
+            {
+              minX: template.minX,
+              minY: template.minY,
+              maxX: template.maxX,
+              maxY: template.maxY,
+            },
+            tile,
+          ),
+        )
+        .map((template) => template.frozenAt ?? -1),
+    )
+
     for (const edge of TILE_HISTORY_DECAY_EDGES) {
       const targetStart = `CAST(history.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}`
-      const ringX = `MIN(ABS(version_tiles.tile_x - history.tile_x), ${WORLD_TILES} - ABS(version_tiles.tile_x - history.tile_x))`
       const chosen = `
         SELECT ${targetStart} AS target_start
         FROM tile_history AS history
@@ -2115,20 +2148,7 @@ export class D1SqlStore implements SqlStore {
               AND finer.bucket_start_s >= ${targetStart}
               AND finer.bucket_start_s < ${targetStart} + ${edge.target}
           )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM templates
-            INNER JOIN template_versions
-              ON template_versions.id = templates.current_version_id
-            INNER JOIN version_tiles
-              ON version_tiles.version_id = template_versions.id
-            WHERE templates.season = history.season
-              AND templates.surface_kind = 'world'
-              AND templates.timelapse_frozen_at_ms IS NOT NULL
-              AND ${targetStart} * 1000 <= templates.timelapse_frozen_at_ms
-              AND ${ringX} <= 1
-              AND ABS(version_tiles.tile_y - history.tile_y) <= 1
-          )
+          AND ${targetStart} * 1000 > ?
         GROUP BY target_start
         ORDER BY target_start
         LIMIT ?`
@@ -2146,7 +2166,17 @@ export class D1SqlStore implements SqlStore {
       const cutoff = now - edge.retainSeconds
       const selected = await this.client
         .prepare(query)
-        .bind(season, tile.x, tile.y, cutoff, DECAY_FOLD_GROUP_LIMIT, season, tile.x, tile.y)
+        .bind(
+          season,
+          tile.x,
+          tile.y,
+          cutoff,
+          frozenThrough,
+          DECAY_FOLD_GROUP_LIMIT,
+          season,
+          tile.x,
+          tile.y,
+        )
         .all<{
           season: number
           tile_x: number
