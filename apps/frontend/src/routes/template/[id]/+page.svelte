@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     canvasPixelToLatLng,
+    timelapseCaptureRect,
     type TileHistoryFrame,
     type TileKey,
   } from '@caelestis/shared'
@@ -13,7 +14,7 @@
   import TemplateViewer from '$lib/components/TemplateViewer.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
   import { Slider } from '$lib/components/ui/slider'
-  import { tilesInRect, tileUnionRect } from '$lib/render'
+  import { tilesInRect } from '$lib/render'
   import { useApp } from '$lib/state/app.svelte'
   import { persisted } from '$lib/persisted.svelte'
   import { progressFromStatus } from '$lib/tree'
@@ -82,7 +83,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     frames = null
     playing = false
     Promise.all(
-      tilesInRect(tileUnionRect(target)).map(async (placement) => {
+      tilesInRect(timelapseCaptureRect(target.bbox)).map(async (placement) => {
         const [x, y] = placement.key.split('/').map(Number)
         try {
           const response = await getTileHistory(x ?? 0, y ?? 0, season, from, to)
@@ -260,7 +261,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
           <Skeleton class="h-6 w-full" />
         {:else if timeline.length === 0}
           <span class="text-sm text-base-content/50">
-            No tile snapshots yet. New snapshots appear when userscript users visit this area.
+            No tile snapshots yet. New snapshots appear after the next six-hour canvas scan.
           </span>
         {:else}
           <button

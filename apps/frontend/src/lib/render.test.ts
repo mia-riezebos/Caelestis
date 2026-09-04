@@ -1,6 +1,15 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest'
-import { osmTileDrawRect } from './render.js'
+import { osmTileDrawRect, tilesInRect } from './render.js'
+
+describe('canvas tile placement', () => {
+  it('includes tiles touched by a fractional capture edge', () => {
+    expect(tilesInRect({ x: 999.5, y: 0, width: 1, height: 1 }).map(({ key }) => key)).toEqual([
+      '0/0',
+      '1/0',
+    ])
+  })
+})
 
 describe('OpenStreetMap tile placement', () => {
   it('overdraws adjacent tiles by one device pixel so filtering cannot expose their edges', () => {

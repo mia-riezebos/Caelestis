@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { TILE_SIZE, type Template, type TileKey, WORLD_TILES } from '@caelestis/shared'
+  import {
+    TILE_SIZE,
+    type Template,
+    type TileKey,
+    timelapseCaptureRect,
+  } from '@caelestis/shared'
   import { Maximize, Minus, Plus } from '@lucide/svelte'
   import {
     type CanvasRect,
@@ -12,7 +17,6 @@
     templateRect,
     tileImage,
     tilesInRect,
-    tileUnionRect,
   } from '$lib/render'
   import { cn } from '$lib/utils'
 
@@ -29,19 +33,8 @@
     class?: string
   } = $props()
 
-  // The template's own tiles plus a one-tile ring: the server's 6-hour fetcher mirrors the ring
-  // too, so panning past the artwork keeps showing real canvas before the basemap takes over.
-  const world = $derived.by<CanvasRect>(() => {
-    const union = tileUnionRect(template)
-    const x = Math.max(0, union.x - TILE_SIZE)
-    const y = Math.max(0, union.y - TILE_SIZE)
-    return {
-      x,
-      y,
-      width: Math.min(WORLD_TILES * TILE_SIZE, union.x + union.width + TILE_SIZE) - x,
-      height: Math.min(WORLD_TILES * TILE_SIZE, union.y + union.height + TILE_SIZE) - y,
-    }
-  })
+  // Match the server's capture plan, so every tile this viewer exposes has historical snapshots.
+  const world = $derived.by<CanvasRect>(() => timelapseCaptureRect(template.bbox))
   const art = $derived(templateRect(template))
   const chunks = $derived(chunkPlacements(template))
 

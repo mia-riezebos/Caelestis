@@ -1,5 +1,6 @@
 import {
   millis,
+  planTimelapseTiles,
   type Seconds,
   seconds,
   sha256Hex,
@@ -7,7 +8,6 @@ import {
   tileKey,
   uuidV7,
   WORLD_TEMPLATE_SURFACE,
-  WORLD_TILES,
 } from '@caelestis/shared'
 import type { AlarmProbe, BlobStore, CounterStore, SqlStore } from '../ports/index.js'
 import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
@@ -28,12 +28,11 @@ import {
  * The server's own tile mirror, run from the 6-hour cron.
  *
  * Userscript reports keep template tiles fresh while anyone is painting; this keeps them from
- * going dark when nobody is, and collects a one-tile ring of surroundings so the frontend viewer
- * has real canvas context rather than template tiles floating on nothing. Ring tiles are context,
- * not telemetry — they are refreshed lazily and never gate on template coverage.
+ * going dark when nobody is, and collects enough surroundings to centre each template in a 16:9
+ * timelapse. Context tiles are server-owned and never gate on template coverage.
  *
  * Deduplication happens at three layers, which is why overlapping templates cost nothing extra:
- * the work list is a set keyed by tile (two templates sharing a tile fetch it once), the blob
+ * the complete plan is a set keyed by tile (two templates sharing a tile fetch it once), the blob
  * store is content-addressed (identical bytes from anywhere store once), and a tile whose hash
  * matches the latest accepted observation is skipped without writing history at all.
  */
@@ -44,7 +43,7 @@ export const FETCHER_USER_ID = 0
 
 /**
  * Subrequest budget per run: each tile is one upstream fetch plus a handful of storage calls, and
- * Workers cap subrequests per invocation. Template tiles are taken before any ring tile, so a
+ * Workers cap subrequests per invocation. Template tiles are taken before any context tile, so a
  * server with more coverage than budget degrades to "template tiles only", never the reverse.
  */
 export const MAX_FETCH_TILES_PER_RUN = 100
@@ -63,15 +62,11 @@ export const ALARM_SCAN_INTERVAL_SECONDS = 6 * 60 * 60
 /** Cron delivery is not exact; keep a small overlap between adjacent bounded batches. */
 export const ALARM_SCAN_JITTER_SECONDS = 5 * 60
 
-/** Ring tiles skip their refetch while younger than this — surroundings age fine. */
-export const RING_STALENESS_SECONDS = 72_000 // 20 hours: roughly daily under a 6-hour cron.
-
 const WPLACE_TILE_USER_AGENT = 'Caelestis-Tile-Fetcher/1.0'
 
 export interface FetchReport {
   readonly fetched: number
   readonly unchanged: number
-  readonly fresh: number
   readonly failed: number
   /** Tiles left for the next run after the per-run budget was spent. */
   readonly deferred: number
@@ -120,8 +115,12 @@ export const fetchCanvasTiles = async (
   const projectionBatch = createStatusProjectionBatch(statusReadModel)
   const artifactWriteBatch = createDerivedArtifactWriteBatch(ports.blobs)
 
-  // Unpublished templates' tiles are fetched too: the storage side is not the read side, and an
-  // admin's draft deserves the same timelapse the published version will show.
+  // Plan the whole run before making an upstream request. Unpublished templates are included too:
+  // an admin's draft deserves the same timelapse the published version will show.
+  const templates = await ports.sql.listManifestTemplates(
+    { season, surface: WORLD_TEMPLATE_SURFACE },
+    true,
+  )
   const alarmTiles = await ports.sql.listAlarmTiles(season)
   const templateTiles = new Map<string, { tile: TileCoord; observedAt: number | null }>()
   for (const row of alarmTiles) {
@@ -132,47 +131,29 @@ export const fetchCanvasTiles = async (
       templateTiles.set(key, { tile, observedAt: row.observedAt })
     }
   }
-  const ringTiles = new Map<string, TileCoord>()
-  for (const { tile } of templateTiles.values()) {
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const y = tile.y + dy
-        if (y < 0 || y >= WORLD_TILES) continue
-        const neighbour = { x: (tile.x + dx + WORLD_TILES) % WORLD_TILES, y }
-        const key = tileKey(neighbour)
-        if (!templateTiles.has(key) && !ringTiles.has(key)) ringTiles.set(key, neighbour)
-      }
-    }
-  }
+  const contextTiles = planTimelapseTiles(templates.map(({ bbox }) => bbox)).filter(
+    (tile) => !templateTiles.has(tileKey(tile)),
+  )
 
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
-  const work: { tile: TileCoord; ring: boolean }[] = [
+  const work: { tile: TileCoord; context: boolean }[] = [
     ...[...templateTiles.values()]
       .sort(compareAlarmTileFreshness)
-      .map(({ tile }) => ({ tile, ring: false })),
-    ...[...ringTiles.values()].map((tile) => ({ tile, ring: true })),
+      .map(({ tile }) => ({ tile, context: false })),
+    ...contextTiles.map((tile) => ({ tile, context: true })),
   ]
 
   let fetched = 0
   let unchanged = 0
-  let fresh = 0
   let failed = 0
   const budgeted = work.slice(0, maxTiles)
   const attemptedTemplateTiles = new Set<string>(
-    budgeted.filter(({ ring }) => !ring).map(({ tile }) => tileKey(tile)),
+    budgeted.filter(({ context }) => !context).map(({ tile }) => tileKey(tile)),
   )
   const serverRefreshedTemplateTiles = new Set<string>()
   try {
-    for (const { tile, ring } of budgeted) {
+    for (const { tile, context } of budgeted) {
       const latest = await ports.sql.readLatestTile(season, tile)
-      if (
-        ring &&
-        latest !== null &&
-        now * 1_000 - latest.observedAt < RING_STALENESS_SECONDS * 1_000
-      ) {
-        fresh++
-        continue
-      }
       try {
         const response = await fetchImpl(wplaceTileUrl(season, tile), {
           headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
@@ -189,7 +170,7 @@ export const fetchCanvasTiles = async (
         const hash = await sha256Hex(bytes)
         if (latest?.hash === hash) {
           unchanged++
-          if (!ring) {
+          if (!context) {
             await runtime.run(
               refreshAuthoritativeTile(
                 {
@@ -231,7 +212,7 @@ export const fetchCanvasTiles = async (
             },
           ),
         )
-        if (!ring) serverRefreshedTemplateTiles.add(tileKey(tile))
+        if (!context) serverRefreshedTemplateTiles.add(tileKey(tile))
         fetched++
       } catch {
         // One unreachable tile must not starve the rest of the run.
@@ -246,10 +227,6 @@ export const fetchCanvasTiles = async (
     }
   }
 
-  const templates = await ports.sql.listManifestTemplates(
-    { season, surface: WORLD_TEMPLATE_SURFACE },
-    true,
-  )
   const refreshedAlarmTiles = await ports.sql.listAlarmTiles(season)
   const requiredTiles = new Map<
     string,
@@ -307,7 +284,6 @@ export const fetchCanvasTiles = async (
   return {
     fetched,
     unchanged,
-    fresh,
     failed,
     deferred: work.length - budgeted.length,
     followUpScheduled,

@@ -4,8 +4,10 @@ import {
   latLngToCanvasPixel,
   MAX_MERCATOR_LATITUDE,
   parseTileKey,
+  planTimelapseTiles,
   TILE_SIZE,
   tileKey,
+  timelapseCaptureRect,
   WORLD_PIXELS,
 } from './tiles.js'
 
@@ -36,6 +38,49 @@ describe('parseTileKey', () => {
       expect(parseTileKey(input)).toBeNull()
     },
   )
+})
+
+describe('timelapse capture planning', () => {
+  it('centres a portrait template inside a 16:9 capture rectangle', () => {
+    expect(
+      timelapseCaptureRect({ minX: 325_051, minY: 1_781_650, maxX: 326_663, maxY: 1_784_234 }),
+    ).toEqual({
+      x: 323_560.1111111111,
+      y: 1_781_650,
+      width: 4_593.777777777777,
+      height: 2_584,
+    })
+  })
+
+  it('deduplicates the tiles required by overlapping capture rectangles', () => {
+    expect(
+      planTimelapseTiles([
+        { minX: 100_000, minY: 100_000, maxX: 101_000, maxY: 101_000 },
+        { minX: 100_000, minY: 100_000, maxX: 101_000, maxY: 101_000 },
+        { minX: 101_000, minY: 100_000, maxX: 102_000, maxY: 101_000 },
+      ]),
+    ).toEqual([
+      { x: 99, y: 100 },
+      { x: 100, y: 100 },
+      { x: 101, y: 100 },
+      { x: 102, y: 100 },
+    ])
+  })
+
+  it('wraps horizontal context and keeps vertical context inside the canvas', () => {
+    expect(planTimelapseTiles([{ minX: 0, minY: 0, maxX: 1_000, maxY: 2_000 }])).toEqual([
+      { x: 2046, y: 0 },
+      { x: 2047, y: 0 },
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+      { x: 2046, y: 1 },
+      { x: 2047, y: 1 },
+      { x: 0, y: 1 },
+      { x: 1, y: 1 },
+      { x: 2, y: 1 },
+    ])
+  })
 })
 
 describe('canvas coordinate conversion', () => {
