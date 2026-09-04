@@ -26,9 +26,13 @@ import { invalidateServerMismatches, invalidateServerMismatchTile } from './serv
 import { coalesceServerRead } from './server-read-coalescer.js'
 import {
   applyServerSyncDelta,
+  applyServerSyncRevision,
   applyServerSyncSnapshot,
   registerServerSyncResource,
+  requestLivePaint,
+  requestLiveTileOffer,
   requestLiveTileOfferCache,
+  requestLiveTileUpload,
   requestServerSync,
   type ServerSyncResult,
   serverLiveSyncHealthy,
@@ -481,6 +485,109 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     trimUnsettledOffers(server.url)
     tileOfferMetric('requested', entries.length)
     let accepted = 0
+    if (server.info?.liveSync === 2) {
+      let offered: Awaited<ReturnType<typeof requestLiveTileOffer>> = null
+      for (let attempt = 0; attempt < RETRIES && offered === null; attempt++)
+        offered = await requestLiveTileOffer(server, {
+          ...identity,
+          season,
+          offers: entries.map(({ deliveryId, tile, sha256, ts }) => ({
+            deliveryId,
+            tile,
+            sha256,
+            ts,
+          })),
+        })
+      if (offered === null || offered.error !== undefined) {
+        retryNeeded = offered === null || offered.error === 'unavailable'
+        for (const entry of entries) {
+          if (retryNeeded) {
+            tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+            retryUnsettledOffer(server, entry)
+          } else deleteUnsettledOffer(server.url, offerKey(entry))
+        }
+        if (!retryNeeded) tileOfferMetric('rejected', entries.length)
+        return
+      }
+      const offeredIds = new Set(entries.map((entry) => entry.deliveryId))
+      const acknowledged = new Set(
+        offered.response.acknowledgedDeliveryIds.filter((id) => offeredIds.has(id)),
+      )
+      const rejected = new Set(
+        offered.response.rejectedDeliveryIds.filter((id) => offeredIds.has(id)),
+      )
+      const wanted = new Map(
+        offered.response.wanted
+          .filter(({ deliveryId }) => offeredIds.has(deliveryId))
+          .map((item) => [item.deliveryId, item]),
+      )
+      const complete = entries.every(
+        (entry) =>
+          Number(acknowledged.has(entry.deliveryId)) +
+            Number(rejected.has(entry.deliveryId)) +
+            Number(wanted.has(entry.deliveryId)) ===
+          1,
+      )
+      if (!complete) {
+        retryNeeded = true
+        for (const entry of entries) {
+          tileOfferAcknowledgements.retryable(server.url, owner, season, offerKey(entry))
+          retryUnsettledOffer(server, entry)
+        }
+        return
+      }
+      for (const entry of entries) {
+        const key = offerKey(entry)
+        if (acknowledged.has(entry.deliveryId)) {
+          tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+          deleteUnsettledOffer(server.url, key)
+          accepted++
+          continue
+        }
+        if (rejected.has(entry.deliveryId)) {
+          if (!tileOfferAcknowledgements.rejected(server.url, owner, season, key)) {
+            retryNeeded = true
+            retryImmediately = true
+            shareObservedTile(entry)
+          } else deleteUnsettledOffer(server.url, key)
+          continue
+        }
+        const request = wanted.get(entry.deliveryId)
+        let uploaded: Awaited<ReturnType<typeof requestLiveTileUpload>> = null
+        for (let attempt = 0; attempt < RETRIES && uploaded === null; attempt++)
+          uploaded = await requestLiveTileUpload(
+            server,
+            {
+              ...identity,
+              deliveryId: entry.deliveryId,
+              season,
+              tile: entry.tile,
+              sha256: entry.sha256,
+              ts: entry.ts,
+              ...(request?.coverageToken === undefined
+                ? {}
+                : { coverageToken: request.coverageToken }),
+            },
+            entry.bytes,
+          )
+        if (uploaded?.accepted === true && uploaded.error === undefined) {
+          tileOfferAcknowledgements.acknowledged(server.url, owner, season, key)
+          deleteUnsettledOffer(server.url, key)
+          invalidateServerMismatchTile(server.url, entry.coord)
+          accepted++
+        } else if (uploaded === null || uploaded.error === 'unavailable') {
+          retryNeeded = true
+          tileOfferAcknowledgements.retryable(server.url, owner, season, key)
+          retryUnsettledOffer(server, entry)
+        } else {
+          tileOfferAcknowledgements.rejected(server.url, owner, season, key)
+          deleteUnsettledOffer(server.url, key)
+        }
+      }
+      tileOfferMetric('accepted', accepted)
+      tileOfferMetric('rejected', rejected.size)
+      return
+    }
     let httpEntries = entries
     const live = await requestLiveTileOfferCache(server, {
       ...identity,
@@ -770,15 +877,39 @@ const deliverPaint = async (
   server: ConnectedServer,
   dedupe: ServerDedupe,
   eventId: string,
-  body: string,
+  event: PaintEvent,
 ): Promise<void> => {
+  if (server.info?.liveSync === 2) {
+    let result: Awaited<ReturnType<typeof requestLivePaint>> = null
+    for (let attempt = 0; attempt < RETRIES && result === null; attempt++)
+      result = await requestLivePaint(server, event)
+    if (result !== null && result.error === undefined) {
+      dedupe.active.delete(eventId)
+      dedupe.pending.delete(eventId)
+      return
+    }
+    dedupe.active.delete(eventId)
+    if (
+      (result === null || result.error === 'unavailable') &&
+      dedupe.values.has(eventId) &&
+      getState().reportPaints &&
+      isCurrentServerConnection(server)
+    ) {
+      setTimeout(() => {
+        if (dedupe.active.has(eventId) || !dedupe.values.has(eventId)) return
+        dedupe.active.add(eventId)
+        void deliverPaint(server, dedupe, eventId, event).catch(reportTelemetryError)
+      }, 1_000)
+    } else dedupe.values.delete(eventId)
+    return
+  }
   const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/paints'), {
     method: 'POST',
     headers: {
       ...authHeaders(server),
       'content-type': 'application/json',
     },
-    body,
+    body: JSON.stringify(event),
   })
   if (response?.ok) {
     dedupe.active.delete(eventId)
@@ -794,7 +925,7 @@ const deliverPaint = async (
   if (replay) {
     dedupe.active.add(eventId)
     queueMicrotask(
-      () => void deliverPaint(server, dedupe, eventId, body).catch(reportTelemetryError),
+      () => void deliverPaint(server, dedupe, eventId, event).catch(reportTelemetryError),
     )
   } else dedupe.values.delete(eventId)
   if (response !== null)
@@ -853,7 +984,7 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
               ? scopedSubmitted
               : null,
       }
-      await deliverPaint(server, dedupe, eventId, JSON.stringify(event))
+      await deliverPaint(server, dedupe, eventId, event)
     }),
   )
 }
@@ -1083,6 +1214,41 @@ const applyStatusDelta = (
     },
   )
 
+const applyLiveStatusSnapshot = (server: ConnectedServer, value: unknown): boolean => {
+  if (typeof value !== 'object' || value === null) return false
+  const body = value as Partial<StatusResponse>
+  if (
+    !Number.isSafeInteger(body.revision) ||
+    Number(body.revision) < 0 ||
+    !Array.isArray(body.templates) ||
+    body.templates.length > MAX_MANIFEST_TEMPLATES
+  )
+    return false
+  const next: TemplateStatus[] = []
+  for (const raw of body.templates) {
+    const status = templateStatusFrom(raw)
+    if (status === null) return false
+    next.push(status)
+  }
+  const startedRevision = serverSyncRevision(server, 'world', 'telemetry-status')
+  const changed = statuses.differs(server.url, next)
+  return (
+    applyServerSyncSnapshot(
+      server,
+      'world',
+      'telemetry-status',
+      startedRevision,
+      { status: changed ? 'changed' : 'unchanged', revision: String(body.revision) },
+      () => {
+        if (startedRevision !== undefined && startedRevision !== String(body.revision))
+          invalidateServerMismatches(server.url)
+        statuses.replace(server, next)
+        if (changed) notifyStatusListeners()
+      },
+    ) === 'applied'
+  )
+}
+
 const refreshStatus = async (
   server: ConnectedServer,
   reason: ReconciliationReason,
@@ -1219,6 +1385,55 @@ const refreshAlarms = async (
       }
     },
   )
+}
+
+const applyLiveAlarmsSnapshot = (server: ConnectedServer, value: unknown): boolean => {
+  const snapshot = coverage.get(server.url)
+  if (
+    snapshot === undefined ||
+    !isCurrentServerConnection(snapshot.server) ||
+    typeof value !== 'object' ||
+    value === null
+  )
+    return false
+  const body = value as Partial<AlarmsResponse>
+  if (
+    !Array.isArray(body.alarms) ||
+    body.alarms.length > MAX_MANIFEST_TEMPLATES ||
+    typeof body.version !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(body.version)
+  )
+    return false
+  const parsed: Alarm[] = []
+  const templateIds = new Set<string>()
+  for (const raw of body.alarms) {
+    const alarm = alarmFrom(raw)
+    if (alarm === null || templateIds.has(alarm.templateId)) return false
+    templateIds.add(alarm.templateId)
+    parsed.push(alarm)
+  }
+  let changed = false
+  const present = new Set<string>()
+  for (const alarm of parsed) {
+    const key = statusKey(server.url, alarm.templateId)
+    present.add(key)
+    const held = alarms.get(key)
+    if (
+      held?.contents === snapshot.contents &&
+      JSON.stringify(held.value) === JSON.stringify(alarm)
+    )
+      continue
+    alarms.set(key, { server, contents: snapshot.contents, value: alarm })
+    changed = true
+  }
+  for (const key of [...alarms.keys()]) {
+    if (!key.startsWith(`${server.url}\u0000`) || present.has(key)) continue
+    alarms.delete(key)
+    changed = true
+  }
+  if (changed) notifyAlarmListeners()
+  applyServerSyncRevision(server, 'world', 'telemetry-alarms', body.version)
+  return true
 }
 
 const notifyAlarmListeners = (): void => {
@@ -1372,6 +1587,14 @@ export const installTelemetry = (): void => {
     scope: (server) => (server.status === 'connected' && server.season !== null ? 'world' : null),
     refresh: refreshStatus,
     applyLiveEvent: (server, event) => {
+      if (
+        typeof event === 'object' &&
+        event !== null &&
+        'type' in event &&
+        event.type === 'status-snapshot' &&
+        'status' in event
+      )
+        return applyLiveStatusSnapshot(server, event.status)
       const delta = statusDeltaFrom(event)
       if (delta === null) return false
       applyStatusDelta(server, delta)
@@ -1386,6 +1609,14 @@ export const installTelemetry = (): void => {
         ? 'world'
         : null,
     refresh: refreshAlarms,
+    applyLiveEvent: (server, event) =>
+      typeof event === 'object' &&
+      event !== null &&
+      'type' in event &&
+      event.type === 'alarms-snapshot' &&
+      'alarms' in event
+        ? applyLiveAlarmsSnapshot(server, event.alarms)
+        : false,
   })
 }
 

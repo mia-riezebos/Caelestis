@@ -525,6 +525,56 @@ describe('server sync coordinator', () => {
     })
   })
 
+  it('keeps v2 resources and paint delivery on the socket through a revision gap', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 2 as const, liveSyncMin: 1 as const },
+      token: 'ABCDEFGHJKMNPQRSTVWXYZ2345',
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource, requestLivePaint } =
+      await import('./server-sync-coordinator.js')
+    const refresh = vi.fn(async () => ({ status: 'unchanged' as const }))
+    const applyLiveEvent = vi.fn(() => true)
+    registerServerSyncResource({
+      id: 'telemetry-status',
+      live: true,
+      scope: () => 'world',
+      refresh,
+      applyLiveEvent,
+    })
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    expect(socket.protocols.slice(0, 2)).toEqual(['caelestis.live.v2', 'caelestis.live.v1'])
+    socket.open()
+    socket.receive({ type: 'status-snapshot', status: { revision: 7, templates: [] } })
+    reconcileSocket(socket, 7, 'snapshot', [])
+    const event = {
+      eventId: '01890f3e-7b2c-7abc-8def-000000000011',
+      wplaceUserId: 42,
+      displayName: 'Mia',
+      season: 0,
+      ts: seconds(1_800_000_000),
+      tiles: [],
+      painted: 0,
+    }
+    const pending = requestLivePaint(liveServer, event)
+    const command = JSON.parse(socket.sent.at(-1) ?? '{}') as { requestId?: string }
+    socket.receive({
+      type: 'paint-result',
+      requestId: command.requestId,
+      eventId: event.eventId,
+      result: 'recorded',
+    })
+
+    await expect(pending).resolves.toMatchObject({ result: 'recorded' })
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(applyLiveEvent).toHaveBeenCalledOnce()
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
   it('reconnects with cached versions and refreshes only divergent projections', async () => {
     const liveServer = { ...server, info: { ...server.info, liveSync: 1 as const } }
     state.current = { servers: [liveServer] }

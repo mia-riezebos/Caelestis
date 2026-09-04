@@ -17,7 +17,8 @@ export interface ServerInfo {
   readonly name: string
   readonly description?: string
   readonly auth: ServerAuthMode
-  readonly liveSync?: 1
+  readonly liveSync?: 1 | 2
+  readonly liveSyncMin?: 1 | 2
   readonly liveTileOffers?: 1
 }
 
@@ -65,7 +66,15 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
   if (typeof value.name !== 'string' || value.name.length < 1 || value.name.length > 256)
     return null
   if (value.auth !== 'none' && value.auth !== 'access_token') return null
-  if (value.liveSync !== undefined && value.liveSync !== 1) return null
+  if (value.liveSync !== undefined && value.liveSync !== 1 && value.liveSync !== 2) return null
+  if (value.liveSyncMin !== undefined && value.liveSyncMin !== 1 && value.liveSyncMin !== 2)
+    return null
+  if (
+    typeof value.liveSync === 'number' &&
+    typeof value.liveSyncMin === 'number' &&
+    value.liveSyncMin > value.liveSync
+  )
+    return null
   if (value.liveTileOffers !== undefined && value.liveTileOffers !== 1) return null
   if (
     value.description !== undefined &&
@@ -79,7 +88,10 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
     name: value.name,
     ...(typeof value.description === 'string' ? { description: value.description } : {}),
     auth: value.auth,
-    ...(value.liveSync === 1 ? { liveSync: 1 as const } : {}),
+    ...(value.liveSync === 1 || value.liveSync === 2 ? { liveSync: value.liveSync } : {}),
+    ...(value.liveSyncMin === 1 || value.liveSyncMin === 2
+      ? { liveSyncMin: value.liveSyncMin }
+      : {}),
     ...(value.liveTileOffers === 1 ? { liveTileOffers: 1 as const } : {}),
   }
 }
