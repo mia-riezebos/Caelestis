@@ -5,6 +5,7 @@ import {
   seconds,
   sha256Hex,
   type TileCoord,
+  type TileKey,
   tileKey,
   uuidV7,
   WORLD_TEMPLATE_SURFACE,
@@ -43,8 +44,8 @@ export const FETCHER_USER_ID = 0
 
 /**
  * Subrequest budget per run: each tile is one upstream fetch plus a handful of storage calls, and
- * Workers cap subrequests per invocation. Template tiles are taken before any context tile, so a
- * server with more coverage than budget degrades to "template tiles only", never the reverse.
+ * Workers cap subrequests per invocation. The oldest planned tiles go first, so work beyond the
+ * budget rotates through later runs instead of permanently starving the same context suffix.
  */
 export const MAX_FETCH_TILES_PER_RUN = 100
 export const MAX_ALARM_PROBES_PER_RUN = 25
@@ -122,7 +123,7 @@ export const fetchCanvasTiles = async (
     true,
   )
   const alarmTiles = await ports.sql.listAlarmTiles(season)
-  const templateTiles = new Map<string, { tile: TileCoord; observedAt: number | null }>()
+  const templateTiles = new Map<TileKey, { tile: TileCoord; observedAt: number | null }>()
   for (const row of alarmTiles) {
     const tile = { x: row.tileX, y: row.tileY }
     const key = tileKey(tile)
@@ -131,29 +132,53 @@ export const fetchCanvasTiles = async (
       templateTiles.set(key, { tile, observedAt: row.observedAt })
     }
   }
-  const contextTiles = planTimelapseTiles(templates.map(({ bbox }) => bbox)).filter(
-    (tile) => !templateTiles.has(tileKey(tile)),
+  const plannedTiles = new Map(
+    planTimelapseTiles(templates.map(({ bbox }) => bbox)).map(
+      (tile) => [tileKey(tile), tile] as const,
+    ),
+  )
+  for (const [key, { tile }] of templateTiles) plannedTiles.set(key, tile)
+  const historyTiles = new Set(
+    planTimelapseTiles(templates.filter(({ finished }) => !finished).map(({ bbox }) => bbox)).map(
+      tileKey,
+    ),
+  )
+  const latestTiles = new Map(
+    (await ports.sql.listLatestTiles(season)).map(
+      (latest) => [tileKey(latest.tile), latest] as const,
+    ),
   )
 
   const tokenHash = await sha256Hex(new TextEncoder().encode('caelestis-tile-fetcher'))
-  const work: { tile: TileCoord; context: boolean }[] = [
-    ...[...templateTiles.values()]
-      .sort(compareAlarmTileFreshness)
-      .map(({ tile }) => ({ tile, context: false })),
-    ...contextTiles.map((tile) => ({ tile, context: true })),
-  ]
+  const work = [...plannedTiles].map(([key, tile]) => {
+    const template = templateTiles.get(key)
+    const latest = latestTiles.get(key) ?? null
+    return {
+      tile,
+      template: template !== undefined,
+      recordHistory: historyTiles.has(key),
+      latest,
+      observedAt: template?.observedAt ?? latest?.observedAt ?? null,
+    }
+  })
+  work.sort(
+    (left, right) =>
+      (left.observedAt ?? -1) - (right.observedAt ?? -1) ||
+      Number(right.template) - Number(left.template) ||
+      left.tile.y - right.tile.y ||
+      left.tile.x - right.tile.x,
+  )
 
   let fetched = 0
   let unchanged = 0
   let failed = 0
   const budgeted = work.slice(0, maxTiles)
   const attemptedTemplateTiles = new Set<string>(
-    budgeted.filter(({ context }) => !context).map(({ tile }) => tileKey(tile)),
+    budgeted.filter(({ template }) => template).map(({ tile }) => tileKey(tile)),
   )
   const serverRefreshedTemplateTiles = new Set<string>()
   try {
-    for (const { tile, context } of budgeted) {
-      const latest = await ports.sql.readLatestTile(season, tile)
+    for (const { tile, template, recordHistory, latest } of budgeted) {
       try {
         const response = await fetchImpl(wplaceTileUrl(season, tile), {
           headers: { 'user-agent': WPLACE_TILE_USER_AGENT },
@@ -170,25 +195,23 @@ export const fetchCanvasTiles = async (
         const hash = await sha256Hex(bytes)
         if (latest?.hash === hash) {
           unchanged++
-          if (!context) {
-            await runtime.run(
-              refreshAuthoritativeTile(
-                {
-                  wplaceUserId: FETCHER_USER_ID,
-                  displayName: FETCHER_DISPLAY_NAME,
-                  tokenHash,
-                  season,
-                  tile,
-                  hash,
-                  observedAt: now,
-                  includeUnpublished: true,
-                },
-                bytes,
-                { projectionBatch, artifactWriteBatch },
-              ),
-            )
-            serverRefreshedTemplateTiles.add(tileKey(tile))
-          }
+          await runtime.run(
+            refreshAuthoritativeTile(
+              {
+                wplaceUserId: FETCHER_USER_ID,
+                displayName: FETCHER_DISPLAY_NAME,
+                tokenHash,
+                season,
+                tile,
+                hash,
+                observedAt: now,
+                includeUnpublished: true,
+              },
+              bytes,
+              { projectionBatch, artifactWriteBatch },
+            ),
+          )
+          if (template) serverRefreshedTemplateTiles.add(tileKey(tile))
           continue
         }
         await runtime.run(
@@ -206,13 +229,14 @@ export const fetchCanvasTiles = async (
             bytes,
             {
               requireCoverage: false,
+              recordHistory,
               authoritative: true,
               projectionBatch,
               artifactWriteBatch,
             },
           ),
         )
-        if (!context) serverRefreshedTemplateTiles.add(tileKey(tile))
+        if (template) serverRefreshedTemplateTiles.add(tileKey(tile))
         fetched++
       } catch {
         // One unreachable tile must not starve the rest of the run.
@@ -243,7 +267,7 @@ export const fetchCanvasTiles = async (
   }
   const statuses = await ports.sql.readTemplateStatuses(season, true, { serverOwnedOnly: true })
   const statusesById = new Map(statuses.map((status) => [status.templateId, status]))
-  const scanCycleBatches = Math.max(1, Math.ceil(templateTiles.size / maxTiles))
+  const scanCycleBatches = Math.max(1, Math.ceil(work.length / maxTiles))
   const freshnessCutoff =
     (now - scanCycleBatches * ALARM_SCAN_INTERVAL_SECONDS - ALARM_SCAN_JITTER_SECONDS) * 1_000
   let followUpScheduled = false

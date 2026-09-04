@@ -76,6 +76,9 @@ export interface TimelapseCaptureRect {
 
 export const TIMELAPSE_ASPECT_RATIO = 16 / 9
 
+/** A single template may ask the viewer for at most this many tile histories. */
+export const MAX_TIMELAPSE_CAPTURE_TILES = 1_000
+
 /** Centre the template in the smallest 16:9 rectangle that fully contains its painted bounds. */
 export const timelapseCaptureRect = (bounds: BoundingBox): TimelapseCaptureRect => {
   const templateWidth =
@@ -90,6 +93,14 @@ export const timelapseCaptureRect = (bounds: BoundingBox): TimelapseCaptureRect 
   return { x, y, width, height }
 }
 
+/** Number of whole canvas tiles touched by one capture rectangle, without enumerating them. */
+export const timelapseCaptureTileCount = (bounds: BoundingBox): number => {
+  const rect = timelapseCaptureRect(bounds)
+  const columns = Math.ceil((rect.x + rect.width) / TILE_SIZE) - Math.floor(rect.x / TILE_SIZE)
+  const rows = Math.ceil((rect.y + rect.height) / TILE_SIZE) - Math.floor(rect.y / TILE_SIZE)
+  return columns * rows
+}
+
 /**
  * Plan one fetch per unique tile needed by every template's 16:9 timelapse rectangle.
  * Horizontal context wraps with the canvas. Vertical context shifts inside its fixed edges.
@@ -97,6 +108,12 @@ export const timelapseCaptureRect = (bounds: BoundingBox): TimelapseCaptureRect 
 export const planTimelapseTiles = (templates: readonly BoundingBox[]): TileCoord[] => {
   const planned = new Map<TileKey, TileCoord>()
   for (const bounds of templates) {
+    const count = timelapseCaptureTileCount(bounds)
+    if (count > MAX_TIMELAPSE_CAPTURE_TILES) {
+      throw new RangeError(
+        `timelapse capture covers ${count.toLocaleString()} tiles, more than the ${MAX_TIMELAPSE_CAPTURE_TILES.toLocaleString()} tile limit`,
+      )
+    }
     const rect = timelapseCaptureRect(bounds)
     const firstTileX = Math.floor(rect.x / TILE_SIZE)
     const lastTileX = Math.ceil((rect.x + rect.width) / TILE_SIZE) - 1

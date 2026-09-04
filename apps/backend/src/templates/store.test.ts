@@ -204,4 +204,19 @@ describe('storeTemplate', () => {
     expect(ports.blobs.hasAllCalls).toHaveLength(0)
     expect(ports.blobs.puts).toHaveLength(0)
   })
+
+  it('refuses a template whose 16:9 timelapse would need too many tiles', async () => {
+    const ports = await harness()
+    const height = 32_000
+    const png = await encodeIndexedPng(1, height, new Uint8Array(height))
+
+    const error = await storeTemplate(ports.blobs, ports.sql, input(png)).catch(
+      (caught: unknown) => caught,
+    )
+
+    expect(error).toBeInstanceOf(StoreTemplateError)
+    expect(error).toHaveProperty('message', expect.stringMatching(/timelapse.*more than the 1,000/))
+    expect(ports.blobs.hasAllCalls).toHaveLength(0)
+    expect(ports.blobs.puts).toHaveLength(0)
+  })
 })

@@ -3,11 +3,13 @@ import {
   canvasPixelToLatLng,
   latLngToCanvasPixel,
   MAX_MERCATOR_LATITUDE,
+  MAX_TIMELAPSE_CAPTURE_TILES,
   parseTileKey,
   planTimelapseTiles,
   TILE_SIZE,
   tileKey,
   timelapseCaptureRect,
+  timelapseCaptureTileCount,
   WORLD_PIXELS,
 } from './tiles.js'
 
@@ -80,6 +82,12 @@ describe('timelapse capture planning', () => {
       { x: 1, y: 1 },
       { x: 2, y: 1 },
     ])
+  })
+
+  it('rejects capture rectangles that would create an unsafe history request fan-out', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 1, maxY: 32_000 }
+    expect(timelapseCaptureTileCount(bounds)).toBeGreaterThan(MAX_TIMELAPSE_CAPTURE_TILES)
+    expect(() => planTimelapseTiles([bounds])).toThrow(/more than the 1,000 tile limit/)
   })
 })
 
