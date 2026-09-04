@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { postReleaseAnnouncement, releaseAnnouncementPayloads } from './post-userscript-release.mjs'
+import { postReleaseAnnouncement, releaseAnnouncementPayloads } from './post-release.mjs'
 
-const announcement = (notes, subjects = {}) =>
+const announcement = (notes, subjects = {}, app = 'userscript') =>
   releaseAnnouncementPayloads({
+    app,
     version: '1.2.3',
-    tag: 'userscript-v1.2.3',
+    tag: `${app}-v1.2.3`,
     notes,
     repository: 'mia-riezebos/Caelestis',
     commitSubject: (hash) => subjects[hash],
   })
 
-describe('userscript release announcement', () => {
+describe('release announcement', () => {
   it('includes a clean release summary and link buttons', () => {
     const [payload] = announcement('### Minor Changes\n\n- abc1234: Ship it.\n', {
       abc1234: 'feat(userscript): ship it',
@@ -22,7 +23,7 @@ describe('userscript release announcement', () => {
     assert.equal(payload.embeds[0].title, 'Caelestis userscript v1.2.3')
     assert.equal(
       payload.embeds[0].description,
-      '### Minor Changes\n\n- `feat(userscript)` Ship it.',
+      '### Minor Changes\n\n- [abc1234](https://github.com/mia-riezebos/Caelestis/commit/abc1234) `feat(userscript)` Ship it.',
     )
     assert.equal(
       payload.embeds[0].url,
@@ -42,6 +43,26 @@ describe('userscript release announcement', () => {
         url: 'https://github.com/mia-riezebos/Caelestis/releases/tag/userscript-v1.2.3',
       },
     ])
+  })
+
+  it('links frontend changes before their conventional commit labels', () => {
+    const [payload] = announcement(
+      '### Patch Changes\n\n- abc1234: Keep the dashboard useful.\n',
+      { abc1234: 'fix(frontend): keep the dashboard useful' },
+      'frontend',
+    )
+
+    assert.equal(payload.embeds[0].title, 'Caelestis frontend v1.2.3')
+    assert.equal(
+      payload.embeds[0].description,
+      '### Patch Changes\n\n- [abc1234](https://github.com/mia-riezebos/Caelestis/commit/abc1234) `fix(frontend)` Keep the dashboard useful.',
+    )
+    assert.deepEqual(payload.components[0].components[0], {
+      type: 2,
+      style: 5,
+      label: 'Open dashboard',
+      url: 'https://caelestis.mia.cx',
+    })
   })
 
   it('caps the summary at 18 changes and prioritizes level then influence', () => {
@@ -79,9 +100,14 @@ describe('userscript release announcement', () => {
         description.indexOf('Fix regression 0.'),
     )
     assert.match(description, /\*3 more changes in the full release notes\.\*$/)
-    assert.doesNotMatch(description, /[0-9a-f]{7}:/)
-    assert.match(description, /- `feat\(userscript\)` Add a user-facing capability\./)
-    assert.match(description, /- `fix\(userscript\)` Fix regression 0\./)
+    assert.match(
+      description,
+      /- \[fffffff\]\(https:\/\/github\.com\/mia-riezebos\/Caelestis\/commit\/fffffff\) `feat\(userscript\)` Add a user-facing capability\./,
+    )
+    assert.match(
+      description,
+      /- \[aaaaaa0\]\(https:\/\/github\.com\/mia-riezebos\/Caelestis\/commit\/aaaaaa0\) `fix\(userscript\)` Fix regression 0\./,
+    )
   })
 
   it('keeps one message and whole entries within Discord limits', () => {

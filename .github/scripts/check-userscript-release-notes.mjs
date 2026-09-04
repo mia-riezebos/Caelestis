@@ -7,14 +7,32 @@ const SUMMARY_LIMIT = 200
 const DETAIL_LIMIT = 240
 const DETAIL_COUNT_LIMIT = 5
 const USERSCRIPT_DECLARATION = /^['"]?@caelestis\/userscript['"]?:\s*(?:patch|minor|major)\s*$/m
+const PACKAGE_DECLARATION = /^['"]?([^'":\s]+)['"]?:\s*(?:patch|minor|major)\s*$/gm
 const INTERNAL_SENTENCE_END = /[.!?]["')\]]*\s+\S/g
 const COMPLETE_SENTENCE_END = /[.!?]["')\]]*$/
 const INLINE_ABBREVIATION = /^(?:e\.g\.|i\.e\.)$/i
 
-const changesetBody = (content, path) => {
+const changesetParts = (content, path) => {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(content)
   if (match === null) throw new Error(`${path}: invalid Changeset frontmatter`)
-  return USERSCRIPT_DECLARATION.test(match[1]) ? match[2].trim() : null
+  return { frontmatter: match[1], body: match[2].trim() }
+}
+
+const changesetBody = (content, path) => {
+  const { frontmatter, body } = changesetParts(content, path)
+  return USERSCRIPT_DECLARATION.test(frontmatter) ? body : null
+}
+
+export const assertNoMixedPackageKinds = ({ content, ignoredPackages, path }) => {
+  const { frontmatter } = changesetParts(content, path)
+  const packages = [...frontmatter.matchAll(PACKAGE_DECLARATION)].map((match) => match[1])
+  const hasIgnored = packages.some((name) => ignoredPackages.has(name))
+  const hasVersioned = packages.some((name) => !ignoredPackages.has(name))
+  if (hasIgnored && hasVersioned) {
+    throw new Error(
+      `${path}: do not mix ignored internal packages with versioned apps; record the change against each affected app`,
+    )
+  }
 }
 
 const paragraphs = (body) => body.split(/\r?\n\s*\r?\n/)
@@ -85,8 +103,7 @@ export const assertPendingChangesetImmutable = ({ current, base, path }) => {
 }
 
 export const validatePendingUserscriptChangeset = ({ current, base, path }) => {
-  const baseIsUserscript = base !== undefined && changesetBody(base, path) !== null
-  if (baseIsUserscript) assertPendingChangesetImmutable({ current, base, path })
+  assertPendingChangesetImmutable({ current, base, path })
   return validateUserscriptChangeset(current, path)
 }
 
@@ -111,12 +128,15 @@ export const checkUserscriptReleaseNotes = ({ root, baseRef }) => {
   }
 
   const directory = resolve(root, '.changeset')
+  const config = JSON.parse(readFileSync(resolve(directory, 'config.json'), 'utf8'))
+  const ignoredPackages = new Set(config.ignore)
   let checked = 0
   for (const name of readdirSync(directory)
     .filter((entry) => entry.endsWith('.md'))
     .sort()) {
     const path = `.changeset/${name}`
     const current = readFileSync(resolve(root, path), 'utf8')
+    assertNoMixedPackageKinds({ content: current, ignoredPackages, path })
     const base =
       baseRef === undefined || baseRef.length === 0 ? undefined : baseFile(root, baseRef, path)
     if (!validatePendingUserscriptChangeset({ current, base, path })) continue
