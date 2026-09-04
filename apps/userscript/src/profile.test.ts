@@ -55,6 +55,14 @@ describe('performance profile', () => {
     ])
   })
 
+  it('uses chronological samples for aggregate percentiles rather than task insertion order', () => {
+    setProfileEnabled(true)
+    recordProfileDuration('slow', 50)
+    for (let i = 0; i < 512; i++) recordProfileDuration('fast', 1)
+    for (let i = 0; i < 512; i++) recordProfileDuration('slow', 50)
+    expect(profileSnapshot().cpu.main.p95Ms).toBe(50)
+  })
+
   it('reports nested detail without double-counting it as CPU duty', () => {
     setProfileEnabled(true)
     recordProfileDuration('frame', 5)
@@ -102,7 +110,7 @@ describe('performance profile', () => {
     unregister()
   })
 
-  it('collects a completed WebGL timer query without blocking the draw', () => {
+  it('collects GPU queries once per frame and retires all polling when disabled', async () => {
     setProfileEnabled(true)
     const query = {}
     const extension = { TIME_ELAPSED_EXT: 1, GPU_DISJOINT_EXT: 2 }
@@ -120,9 +128,18 @@ describe('performance profile', () => {
     const draw = vi.fn()
 
     profileGpu(gl, 'overlay', draw)
+    await Promise.resolve()
     profileGpu(gl, 'overlay', draw)
 
     expect(draw).toHaveBeenCalledTimes(2)
     expect(profileSnapshot().gpu.totalMs).toBe(2)
+    profileGpu(gl, 'outline', draw)
+    profileGpu(gl, 'markers', draw)
+    expect(gl.getParameter).toHaveBeenCalledTimes(1)
+    setProfileEnabled(false)
+    profileGpu(gl, 'overlay', draw)
+    vi.mocked(gl.getParameter).mockClear()
+    for (let i = 0; i < 10; i++) profileGpu(gl, 'overlay', draw)
+    expect(gl.getParameter).not.toHaveBeenCalled()
   })
 })

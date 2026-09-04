@@ -1605,7 +1605,7 @@ const capture = (
   from: 'tile' | 'preview' = 'tile',
   dirty: CanvasWriteRect | null = null,
 ): boolean =>
-  measureProfile('Tile pixel capture', () => {
+  measureProfile(from === 'preview' ? 'Draft pixel capture' : 'Tile pixel capture', () => {
     if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return false
     /**
      * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
@@ -1627,6 +1627,7 @@ const capture = (
         context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
         context.drawImage(bitmap, 0, 0)
         const image = context.getImageData(dirty.x, dirty.y, dirty.width, dirty.height)
+        count('pixels:draft readback pixels', dirty.width * dirty.height)
         applyWrite(tile, readWrite(image, dirty.x, dirty.y))
         count('pixels:draft region read')
         return true
@@ -1645,6 +1646,10 @@ const capture = (
         context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
         context.drawImage(bitmap, 0, 0)
         const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
+        count(
+          from === 'preview' ? 'pixels:draft readback pixels' : 'pixels:tile readback pixels',
+          TILE_SIZE * TILE_SIZE,
+        )
         const table = indexTable()
         for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
           // Fully transparent is unpainted. Opaque pixels are palette colours, allowing for bounded

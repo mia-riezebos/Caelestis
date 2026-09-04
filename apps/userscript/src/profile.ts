@@ -84,6 +84,7 @@ const tasks = new Map<
   { readonly name: string; readonly kind: ProfileKind; readonly stat: MutableStat }
 >()
 const workload = new Map<string, MutableWorkload>()
+const recentByKind = new Map<ProfileKind, number[]>()
 const memorySources = new Map<string, () => number>()
 
 let frameRequest: number | null = null
@@ -123,10 +124,8 @@ const combined = (kind: ProfileKind): ProfileStat => {
     merged.count += stat.count
     merged.totalMs += stat.totalMs
     merged.maxMs = Math.max(merged.maxMs, stat.maxMs)
-    merged.recent.push(...stat.recent)
   }
-  if (merged.recent.length > RECENT_SAMPLES)
-    merged.recent.splice(0, merged.recent.length - RECENT_SAMPLES)
+  merged.recent = recentByKind.get(kind) ?? []
   return summary(merged)
 }
 
@@ -217,6 +216,7 @@ export const installProfile = (): void => {
 }
 
 export const resetProfile = (): void => {
+  recentByKind.clear()
   startedAt = performance.now()
   tasks.clear()
   workload.clear()
@@ -246,6 +246,10 @@ export const recordProfileDuration = (
   stat.maxMs = Math.max(stat.maxMs, durationMs)
   stat.recent.push(durationMs)
   if (stat.recent.length > RECENT_SAMPLES) stat.recent.shift()
+  const recent = recentByKind.get(kind) ?? []
+  recent.push(durationMs)
+  if (recent.length > RECENT_SAMPLES) recent.shift()
+  recentByKind.set(kind, recent)
 }
 
 /** Record one per-frame workload gauge without paying for it while profiling is disabled. */
@@ -305,6 +309,7 @@ interface PendingGpuQuery {
 interface GpuTimerState {
   readonly extension: TimerExtension
   readonly pending: PendingGpuQuery[]
+  collectedThisFrame: boolean
 }
 
 const gpuTimers = new WeakMap<WebGL2RenderingContext, GpuTimerState>()
@@ -320,7 +325,7 @@ const timerState = (gl: WebGL2RenderingContext): GpuTimerState | null => {
       return null
     }
     gpuSupported = true
-    const created = { extension, pending: [] }
+    const created = { extension, pending: [], collectedThisFrame: false }
     gpuTimers.set(gl, created)
     return created
   } catch {
@@ -330,6 +335,14 @@ const timerState = (gl: WebGL2RenderingContext): GpuTimerState | null => {
 }
 
 const collectGpuQueries = (gl: WebGL2RenderingContext, state: GpuTimerState): void => {
+  // MapLibre invokes its custom passes synchronously. Share one collection across those passes,
+  // then release the guard after the host frame, without starting another animation loop.
+  if (state.collectedThisFrame) return
+  state.collectedThisFrame = true
+  queueMicrotask(() => {
+    state.collectedThisFrame = false
+  })
+  if (state.pending.length === 0) return
   try {
     if (gl.getParameter(state.extension.GPU_DISJOINT_EXT)) {
       for (const pending of state.pending.splice(0)) gl.deleteQuery(pending.query)
@@ -358,7 +371,7 @@ const collectGpuQueries = (gl: WebGL2RenderingContext, state: GpuTimerState): vo
 export const profileGpu = <T>(gl: WebGL2RenderingContext, name: string, draw: () => T): T => {
   const known = gpuTimers.get(gl)
   if (!enabled) {
-    if (known !== undefined) collectGpuQueries(gl, known)
+    if (known !== undefined) clearGpuProfile(gl)
     return draw()
   }
   const state = timerState(gl)
@@ -431,10 +444,11 @@ export const profileSnapshot = (): ProfileSnapshot => {
       tasks: [],
       workload: [],
       scope: {
-        cpu: 'Instrumented Caelestis work only.',
+        cpu: 'Instrumented Caelestis work only. Task and aggregate p95 use the last 512 samples in recording order.',
         gpu: 'Caelestis WebGL layers only, when timer queries are available.',
         memory: 'Known Caelestis pixel and GPU buffers. Object overhead is not included.',
-        pageSignals: 'Frame cadence, long tasks and page heap cover the whole tab.',
+        pageSignals:
+          'Whole-tab frame cadence, not input latency. Frame p95 uses the last 600 intervals.',
         workload: 'Per-frame Caelestis render inputs and retained work while profiling is enabled.',
       },
     }
@@ -496,10 +510,11 @@ export const profileSnapshot = (): ProfileSnapshot => {
     tasks: taskRows,
     workload: workloadRows,
     scope: {
-      cpu: 'Instrumented Caelestis work only.',
+      cpu: 'Instrumented Caelestis work only. Task and aggregate p95 use the last 512 samples in recording order.',
       gpu: 'Caelestis WebGL layers only, when timer queries are available.',
       memory: 'Known Caelestis pixel and GPU buffers. Object overhead is not included.',
-      pageSignals: 'Frame cadence, long tasks and page heap cover the whole tab.',
+      pageSignals:
+        'Whole-tab frame cadence, not input latency. Frame p95 uses the last 600 intervals.',
       workload: 'Per-frame Caelestis render inputs and retained work while profiling is enabled.',
     },
   }
