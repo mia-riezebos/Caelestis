@@ -348,16 +348,16 @@ const collectGpuQueries = (gl: WebGL2RenderingContext, state: GpuTimerState): vo
       for (const pending of state.pending.splice(0)) gl.deleteQuery(pending.query)
       return
     }
-    for (let index = state.pending.length - 1; index >= 0; index--) {
-      const pending = state.pending[index]
-      if (pending === undefined) continue
-      if (!gl.getQueryParameter(pending.query, gl.QUERY_RESULT_AVAILABLE)) continue
+    while (state.pending.length > 0) {
+      const pending = state.pending[0]
+      if (pending === undefined) break
+      if (!gl.getQueryParameter(pending.query, gl.QUERY_RESULT_AVAILABLE)) break
       const nanoseconds = Number(gl.getQueryParameter(pending.query, gl.QUERY_RESULT))
       if (Number.isFinite(nanoseconds) && nanoseconds >= 0) {
         recordProfileDuration(pending.name, nanoseconds / 1_000_000, 'gpu')
       }
       gl.deleteQuery(pending.query)
-      state.pending.splice(index, 1)
+      state.pending.shift()
     }
   } catch {
     for (const pending of state.pending.splice(0)) {
