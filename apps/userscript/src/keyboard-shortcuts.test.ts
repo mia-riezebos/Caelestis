@@ -265,10 +265,12 @@ describe('keyboard shortcut actions', () => {
     harness.cancelPaint.mockReturnValueOnce(false)
     harness.undoPaint.mockReturnValueOnce(false)
     harness.redoPaint.mockReturnValueOnce(false)
+    harness.toggleTheme.mockReturnValueOnce(false)
     expect(press('b').defaultPrevented).toBe(true)
     expect(press('Escape').defaultPrevented).toBe(true)
     expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
     expect(press('z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(press('l').defaultPrevented).toBe(true)
 
     harness.paintAction.mockImplementationOnce(() => {
       harness.allianceEditorActive = false

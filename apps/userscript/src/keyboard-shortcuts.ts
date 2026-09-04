@@ -252,7 +252,8 @@ export const installKeyboardShortcuts = (
       return
     }
     if (shortcut === 'toggle-theme') {
-      if (toggleWplaceTheme()) claim()
+      const handled = toggleWplaceTheme()
+      if (allianceEditorStage !== null || handled) claim()
       return
     }
 
