@@ -334,6 +334,9 @@ export interface TreeStandaloneActionModel {
   readonly key: string
   readonly depth: number
   readonly action: TreeActionModel
+  readonly variant: 'compact' | 'ghost'
+  readonly showIcon?: boolean
+  readonly title: string
 }
 
 export type TreeEntryModel = TreeRowModel | TreeNoticeModel | TreeStandaloneActionModel
