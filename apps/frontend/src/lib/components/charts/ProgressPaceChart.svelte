@@ -1,5 +1,9 @@
 <script lang="ts">
   import { formatCount, formatExactCount, formatPixels, type HistoryBucket } from '@caelestis/shared'
+  import { untrack } from 'svelte'
+  import { cubicOut } from 'svelte/easing'
+  import { Tween } from 'svelte/motion'
+  import { fade, type TransitionConfig } from 'svelte/transition'
   import { persisted } from '$lib/persisted.svelte'
   import {
     availableRangePresets,
@@ -156,17 +160,18 @@
     v: a.v + (b.v - a.v) * fraction,
   })
 
-  const visiblePoints = $derived.by(() => {
-    const clipped = clipSeries(points, view.from, view.to, lerpPoint)
+  /** The points inside a range, holding the newest bucket's level out to the right edge. */
+  const windowPoints = (range: TimeWindow): Point[] => {
+    const clipped = clipSeries(points, range.from, range.to, lerpPoint)
     const last = clipped[clipped.length - 1]
     const newest = points[points.length - 1]
     // The newest bucket is still filling: hold its level out to the right edge so the areas meet
     // "now" instead of stopping one bucket short of it.
-    if (last !== undefined && newest !== undefined && last.t === newest.t && last.t < view.to) {
-      clipped.push({ ...last, t: view.to, placed: 0, correct: 0 })
+    if (last !== undefined && newest !== undefined && last.t === newest.t && last.t < range.to) {
+      clipped.push({ ...last, t: range.to, placed: 0, correct: 0 })
     }
     return clipped
-  })
+  }
 
   const retainedPacePoints = (source: PaceHistorySource): PacePoint[] => {
     const { buckets: paceBuckets, coverageStart, resolution: paceResolution } = source.history
@@ -201,15 +206,8 @@
     }),
   )
 
-  const activePaces = $derived(
-    paceWindows
-      .filter((pace) => enabledWindows.has(pace.key) && pace.usable)
-      .map((pace) => ({
-        ...pace,
-        rank:
-          PACE_WINDOWS.findIndex((x) => x.key === pace.key) / Math.max(1, PACE_WINDOWS.length - 1),
-        series: clipSeries(pace.fullSeries, view.from, view.to, lerpRate),
-      })),
+  const enabledPaces = $derived(
+    paceWindows.filter((pace) => enabledWindows.has(pace.key) && pace.usable),
   )
 
   /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */
@@ -238,25 +236,69 @@
   const plotWidth = $derived(Math.max(1, width - pad.left - pad.right))
   const plotHeight = height - pad.top - pad.bottom
 
+  // The axis tops come from the target window, so a zoom re-fits to where it is going.
+  const targetPoints = $derived(windowPoints(view))
   const leftScale = $derived(
-    axisScale(Math.max(0, ...visiblePoints.map((p) => p.cumCorrect + p.cumMismatched)), 4, 1),
+    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched)), 4, 1),
   )
   const rightScale = $derived(
-    axisScale(Math.max(0, ...activePaces.flatMap((p) => p.series.map((s) => s.v))), 4),
+    axisScale(
+      Math.max(
+        0,
+        ...enabledPaces.flatMap((pace) =>
+          clipSeries(pace.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
+        ),
+      ),
+      4,
+    ),
+  )
+
+  // ── Refit ────────────────────────────────────────────────────────────────────────────────────
+  // The drawn domain and both axis tops chase their targets, so a preset, a plot-drag zoom, or a
+  // toggled pace line re-fits the plot instead of snapping it. A brush drag follows the pointer
+  // directly, and reduced motion turns every tween and transition into a cut.
+  const REFIT_MS = 400
+  const reduceMotion =
+    typeof window === 'undefined' ? null : window.matchMedia('(prefers-reduced-motion: reduce)')
+  const motion = (ms: number): number => (reduceMotion?.matches ? 0 : ms)
+  const shown = new Tween(
+    // The tween starts on the first frame's targets; the effect below keeps it chasing them.
+    untrack(() => ({
+      from: view.from,
+      to: view.to,
+      leftMax: leftScale.max,
+      rightMax: rightScale.max,
+    })),
+    { duration: REFIT_MS, easing: cubicOut },
+  )
+  $effect(() => {
+    const target = { from: view.from, to: view.to, leftMax: leftScale.max, rightMax: rightScale.max }
+    void shown.set(target, { duration: brushDrag === null ? motion(REFIT_MS) : 0 })
+  })
+  const shownView = $derived<TimeWindow>({ from: shown.current.from, to: shown.current.to })
+  const visiblePoints = $derived(windowPoints(shownView))
+  const activePaces = $derived(
+    enabledPaces.map((pace) => ({
+      ...pace,
+      rank:
+        PACE_WINDOWS.findIndex((x) => x.key === pace.key) / Math.max(1, PACE_WINDOWS.length - 1),
+      series: clipSeries(pace.fullSeries, shownView.from, shownView.to, lerpRate),
+    })),
   )
 
   const x = $derived(
-    (t: number) => pad.left + ((t - view.from) / Math.max(1, view.to - view.from)) * plotWidth,
+    (t: number) =>
+      pad.left + ((t - shownView.from) / Math.max(1, shownView.to - shownView.from)) * plotWidth,
   )
   const yLeft = $derived(
-    (v: number) => height - pad.bottom - (v / leftScale.max) * plotHeight,
+    (v: number) => height - pad.bottom - (v / shown.current.leftMax) * plotHeight,
   )
   const yRight = $derived(
-    (v: number) => height - pad.bottom - (v / rightScale.max) * plotHeight,
+    (v: number) => height - pad.bottom - (v / shown.current.rightMax) * plotHeight,
   )
   /** The time under a pointer, given the plot's left edge on screen. */
   const timeAt = (clientX: number, left: number): number =>
-    view.from + ((clientX - left - pad.left) / plotWidth) * (view.to - view.from)
+    shownView.from + ((clientX - left - pad.left) / plotWidth) * (shownView.to - shownView.from)
 
   const linePath = (series: readonly { t: number; v: number }[]): string =>
     series
@@ -277,11 +319,11 @@
   }
 
   const DAY_SECONDS = 86_400
-  const tickStep = $derived(timeTickStep(view.to - view.from, plotWidth))
+  const tickStep = $derived(timeTickStep(shownView.to - shownView.from, plotWidth))
 
   const xTicks = $derived.by(() => {
     const ticks: number[] = []
-    for (let t = Math.ceil(view.from / tickStep) * tickStep; t < view.to; t += tickStep) {
+    for (let t = Math.ceil(shownView.from / tickStep) * tickStep; t < shownView.to; t += tickStep) {
       ticks.push(t)
     }
     return ticks
@@ -289,8 +331,8 @@
 
   const formatTick = (t: number): string => {
     const date = new Date(t * 1000)
-    const rangeStart = new Date(view.from * 1_000)
-    const rangeEnd = new Date((view.to - 1) * 1_000)
+    const rangeStart = new Date(shownView.from * 1_000)
+    const rangeEnd = new Date((shownView.to - 1) * 1_000)
     const crossesDay =
       rangeStart.getFullYear() !== rangeEnd.getFullYear() ||
       rangeStart.getMonth() !== rangeEnd.getMonth() ||
@@ -368,6 +410,20 @@
 
   const hoverPace = (series: readonly { t: number; v: number }[], t: number): number | null =>
     interpolateValue(series, t, (point) => point.v)
+
+  /** The hover card pops from its anchored corner, on the transitions.dev tooltip timings. */
+  const pop = (_node: Element, { duration }: { duration: number }): TransitionConfig => ({
+    duration,
+    easing: cubicOut,
+    css: (t) => `opacity:${t};transform:scale(${0.98 + 0.02 * t})`,
+  })
+
+  /** A pace line switched on later wipes in from its first point, the way the chart loads. */
+  const wipe = (_node: Element, { duration }: { duration: number }): TransitionConfig => ({
+    duration,
+    easing: cubicOut,
+    css: (t) => `clip-path:inset(-12px ${(100 * (1 - t)).toFixed(2)}% -12px -12px)`,
+  })
 
   const liveEdge = $derived(
     live && view.to === to ? (visiblePoints[visiblePoints.length - 1] ?? null) : null,
@@ -789,31 +845,35 @@
         onkeydown={onPlotKey}
       >
         {#each leftScale.ticks as tick (tick)}
-          <line
-            x1={pad.left}
-            x2={width - pad.right}
-            y1={yLeft(tick)}
-            y2={yLeft(tick)}
-            class="stroke-base-content/10"
-          />
-          <text
-            x={pad.left - 8}
-            y={yLeft(tick) + 3}
-            text-anchor="end"
-            aria-label={formatPixels(tick)}
-            class="fill-base-content/50 text-[10px] tabular-nums"><title>{formatPixels(tick)}</title>{formatCount(tick)}</text
-          >
+          {#if yLeft(tick) >= pad.top}
+            <line
+              x1={pad.left}
+              x2={width - pad.right}
+              y1={yLeft(tick)}
+              y2={yLeft(tick)}
+              class="stroke-base-content/10"
+            />
+            <text
+              x={pad.left - 8}
+              y={yLeft(tick) + 3}
+              text-anchor="end"
+              aria-label={formatPixels(tick)}
+              class="fill-base-content/50 text-[10px] tabular-nums"><title>{formatPixels(tick)}</title>{formatCount(tick)}</text
+            >
+          {/if}
         {/each}
         {#if activePaces.length > 0}
           {#each rightScale.ticks as tick (tick)}
-            <text
-              x={width - pad.right + 8}
-              y={yRight(tick) + 3}
-              text-anchor="start"
-              aria-label={`${formatPixels(tick)} per hour`}
-              class="fill-base-content/40 text-[10px] tabular-nums"
-              ><title>{formatPixels(tick)} per hour</title>{formatCount(tick)}</text
-            >
+            {#if yRight(tick) >= pad.top}
+              <text
+                x={width - pad.right + 8}
+                y={yRight(tick) + 3}
+                text-anchor="start"
+                aria-label={`${formatPixels(tick)} per hour`}
+                class="fill-base-content/40 text-[10px] tabular-nums"
+                ><title>{formatPixels(tick)} per hour</title>{formatCount(tick)}</text
+              >
+            {/if}
           {/each}
         {/if}
         <text x={pad.left - 8} y={9} text-anchor="end" class="fill-base-content/40 text-[9px]">px</text>
@@ -848,59 +908,64 @@
           </text>
         {/each}
 
-        <path d={bandPath(() => 0, (p) => p.cumCorrect)} fill="var(--chart-correct)" opacity="0.3" />
-        <path
-          d={bandPath((p) => p.cumCorrect, (p) => p.cumCorrect + p.cumMismatched)}
-          class="fill-error"
-          opacity="0.25"
-        />
-        <path
-          d={visiblePoints
-            .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${yLeft(p.cumCorrect).toFixed(1)}`)
-            .join('')}
-          fill="none"
-          stroke="var(--chart-correct)"
-          stroke-width="1.5"
-          stroke-linejoin="round"
-        />
-
-        {#each activePaces as pace (pace.key)}
+        <g class="chart-reveal">
+          <path d={bandPath(() => 0, (p) => p.cumCorrect)} fill="var(--chart-correct)" opacity="0.3" />
           <path
-            data-pace-window={pace.key}
-            data-series-start={pace.fullSeries[0]?.t}
-            data-series-first-value={pace.fullSeries[0]?.v}
-            d={linePath(pace.series)}
+            d={bandPath((p) => p.cumCorrect, (p) => p.cumCorrect + p.cumMismatched)}
+            class="fill-error"
+            opacity="0.25"
+          />
+          <path
+            d={visiblePoints
+              .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${yLeft(p.cumCorrect).toFixed(1)}`)
+              .join('')}
             fill="none"
-            stroke={paceColor(pace.rank)}
-            stroke-width={paceWidth(pace.rank)}
+            stroke="var(--chart-correct)"
+            stroke-width="1.5"
             stroke-linejoin="round"
           />
-        {/each}
 
-        {#if liveEdge !== null}
-          <circle
-            cx={x(liveEdge.t)}
-            cy={yLeft(liveEdge.cumCorrect)}
-            r="4"
-            fill="var(--chart-correct)"
-            class="motion-safe:animate-ping"
-            style:transform-box="fill-box"
-            style:transform-origin="center"
-            opacity="0.6"
-          />
-          <circle
-            cx={x(liveEdge.t)}
-            cy={yLeft(liveEdge.cumCorrect)}
-            r="3"
-            fill="var(--chart-correct)"
-            class="stroke-base-100"
-            stroke-width="1.5"
-          />
-        {/if}
+          {#each activePaces as pace (pace.key)}
+            <path
+              in:wipe={{ duration: motion(600) }}
+              out:fade={{ duration: motion(150) }}
+              data-pace-window={pace.key}
+              data-series-start={pace.fullSeries[0]?.t}
+              data-series-first-value={pace.fullSeries[0]?.v}
+              d={linePath(pace.series)}
+              fill="none"
+              stroke={paceColor(pace.rank)}
+              stroke-width={paceWidth(pace.rank)}
+              stroke-linejoin="round"
+            />
+          {/each}
+
+          {#if liveEdge !== null}
+            <circle
+              cx={x(liveEdge.t)}
+              cy={yLeft(liveEdge.cumCorrect)}
+              r="4"
+              fill="var(--chart-correct)"
+              class="motion-safe:animate-ping"
+              style:transform-box="fill-box"
+              style:transform-origin="center"
+              opacity="0.6"
+            />
+            <circle
+              cx={x(liveEdge.t)}
+              cy={yLeft(liveEdge.cumCorrect)}
+              r="3"
+              fill="var(--chart-correct)"
+              class="stroke-base-100"
+              stroke-width="1.5"
+            />
+          {/if}
+        </g>
 
         {#if plotDrag !== null}
           <rect
             data-plot-selection
+            out:fade={{ duration: motion(150) }}
             x={Math.min(x(plotDrag.from), x(plotDrag.to))}
             y={pad.top}
             width={Math.abs(x(plotDrag.to) - x(plotDrag.from))}
@@ -910,41 +975,46 @@
         {/if}
 
         {#if hover !== null}
-          <line
-            data-crosshair
-            x1={x(hover.t)}
-            x2={x(hover.t)}
-            y1={pad.top}
-            y2={height - pad.bottom}
-            class="stroke-base-content/25"
-          />
-          <circle
-            cx={x(hover.t)}
-            cy={yLeft(hover.cumCorrect)}
-            r="3"
-            fill="var(--chart-correct)"
-            class="stroke-base-100"
-            stroke-width="1.5"
-          />
-          {#each activePaces as pace (pace.key)}
-            {@const value = hoverPace(pace.series, hover.t)}
-            {#if value !== null}
-              <circle
-                cx={x(hover.t)}
-                cy={yRight(value)}
-                r="3"
-                fill={paceColor(pace.rank)}
-                class="stroke-base-100"
-                stroke-width="1.5"
-              />
-            {/if}
-          {/each}
+          <g in:fade={{ duration: motion(150) }} out:fade={{ duration: motion(100) }}>
+            <line
+              data-crosshair
+              x1={x(hover.t)}
+              x2={x(hover.t)}
+              y1={pad.top}
+              y2={height - pad.bottom}
+              class="stroke-base-content/25"
+            />
+            <circle
+              cx={x(hover.t)}
+              cy={yLeft(hover.cumCorrect)}
+              r="3"
+              fill="var(--chart-correct)"
+              class="stroke-base-100"
+              stroke-width="1.5"
+            />
+            {#each activePaces as pace (pace.key)}
+              {@const value = hoverPace(pace.series, hover.t)}
+              {#if value !== null}
+                <circle
+                  cx={x(hover.t)}
+                  cy={yRight(value)}
+                  r="3"
+                  fill={paceColor(pace.rank)}
+                  class="stroke-base-100"
+                  stroke-width="1.5"
+                />
+              {/if}
+            {/each}
+          </g>
         {/if}
       </svg>
 
       {#if hover !== null}
         <div
           class="pointer-events-none absolute z-10 rounded-lg border border-base-300 bg-base-100 px-2.5 py-1.5 text-xs shadow-sm"
+          in:pop={{ duration: motion(150) }}
+          out:pop={{ duration: motion(100) }}
+          style:transform-origin={x(hover.t) > width * 0.55 ? '100% 0' : '0 0'}
           style:top="{pad.top}px"
           style:left={x(hover.t) > width * 0.55 ? null : `${x(hover.t) + 12}px`}
           style:right={x(hover.t) > width * 0.55 ? `${width - x(hover.t) + 12}px` : null}
@@ -1002,7 +1072,7 @@
           rx="4"
           class="fill-base-200"
         />
-        <path d={brushOutline} fill="var(--chart-placed)" opacity="0.35" />
+        <path class="chart-reveal" d={brushOutline} fill="var(--chart-placed)" opacity="0.35" />
         <rect
           data-brush-window
           x={bx(view.from)}
