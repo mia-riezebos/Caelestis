@@ -129,13 +129,13 @@ Production deployments run from `.github/workflows/deploy.yml` after a push to `
 needs a `CLOUDFLARE_API_TOKEN` repository secret with access to the configured Workers, D1, and R2
 resources.
 
-## Userscript releases
+## App releases
 
-Userscript releases use Changesets. A user-facing userscript change should include a changeset for
-`@caelestis/userscript`. Merging the generated release pull request builds the userscript, publishes
-the GitHub release, and updates the stable installer.
+The userscript, frontend, and backend use one Changesets release workflow with independent versions
+and changelogs. User-visible shared-package changes belong to every affected deployable app, not the
+internal package.
 
-See [Userscript releases](docs/userscript-releases.md) for the full release process.
+See [App releases](docs/app-releases.md) for release-note ownership and publishing details.
 
 ## Issues
 
