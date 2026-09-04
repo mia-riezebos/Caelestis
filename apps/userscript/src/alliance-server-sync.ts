@@ -266,6 +266,42 @@ export const installAllianceServerSync = (): void => {
         return { status: 'skipped' }
       return readServer(server, surface, generation, signal, reason, transport)
     },
+    applyLiveEvent: async (server, event) => {
+      const surface = selected
+      if (
+        surface === null ||
+        server.info === null ||
+        readyGeneration !== generation ||
+        typeof event !== 'object' ||
+        event === null ||
+        !('type' in event) ||
+        event.type !== 'manifest-snapshot' ||
+        !('resource' in event) ||
+        event.resource !== ALLIANCE_MANIFEST_RESOURCE ||
+        !('scope' in event) ||
+        event.scope !== templateSurfaceKey(surface) ||
+        !('manifest' in event)
+      )
+        return false
+      const manifest = parseServerManifest(event.manifest, server.info, surface)
+      if (
+        manifest === null ||
+        manifest.season !== server.season ||
+        !currentSurface(surface, generation) ||
+        !isCurrentServerConnection(server)
+      )
+        return false
+      manifests.set(manifestKey(server.url, surface), { owner: server, manifest })
+      rememberNodes(server.url, manifest.nodes, surface)
+      notifyManifestChange()
+      await syncServerTemplates(
+        server,
+        manifest.templates,
+        () => currentSurface(surface, generation) && isCurrentServerConnection(server),
+        surface,
+      )
+      return currentSurface(surface, generation) && isCurrentServerConnection(server)
+    },
   })
   selectActiveSurface()
 }
