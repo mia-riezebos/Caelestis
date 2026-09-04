@@ -98,6 +98,18 @@ describe('userscript Changeset release notes', () => {
     )
   })
 
+  it('rejects edits to a pending backend Changeset', () => {
+    assert.throws(
+      () =>
+        validatePendingUserscriptChangeset({
+          current: backendChangeset('Rewrite the backend release note.'),
+          base: backendChangeset('Describe one backend change.'),
+          path: '.changeset/example.md',
+        }),
+      /add a new Changeset instead of editing a pending one/,
+    )
+  })
+
   it('rejects mixed ignored and versioned package entries', () => {
     const content = `---
 '@caelestis/userscript': patch
