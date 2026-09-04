@@ -522,7 +522,7 @@ describe('motion', () => {
       label.textContent?.trim(),
     )
 
-  it('wipes the series in on load and adds a switched-on pace line at once under reduced motion', () => {
+  it('wipes the series in on load and fades a pace line in and out as it is toggled', () => {
     mountThreeDays()
 
     expect(document.querySelector('svg[role="img"] g.chart-reveal')).not.toBeNull()
@@ -553,5 +553,36 @@ describe('motion', () => {
     await new Promise((resolve) => setTimeout(resolve, 800))
     flushSync()
     expect(timeLabels()).not.toEqual(before)
+  })
+
+  it('moves the window under a brush drag at once while the axis top keeps gliding', async () => {
+    vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: false } as MediaQueryList)
+    mountThreeDays()
+    const labelsBefore = timeLabels()
+    // The first gridline is the lowest tick. Its y follows the drawn axis top: with the whole
+    // history the top is 74.88 (72 px plus headroom); inside the first day it settles at 26.
+    const firstGridline = (): number =>
+      Number(document.querySelector('svg[role="img"] line')?.getAttribute('y1'))
+    const plotBottom = 240 - 22
+    const plotHeight = 240 - 18 - 22
+    const px = (t: number): number => 48 + (t / THREE_DAYS) * 544
+    const pointer = (type: string, init: PointerEventInit): PointerEvent =>
+      new PointerEvent(type, { bubbles: true, ...init })
+
+    document
+      .querySelector('[data-handle="tail"]')
+      ?.dispatchEvent(pointer('pointerdown', { clientX: px(THREE_DAYS), clientY: 300 }))
+    window.dispatchEvent(pointer('pointermove', { clientX: px(DAY), clientY: 300 }))
+    // A browser flushes between the move and the release; do the same here.
+    flushSync()
+    window.dispatchEvent(pointer('pointerup', { clientX: px(DAY), clientY: 300 }))
+    flushSync()
+
+    expect(timeLabels()).not.toEqual(labelsBefore)
+    expect(firstGridline()).toBeCloseTo(plotBottom - (5 / 74.88) * plotHeight, 0)
+
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    flushSync()
+    expect(firstGridline()).toBeCloseTo(plotBottom - (5 / 26) * plotHeight, 0)
   })
 })

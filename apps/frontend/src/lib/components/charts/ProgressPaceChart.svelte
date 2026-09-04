@@ -255,27 +255,36 @@
 
   // ── Refit ────────────────────────────────────────────────────────────────────────────────────
   // The drawn domain and both axis tops chase their targets, so a preset, a plot-drag zoom, or a
-  // toggled pace line re-fits the plot instead of snapping it. A brush drag follows the pointer
-  // directly, and reduced motion turns every tween and transition into a cut.
+  // toggled pace line re-fits the plot instead of snapping it. A brush drag moves the window
+  // under the pointer while the axis tops keep gliding, and reduced motion turns every tween and
+  // transition into a cut.
   const REFIT_MS = 400
   const reduceMotion =
     typeof window === 'undefined' ? null : window.matchMedia('(prefers-reduced-motion: reduce)')
   const motion = (ms: number): number => (reduceMotion?.matches ? 0 : ms)
-  const shown = new Tween(
-    // The tween starts on the first frame's targets; the effect below keeps it chasing them.
-    untrack(() => ({
-      from: view.from,
-      to: view.to,
-      leftMax: leftScale.max,
-      rightMax: rightScale.max,
-    })),
+  // The tweens start on the first frame's targets; the effects below keep them chasing.
+  const shownWindow = new Tween(
+    untrack(() => ({ from: view.from, to: view.to })),
+    { duration: REFIT_MS, easing: cubicOut },
+  )
+  const shownAxes = new Tween(
+    untrack(() => ({ leftMax: leftScale.max, rightMax: rightScale.max })),
     { duration: REFIT_MS, easing: cubicOut },
   )
   $effect(() => {
-    const target = { from: view.from, to: view.to, leftMax: leftScale.max, rightMax: rightScale.max }
-    void shown.set(target, { duration: brushDrag === null ? motion(REFIT_MS) : 0 })
+    const duration = brushDrag === null ? motion(REFIT_MS) : 0
+    void shownWindow.set({ from: view.from, to: view.to }, { duration })
   })
-  const shownView = $derived<TimeWindow>({ from: shown.current.from, to: shown.current.to })
+  $effect(() => {
+    void shownAxes.set(
+      { leftMax: leftScale.max, rightMax: rightScale.max },
+      { duration: motion(REFIT_MS) },
+    )
+  })
+  const shownView = $derived<TimeWindow>({
+    from: shownWindow.current.from,
+    to: shownWindow.current.to,
+  })
   const visiblePoints = $derived(windowPoints(shownView))
   const activePaces = $derived(
     enabledPaces.map((pace) => ({
@@ -291,10 +300,10 @@
       pad.left + ((t - shownView.from) / Math.max(1, shownView.to - shownView.from)) * plotWidth,
   )
   const yLeft = $derived(
-    (v: number) => height - pad.bottom - (v / shown.current.leftMax) * plotHeight,
+    (v: number) => height - pad.bottom - (v / shownAxes.current.leftMax) * plotHeight,
   )
   const yRight = $derived(
-    (v: number) => height - pad.bottom - (v / shown.current.rightMax) * plotHeight,
+    (v: number) => height - pad.bottom - (v / shownAxes.current.rightMax) * plotHeight,
   )
   /** The time under a pointer, given the plot's left edge on screen. */
   const timeAt = (clientX: number, left: number): number =>
@@ -416,13 +425,6 @@
     duration,
     easing: cubicOut,
     css: (t) => `opacity:${t};transform:scale(${0.98 + 0.02 * t})`,
-  })
-
-  /** A pace line switched on later wipes in from its first point, the way the chart loads. */
-  const wipe = (_node: Element, { duration }: { duration: number }): TransitionConfig => ({
-    duration,
-    easing: cubicOut,
-    css: (t) => `clip-path:inset(-12px ${(100 * (1 - t)).toFixed(2)}% -12px -12px)`,
   })
 
   const liveEdge = $derived(
@@ -927,7 +929,7 @@
 
           {#each activePaces as pace (pace.key)}
             <path
-              in:wipe={{ duration: motion(600) }}
+              in:fade={{ duration: motion(250) }}
               out:fade={{ duration: motion(150) }}
               data-pace-window={pace.key}
               data-series-start={pace.fullSeries[0]?.t}
