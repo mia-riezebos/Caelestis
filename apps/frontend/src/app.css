@@ -290,8 +290,8 @@
  * Progress chart load motion. The series and the brush's minimap wipe in from the left when the
  * chart mounts, so the history arrives as one stroke of time rather than a fade. The clip is
  * released once the wipe has run; the negative insets keep stroke caps and the live marker's halo
- * out of the clip while it is active. Lines switched on later wipe in through a Svelte transition
- * with the same shape, and the global reduced-motion rule above turns this into a cut.
+ * out of the clip while it is active. Pace lines switched on later only fade, so the wipe stays a
+ * once-per-load moment, and the global reduced-motion rule above turns it into a cut.
  */
 .chart-reveal {
   clip-path: none;
