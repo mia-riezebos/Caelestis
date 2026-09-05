@@ -341,7 +341,6 @@
             <span class="name">{entry.name}</span>
           {/if}
           {#if entry.meta !== undefined}<span class="meta">{entry.meta}</span>{/if}
-          {#if entry.lifecycle !== undefined}<TemplateState compact {...entry.lifecycle} />{/if}
           {#if entry.progress !== undefined && disclosure === undefined}
             <span class="row-tail">
               <span class="progress" aria-label={`${percent(entry.progress)}% complete`}>
@@ -376,6 +375,9 @@
             <input type="checkbox" checked={entry.visible} aria-label={`Show ${entry.name}`} onclick={(event) => event.stopPropagation()} onchange={(event) => emit({ type: 'toggle-visible', key: entry.key, visible: event.currentTarget.checked })} />
             <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
           </label>
+          {#if entry.lifecycle?.finished || entry.lifecycle?.frozen}
+            <div class="lifecycle-detail" style:padding-inline-start={`${1.25 + (entry.leadingActions?.length ?? 0) * 2.25}rem`}><TemplateState compact {...entry.lifecycle} /></div>
+          {/if}
           {#if disclosure !== undefined && entry.progress !== undefined}
             <div class="progress-detail">
               <div class="progress-disclosure">
@@ -475,6 +477,7 @@
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
   .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
   .progress-detail { display: flex; flex-basis: 100%; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .lifecycle-detail { flex-basis: 100%; min-inline-size: 0; }
   .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
   .progress-summary { container-type: inline-size; display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
   .progress-summary :global(.meter-wrap) { inline-size: 100%; }
