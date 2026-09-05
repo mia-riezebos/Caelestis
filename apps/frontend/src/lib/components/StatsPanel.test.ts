@@ -103,6 +103,18 @@ describe('retained history range', () => {
   it('advances and refreshes the history boundary while a template stays live', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW_SECONDS * 1_000)
+    api.getHistory.mockResolvedValue({
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: 900,
+          bucketStart: seconds(NOW_SECONDS - 900),
+          placed: 1,
+          correct: 1,
+          repairs: 0,
+        },
+      ],
+    })
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
@@ -114,6 +126,10 @@ describe('retained history range', () => {
     flushSync()
     await vi.advanceTimersByTimeAsync(0)
     expect(api.getHistory).toHaveBeenCalledTimes(8)
+    const preset = document.querySelector<HTMLButtonElement>('[data-range-preset="6h"]')
+    preset?.click()
+    flushSync()
+    expect(preset?.getAttribute('aria-pressed')).toBe('true')
 
     await vi.advanceTimersByTimeAsync(15_000)
     flushSync()
@@ -123,6 +139,14 @@ describe('retained history range', () => {
     expect(api.getHistory).toHaveBeenLastCalledWith(['live'], 0, NOW_SECONDS + 16, {
       maxResolution: 43_200,
     })
+    expect(preset?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('[data-handle="head"]')?.getAttribute('aria-valuenow')).toBe(
+      String(NOW_SECONDS + 16 - 6 * 3_600),
+    )
+    expect(document.querySelector('[data-handle="tail"]')?.getAttribute('aria-valuenow')).toBe(
+      String(NOW_SECONDS + 16),
+    )
+    expect(document.querySelector('[class*="animate-ping"]')).not.toBeNull()
   })
 
   it('formats partial-day coverage without exposing floating-point noise', async () => {
