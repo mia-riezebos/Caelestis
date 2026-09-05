@@ -13,6 +13,11 @@ import { PaletteProgress, ShortcutHelp, TemplateAdmin, TemplateState } from '../
 
 beforeAll(() => registerCaelestisUi())
 
+const lifecycleLabels = (root: ParentNode | null) =>
+  Array.from(root?.querySelectorAll('.lifecycle [role="img"]') ?? [], (icon) =>
+    icon.getAttribute('aria-label'),
+  ).join(' ')
+
 describe('@caelestis/ui', () => {
   it('exposes ordinary Svelte components from the root entry', () => {
     expect(TemplateState).toBeTypeOf('function')
@@ -48,8 +53,9 @@ describe('@caelestis/ui', () => {
     await tick()
 
     expect(state).toBeInstanceOf(CaelestisTemplateState)
-    expect(state.shadowRoot?.textContent).toContain('Finished')
-    expect(state.shadowRoot?.textContent).toContain('Timelapse frozen')
+    expect(lifecycleLabels(state.shadowRoot)).toBe('Finished')
+    expect(state.shadowRoot?.querySelector('[aria-label="Finished"]')?.textContent).toBe('✅')
+    expect(state.shadowRoot?.querySelector('[aria-label="Timelapse frozen"]')).toBeNull()
     expect(state.childNodes).toHaveLength(0)
   })
 
@@ -83,7 +89,7 @@ describe('@caelestis/ui', () => {
   it.each([
     [true, false, 'Finished'],
     [false, true, 'Timelapse frozen'],
-    [true, true, 'Finished Timelapse frozen'],
+    [true, true, 'Finished'],
   ])(
     'keeps passive lifecycle states outside the live status region (%s, %s)',
     async (finished, frozen, label) => {
@@ -93,7 +99,10 @@ describe('@caelestis/ui', () => {
       document.body.append(state)
       await tick()
 
-      expect(state.shadowRoot?.querySelector('.lifecycle')?.textContent?.trim()).toBe(label)
+      expect(lifecycleLabels(state.shadowRoot)).toBe(label)
+      for (const icon of state.shadowRoot?.querySelectorAll('.lifecycle [role="img"]') ?? []) {
+        expect(icon.getAttribute('title')).toBe(icon.getAttribute('aria-label'))
+      }
       expect(state.shadowRoot?.querySelector('[role="status"]')).toBeNull()
       state.remove()
     },
@@ -122,9 +131,7 @@ describe('@caelestis/ui', () => {
     await tick()
     expect(alarm()?.textContent).toContain('Sustained griefing · 1,234 px lost')
     expect(alarm()?.textContent).not.toContain('Regression')
-    expect(state.shadowRoot?.querySelector('.lifecycle')?.textContent?.trim()).toBe(
-      'Finished Timelapse frozen',
-    )
+    expect(lifecycleLabels(state.shadowRoot)).toBe('Finished')
 
     state.alarmKind = undefined
     await tick()
@@ -134,9 +141,7 @@ describe('@caelestis/ui', () => {
     state.griefed = false
     await tick()
     expect(alarm()).toBeNull()
-    expect(state.shadowRoot?.querySelector('.lifecycle')?.textContent?.trim()).toBe(
-      'Finished Timelapse frozen',
-    )
+    expect(lifecycleLabels(state.shadowRoot)).toBe('Finished')
     state.remove()
   })
 
