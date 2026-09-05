@@ -94,10 +94,6 @@ const CROSSHAIR_LAYER = 'pixel-hover'
 /** A tile being painted gets its own layer, named for the tile. */
 const DRAFT_LAYER = /^paint-preview-/
 
-/** Not every frame: this is only ever wrong just after a draft layer appears. */
-const REORDER_MS = 500
-let nextCheck = 0
-
 interface Ordered {
   /** MapLibre's own draw order. Custom layers are in it; `getStyle` leaves them out. */
   style?: { _order?: string[] }
@@ -119,13 +115,10 @@ const DRAFT_TILE = /-(\d+),(\d+)$/
  * Checked from the frame hook rather than from `styledata`. Moving a layer *fires* `styledata`, so
  * listening to it to decide whether to move is a loop that provokes itself — and if wplace re-insert
  * a draft above ours, the two take turns for as long as the tab lasts. A poll cannot do that, and
- * reading `_order` is an array scan.
+ * reading `_order` is an array scan. Register canvases on every frame so the first native writes
+ * become available immediately, including when Paint closes and reopens between frames.
  */
 export const keepMarkersAboveDrafts = (): void => {
-  const now = performance.now()
-  if (now < nextCheck) return
-  nextCheck = now + REORDER_MS
-
   const map = getMap() as Ordered | null
   const order = map?.style?._order
   if (map === null || order === undefined) {
