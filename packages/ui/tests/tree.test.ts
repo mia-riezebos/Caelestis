@@ -60,6 +60,40 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
+  it('preserves focused-row controls and progress alongside combined lifecycle and alarm state', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          focusedKey: 'local:city',
+          entries: model.entries.map((entry) =>
+            entry.type === 'row' && entry.key === 'local:city'
+              ? { ...entry, lifecycle: { finished: true, frozen: true, griefed: true } }
+              : entry,
+          ),
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    const row = document.querySelector('[data-caelestis-tree-key="local:city"]')
+    expect(row?.getAttribute('aria-current')).toBe('true')
+    expect(row?.querySelector('[aria-label="75% complete"]')).not.toBeNull()
+    expect(row?.querySelector('.lifecycle-detail')?.textContent).toContain(
+      'Finished Timelapse frozen',
+    )
+    expect(row?.querySelector('[role="status"]')?.textContent).toContain('Grief detected')
+    row?.querySelector<HTMLInputElement>('[aria-label="Show City"]')?.click()
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'toggle-visible',
+      key: 'local:city',
+      visible: false,
+    })
+    void unmount(component)
+  })
+
   it('debounces search and emits sort, expansion, visibility, and action intents', () => {
     vi.useFakeTimers()
     const onIntent = vi.fn()

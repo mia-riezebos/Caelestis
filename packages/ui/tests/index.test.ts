@@ -111,7 +111,9 @@ describe('@caelestis/ui', () => {
 
     const alarm = () => state.shadowRoot?.querySelector('[role="status"]')
     expect(state.shadowRoot?.querySelectorAll('[role="status"]')).toHaveLength(1)
-    expect(alarm()?.getAttribute('aria-label')).toBe('Template alarm: Grief detected · Regression · 0 pixels lost')
+    expect(alarm()?.getAttribute('aria-label')).toBe(
+      'Template alarm: Grief detected · Regression · 0 pixels lost',
+    )
     expect(alarm()?.getAttribute('aria-atomic')).toBe('true')
     expect(alarm()?.textContent).toContain('Grief detected · Regression · 0 px lost')
 
