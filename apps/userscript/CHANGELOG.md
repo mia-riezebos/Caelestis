@@ -1,5 +1,17 @@
 # @caelestis/userscript
 
+## 0.7.2
+
+### Patch Changes
+
+- bf08766: Compact large counts in palette badges and progress displays while keeping exact values available in tooltips and accessible labels.
+- 967509e: Show draft mismatch markers from the first rendered frame after opening Paint.
+- b3f0938: Prevent partial background scans from restoring stale mismatch markers after cancelling Space-painted strokes.
+- deb1a62: Clear cancelled draft markers when Wplace removes or replaces a draft canvas, including rapid Paint reopen cycles.
+- 5b56886: Keep mismatch markers visible while background scans refresh cancelled drafts.
+- 32fbce3: Limit compact counts to three significant digits so large palette badges fit narrow displays.
+- a765381: Restore committed mismatch markers and progress when cancelling a draft during native canvas clears.
+
 ## 0.7.1
 
 ### Patch Changes
