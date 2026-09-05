@@ -486,6 +486,31 @@ describe('visible mismatch answer retention', () => {
     endMismatchFrame()
   })
 
+  it('keeps complete markers while the server mask reloads without captured native pixels', async () => {
+    const held = {
+      ...template(200),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote',
+      serverVersion: 'version',
+    }
+    harness.pixelsAvailable = false
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    )
+    const { pixelAccounting } = await import('./mismatch.js')
+    const read = (current = held) =>
+      pixelAccounting.frame(() => pixelAccounting.read(current).tile({ x: 0, y: 0 }))
+    const answer = read()
+    expect(answer?.markers).toHaveLength(1)
+    harness.serverMask = null
+    expect(read()?.markers).toBe(answer?.markers)
+    expect(read({ ...held, moved: 1 })).toBeNull()
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([MATCH])),
+    )
+    expect(read()?.markers).toHaveLength(0)
+  })
+
   it('draws every server-classified mismatch beyond the old 128-answer cap', async () => {
     const serverTemplate = {
       ...template(200),
