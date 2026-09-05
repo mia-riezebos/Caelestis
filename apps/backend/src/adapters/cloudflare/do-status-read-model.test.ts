@@ -33,7 +33,8 @@ describe('Durable Object status read-model adapter', () => {
     const namespace = {
       getByName: vi.fn(() => stub),
     } as unknown as DurableObjectNamespace<StatusReadModelObject>
-    const model = new DurableObjectStatusReadModel(namespace)
+    const scheduleAlarms = vi.fn(async () => undefined)
+    const model = new DurableObjectStatusReadModel(namespace, scheduleAlarms)
 
     await expect(model.applyCommittedChange(8)).resolves.toBeNull()
     await expect(model.reconcileSnapshot(8, 'admin')).resolves.toEqual({
@@ -85,6 +86,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(stub.reconcileSnapshotMeasured).toHaveBeenCalledWith(8, 'admin')
     expect(stub.notifyManifestChange).toHaveBeenCalledWith(8, allianceSurface, false)
     expect(stub.notifyAlarmChange).toHaveBeenCalledWith(8)
+    expect(scheduleAlarms).toHaveBeenCalledOnce()
     expect(stub.closeCredential).toHaveBeenCalledTimes(9)
     for (let season = 0; season <= 8; season++)
       expect(stub.closeCredential).toHaveBeenCalledWith(season, 'b'.repeat(64))

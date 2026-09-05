@@ -15,6 +15,7 @@ import {
   type TileCoord,
   TRANSPARENT_INDEX,
   tileKey,
+  uuidV7,
   WORLD_PIXELS,
   WRONG,
 } from '@caelestis/shared'
@@ -43,6 +44,7 @@ import type {
 import {
   finishTileGenerationCommit,
   prepareTileGenerationCommit,
+  publishAlarmChange,
   repairCommittedStatusProjection,
   repairCommittedTileGeneration,
   resolveCurrentTileOffers,
@@ -474,6 +476,31 @@ const recordObservationPromise = async (
           ),
         }
   await options.onCommitted?.(mutation)
+  // Evaluate only changed templates, before acknowledging this observation. Initial incomplete
+  // work seeds a baseline; a newly lost correct pixel opens an episode immediately.
+  const alarmChanges = committed.statusChanges.filter(
+    ({ previous, current }) => previous === null || previous.correct !== current.correct,
+  )
+  // The fetcher evaluates its complete scan/follow-up after its authoritative tile batch.
+  if (options.authoritative !== true && alarmChanges.length > 0) {
+    const snapshots = await ports.sql.readTemplateAlarmSnapshots(
+      alarmChanges.map(({ current }) => current.templateId),
+    )
+    for (const snapshot of snapshots) {
+      const change = alarmChanges.find(({ current }) => current.templateId === snapshot.templateId)
+      if (change === undefined || change.current.versionId !== snapshot.versionId) continue
+      await ports.sql.evaluateTemplateAlarm(
+        snapshot,
+        {
+          kind: 'observation',
+          previousCorrect:
+            snapshot.correct - change.current.correct + (change.previous?.correct ?? 0),
+        },
+        uuidV7(),
+      )
+    }
+    await publishAlarmChange(ports.statusReadModel, metadata.season)
+  }
   // Publish the authoritative revision first. A caller processing many tiles owns one shared batch
   // and flushes it only after its coalesced projection; standalone calls flush their local batch.
   const ownsArtifactWriteBatch = options.artifactWriteBatch === undefined

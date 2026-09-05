@@ -1265,6 +1265,29 @@ export class MemorySqlStore implements SqlStore {
     return revision
   }
 
+  async readTemplateAlarmSnapshots(
+    templateIds: readonly string[],
+  ): Promise<readonly TemplateAlarmSnapshot[]> {
+    return templateIds.flatMap((templateId) => {
+      const template = this.templates.get(templateId)
+      const version = template && this.templateVersions.get(template.currentVersionId)
+      if (!version) return []
+      const statuses = [...this.templateTileStatuses.values()].filter(
+        (status) => status.templateId === templateId && status.versionId === version.versionId,
+      )
+      if (statuses.length === 0) return []
+      return [
+        {
+          templateId,
+          versionId: version.versionId,
+          total: version.totalPixels,
+          correct: statuses.reduce((sum, status) => sum + status.correct, 0),
+          observedAt: millis(Math.max(...statuses.map((status) => status.observedAt))),
+        },
+      ]
+    })
+  }
+
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -1285,12 +1308,19 @@ export class MemorySqlStore implements SqlStore {
       return { state: previous, scheduleFollowUp: false }
     }
     const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
-    const probe = result.scheduleFollowUp
-      ? {
-          probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
-          probePixelsLost: result.state.alarm?.pixelsLost ?? null,
-        }
-      : { probeDueAt: null, probePixelsLost: null }
+    const preserveProbe =
+      phase.kind === 'observation' &&
+      result.state.alarm !== null &&
+      result.state.alarm.id === previous?.alarm?.id &&
+      previous.probeDueAt !== null
+    const probe = preserveProbe
+      ? { probeDueAt: previous.probeDueAt, probePixelsLost: previous.probePixelsLost }
+      : result.scheduleFollowUp
+        ? {
+            probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
+            probePixelsLost: result.state.alarm?.pixelsLost ?? null,
+          }
+        : { probeDueAt: null, probePixelsLost: null }
     this.alarmStates.set(snapshot.templateId, {
       ...result.state,
       ...probe,

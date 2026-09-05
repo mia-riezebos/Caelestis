@@ -133,6 +133,58 @@ const uploadCanvas = async (
 describe('telemetry routes', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('opens one-pixel regressions during ingestion and keeps the original follow-up deadline', async () => {
+    const notifyAlarmChange = vi.fn(async () => undefined)
+    const { app, sql } = await harness({
+      notifyAlarmChange,
+      applyCommittedChange: async () => null,
+      reconcileSnapshot: async () => ({
+        cacheOutcome: 'hit',
+        snapshot: { revision: 0, templates: [] },
+      }),
+    })
+    const templateId = await createPublishedTemplate(app)
+    const token = await mintToken(app, 'report')
+    const start = Math.floor(Date.now() / 1_000) - 30
+    const tile = async (pixels: number[]) => {
+      const indices = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+      indices.set(pixels)
+      return encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
+    }
+    await uploadCanvas(app, token, await tile([0, 1, TRANSPARENT_INDEX]), start)
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
+    // Painting a previously blank pixel incorrectly is not regression.
+    await uploadCanvas(app, token, await tile([0, 1, 3]), start + 1)
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
+    notifyAlarmChange.mockClear()
+    await uploadCanvas(app, token, await tile([3, 1, 3]), start + 2)
+    const [alarm] = await sql.readActiveAlarms(0, false)
+    expect(alarm).toMatchObject({ templateId, kind: 'regression', pixelsLost: 1 })
+    expect(notifyAlarmChange).toHaveBeenCalledWith(0)
+    const dueAt = millis((start + 2) * 1_000 + 10 * 60 * 1_000)
+    expect(await sql.nextAlarmProbeAt()).toBe(dueAt)
+    await uploadCanvas(app, token, await tile([3, 3, 3]), start + 3)
+    expect(await sql.nextAlarmProbeAt()).toBe(dueAt)
+    expect(await sql.listDueAlarmProbes(dueAt)).toEqual([
+      expect.objectContaining({ alarmId: alarm?.id, pixelsLost: 1, dueAt }),
+    ])
+    const [snapshot] = await sql.readTemplateAlarmSnapshots([templateId])
+    if (!snapshot || !alarm) throw new Error('expected an ingested alarm snapshot')
+    await sql.evaluateTemplateAlarm(
+      { ...snapshot, observedAt: dueAt },
+      {
+        kind: 'follow-up',
+        alarmId: alarm.id,
+        pixelsLost: 1,
+        dueAt,
+      },
+      'unused',
+    )
+    expect(await sql.readActiveAlarms(0, false)).toEqual([
+      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 2 }),
+    ])
+  })
+
   it('reads historical status directly without creating a season read model', async () => {
     const reconcileSnapshot = vi.fn(async () => {
       throw new Error('historical status must not reach the read model')

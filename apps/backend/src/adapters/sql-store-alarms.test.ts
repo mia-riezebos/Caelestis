@@ -1,4 +1,4 @@
-import { millis, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { millis, seconds, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
@@ -68,6 +68,75 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
   })
 
   afterEach(() => harness.close())
+
+  it('reads classified alarm baselines only for requested current template versions', async () => {
+    await store.recordTileObservation(
+      {
+        season: 1,
+        tile: { x: 0, y: 0 },
+        hash: 'd'.repeat(64),
+        observedAt: NOW,
+        reportedAt: seconds(NOW / 1_000),
+        reportedWithToken: TOKEN,
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: TEMPLATE_ID,
+          versionId: VERSION_ID,
+          tile: { x: 0, y: 0 },
+          correct: 60_000,
+          wrong: 10_000,
+          blank: 30_000,
+          observedAt: NOW,
+        },
+      ],
+    )
+    expect(await store.readTemplateAlarmSnapshots([])).toEqual([])
+    expect(await store.readTemplateAlarmSnapshots(['other'])).toEqual([])
+    expect(await store.readTemplateAlarmSnapshots([TEMPLATE_ID])).toEqual([snapshot(60_000)])
+    await store.insertTemplateVersion(version(NEXT_VERSION_ID), { requireExisting: true })
+    expect(await store.readTemplateAlarmSnapshots([TEMPLATE_ID])).toEqual([])
+  })
+
+  it('keeps the first probe during live losses, recovery, and admin dismissal', async () => {
+    await store.evaluateTemplateAlarm(
+      snapshot(59_999),
+      { kind: 'observation', previousCorrect: 60_000 },
+      ALARM_ID,
+    )
+    const dueAt = millis(NOW + 10 * 60 * 1_000)
+    await store.evaluateTemplateAlarm(
+      snapshot(59_998, millis(NOW + 1)),
+      { kind: 'observation', previousCorrect: 59_999 },
+      'unused',
+    )
+    expect(await store.listDueAlarmProbes(dueAt)).toEqual([
+      expect.objectContaining({ dueAt, pixelsLost: 1, alarmId: ALARM_ID }),
+    ])
+    await store.dismissTemplateAlarm(TEMPLATE_ID, ALARM_ID, millis(NOW + 2))
+    await store.evaluateTemplateAlarm(
+      snapshot(59_998, millis(NOW + 3)),
+      { kind: 'observation', previousCorrect: 59_998 },
+      'unused',
+    )
+    expect(await store.readActiveAlarms(1, false)).toEqual([])
+    await store.evaluateTemplateAlarm(
+      snapshot(59_997, millis(NOW + 4)),
+      { kind: 'observation', previousCorrect: 59_998 },
+      NEXT_VERSION_ID,
+    )
+    expect(await store.readActiveAlarms(1, false)).toEqual([
+      expect.objectContaining({ id: NEXT_VERSION_ID, pixelsLost: 1 }),
+    ])
+    await store.evaluateTemplateAlarm(
+      snapshot(59_998, millis(NOW + 5)),
+      { kind: 'observation', previousCorrect: 59_997 },
+      'unused',
+    )
+    expect(await store.readActiveAlarms(1, false)).toEqual([])
+    expect(await store.nextAlarmProbeAt()).toBeNull()
+  })
 
   it('dismisses an episode durably without reopening it on unchanged or stale observations', async () => {
     await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)

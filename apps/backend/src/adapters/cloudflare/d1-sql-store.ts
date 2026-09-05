@@ -2,6 +2,7 @@ import {
   type Alarm,
   type ContributionDay,
   type Millis,
+  millis,
   type Seconds,
   sameTemplateSurface,
   seconds,
@@ -2395,6 +2396,32 @@ export class D1SqlStore implements SqlStore {
     return row.revision
   }
 
+  async readTemplateAlarmSnapshots(
+    templateIds: readonly string[],
+  ): Promise<readonly TemplateAlarmSnapshot[]> {
+    if (templateIds.length === 0) return []
+    const rows = await this.database
+      .select({
+        templateId: templates.id,
+        versionId: templateVersions.id,
+        total: templateVersions.totalPixels,
+        correct: sql<number>`sum(${templateTileStatuses.correct})`,
+        observedAt: sql<number>`max(${templateTileStatuses.observedAtMs})`,
+      })
+      .from(templates)
+      .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
+      .innerJoin(
+        templateTileStatuses,
+        and(
+          eq(templateTileStatuses.templateId, templates.id),
+          eq(templateTileStatuses.versionId, templateVersions.id),
+        ),
+      )
+      .where(inArray(templates.id, [...templateIds]))
+      .groupBy(templates.id, templateVersions.id, templateVersions.totalPixels)
+    return rows.map((row) => ({ ...row, observedAt: millis(row.observedAt) }))
+  }
+
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -2424,9 +2451,16 @@ export class D1SqlStore implements SqlStore {
       }
       const result = evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
       const alarm = result.state.alarm
-      const probeDueAt = result.scheduleFollowUp
-        ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
-        : null
+      const preserveProbe =
+        phase.kind === 'observation' &&
+        alarm !== null &&
+        alarm.id === previousState?.alarm?.id &&
+        previousRow?.probeDueAtMs != null
+      const probeDueAt = preserveProbe
+        ? previousRow.probeDueAtMs
+        : result.scheduleFollowUp
+          ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
+          : null
       const values = {
         templateId: snapshot.templateId,
         versionId: result.state.versionId,
@@ -2438,7 +2472,11 @@ export class D1SqlStore implements SqlStore {
         firstSeenMs: alarm?.firstSeen ?? null,
         lastSeenMs: alarm?.lastSeen ?? null,
         probeDueAtMs: probeDueAt,
-        probePixelsLost: result.scheduleFollowUp ? (alarm?.pixelsLost ?? null) : null,
+        probePixelsLost: preserveProbe
+          ? previousRow.probePixelsLost
+          : result.scheduleFollowUp
+            ? (alarm?.pixelsLost ?? null)
+            : null,
         evaluatedAtMs: snapshot.observedAt,
         revision: (previousRow?.revision ?? -1) + 1,
       }

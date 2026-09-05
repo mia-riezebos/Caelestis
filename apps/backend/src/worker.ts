@@ -57,7 +57,9 @@ const preparedStatusReadModels = new WeakMap<Env, DurableObjectStatusReadModel>(
 const statusReadModelFor = (env: Env): DurableObjectStatusReadModel => {
   const prepared = preparedStatusReadModels.get(env)
   if (prepared !== undefined) return prepared
-  const created = new DurableObjectStatusReadModel(env.STATUS_READ_MODEL)
+  const created = new DurableObjectStatusReadModel(env.STATUS_READ_MODEL, () =>
+    env.ALARM_WATCHER.getByName('global').schedule(),
+  )
   preparedStatusReadModels.set(env, created)
   return created
 }

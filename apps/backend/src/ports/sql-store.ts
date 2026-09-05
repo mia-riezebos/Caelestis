@@ -578,7 +578,7 @@ export interface ManifestTemplateRecord {
   readonly updatedAt: Millis
 }
 
-/** One complete current-state observation used by the server-owned alarm policy. */
+/** Current classified pixels used by the server-owned alarm policy. */
 export interface TemplateAlarmSnapshot {
   readonly templateId: string
   readonly versionId: string
@@ -597,6 +597,7 @@ export interface TemplateAlarmState {
 
 export type AlarmEvaluationPhase =
   | { readonly kind: 'scan' }
+  | { readonly kind: 'observation'; readonly previousCorrect: number }
   | {
       readonly kind: 'follow-up'
       readonly alarmId: string
@@ -1059,7 +1060,12 @@ export interface SqlStore {
     adminFingerprint: string,
   ): Promise<number | null>
 
-  /** Atomically evaluate and persist one complete template snapshot. */
+  /** Read current counts for only the templates touched by a tile observation. */
+  readTemplateAlarmSnapshots(
+    templateIds: readonly string[],
+  ): Promise<readonly TemplateAlarmSnapshot[]>
+
+  /** Atomically evaluate and persist one template snapshot. */
   evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
