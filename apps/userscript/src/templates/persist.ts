@@ -56,6 +56,7 @@ const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
 }
 
 export interface StoredTemplate extends ImportedTemplate {
+  readonly updatedAt?: number
   /** Exact drawing surface. Records written before alliance support are world-scoped. */
   readonly surface?: TemplateSurface
   readonly visible: boolean
@@ -258,6 +259,7 @@ export interface TemplateFolderUpdate {
   readonly id: string
   readonly expectedRevision: number
   readonly folderId: string | null
+  readonly updatedAt?: number
 }
 
 export type SaveTemplateFoldersResult =
@@ -290,7 +292,12 @@ export const saveTemplateFolders = async (
             const record = current.get(update.id)
             if (record === undefined) return
             const revision = update.expectedRevision + 1
-            templates.put({ ...record, folderId: update.folderId, revision })
+            templates.put({
+              ...record,
+              folderId: update.folderId,
+              ...(update.updatedAt === undefined ? {} : { updatedAt: update.updatedAt }),
+              revision,
+            })
             revisions.set(update.id, revision)
           }
           result = { status: 'saved', revisions }

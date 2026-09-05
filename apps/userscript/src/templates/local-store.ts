@@ -59,6 +59,8 @@ import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './serv
  */
 
 export interface PlacedTemplate extends ImportedTemplate {
+  /** Last local content or placement edit; absent on legacy records and server render copies. */
+  readonly updatedAt?: number
   /** Drawing surface this placement belongs to. Legacy browser-owned templates are world-scoped. */
   readonly surface?: TemplateSurface
   /** Runtime owner for server rows; absent on Local and legacy restored records. */
@@ -665,6 +667,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     owns,
     revision,
     folderId,
+    updatedAt,
   } = value
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) {
     throw new RangeError('template id is invalid')
@@ -734,6 +737,9 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     surface,
     revision: revision === undefined ? 0 : (revision as number),
     folderId: typeof folderId === 'string' ? folderId : null,
+    ...(typeof updatedAt === 'number' && Number.isFinite(updatedAt) && updatedAt >= 0
+      ? { updatedAt }
+      : {}),
     appearance: normaliseAppearance(appearance),
     // "It has an appearance, so it chose one" holds for a record written by this model. A record
     // from before it carries `shape`, and every template got one whether or not anyone touched it,
@@ -1170,6 +1176,7 @@ export const addLocalTemplate = async (
     const tiles = await paintedTileKeys(scoped)
     const placed: PlacedTemplate = {
       ...template,
+      updatedAt: Date.now(),
       surface,
       tiles,
       visible: true,
@@ -1268,6 +1275,7 @@ export const copyAsLocalTemplate = async (
       const tiles = await paintedTileKeys({ ...imported, surface })
       const placed: PlacedTemplate = {
         ...imported,
+        updatedAt: Date.now(),
         surface,
         tiles,
         visible: true,
@@ -1587,6 +1595,7 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
         }
         const next = {
           ...latest,
+          updatedAt: Date.now(),
           originX: target.originX,
           originY: target.originY,
           everPlaced: latest.everPlaced || target.everPlaced,
@@ -1663,7 +1672,7 @@ export const markPlaced = async (id: string): Promise<boolean> => {
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
-    const next = { ...existing, everPlaced: true }
+    const next = { ...existing, everPlaced: true, updatedAt: Date.now() }
     const result = await savePlaced(next, isPendingImage(existing) ? null : existing.revision)
     const revision = committedRevision(result)
     if (revision === null) {
@@ -1716,7 +1725,7 @@ export const setTemplateFolder = async (id: string, folderId: string | null): Pr
         }
       }
       if (existing.folderId === folderId) return true
-      const next = { ...existing, folderId }
+      const next = { ...existing, folderId, updatedAt: Date.now() }
       let revision = existing.revision
       if (!isPendingImage(existing)) {
         const result = await savePlaced(next)
@@ -1771,11 +1780,13 @@ export const setTemplatesFolder = async (
       const changed = present.filter((template) => template.folderId !== folderId)
       if (changed.length === 0) return true
       const durable = changed.filter((template) => !isPendingImage(template))
+      const updatedAt = Date.now()
       const result = await saveTemplateFolders(
         durable.map((template) => ({
           id: template.id,
           expectedRevision: template.revision,
           folderId,
+          updatedAt,
         })),
       )
       if (result.status !== 'saved') {
@@ -1789,6 +1800,7 @@ export const setTemplatesFolder = async (
         templates.set(template.id, {
           ...template,
           folderId,
+          updatedAt,
           revision: result.revisions.get(template.id) ?? template.revision,
         })
       }
@@ -1807,7 +1819,7 @@ export const renameLocalTemplate = async (id: string, name: string): Promise<boo
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     if (trimmed === existing.name) return true
-    const next = { ...existing, name: trimmed }
+    const next = { ...existing, name: trimmed, updatedAt: Date.now() }
     let revision = existing.revision
     if (!isPendingImage(existing)) {
       const result = await savePlaced(next)

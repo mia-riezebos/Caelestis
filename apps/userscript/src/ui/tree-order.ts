@@ -8,9 +8,12 @@ export interface OrderedTreeItem {
   readonly key: string
   readonly name: string
   readonly createdAt?: number
+  readonly updatedAt?: number | undefined
+  readonly totalPixels?: number | undefined
+  readonly mismatched?: number | undefined
   /** Absent for structural rows; progress sorting leaves those in their durable slots. */
   readonly progress?: TemplateProgress | undefined
-  /** Aggregated folder progress is display-only; only leaves move under progress sorting. */
+  /** Only template leaves move under metric sorts; structural rows keep their custom slots. */
   readonly progressSortable?: true | undefined
 }
 
@@ -93,23 +96,45 @@ export const orderedTreeItems = <T extends OrderedTreeItem>(
     (a, b) => (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
   )
   const custom = [...ranked.map(({ item }) => item), ...unranked]
-  if (getState().sort.field !== 'progress') return custom.slice(0, bounded)
+  const { field, direction: sortDirection } = getState().sort
+  if (field === 'custom') return custom.slice(0, bounded)
 
   // A folder is a place, not a score. Preserve every structural slot from the user's own order and
   // sort only template rows among the slots templates already occupy. That keeps the hierarchy
   // legible while still bringing the least/most complete work together at every sibling level.
-  const direction = getState().sort.direction === 'desc' ? -1 : 1
+  const direction = sortDirection === 'desc' ? -1 : 1
+  const value = (item: T): number | undefined => {
+    switch (field) {
+      case 'recent':
+        return item.updatedAt
+      case 'size':
+        return item.totalPixels
+      case 'mismatched':
+        return item.mismatched
+      case 'progress':
+        return item.progress === undefined ? undefined : completionRatio(item.progress)
+      default:
+        return undefined
+    }
+  }
   const templates = custom
-    .filter(
-      (item): item is T & { readonly progress: TemplateProgress } =>
-        item.progressSortable === true && item.progress !== undefined,
-    )
-    .sort(
-      (a, b) =>
-        direction * (completionRatio(a.progress) - completionRatio(b.progress)) ||
+    .filter((item) => item.progressSortable === true)
+    .sort((a, b) => {
+      const av = value(a)
+      const bv = value(b)
+      // Unknown measurements stay last in both directions; ties never reverse.
+      return (
+        (av === undefined
+          ? bv === undefined
+            ? 0
+            : 1
+          : bv === undefined
+            ? -1
+            : direction * (av - bv)) ||
         NAME_COLLATOR.compare(a.name, b.name) ||
-        a.key.localeCompare(b.key),
-    )
+        a.key.localeCompare(b.key)
+      )
+    })
   let templateAt = 0
   return custom
     .map((item) => (item.progressSortable !== true ? item : (templates[templateAt++] ?? item)))

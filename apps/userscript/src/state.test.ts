@@ -23,6 +23,55 @@ afterEach(() => {
 })
 
 describe('server state boundaries', () => {
+  it.each(['custom', 'recent', 'name', 'progress', 'size', 'mismatched'] as const)(
+    'round-trips %s sorting without rewriting custom order',
+    async (field) => {
+      let stored = JSON.stringify({ customOrder: ['local:b', 'local:a'] })
+      vi.stubGlobal(
+        'GM_getValue',
+        vi.fn(() => stored),
+      )
+      vi.stubGlobal(
+        'GM_setValue',
+        vi.fn((_key: string, value: string) => {
+          stored = value
+        }),
+      )
+      const { loadState, setState } = await import('./state.js')
+      loadState()
+      for (const direction of ['asc', 'desc'] as const) {
+        setState({ sort: { field, direction } })
+        expect(loadState()).toMatchObject({
+          sort: { field, direction: field === 'custom' ? 'asc' : direction },
+          customOrder: ['local:b', 'local:a'],
+        })
+      }
+    },
+  )
+
+  it.each([
+    ['recent', 'desc'],
+    ['name', 'asc'],
+    ['progress', 'desc'],
+    ['size', 'desc'],
+    ['mismatched', 'desc'],
+  ])('defaults missing %s direction to %s', async (field, direction) => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({ sort: { field } })),
+    )
+    const { loadState } = await import('./state.js')
+    expect(loadState().sort).toEqual({ field, direction })
+  })
+
+  it('rejects unknown sorting fields', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({ sort: { field: 'constructor', direction: 'desc' } })),
+    )
+    const { loadState } = await import('./state.js')
+    expect(loadState().sort).toEqual({ field: 'custom', direction: 'asc' })
+  })
   it('enables contribution sharing for fresh and legacy state', async () => {
     vi.stubGlobal(
       'GM_getValue',
