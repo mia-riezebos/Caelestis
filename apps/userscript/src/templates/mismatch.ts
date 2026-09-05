@@ -1433,10 +1433,16 @@ const mismatchAnswer = (
   }
   const pixels = tilePixels(tile)
   if (pixels === null) {
-    // Never decoded while we were watching. Go and get it rather than wait for wplace to.
+    // Keep the completed projection while an invalidated server mask or native tile reloads.
+    // A changed template cannot reuse coordinates classified against its previous pixels/position.
     stale.add(cacheKey)
     ensureTilePixels(tile)
-    return null
+    return held !== undefined &&
+      held.templateSource === template.indices &&
+      held.key === key &&
+      satisfies(held, collection)
+      ? answerFrom(held, kind, template)
+      : null
   }
 
   const existing = cache.get(cacheKey)
