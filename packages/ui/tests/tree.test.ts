@@ -224,6 +224,42 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('keeps exact pixel labels when expanded counts are compact', () => {
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          entries: model.entries.map((entry) =>
+            entry.type === 'row' && entry.key === 'local:city'
+              ? {
+                  ...entry,
+                  progress: {
+                    completed: 3012480,
+                    mismatched: 1,
+                    unpainted: 12543,
+                    known: 3025024,
+                    total: 3025024,
+                  },
+                }
+              : entry,
+          ),
+        },
+      },
+    })
+    flushSync()
+    document.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')?.click()
+    flushSync()
+    const completed = document.querySelector<HTMLElement>('.progress-legend .completed')
+    expect(completed?.textContent).toBe('3M')
+    expect(completed?.title).toBe('3,012,480 pixels completed')
+    expect(completed?.getAttribute('aria-label')).toBe(completed?.title)
+    expect(document.querySelector('.progress-legend .mismatched')?.getAttribute('aria-label')).toBe(
+      '1 pixel mismatched',
+    )
+    void unmount(component)
+  })
+
   it('uses roving focus and exposes progress detail on demand', async () => {
     const component = mount(TemplateTree, { target: document.body, props: { model } })
     flushSync()

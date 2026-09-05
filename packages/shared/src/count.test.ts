@@ -30,6 +30,7 @@ describe('compact counts', () => {
     (suffix, group) => {
       const boundary = 1000n ** BigInt(group)
       expect(formatCount(boundary, 'en-US')).toBe(`1${suffix}`)
+      expect(formatCount(Number(boundary), 'en-US')).toBe(`1${suffix}`)
       expect(formatCount((boundary * 125n) / 10n, 'en-US')).toBe(`12.5${suffix}`)
       expect(formatCount(boundary - 1n, 'en-US')).toBe(group === 1 ? '999' : `1${suffix}`)
     },
@@ -77,6 +78,7 @@ describe('compact counts', () => {
       '123,456,789,012,345,678,901,234,567,890',
     )
     expect(formatPixels(1, 'en-US')).toBe('1 pixel')
+    expect(formatPixels(-1, 'en-US')).toBe('-1 pixel')
     expect(formatPixels(0, 'en-US')).toBe('0 pixels')
     expect(formatPixels(12543, 'nl-NL')).toBe('12.543 pixels')
   })

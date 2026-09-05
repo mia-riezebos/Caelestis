@@ -36,6 +36,27 @@ const bucket = (resolution: number, bucketStart: number): HistoryBucket => ({
 })
 
 describe('rolling pace retention', () => {
+  it('uses Standard axis suffixes and exact pixel labels', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(3600, 0), bucket(3600, 3600)],
+        resolution: 3600,
+        from: 0,
+        to: 7200,
+        anchorCorrect: 3_000_000,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+    const labels = [...document.querySelectorAll('text[aria-label]')]
+    expect(labels.some((label) => label.textContent?.includes('M'))).toBe(true)
+    for (const label of labels) {
+      expect(label.querySelector('title')?.textContent).toBe(label.getAttribute('aria-label'))
+      expect(label.getAttribute('aria-label')).toMatch(/pixels?( per hour)?$/)
+    }
+  })
+
   it('keeps short windows selectable when only the recent history is granular enough', () => {
     const buckets = [bucket(3_600, 0), bucket(3_600, 3_600), bucket(3_600, 7_200)]
     const paceBuckets = [bucket(900, 4_500)]

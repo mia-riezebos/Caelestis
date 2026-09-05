@@ -248,6 +248,34 @@ beforeEach(() => {
 })
 
 describe('Wplace paint palette progress', () => {
+  it('compacts badges while keeping exact labels and restoring the native title', async () => {
+    harness.localProgress = [
+      { index: 0, completed: 0, mismatched: 0, unpainted: 12543, known: 12543, total: 12543 },
+    ]
+    const swatch = document.createElement('button')
+    swatch.id = 'color-1'
+    swatch.setAttribute('aria-label', 'Black')
+    swatch.title = 'Black (free)'
+    document.body.append(swatch)
+    const { installPaintPaletteProgress } = await import('./paint-palette.js')
+    installPaintPaletteProgress()
+    expect(
+      swatch.querySelector<HTMLElement & { model: { value: string } }>('caelestis-palette-progress')
+        ?.model.value,
+    ).toBe('12.5K')
+    expect(swatch.getAttribute('aria-label')).toContain('12,543 pixels left')
+    expect(swatch.title).toBe('Black (free). 12,543 pixels left in the focused template')
+
+    harness.localProgress = [
+      { index: 0, completed: 12543, mismatched: 0, unpainted: 0, known: 12543, total: 12543 },
+    ]
+    harness.mismatchListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
+    expect(swatch.getAttribute('aria-label')).toBe('Black')
+    expect(swatch.title).toBe('Black (free)')
+  })
+
   it('shows pixels left for only the focused template while progress is still loading', async () => {
     harness.localProgress = [
       { index: 0, completed: 12, mismatched: 0, unpainted: 0, known: 12, total: 112 },
@@ -260,6 +288,8 @@ describe('Wplace paint palette progress', () => {
       await import('./paint-palette.js')
 
     installPaintPaletteProgress()
+    // The shared module may already be installed; wait for the remounted swatch observer.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     expect(
       swatch.querySelector<HTMLElement & { model?: { value: string } }>(

@@ -7,6 +7,25 @@ import ColourProgress from '../src/progress/ColourProgress.svelte'
 beforeEach(() => document.body.replaceChildren())
 
 describe('colour progress', () => {
+  it('compacts pairs and exposes exact counts even when the narrow layout hides them', () => {
+    const component = mount(ColourProgress, {
+      target: document.body,
+      props: {
+        colours: [
+          { index: 1, correct: 12543, total: 400012 },
+          { index: 2, correct: 1, total: 1 },
+        ],
+      },
+    })
+    flushSync()
+    const rows = [...document.querySelectorAll('li')]
+    expect(rows[0]?.querySelector('.count')?.textContent).toBe('12.5K/400K')
+    expect(rows[0]?.getAttribute('aria-label')).toContain('12,543 of 400,012 pixels complete')
+    expect(rows[0]?.title).toBe(rows[0]?.getAttribute('aria-label'))
+    expect(rows[1]?.getAttribute('aria-label')).toContain('1 of 1 pixel complete')
+    void unmount(component)
+  })
+
   it('sorts visible rows and reports sort changes through its typed callback', () => {
     const onSortChange = vi.fn()
     const component = mount(ColourProgress, {
