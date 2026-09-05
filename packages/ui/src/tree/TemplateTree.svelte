@@ -296,6 +296,7 @@
           class:tall-heading={tallHeading}
           class:muted={entry.muted}
           class:focused-template={model.focusedKey === entry.key}
+          class:grief-alarm={entry.lifecycle?.finished && entry.lifecycle.griefed}
           class:dragging={draggingKey === entry.key}
           class:drop-before={dropTarget?.key === entry.key && dropTarget.position === 'before'}
           class:drop-after={dropTarget?.key === entry.key && dropTarget.position === 'after'}
@@ -458,6 +459,8 @@
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
   .row.focused-template { background: color-mix(in oklab, var(--caelestis-primary) 12%, transparent); }
   .row.focused-template::before { content: ''; position: absolute; inset-block: 0.25rem; inset-inline-start: 0; inline-size: 3px; border-radius: 999px; background: var(--caelestis-primary); }
+  .row.grief-alarm { background: color-mix(in oklab, var(--caelestis-danger) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--caelestis-danger) 65%, transparent); }
+  .row.grief-alarm:hover { background: color-mix(in oklab, var(--caelestis-danger) 20%, transparent); }
   .row:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .row.muted { opacity: 0.55; }
   .row.dragging { opacity: 0.25; }

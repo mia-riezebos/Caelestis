@@ -7,6 +7,7 @@ Finished and frozen are passive states. Mia chose emoji indicators so they fit b
 - Where there is no template icon, show the selected emoji at 16px.
 - Name the icons “Finished” and “Timelapse frozen” in tooltips and accessible labels.
 - Show grief as an inline ⚠️. Put the alarm description and exact pixel count in its tooltip and accessible live status.
+- Give griefed rows a red tint and inset red border, using the existing danger token. Preserve the focused-template rail and keyboard focus outline. The border must not change row dimensions.
 
 Keep the existing panel, controls, theme tokens, and focus indication. Both states occupy the same space without widening the row.
 
