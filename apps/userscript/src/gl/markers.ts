@@ -18,6 +18,7 @@ import {
   currentQuads,
   isDrawingTiles,
   registerDraftCanvas,
+  retainDraftCanvases,
   type TileQuad,
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
@@ -129,6 +130,7 @@ export const keepMarkersAboveDrafts = (): void => {
 
   const markers = order.indexOf(MARKER_LAYER_ID)
   let lastDraft = -1
+  const canvases = new Set<object>()
   for (let i = 0; i < order.length; i++) {
     const id = order[i] as string
     if (!DRAFT_LAYER.test(id)) continue
@@ -153,8 +155,10 @@ export const keepMarkersAboveDrafts = (): void => {
       count('paint:draft source gave no canvas')
       continue
     }
+    canvases.add(canvas)
     registerDraftCanvas(canvas, { x: Number(match[1]), y: Number(match[2]) })
   }
+  retainDraftCanvases(canvases)
   if (markers < 0 || lastDraft < 0 || markers > lastDraft) return
 
   const crosshair = map.getLayer?.(CROSSHAIR_LAYER) === undefined ? undefined : CROSSHAIR_LAYER

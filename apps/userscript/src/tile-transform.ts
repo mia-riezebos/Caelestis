@@ -1158,6 +1158,7 @@ export const markCanvasDirty = (canvas: object, rect: CanvasWriteRect | null = n
 
 /** Which tile a paint-preview canvas belongs to, once a draw has told us. */
 const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
+const paintCanvasOfTile = new Map<string, object>()
 
 /**
  * The draft layer, per tile: what has been placed but not submitted.
@@ -1366,11 +1367,33 @@ const queuedWrites = new WeakMap<object, number[]>()
 export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
   const known = tileOfPaintCanvas.get(canvas)
   if (known !== undefined && known.x === tile.x && known.y === tile.y) return
+  if (known !== undefined) retireDraftCanvas(canvas, known)
+  const key = tileKey(tile)
+  const previous = paintCanvasOfTile.get(key)
+  if (previous !== undefined) retireDraftCanvas(previous, tile)
+  paintCanvasOfTile.set(key, canvas)
   tileOfPaintCanvas.set(canvas, tile)
   markCanvasDirty(canvas)
   count('paint:named a draft canvas')
   const held = queuedWrites.get(canvas)
   if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
+}
+
+const retireDraftCanvas = (canvas: object, tile: TileCoord): void => {
+  tileOfPaintCanvas.delete(canvas)
+  paintCanvasOfTile.delete(tileKey(tile))
+  queuedWrites.delete(canvas)
+  dirtyCanvases.delete(canvas)
+  clearDraftPixels(tile)
+}
+
+/** Discard draft sources removed from Wplace's style, independently of its drawer animation. */
+export const retainDraftCanvases = (canvases: ReadonlySet<object>): void => {
+  for (const canvas of paintCanvasOfTile.values()) {
+    if (canvases.has(canvas)) continue
+    const tile = tileOfPaintCanvas.get(canvas)
+    if (tile !== undefined) retireDraftCanvas(canvas, tile)
+  }
 }
 
 /** Notified when a single placed pixel changes, in canvas coordinates. */
@@ -1595,18 +1618,22 @@ export const captureDraftPixels = (
   count('pixels:draft captured')
 }
 
-/** Discard Wplace's local draft state when its Paint drawer closes or cancels. */
-export const clearDraftPixels = (): void => {
+/** Discard all local drafts, or one tile whose native draft canvas was removed or replaced. */
+export const clearDraftPixels = (tile?: TileCoord): void => {
   // Native clears remove sparse offsets immediately but publish their changes in a microtask.
   // Cancellation must retain those coordinates too, before discarding the pending transaction.
   const affected = new Map<string, Set<number>>()
-  for (const [key, offsets] of draftedOffsets) affected.set(key, new Set(offsets.keys()))
-  for (const [key, { before }] of pendingDraftWrites) {
-    const offsets = affected.get(key) ?? new Set<number>()
-    for (const offset of before.keys()) offsets.add(offset)
+  const keys =
+    tile === undefined
+      ? new Set([...draftedOffsets.keys(), ...pendingDraftWrites.keys()])
+      : [tileKey(tile)]
+  for (const key of keys) {
+    const offsets = new Set(draftedOffsets.get(key)?.keys())
+    for (const offset of pendingDraftWrites.get(key)?.before.keys() ?? []) offsets.add(offset)
     affected.set(key, offsets)
   }
-  pendingDraftWrites.clear()
+  if (tile !== undefined) pendingDraftWrites.delete(tileKey(tile))
+  else pendingDraftWrites.clear()
   const changed: Array<{ tile: TileCoord; triples: number[] }> = []
   for (const [key, offsets] of affected) {
     const [x, y] = key.split('/').map(Number)
@@ -1619,9 +1646,16 @@ export const clearDraftPixels = (): void => {
     if (triples.length > 0) changed.push({ tile: { x, y }, triples })
   }
   // Delete first: every accounting listener now observes the canonical fallback to server pixels.
-  draftOfTile.clear()
-  transparentOfTile.clear()
-  draftedOffsets.clear()
+  if (tile !== undefined) {
+    const key = tileKey(tile)
+    draftOfTile.delete(key)
+    transparentOfTile.delete(key)
+    draftedOffsets.delete(key)
+  } else {
+    draftOfTile.clear()
+    transparentOfTile.clear()
+    draftedOffsets.clear()
+  }
   for (const one of changed) notifyPixelBatch(one.tile, one.triples, 'draft')
   if (changed.length > 0) count('pixels:drafts cleared')
 }

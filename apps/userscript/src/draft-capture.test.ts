@@ -175,6 +175,26 @@ it('does not reread an unchanged draft uploaded on every frame', async () => {
   expect(api.draftPixels(tile)?.[996_002]).toBe(2)
 })
 
+it('retires the previous draft when native Paint replaces its canvas before the drawer closes', async () => {
+  const { api, source, tile, pixel, Canvas, occupancy } = await setup()
+  source.context.putImageData(pixel(1), 2, 3)
+  occupancy.push(996_002)
+  await Promise.resolve()
+  const changes = vi.fn()
+  api.onTilePixels(changes)
+  occupancy.length = 0
+  const replacement = new Canvas()
+  api.registerDraftCanvas(replacement, tile)
+  expect(api.draftPixels(tile)?.[996_002] ?? 255).toBe(255)
+  expect(changes).toHaveBeenCalledWith(tile, [2, 996, 255], 'draft')
+  source.context.putImageData(pixel(1), 3, 3)
+  replacement.context.putImageData(pixel(2), 4, 3)
+  occupancy.push(996_004)
+  await Promise.resolve()
+  expect([...api.draftedPixelOffsets(tile)]).toEqual([996_004])
+  expect(api.draftPixels(tile)?.[996_004]).toBe(2)
+})
+
 it('recovers copied canvas writes and a replacement source on the same texture', async () => {
   const { api, source, tile, draw, pixel, reads, Canvas } = await setup()
   draw()
@@ -277,9 +297,12 @@ it.each([
   { width: 33, transparent: true, pendingClear: false, worker: false },
   { width: 1, transparent: false, pendingClear: true, worker: true },
   { width: 33, transparent: true, pendingClear: true, worker: true },
+  { width: 1, transparent: false, pendingClear: true, worker: false, removed: true, cold: true },
+  { width: 33, transparent: false, pendingClear: true, worker: true, removed: true, cold: true },
+  { width: 33, transparent: true, pendingClear: false, worker: false, removed: true, cold: true },
 ])(
-  'restores cancelled drafts: $width pixels, transparent=$transparent, pendingClear=$pendingClear, worker=$worker',
-  async ({ width, transparent, pendingClear, worker }) => {
+  'restores cancelled drafts: $width pixels, transparent=$transparent, pendingClear=$pendingClear, worker=$worker, removed=$removed, cold=$cold',
+  async ({ width, transparent, pendingClear, worker, removed, cold }) => {
     const { api, source, tile, pixel, occupancy } = await setup()
     let template: PlacedTemplate = {
       id: 'cancelled-draft',
@@ -314,7 +337,7 @@ it.each([
     const loadPixels = vi.fn(async () => committed)
     vi.doMock('./tile-transform.js', () => ({
       ...api,
-      tilePixels: () => committed,
+      tilePixels: () => (cold ? null : committed),
       loadTilePixels: loadPixels,
     }))
     vi.doMock('./server-mismatch.js', () => ({
@@ -371,7 +394,8 @@ it.each([
       for (let x = 0; x <= width; x++) source.context.clearRect(x, 3, 1, 1)
     }
     occupancy.length = 0
-    api.clearDraftPixels()
+    if (removed) api.retainDraftCanvases(new Set())
+    else api.clearDraftPixels()
     await Promise.resolve()
     if (worker) {
       finish?.()
@@ -387,12 +411,13 @@ it.each([
       mismatched: 2,
     })
     expect(pixelAccounting.read(template).draftPixelDeltas).toEqual([])
+    expect(loadPixels).not.toHaveBeenCalled()
     expect(
       await pixelAccounting.read(template).nearest(0, 'mismatched', {
         x: template.originX,
         y: template.originY,
       }),
     ).toMatchObject({ x: template.originX + width, y: template.originY })
-    expect(loadPixels).not.toHaveBeenCalled()
+    expect(loadPixels).toHaveBeenCalledTimes(cold ? 1 : 0)
   },
 )

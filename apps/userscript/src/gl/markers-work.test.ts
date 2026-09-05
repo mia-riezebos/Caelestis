@@ -115,6 +115,7 @@ vi.mock('../tile-transform.js', () => ({
   currentQuads: () => [fixture.quad],
   isDrawingTiles: () => true,
   registerDraftCanvas: fixture.registerDraftCanvas,
+  retainDraftCanvases: vi.fn(),
 }))
 vi.mock('../wplace-paint.js', () => ({
   isPaintOpen: () => fixture.paintOpen,
