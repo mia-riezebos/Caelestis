@@ -21,6 +21,7 @@ import {
   type AlarmEvaluationPhase,
   type AlarmPolicyResult,
   type AlarmProbe,
+  type AlarmStatusSnapshot,
   type AlarmTileRecord,
   assertValidAccessToken,
   assertValidBuckets,
@@ -1287,6 +1288,12 @@ export class MemorySqlStore implements SqlStore {
     return revision
   }
 
+  async readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot> {
+    const revision = this.statusRevisions.get(season)?.revision ?? 0
+    const templates = await this.readTemplateStatuses(season, true, { serverOwnedOnly: true })
+    return { revision, templates }
+  }
+
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -1307,7 +1314,9 @@ export class MemorySqlStore implements SqlStore {
       previous !== null &&
       (snapshot.observedAt < previous.evaluatedAt ||
         (snapshot.observationRevision !== undefined &&
-          snapshot.observationRevision <= previous.observationRevision))
+          (snapshot.observationRevision < previous.observationRevision ||
+            (phase.kind === 'observation' &&
+              snapshot.observationRevision === previous.observationRevision))))
     ) {
       return { state: previous, scheduleFollowUp: false }
     }

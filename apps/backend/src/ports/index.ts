@@ -27,6 +27,7 @@ export {
   type AlarmEvaluationPhase,
   type AlarmPolicyResult,
   type AlarmProbe,
+  type AlarmStatusSnapshot,
   type AlarmTileRecord,
   assertValidAccessToken,
   assertValidBuckets,

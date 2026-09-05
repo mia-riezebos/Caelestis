@@ -585,8 +585,13 @@ export interface TemplateAlarmSnapshot {
   readonly total: number
   readonly correct: number
   readonly observedAt: Millis
-  /** Present for live observations to order commits even when their timestamps are equal. */
+  /** Orders the committed evidence, including authoritative scans with equal timestamps. */
   readonly observationRevision?: number
+}
+
+export interface AlarmStatusSnapshot {
+  readonly revision: number
+  readonly templates: readonly TemplateStatus[]
 }
 
 export interface TemplateAlarmState {
@@ -1064,6 +1069,9 @@ export interface SqlStore {
     publicFingerprint: string,
     adminFingerprint: string,
   ): Promise<number | null>
+
+  /** Read authoritative template counts and their observation fence in one transaction. */
+  readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot>
 
   /** Atomically evaluate and persist one template snapshot. */
   evaluateTemplateAlarm(

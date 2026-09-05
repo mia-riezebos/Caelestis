@@ -55,6 +55,7 @@ import {
   type AlarmEvaluationPhase,
   type AlarmPolicyResult,
   type AlarmProbe,
+  type AlarmStatusSnapshot,
   type AlarmTileRecord,
   assertValidBuckets,
   assertValidContributionQuery,
@@ -2406,6 +2407,47 @@ export class D1SqlStore implements SqlStore {
     return row.revision
   }
 
+  async readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot> {
+    const [revisionResult, statusResult] = await this.client.batch([
+      this.client
+        .prepare(
+          'SELECT coalesce((SELECT revision FROM status_read_model_revisions WHERE season = ?), 0) AS revision',
+        )
+        .bind(season),
+      this.client
+        .prepare(`SELECT template.id AS template_id, version.total_pixels AS total,
+        sum(status.correct) AS correct, sum(status.wrong) AS wrong, sum(status.blank) AS blank,
+        max(status.observed_at_ms) AS observed_at_ms
+        FROM templates AS template
+        INNER JOIN template_versions AS version ON version.id = template.current_version_id
+        INNER JOIN template_alarm_tile_statuses AS status
+          ON status.template_id = template.id AND status.version_id = version.id
+        WHERE template.season = ?
+        GROUP BY template.id, version.total_pixels ORDER BY template.id`)
+        .bind(season),
+    ])
+    const row = revisionResult?.results[0] as { revision: number }
+    const statuses = statusResult?.results as Array<{
+      template_id: string
+      total: number
+      correct: number
+      wrong: number
+      blank: number
+      observed_at_ms: number
+    }>
+    return {
+      revision: row.revision,
+      templates: statuses.map((status) => ({
+        templateId: status.template_id,
+        total: status.total,
+        correct: status.correct,
+        wrong: status.wrong,
+        blank: status.blank,
+        observedAt: millis(status.observed_at_ms),
+      })),
+    }
+  }
+
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -2434,7 +2476,9 @@ export class D1SqlStore implements SqlStore {
         previousRow !== undefined &&
         (snapshot.observedAt < previousRow.evaluatedAtMs ||
           (snapshot.observationRevision !== undefined &&
-            snapshot.observationRevision <= previousRow.observationRevision))
+            (snapshot.observationRevision < previousRow.observationRevision ||
+              (phase.kind === 'observation' &&
+                snapshot.observationRevision === previousRow.observationRevision))))
       ) {
         return { state: previousState as TemplateAlarmState, scheduleFollowUp: false }
       }
