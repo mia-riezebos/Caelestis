@@ -544,7 +544,7 @@ const buildTree = <Result>(
           renderedParent(nodeTreeKey(server, node.id), node.parentId),
         ]),
       )
-      for (const template of serverTemplates) {
+      for (const template of serverRows?.templates ?? []) {
         const alarm = serverAlarmFor(server, template)
         if (alarm === null) continue
         let parentId = renderedParent(serverTemplateTreeKey(server, template.id), template.nodeId)

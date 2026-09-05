@@ -117,7 +117,7 @@ const treeRows = (callbacks: TreeCallbacks, query = '') =>
   )
 
 describe('tree drag and drop', () => {
-  it('rolls observed grief through collapsed ancestors and clears it after recovery or a move', () => {
+  it.each([true, false])('rolls observed grief through ancestors (published: %s)', (published) => {
     const server = connectedServer()
     const rootKey = `server:${SERVER_URL}`
     const parentKey = nodeTreeKey(server, SOURCE_NODE_ID)
@@ -138,6 +138,7 @@ describe('tree drag and drop', () => {
     const template = {
       ...serverTemplate(TEMPLATE_A_ID, DESTINATION_NODE_ID, 'Artwork', 1),
       finished: true,
+      published,
     }
     setState({ servers: [server], collapsed: [parentKey] })
     acceptServerSnapshot(server, { nodes, templates: [template] })
