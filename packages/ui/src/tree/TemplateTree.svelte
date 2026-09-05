@@ -329,58 +329,60 @@
               <span class="connector-elbow" style:inset-inline-start={`${current * 18 + 9}px`}></span>
             </span>
           {/if}
-          {#if entry.container}<span class:open={entry.expanded} class="caret" aria-hidden="true">›</span>{/if}
-          <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
-            <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
-          </TemplateLifecycle>
-          {#each entry.leadingActions ?? [] as item (item.id)}
-            <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-              <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
-            </button>
-          {/each}
-          {#if model.renamingKey === entry.key}
-            <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') emit({ type: 'cancel-rename', key: entry.key }) }} />
-          {:else}
-            <span class="name">{entry.name}</span>
-          {/if}
-          {#if entry.meta !== undefined}<span class="meta">{entry.meta}</span>{/if}
-          {#if entry.progress !== undefined && disclosure === undefined}
-            <span class="row-tail">
-              <span class="progress" aria-label={`${percent(entry.progress)}% complete`}>
-                <ProgressMeter progress={entry.progress} size="sm" />
+          <div class="row-heading">
+            {#if entry.container}<span class:open={entry.expanded} class="caret" aria-hidden="true">›</span>{/if}
+            <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
+              <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+            </TemplateLifecycle>
+            {#if entry.lifecycle?.finished && entry.lifecycle.griefed}
+              <TemplateState compact showLifecycle={false} {...entry.lifecycle} />
+            {/if}
+            {#each entry.leadingActions ?? [] as item (item.id)}
+              <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
+                <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+              </button>
+            {/each}
+            {#if model.renamingKey === entry.key}
+              <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') emit({ type: 'cancel-rename', key: entry.key }) }} />
+            {:else}
+              <span class="name" title={entry.name}>{entry.name}</span>
+            {/if}
+            {#if entry.meta !== undefined}<span class="meta">{entry.meta}</span>{/if}
+            {#if entry.progress !== undefined && disclosure === undefined}
+              <span class="row-tail">
+                <span class="progress" aria-label={`${percent(entry.progress)}% complete`}>
+                  <ProgressMeter progress={entry.progress} size="sm" />
+                </span>
+                <span class="actions">
+                  {#each entry.actions ?? [] as item (item.id)}
+                    <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
+                      <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+                    </button>
+                  {/each}
+                  <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
+                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
+                  </button>
+                </span>
               </span>
+            {:else if (entry.actions?.length ?? 0) > 0 || (entry.progress !== undefined && disclosure !== undefined)}
               <span class="actions">
                 {#each entry.actions ?? [] as item (item.id)}
                   <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
                   </button>
                 {/each}
-                <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
-                  <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
-                </button>
+                {#if entry.progress !== undefined && disclosure !== undefined}
+                  <button class="icon-action" type="button" title="Collapse progress" aria-label="Collapse progress" onclick={(event) => { event.stopPropagation(); disclosures.delete(entry.key); void focusRowAction(entry.key, 'Expand progress') }}>
+                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandLess} /></svg>
+                  </button>
+                {/if}
               </span>
-            </span>
-          {:else if (entry.actions?.length ?? 0) > 0 || (entry.progress !== undefined && disclosure !== undefined)}
-            <span class="actions">
-              {#each entry.actions ?? [] as item (item.id)}
-                <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-                  <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
-                </button>
-              {/each}
-              {#if entry.progress !== undefined && disclosure !== undefined}
-                <button class="icon-action" type="button" title="Collapse progress" aria-label="Collapse progress" onclick={(event) => { event.stopPropagation(); disclosures.delete(entry.key); void focusRowAction(entry.key, 'Expand progress') }}>
-                  <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandLess} /></svg>
-                </button>
-              {/if}
-            </span>
-          {/if}
-          <label class="visibility" title={entry.visible ? `Hide ${entry.name}` : `Show ${entry.name}`}>
-            <input type="checkbox" checked={entry.visible} aria-label={`Show ${entry.name}`} onclick={(event) => event.stopPropagation()} onchange={(event) => emit({ type: 'toggle-visible', key: entry.key, visible: event.currentTarget.checked })} />
-            <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
-          </label>
-          {#if entry.lifecycle?.finished && entry.lifecycle.griefed}
-            <div class="alarm-detail" style:padding-inline-start={`${1.25 + (entry.leadingActions?.length ?? 0) * 2.25}rem`}><TemplateState compact showLifecycle={false} {...entry.lifecycle} /></div>
-          {/if}
+            {/if}
+            <label class="visibility" title={entry.visible ? `Hide ${entry.name}` : `Show ${entry.name}`}>
+              <input type="checkbox" checked={entry.visible} aria-label={`Show ${entry.name}`} onclick={(event) => event.stopPropagation()} onchange={(event) => emit({ type: 'toggle-visible', key: entry.key, visible: event.currentTarget.checked })} />
+              <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
+            </label>
+          </div>
           {#if disclosure !== undefined && entry.progress !== undefined}
             <div class="progress-detail">
               <div class="progress-disclosure">
@@ -442,9 +444,10 @@
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
   select, .direction { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   select { padding-inline: 0.75rem 2rem; }
-  .scroller { flex: 1; min-block-size: 0; overflow-y: auto; }
+  .scroller { flex: 1; min-block-size: 0; overflow: auto; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
-  .row { position: relative; display: flex; flex-wrap: wrap; align-content: flex-start; align-items: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
+  .row { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
+  .row-heading { display: flex; flex-wrap: nowrap; align-items: center; gap: 0.25rem; min-inline-size: 0; white-space: nowrap; }
   .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; opacity: 0.28; pointer-events: none; }
   .connector-vertical, .connector-current { position: absolute; inset-block-start: 0; border-inline-start: 1px solid currentColor; }
   .connector-vertical, .connector-current.continues { inset-block-end: 0; }
@@ -461,26 +464,25 @@
   .row.drop-before { box-shadow: inset 0 2px var(--caelestis-primary); }
   .row.drop-after { box-shadow: inset 0 -2px var(--caelestis-primary); }
   .row.drop-inside { outline: 2px dashed var(--caelestis-primary); }
-  .caret { inline-size: 1rem; font-size: 1.25rem; text-align: center; transition: transform 120ms; }
+  .caret { flex: 0 0 1rem; inline-size: 1rem; font-size: 1.25rem; text-align: center; transition: transform 120ms; }
   .caret.open { transform: rotate(90deg); }
   .kind, .icon-action svg { inline-size: 1rem; block-size: 1rem; flex: 0 0 auto; fill: currentColor; }
   .name { min-inline-size: 2rem; overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
   .rename { min-inline-size: 4rem; flex: 1; }
   .meta { color: var(--caelestis-muted-text); font-size: 0.75rem; }
   .actions { display: flex; align-items: center; margin-inline-start: auto; transition: opacity 100ms ease-out; }
-  .row-tail { display: grid; flex: 0 0 6.5rem; inline-size: 6.5rem; min-inline-size: 0; align-items: center; }
+  .row-tail { display: grid; flex: 0 1 6.5rem; inline-size: 6.5rem; min-inline-size: min-content; align-items: center; }
   .row-tail > * { grid-area: 1 / 1; }
   .row-tail > .actions { justify-self: end; }
   .icon-action { display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; min-inline-size: 2rem; min-block-size: 2rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; }
   .icon-action:hover { background: color-mix(in oklch, currentColor 8%, transparent); }
-  .visibility { position: relative; display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; cursor: pointer; }
+  .visibility { position: relative; display: grid; flex: 0 0 1.5rem; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; cursor: pointer; }
   .visibility input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
   .visibility > span { display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border: 1px solid color-mix(in oklab, currentColor 44%, transparent); border-radius: 999px; }
   .visibility :global(svg) { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
   .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
-  .progress-detail { display: flex; flex-basis: 100%; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
-  .alarm-detail { flex-basis: 100%; min-inline-size: 0; }
+  .progress-detail { display: flex; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
   .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
   .progress-summary { container-type: inline-size; display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
   .progress-summary :global(.meter-wrap) { inline-size: 100%; }

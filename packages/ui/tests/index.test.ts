@@ -79,11 +79,11 @@ describe('@caelestis/ui', () => {
     state.pixelsLost = 1234
     document.body.append(state)
     await tick()
-    expect(state.shadowRoot?.textContent).toContain('Regression · 1,234 px lost')
+    expect(state.shadowRoot?.textContent).toContain('Regression · 1,234 pixels lost')
 
     state.alarmKind = 'sustained-griefing'
     await tick()
-    expect(state.shadowRoot?.textContent).toContain('Sustained griefing · 1,234 px lost')
+    expect(state.shadowRoot?.textContent).toContain('Sustained griefing · 1,234 pixels lost')
   })
 
   it.each([
@@ -124,19 +124,19 @@ describe('@caelestis/ui', () => {
       'Template alarm: Grief detected · Regression · 0 pixels lost',
     )
     expect(alarm()?.getAttribute('aria-atomic')).toBe('true')
-    expect(alarm()?.textContent).toContain('Grief detected · Regression · 0 px lost')
+    expect(alarm()?.textContent).toContain('Grief detected · Regression · 0 pixels lost')
 
     state.alarmKind = 'sustained-griefing'
     state.pixelsLost = 1234
     await tick()
-    expect(alarm()?.textContent).toContain('Sustained griefing · 1,234 px lost')
+    expect(alarm()?.textContent).toContain('Sustained griefing · 1,234 pixels lost')
     expect(alarm()?.textContent).not.toContain('Regression')
     expect(lifecycleLabels(state.shadowRoot)).toBe('Finished')
 
     state.alarmKind = undefined
     await tick()
     expect(alarm()?.textContent).toContain('Grief detected')
-    expect(alarm()?.textContent).not.toContain('px lost')
+    expect(alarm()?.textContent).not.toContain('pixels lost')
 
     state.griefed = false
     await tick()

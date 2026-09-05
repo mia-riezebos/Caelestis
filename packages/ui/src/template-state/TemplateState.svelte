@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { formatCount, formatExactCount, formatPixels } from '@caelestis/shared'
+  import { formatPixels } from '@caelestis/shared'
   import TemplateLifecycle from './TemplateLifecycle.svelte'
   import type { TemplateStateProps } from '../types.js'
 
@@ -26,11 +26,6 @@
       ? null
       : `${alarmTitle}${alarmKind === undefined || pixelsLost === undefined ? '' : ` · ${formatPixels(pixelsLost)} lost`}`,
   )
-  const alarmDisplay = $derived(
-    alarmTitle !== null && alarmKind !== undefined && pixelsLost !== undefined
-      ? `${alarmTitle} · ${compact ? formatCount(pixelsLost) : formatExactCount(pixelsLost)} px lost`
-      : alarmLabel,
-  )
 </script>
 
 {#if (showLifecycle && (finished || frozen)) || alarmLabel !== null}
@@ -40,8 +35,8 @@
     {/if}
     {#if alarmLabel !== null}
       <span class="alarm" role="status" title={alarmLabel} aria-label={`Template alarm: ${alarmLabel}`} aria-atomic="true">
-        <span class="alarm-mark" aria-hidden="true">!</span>
-        <span>{alarmDisplay}</span>
+        <span class="alarm-mark" aria-hidden="true">⚠️</span>
+        <span class="alarm-description">{alarmLabel}</span>
       </span>
     {/if}
   </span>
@@ -49,41 +44,23 @@
 
 <style>
   .states {
-    --_text: var(--caelestis-text, oklch(0.26 0.025 264));
-    --_danger: var(--caelestis-danger, oklch(0.59 0.2 27));
     display: inline-flex;
-    flex-direction: column;
+    flex: 0 0 auto;
+    align-items: center;
     gap: 0.25rem;
-    max-inline-size: 100%;
-    color: var(--_text);
-    font: 500 0.8125rem/1.25rem ui-sans-serif, system-ui, sans-serif;
+    white-space: nowrap;
   }
 
   .alarm {
-    display: flex;
-    align-items: baseline;
-    gap: 0.375rem;
-    padding: 0.1875rem 0.375rem;
-    border-inline-start: 2px solid var(--_danger);
-    background: color-mix(in oklch, var(--_danger) 10%, transparent);
-    font-weight: 700;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: 1rem;
+    block-size: 1rem;
+    font: 1rem/1 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
   }
 
-  .alarm-mark { font-weight: 800; }
-  .compact { font-size: 0.75rem; line-height: 1rem; }
-
-  @media (prefers-color-scheme: dark) {
-    .states {
-      --_text: var(--caelestis-text, oklch(0.91 0.015 264));
-      --_danger: var(--caelestis-danger, oklch(0.72 0.18 27));
-    }
-  }
-
-  @media (prefers-contrast: more) {
-    .alarm { border-inline-start-width: 3px; background: transparent; }
-  }
-
-  @media (forced-colors: active) {
-    .alarm { color: CanvasText; border-color: CanvasText; background: Canvas; }
-  }
+  .compact .alarm { font-size: 0.875rem; }
+  .alarm-description { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>
