@@ -18,12 +18,14 @@ import { warn } from '../debug.js'
 import { createLocalFolder, removeLocalFolder } from '../local-folders.js'
 import { viewportCentre } from '../main.js'
 import type { ServerTemplate } from '../server-cache.js'
+import { requestServerSync } from '../server-sync-coordinator.js'
 import {
   type ConnectedServer,
   countNodeSubtree,
   createNode,
   deleteNode as deleteNodeOnServer,
   deleteTemplate as deleteTemplateOnServer,
+  dismissTemplateAlarm,
   getState,
   isCurrentServerConnection,
   listServerNodes,
@@ -35,6 +37,7 @@ import {
   setState,
   uploadTemplateVersion,
 } from '../state.js'
+import { serverAlarmFor } from '../telemetry.js'
 import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
@@ -1025,6 +1028,24 @@ export const openContextMenu = (
   ]
   const published = publishedStateOf(target)
   const lifecycle = templateStateOf(target)
+  const alarm =
+    target.server === null || lifecycle === null ? null : serverAlarmFor(target.server, lifecycle)
+  const dismissGrief: readonly [TreeIcon, string, () => void] | null =
+    alarm === null || target.server === null
+      ? null
+      : [
+          'check',
+          'Dismiss grief alert',
+          () => {
+            const server = target.server
+            if (server === null) return
+            void dismissTemplateAlarm(server, alarm.templateId, alarm.id).then((result) => {
+              if (!result.ok) toast(result.message, 'error')
+              requestServerSync('manual', 'telemetry-alarms', server)
+              rerender()
+            })
+          },
+        ]
   const folderTemplates = folderTemplatesFor(target)
   const folderPublished =
     folderTemplates !== null &&
@@ -1049,6 +1070,7 @@ export const openContextMenu = (
         : [
             ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
             ['download', 'Export .wplace', () => void exportTemplate(target)],
+            ...(dismissGrief === null ? [] : [dismissGrief]),
             published
               ? [
                   'eyeOff',

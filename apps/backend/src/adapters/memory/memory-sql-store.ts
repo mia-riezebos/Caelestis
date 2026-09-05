@@ -2,6 +2,7 @@ import {
   type Alarm,
   type ContributionDay,
   type Millis,
+  millis,
   type Seconds,
   sameTemplateSurface,
   seconds,
@@ -1296,6 +1297,20 @@ export class MemorySqlStore implements SqlStore {
       evaluatedAt: snapshot.observedAt,
     })
     return result
+  }
+
+  async dismissTemplateAlarm(templateId: string, alarmId: string, now: Millis): Promise<boolean> {
+    const state = this.alarmStates.get(templateId)
+    if (state?.alarm?.id !== alarmId) return false
+    this.alarmStates.set(templateId, {
+      ...state,
+      peakCorrect: state.peakCorrect - state.alarm.pixelsLost,
+      alarm: null,
+      probeDueAt: null,
+      probePixelsLost: null,
+      evaluatedAt: millis(Math.max(state.evaluatedAt, now)),
+    })
+    return true
   }
 
   async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {

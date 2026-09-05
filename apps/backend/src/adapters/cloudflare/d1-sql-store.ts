@@ -2462,6 +2462,30 @@ export class D1SqlStore implements SqlStore {
     throw new Error(`alarm state stayed contended for template ${snapshot.templateId}`)
   }
 
+  async dismissTemplateAlarm(templateId: string, alarmId: string, now: Millis): Promise<boolean> {
+    const write = await this.database
+      .update(templateAlarmStates)
+      .set({
+        peakCorrect: sql`${templateAlarmStates.peakCorrect} - ${templateAlarmStates.pixelsLost}`,
+        alarmId: null,
+        kind: null,
+        pixelsLost: null,
+        firstSeenMs: null,
+        lastSeenMs: null,
+        probeDueAtMs: null,
+        probePixelsLost: null,
+        evaluatedAtMs: sql`max(${templateAlarmStates.evaluatedAtMs}, ${now})`,
+        revision: sql`${templateAlarmStates.revision} + 1`,
+      })
+      .where(
+        and(
+          eq(templateAlarmStates.templateId, templateId),
+          eq(templateAlarmStates.alarmId, alarmId),
+        ),
+      )
+    return Number(write.meta.changes) > 0
+  }
+
   async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {
     const rows = await this.database
       .select({ state: templateAlarmStates })

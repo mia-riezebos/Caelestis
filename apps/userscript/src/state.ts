@@ -1656,6 +1656,26 @@ export const listServerTemplates = async (
     : contents.templates
 }
 
+/** Dismiss an observed grief episode for everyone on this server. */
+export const dismissTemplateAlarm = async (
+  server: ConnectedServer,
+  templateId: string,
+  alarmId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await requestServerMutation(
+      serverEndpoint(server.url, `/admin/templates/${templateId}/alarms/${alarmId}`),
+      { method: 'DELETE', headers: adminHeaders(server) },
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    return response.ok
+      ? { ok: true }
+      : { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
 export const patchTemplate = async (
   server: ConnectedServer,
   templateId: string,

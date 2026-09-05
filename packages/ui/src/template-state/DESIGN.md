@@ -10,6 +10,7 @@ Finished and frozen are passive states. Mia chose emoji indicators so they fit b
 - Give griefed rows a red tint and inset red border, using the existing danger token. Preserve the focused-template rail and keyboard focus outline. The border must not change row dimensions.
 - Use the server's regression episode, not the current mismatch count, for grief warnings. New incorrect paint alone does not create an episode.
 - Bubble active episodes through every parent folder and the server row, including collapsed and search-hidden descendants. Container warnings say “Contains griefed templates” and do not imply a finished lifecycle state.
+- Admins can choose “Dismiss grief alert” from a template's context menu. This clears the episode for everyone and resets its correct-pixel baseline. Later observed losses can raise a new episode.
 
 Keep the existing panel, controls, theme tokens, and focus indication. Both states occupy the same space without widening the row.
 

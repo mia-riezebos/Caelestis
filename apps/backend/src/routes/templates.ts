@@ -11,6 +11,7 @@ import { runBackendHttp } from '../runtime/hono.js'
 import {
   createTemplate,
   deleteTemplate,
+  dismissTemplateAlarm,
   patchTemplate,
   readBlob,
   replaceTemplateVersion,
@@ -48,6 +49,17 @@ export const createTemplateRoutes = (runtime: BackendRuntime, auth: AuthOptions)
   const routes = new Hono()
 
   routes.use('/*', requireScopeEffect(runtime, auth, 'admin'))
+
+  routes.delete('/:templateId/alarms/:alarmId', (c) => {
+    const templateId = c.req.param('templateId')
+    const alarmId = c.req.param('alarmId')
+    if (!UUID_V7.test(templateId) || !UUID_V7.test(alarmId)) {
+      return c.json({ error: 'templateId and alarmId must be canonical lowercase UUIDv7' }, 400)
+    }
+    return runBackendHttp(c, runtime, dismissTemplateAlarm(templateId, alarmId), (result) =>
+      c.json(result),
+    )
+  })
 
   routes.post('/', async (c) => {
     if (!c.req.header('content-type')?.toLowerCase().startsWith('multipart/form-data')) {

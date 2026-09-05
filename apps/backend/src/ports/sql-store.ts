@@ -1068,6 +1068,9 @@ export interface SqlStore {
 
   readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]>
 
+  /** Clear the observed episode and reset its baseline, fencing older scans and follow-ups. */
+  dismissTemplateAlarm(templateId: string, alarmId: string, now: Millis): Promise<boolean>
+
   listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]>
 
   nextAlarmProbeAt(): Promise<Millis | null>

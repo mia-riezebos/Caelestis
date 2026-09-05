@@ -328,6 +328,43 @@ describe('telemetry routes', () => {
     expect(connections.every((connection) => connection.anonymous)).toBe(true)
   })
 
+  it('allows only admins to dismiss an exact grief episode and broadcasts the change', async () => {
+    const notifyAlarmChange = vi.fn(async () => undefined)
+    const { app, sql } = await harness({
+      notifyAlarmChange,
+      applyCommittedChange: async () => null,
+      reconcileSnapshot: async () => ({
+        cacheOutcome: 'hit',
+        snapshot: { revision: 0, templates: [] },
+      }),
+    })
+    const templateId = await createPublishedTemplate(app)
+    const versionId = (await sql.readTemplate(templateId))?.currentVersionId ?? ''
+    const snapshot = (correct: number) => ({
+      templateId,
+      versionId,
+      total: 100_000,
+      correct,
+      observedAt: millis(Date.now() - 1_000),
+    })
+    await sql.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, EVENT_ID)
+    await sql.evaluateTemplateAlarm(snapshot(59_900), { kind: 'scan' }, EVENT_ID)
+    const url = `/admin/templates/${templateId}/alarms/${EVENT_ID}`
+    const readToken = await mintToken(app, 'read')
+    expect((await app.request(url, { method: 'DELETE', headers: bearer(readToken) })).status).toBe(
+      403,
+    )
+    expect(await sql.readActiveAlarms(0, false)).toHaveLength(1)
+    expect((await app.request(url, { method: 'DELETE', headers: bearer(BOOTSTRAP) })).status).toBe(
+      200,
+    )
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
+    expect(notifyAlarmChange).toHaveBeenCalledExactlyOnceWith(0)
+    expect((await app.request(url, { method: 'DELETE', headers: bearer(BOOTSTRAP) })).status).toBe(
+      409,
+    )
+  })
+
   it('serves active alarms with read scope and hides unpublished templates from readers', async () => {
     const { app, sql } = await harness()
     const templateId = await createPublishedTemplate(app)

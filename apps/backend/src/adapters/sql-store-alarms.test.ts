@@ -69,6 +69,46 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
 
   afterEach(() => harness.close())
 
+  it('dismisses an episode durably without reopening it on unchanged or stale observations', async () => {
+    await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
+    await expect(store.dismissTemplateAlarm(TEMPLATE_ID, 'wrong-episode', PROBE_AT)).resolves.toBe(
+      false,
+    )
+    await expect(store.dismissTemplateAlarm(TEMPLATE_ID, ALARM_ID, PROBE_AT)).resolves.toBe(true)
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([])
+    await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
+    await store.evaluateTemplateAlarm(snapshot(60_000, SIX_HOURS_LATER), { kind: 'scan' }, 'stale')
+    await store.evaluateTemplateAlarm(
+      snapshot(59_700, PROBE_AT),
+      {
+        kind: 'follow-up',
+        alarmId: ALARM_ID,
+        pixelsLost: 100,
+        dueAt: PROBE_AT,
+      },
+      'stale-follow-up',
+    )
+    await store.evaluateTemplateAlarm(
+      snapshot(59_900, millis(PROBE_AT + 1)),
+      { kind: 'scan' },
+      'unchanged',
+    )
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([])
+    await store.evaluateTemplateAlarm(
+      snapshot(59_800, millis(PROBE_AT + 2)),
+      { kind: 'scan' },
+      NEXT_VERSION_ID,
+    )
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
+      expect.objectContaining({ id: NEXT_VERSION_ID, pixelsLost: 100 }),
+    ])
+    await expect(
+      store.dismissTemplateAlarm(TEMPLATE_ID, ALARM_ID, millis(PROBE_AT + 3)),
+    ).resolves.toBe(false)
+    await expect(store.readActiveAlarms(1, false)).resolves.toHaveLength(1)
+  })
+
   it('persists one alarm episode and promotes it only after a worsening due probe', async () => {
     await expect(
       store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID),
