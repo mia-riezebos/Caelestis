@@ -125,24 +125,34 @@
   const hasActivity = $derived(points.some((p) => p.placed > 0))
 
   // ── Time window ──────────────────────────────────────────────────────────────────────────────
-  // `null` shows the whole fetched range. Everything below reads the clamped `view`, so a window
-  // chosen before a re-fetch can never point outside the data. Pace and cumulatives are still
-  // derived from the full data, so a window's left edge shows real values, not a restart from zero.
+  // `null` shows the whole fetched range. Presets stay attached to a moving live edge, while
+  // pointer and keyboard selections keep their absolute timestamps across a re-fetch.
   let selection = $state<TimeWindow | null>(null)
+  let relativePreset = $state<number | null>(null)
   const span = $derived(to - from)
   const MIN_SELECTION = $derived(Math.min(span, resolution * 6))
-  const view = $derived<TimeWindow>(
-    selection === null ? { from, to } : clampWindow(selection, from, to, MIN_SELECTION),
-  )
+  const view = $derived.by<TimeWindow>(() => {
+    if (relativePreset !== null) {
+      return clampWindow({ from: to - relativePreset, to }, from, to, MIN_SELECTION)
+    }
+    return selection === null ? { from, to } : clampWindow(selection, from, to, MIN_SELECTION)
+  })
   const zoomed = $derived(view.from > from || view.to < to)
   const resetWindow = (): void => {
+    relativePreset = null
+    selection = null
+  }
+  const selectWindow = (window: TimeWindow): void => {
+    relativePreset = null
+    selection = window
+  }
+  const selectPreset = (seconds: number): void => {
+    relativePreset = seconds
     selection = null
   }
 
   const presets = $derived(availableRangePresets(span, MIN_SELECTION))
-  const presetWindow = (seconds: number): TimeWindow => ({ from: to - seconds, to })
-  const presetActive = (seconds: number): boolean =>
-    view.to === to && view.from === presetWindow(seconds).from
+  const presetActive = (seconds: number): boolean => relativePreset === seconds
 
   const lerpPoint = (a: Point, b: Point, fraction: number): Point => ({
     t: a.t + (b.t - a.t) * fraction,
@@ -513,14 +523,16 @@
       const drag = plotDrag
       plotDrag = null
       if (drag !== null) {
-        selection = clampWindow(
-          {
-            from: snapTime(Math.min(drag.from, drag.to), resolution, from, to),
-            to: snapTime(Math.max(drag.from, drag.to), resolution, from, to),
-          },
-          from,
-          to,
-          MIN_SELECTION,
+        selectWindow(
+          clampWindow(
+            {
+              from: snapTime(Math.min(drag.from, drag.to), resolution, from, to),
+              to: snapTime(Math.max(drag.from, drag.to), resolution, from, to),
+            },
+            from,
+            to,
+            MIN_SELECTION,
+          ),
         )
       }
       if (clientX === undefined || clientY === undefined) return
@@ -625,19 +637,19 @@
       if (!moved && Math.abs(moveEvent.clientX - startX) > 4) moved = true
       switch (kind) {
         case 'head':
-          selection = { from: Math.min(current, view.to - MIN_SELECTION), to: view.to }
+          selectWindow({ from: Math.min(current, view.to - MIN_SELECTION), to: view.to })
           break
         case 'tail':
-          selection = { from: view.from, to: Math.max(current, view.from + MIN_SELECTION) }
+          selectWindow({ from: view.from, to: Math.max(current, view.from + MIN_SELECTION) })
           break
         case 'move': {
           const size = start.to - start.from
           const next = Math.min(to - size, Math.max(from, current - grabOffset))
-          selection = { from: next, to: next + size }
+          selectWindow({ from: next, to: next + size })
           break
         }
         case 'new':
-          if (moved) selection = { from: Math.min(t, current), to: Math.max(t, current) }
+          if (moved) selectWindow({ from: Math.min(t, current), to: Math.max(t, current) })
           break
       }
     }
@@ -671,16 +683,18 @@
         delta = keyStep * 10
         break
       case 'Home':
-        selection =
+        selectWindow(
           edge === 'head'
             ? { from, to: view.to }
-            : { from: view.from, to: view.from + MIN_SELECTION }
+            : { from: view.from, to: view.from + MIN_SELECTION },
+        )
         break
       case 'End':
-        selection =
+        selectWindow(
           edge === 'head'
             ? { from: view.to - MIN_SELECTION, to: view.to }
-            : { from: view.from, to }
+            : { from: view.from, to },
+        )
         break
       case 'Escape':
         resetWindow()
@@ -690,10 +704,14 @@
     }
     event.preventDefault()
     if (delta === null) return
-    selection =
+    selectWindow(
       edge === 'head'
         ? { from: Math.min(view.to - MIN_SELECTION, Math.max(from, view.from + delta)), to: view.to }
-        : { from: view.from, to: Math.max(view.from + MIN_SELECTION, Math.min(to, view.to + delta)) }
+        : {
+            from: view.from,
+            to: Math.max(view.from + MIN_SELECTION, Math.min(to, view.to + delta)),
+          },
+    )
   }
 
   const grips = $derived<readonly { edge: Edge; t: number; min: number; max: number }[]>([
@@ -820,7 +838,7 @@
               aria-pressed={activePreset === preset.key}
               data-range-preset={preset.key}
               title="Show {preset.label}"
-              onclick={() => (selection = presetWindow(preset.seconds))}
+              onclick={() => selectPreset(preset.seconds)}
             >
               {preset.key}
             </button>
