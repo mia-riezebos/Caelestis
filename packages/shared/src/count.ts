@@ -26,6 +26,8 @@ const PREFIXES = [
   ['', 'Ce', 'Dn', 'Tc', 'Qe', 'Qu', 'Sc', 'Si', 'Oe', 'Ne'],
 ] as const
 const GROUPS = ['', 'MI-', 'MC-', 'NA-', 'PC-', 'FM-', 'AT-', 'ZP-']
+// Three-digit rounding promotes 999.5 to 1K, including fractional chart values.
+const COMPACT_ROUNDING_THRESHOLD = 999.5
 type Locale = Intl.LocalesArgument
 
 // Antimatter Dimensions Standard notation, src/utils.ts (MIT).
@@ -57,12 +59,17 @@ export const formatExactCount = (value: number | bigint, locale?: Locale): strin
     ? value.toLocaleString(locale)
     : value.toLocaleString(locale, { maximumSignificantDigits: 21 })
 
-/** Standard-notation count with at most one decimal; small values stay exact. */
+/** Standard-notation count with at most three significant digits; integers below 1,000 stay exact. */
 export const formatCount = (value: number | bigint, locale?: Locale): string => {
   const negative = value < 0
   const absolute = negative ? -value : value
-  if (absolute < 1000 || (typeof value === 'number' && !Number.isFinite(value))) {
-    return formatExactCount(value, locale)
+  if (
+    absolute < COMPACT_ROUNDING_THRESHOLD ||
+    (typeof value === 'number' && !Number.isFinite(value))
+  ) {
+    return typeof value === 'bigint'
+      ? formatExactCount(value, locale)
+      : value.toLocaleString(locale, { maximumSignificantDigits: 3 })
   }
   // Decimal digits avoid logarithm errors at suffix boundaries and bigint-to-number overflow.
   const [coefficient = '', power = '0'] = absolute.toString().split('e')
@@ -71,17 +78,17 @@ export const formatCount = (value: number | bigint, locale?: Locale): string => 
   const digits = integer + fraction
   let group = Math.floor(exponent / 3)
   const leading = (exponent % 3) + 1
-  const padded = digits.padEnd(leading + 2, '0')
-  let tenths = Number(padded.slice(0, leading + 1))
-  if (Number(padded[leading + 1]) >= 5) tenths++
-  if (tenths === 10_000) {
-    tenths = 10
+  const padded = digits.padEnd(4, '0')
+  let significant = Number(padded.slice(0, 3))
+  if (Number(padded[3]) >= 5) significant++
+  let mantissa = significant / 10 ** (3 - leading)
+  if (mantissa === 1000) {
+    mantissa = 1
     group++
   }
   const ending = suffix(group)
-  const mantissa = (negative ? -tenths : tenths) / 10
-  const localized = mantissa.toLocaleString(locale, {
-    maximumFractionDigits: 1,
+  const localized = (negative ? -mantissa : mantissa).toLocaleString(locale, {
+    maximumSignificantDigits: 3,
     useGrouping: false,
   })
   return ending === undefined ? `${localized}e${group * 3}` : `${localized}${ending}`

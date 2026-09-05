@@ -251,7 +251,7 @@ describe('template tree', () => {
     document.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')?.click()
     flushSync()
     const completed = document.querySelector<HTMLElement>('.progress-legend .completed')
-    expect(completed?.textContent).toBe('3M')
+    expect(completed?.textContent).toBe('3.01M')
     expect(completed?.title).toBe('3,012,480 pixels completed')
     expect(completed?.getAttribute('aria-label')).toBe(completed?.title)
     expect(document.querySelector('.progress-legend .mismatched')?.getAttribute('aria-label')).toBe(
