@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+
+import { type Alarm, millis } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   acceptServerSnapshot,
@@ -12,6 +14,7 @@ import { startRenaming, type TreeCallbacks, templateTreeAdapter } from './tree.j
 
 const navigationHarness = vi.hoisted(() => ({ navigateTo: vi.fn() }))
 const telemetryHarness = vi.hoisted(() => ({
+  alarms: new Map<string, Alarm>(),
   progress: new Map<
     string,
     { completed: number; mismatched: number; unpainted: number; known: number; total: number }
@@ -26,6 +29,8 @@ vi.mock('../telemetry.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../telemetry.js')>()
   return {
     ...original,
+    serverAlarmFor: (_server: unknown, template: { id: string }) =>
+      telemetryHarness.alarms.get(template.id) ?? null,
     serverProgressFor: (
       server: Parameters<typeof original.serverProgressFor>[0],
       template: Parameters<typeof original.serverProgressFor>[1],
@@ -66,6 +71,7 @@ const TEMPLATE_B_ID = '019fed50-87a1-7523-a88c-bdeafad49685'
 
 afterEach(() => {
   telemetryHarness.progress.clear()
+  telemetryHarness.alarms.clear()
   forgetServerRows(SERVER_URL)
   setState({
     servers: [],
@@ -111,6 +117,59 @@ const treeRows = (callbacks: TreeCallbacks, query = '') =>
   )
 
 describe('tree drag and drop', () => {
+  it('rolls observed grief through collapsed ancestors and clears it after recovery or a move', () => {
+    const server = connectedServer()
+    const rootKey = `server:${SERVER_URL}`
+    const parentKey = nodeTreeKey(server, SOURCE_NODE_ID)
+    const childKey = nodeTreeKey(server, DESTINATION_NODE_ID)
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onContextMenu: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onDropInLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+    const nodes = [
+      serverNode(SOURCE_NODE_ID, 'Parent'),
+      { ...serverNode(DESTINATION_NODE_ID, 'Child'), parentId: SOURCE_NODE_ID },
+    ]
+    const template = {
+      ...serverTemplate(TEMPLATE_A_ID, DESTINATION_NODE_ID, 'Artwork', 1),
+      finished: true,
+    }
+    setState({ servers: [server], collapsed: [parentKey] })
+    acceptServerSnapshot(server, { nodes, templates: [template] })
+    telemetryHarness.progress.set(TEMPLATE_A_ID, {
+      completed: 50,
+      mismatched: 50,
+      unpainted: 0,
+      known: 100,
+      total: 100,
+    })
+    const warnings = (query = '') =>
+      treeRows(callbacks, query)
+        .filter((row) => row.containsGrief)
+        .map((row) => row.key)
+    expect(warnings()).toEqual([])
+    telemetryHarness.alarms.set(TEMPLATE_A_ID, {
+      id: 'episode',
+      templateId: TEMPLATE_A_ID,
+      kind: 'regression',
+      pixelsLost: 10,
+      firstSeen: millis(1),
+      lastSeen: millis(1),
+    })
+    expect(warnings()).toEqual([rootKey, parentKey])
+    expect(warnings('Parent')).toEqual([rootKey, parentKey])
+    setState({ collapsed: [childKey] })
+    expect(warnings()).toEqual([rootKey, parentKey, childKey])
+    optimisticallyPlaceServerRow(server, serverTemplateTreeKey(server, TEMPLATE_A_ID), null)
+    expect(warnings()).toEqual([rootKey])
+    telemetryHarness.alarms.clear()
+    expect(warnings()).toEqual([])
+  })
   it('commits a Local folder rename through the tree interface', async () => {
     setState({
       localFolders: [{ id: 'folder', parentId: null, name: 'Before', visible: true }],

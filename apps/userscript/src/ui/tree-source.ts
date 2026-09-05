@@ -15,6 +15,7 @@ export interface TreeItem {
   readonly childrenOf: string | null
   readonly createdAt?: number
   readonly meta?: string | undefined
+  readonly containsGrief?: boolean
   readonly lifecycle?: {
     readonly finished: boolean
     readonly frozen: boolean

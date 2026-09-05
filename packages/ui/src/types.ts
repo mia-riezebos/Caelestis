@@ -17,6 +17,8 @@ export interface TemplateStateProps {
   finished?: boolean
   frozen?: boolean
   griefed?: boolean
+  /** A container has at least one griefed descendant template. */
+  containsGrief?: boolean
   alarmKind?: AlarmKind | undefined
   pixelsLost?: number | undefined
   compact?: boolean
@@ -305,6 +307,8 @@ export interface TreeRowModel {
   readonly visible: boolean
   readonly muted?: boolean
   readonly meta?: string
+  /** Includes descendants hidden by collapsed folders or search. */
+  readonly containsGrief?: boolean
   readonly lifecycle?: {
     readonly finished: boolean
     readonly frozen: boolean

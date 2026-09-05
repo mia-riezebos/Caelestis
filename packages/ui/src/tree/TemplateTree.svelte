@@ -292,11 +292,12 @@
         {@const tallHeading = entry.progress !== undefined || (entry.actions?.length ?? 0) > 0 || (entry.leadingActions?.length ?? 0) > 0}
         {@const connectorWidth = (entry.branches?.length ?? 0) * branchIndent + (entry.container ? 0 : leafHeadingIndent)}
         {@const progressDetailOffset = entry.container ? leafHeadingIndent : 0}
+        {@const griefAlarm = entry.containsGrief || entry.lifecycle?.griefed}
         <div
           class:tall-heading={tallHeading}
           class:muted={entry.muted}
           class:focused-template={model.focusedKey === entry.key}
-          class:grief-alarm={entry.lifecycle?.finished && entry.lifecycle.griefed}
+          class:grief-alarm={griefAlarm}
           class:dragging={draggingKey === entry.key}
           class:drop-before={dropTarget?.key === entry.key && dropTarget.position === 'before'}
           class:drop-after={dropTarget?.key === entry.key && dropTarget.position === 'after'}
@@ -335,8 +336,8 @@
             <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
               <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
             </TemplateLifecycle>
-            {#if entry.lifecycle?.finished && entry.lifecycle.griefed}
-              <TemplateState compact showLifecycle={false} {...entry.lifecycle} />
+            {#if griefAlarm}
+              <TemplateState compact showLifecycle={false} containsGrief={entry.containsGrief ?? false} {...entry.lifecycle} />
             {/if}
             {#each entry.leadingActions ?? [] as item (item.id)}
               <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>

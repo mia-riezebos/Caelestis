@@ -20,6 +20,7 @@ export interface TreeRowOptions {
   readonly depth: number
   readonly branches?: readonly boolean[] | undefined
   readonly meta?: string | undefined
+  readonly containsGrief?: boolean
   readonly lifecycle?:
     | { readonly finished: boolean; readonly frozen: boolean; readonly griefed: boolean }
     | undefined

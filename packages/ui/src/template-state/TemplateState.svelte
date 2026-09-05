@@ -7,19 +7,20 @@
     finished = false,
     frozen = false,
     griefed = false,
+    containsGrief = false,
     alarmKind,
     pixelsLost,
     compact = false,
     showLifecycle = true,
   }: TemplateStateProps = $props()
 
-  const griefDetected = $derived(finished && griefed)
+  const griefDetected = $derived(griefed)
   const alarmTitle = $derived(
     alarmKind === 'sustained-griefing'
       ? 'Sustained griefing'
       : alarmKind === 'regression'
         ? griefDetected ? 'Grief detected · Regression' : 'Regression'
-        : griefDetected ? 'Grief detected' : null,
+        : griefDetected ? 'Grief detected' : containsGrief ? 'Contains griefed templates' : null,
   )
   const alarmLabel = $derived(
     alarmTitle === null

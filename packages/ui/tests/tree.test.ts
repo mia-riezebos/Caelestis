@@ -60,6 +60,29 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
+  it('warns on a collapsed folder without giving it a finished lifecycle indicator', () => {
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          entries: model.entries.map((entry) =>
+            entry.type === 'row' && entry.container
+              ? { ...entry, expanded: false, containsGrief: true }
+              : entry,
+          ),
+        },
+      },
+    })
+    flushSync()
+    const row = document.querySelector('.row[aria-expanded="false"]')
+    expect(row?.querySelector('[role="status"]')?.getAttribute('title')).toBe(
+      'Contains griefed templates',
+    )
+    expect(row?.querySelector('[aria-label="Finished"]')).toBeNull()
+    expect(row?.querySelector('.progress-detail')).toBeNull()
+    void unmount(component)
+  })
   it('preserves focused-row controls and progress alongside combined lifecycle and alarm state', () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, {

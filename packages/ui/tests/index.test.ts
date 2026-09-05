@@ -59,18 +59,17 @@ describe('@caelestis/ui', () => {
     expect(state.childNodes).toHaveLength(0)
   })
 
-  it('only raises the grief alarm for a finished template', async () => {
+  it('shows an observed grief alarm independently of completion state', async () => {
     const state = new CaelestisTemplateState()
     state.griefed = true
     document.body.append(state)
     await tick()
-    expect(state.shadowRoot?.textContent).not.toContain('Grief detected')
-
-    state.finished = true
-    await tick()
     expect(state.shadowRoot?.querySelector('[role="status"]')?.textContent).toContain(
       'Grief detected',
     )
+    state.griefed = false
+    await tick()
+    expect(state.shadowRoot?.querySelector('[role="status"]')).toBeNull()
   })
 
   it('renders server-owned regression and sustained-griefing alarms independently', async () => {

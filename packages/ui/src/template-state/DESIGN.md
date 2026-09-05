@@ -8,6 +8,8 @@ Finished and frozen are passive states. Mia chose emoji indicators so they fit b
 - Name the icons “Finished” and “Timelapse frozen” in tooltips and accessible labels.
 - Show grief as an inline ⚠️. Put the alarm description and exact pixel count in its tooltip and accessible live status.
 - Give griefed rows a red tint and inset red border, using the existing danger token. Preserve the focused-template rail and keyboard focus outline. The border must not change row dimensions.
+- Use the server's regression episode, not the current mismatch count, for grief warnings. New incorrect paint alone does not create an episode.
+- Bubble active episodes through every parent folder and the server row, including collapsed and search-hidden descendants. Container warnings say “Contains griefed templates” and do not imply a finished lifecycle state.
 
 Keep the existing panel, controls, theme tokens, and focus indication. Both states occupy the same space without widening the row.
 
