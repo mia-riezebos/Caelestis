@@ -204,6 +204,108 @@
   }
 }
 
+/*
+ * transitions.dev "Tabs sliding" (16-tabs-sliding.md): the range presets on the progress chart
+ * are a segmented control whose active pill slides between options. The tunables map onto the
+ * daisyUI palette so a theme swap re-skins the bar and pill with everything else. The control
+ * sits on the chart's `btn-xs` scale, so the tab height and padding are the only values changed
+ * from the reference snippet; the extra rules below it hide the pill while no preset matches the
+ * window and give it a hairline so it still reads on the dark theme's whisper-quiet surfaces.
+ */
+:root {
+  --tabs-dur: 250ms;
+  --tabs-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --tabs-text-muted: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  --tabs-text-active: var(--color-base-content);
+  --tabs-bar-bg: var(--color-base-200);
+  --tabs-pill-bg: var(--color-base-100);
+}
+
+/* The bar is just a flex container with padding for the pill
+   to sit inside. Buttons sit on z-index: 1, the pill on z-index: 0,
+   so labels read above the pill background. */
+.t-tabs {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 48px;
+  background: var(--tabs-bar-bg);
+}
+.t-tab {
+  position: relative;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  height: 24px;
+  padding: 2px 10px;
+  color: var(--tabs-text-muted);
+  cursor: pointer;
+  border-radius: 48px;
+  z-index: 1;
+  transition: color var(--tabs-dur) var(--tabs-ease);
+}
+.t-tab:not([aria-pressed="true"]):hover,
+.t-tab[aria-pressed="true"] {
+  color: var(--tabs-text-active);
+}
+
+/* The pill: width + transform are written inline by JS so
+   the transition tweens between the previous and next
+   measured positions. */
+.t-tabs-pill {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  height: 24px;
+  width: 0;
+  background: var(--tabs-pill-bg);
+  border-radius: 48px;
+  transform: translateX(0);
+  transition:
+    transform var(--tabs-dur) var(--tabs-ease),
+    width     var(--tabs-dur) var(--tabs-ease),
+    opacity   var(--tabs-dur) var(--tabs-ease);
+  will-change: transform, width;
+  z-index: 0;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--color-base-content) 10%, transparent),
+    0 1px 2px color-mix(in oklab, var(--color-base-content) 8%, transparent);
+}
+.t-tabs[data-empty] .t-tabs-pill {
+  opacity: 0;
+}
+.t-tab:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-tabs-pill, .t-tab { transition: none !important; }
+}
+
+/*
+ * Progress chart load motion. The series and the brush's minimap wipe in from the left when the
+ * chart mounts, so the history arrives as one stroke of time rather than a fade. The clip is
+ * released once the wipe has run; the negative insets keep stroke caps and the live marker's halo
+ * out of the clip while it is active. Pace lines switched on later only fade, so the wipe stays a
+ * once-per-load moment, and the global reduced-motion rule above turns it into a cut.
+ */
+.chart-reveal {
+  clip-path: none;
+  animation: chart-reveal 600ms ease-out;
+}
+@keyframes chart-reveal {
+  from {
+    clip-path: inset(-12px 100% -12px -12px);
+  }
+  to {
+    clip-path: inset(-12px -12px -12px -12px);
+  }
+}
+
 @utility pixelated {
   image-rendering: pixelated;
 }
