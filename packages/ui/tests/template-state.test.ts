@@ -14,8 +14,9 @@ it.each([true, false])('preserves exact alarm values when compact=%s', (compact)
   })
   flushSync()
   const alarm = document.querySelector<HTMLElement>('[role="status"]')
-  expect(alarm?.querySelector('span:last-child')?.textContent).toBe(
-    compact ? 'Regression · 12.5K px lost' : 'Regression · 12,543 px lost',
+  expect(alarm?.querySelector('.alarm-mark')?.textContent).toBe('⚠️')
+  expect(alarm?.querySelector('.alarm-description')?.textContent).toBe(
+    'Regression · 12,543 pixels lost',
   )
   expect(alarm?.title).toBe('Regression · 12,543 pixels lost')
   expect(alarm?.getAttribute('aria-label')).toBe(`Template alarm: ${alarm?.title}`)
