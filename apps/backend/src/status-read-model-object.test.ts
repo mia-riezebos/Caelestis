@@ -332,6 +332,39 @@ describe('status read-model Durable Object', () => {
     expect(coverageToken).toBeTruthy()
   })
 
+  it('retains unrelated tile generations across metadata updates and a restarted coverage read', async () => {
+    database = new SqliteD1Database()
+    const state = objectState(new Map())
+    const object = new StatusReadModelObject(state, { DB: database } as unknown as Env)
+    const tile = { x: 1, y: 2 }
+    const prepared = await object.prepareTileGenerationCommit(8, tile)
+    await object.applyCommittedTileGeneration(8, {
+      ...prepared,
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    const offers = [{ deliveryId: 'unchanged', tile, hash: 'a'.repeat(64) }]
+    await object.notifyManifestChange(8, undefined, false)
+    expect(object.resolveCurrentTileOffers(8, 'public', offers).acknowledgedDeliveryIds).toEqual([
+      'unchanged',
+    ])
+    const unrelated = await object.prepareTileGenerationCommit(8, { x: 80, y: 80 })
+    expect(unrelated.coverageToken).toBe(prepared.coverageToken)
+    expect(object.resolveCurrentTileOffers(8, 'public', offers).acknowledgedDeliveryIds).toEqual([
+      'unchanged',
+    ])
+    const restarted = new StatusReadModelObject(state, { DB: database } as unknown as Env)
+    expect((await restarted.prepareTileGenerationCommit(8, tile)).coverageToken).toBe(
+      prepared.coverageToken,
+    )
+    await object.notifyManifestChange(8)
+    expect(object.resolveCurrentTileOffers(8, 'public', offers).acknowledgedDeliveryIds).toEqual([])
+  })
+
   it('stops acknowledging tile generations while manifest invalidation is pending', async () => {
     database = new SqliteD1Database()
     const state = objectState(new Map())
@@ -525,9 +558,9 @@ describe('status read-model Durable Object', () => {
     })
     const chunks = [...held.keys()].filter((key) => key.startsWith('manifest-read-model:v1:chunk:'))
     expect(chunks.length).toBeGreaterThan(1)
-    await expect(createChunkedManifestPersistence(state.storage, 4).loadRevision?.()).resolves.toBe(
-      7,
-    )
+    await expect(
+      createChunkedManifestPersistence(state.storage, 4).loadCoverageRevision?.(),
+    ).resolves.toBe(7)
     await expect(createChunkedManifestPersistence(state.storage, 4).load()).resolves.toMatchObject({
       season: 4,
       revision: 7,
@@ -539,6 +572,7 @@ describe('status read-model Durable Object', () => {
     await expect(broken.load()).resolves.toEqual({
       season: 4,
       revision: 7,
+      coverageRevision: 7,
       entries: [],
     })
     const input = {
