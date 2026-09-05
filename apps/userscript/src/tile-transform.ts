@@ -10,6 +10,7 @@ import { announceCanvasWrite, type CanvasWriteRect } from './canvas-write.js'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
+import { nextPixelObservation, recordPixelObservation } from './pixel-observation.js'
 import { measureProfile } from './profile.js'
 import { buildExactRgbIndex, canvasRgbIndex } from './rgb-index.js'
 import { draftedPixelsIn } from './templates/drafted.js'
@@ -702,7 +703,8 @@ const notifyPaintSubmission = (submission: PaintSubmission): void => {
   }
 }
 
-const notifyAcceptedPaint = (paint: AcceptedPaint): void => {
+const notifyAcceptedPaint = (paint: AcceptedPaint, accepted: number): void => {
+  retainAcceptedPaint(paint, accepted)
   for (const listener of acceptedPaintListeners) {
     try {
       listener(paint)
@@ -730,6 +732,7 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
         if (url !== null) {
           tile = tileFromUrl(url)
           if (tile !== null) {
+            tileRequestOrder.set(tile, nextPixelObservation())
             tileUrlShape = url.replace(`/${tile.x}/${tile.y}.png`, '/{x}/{y}.png')
             shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
           }
@@ -744,6 +747,9 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
               : new realm.Request(input, args[1])
             if (request.method.toUpperCase() === 'POST') {
               paintSubmission = { identity: {} }
+              const submitted = nextPixelObservation()
+              submissionOrder.set(paintSubmission.identity, submitted)
+              pendingSubmissions.add(submitted)
               notifyPaintSubmission(paintSubmission)
               paintBody = request.json().catch(() => null)
             }
@@ -752,116 +758,134 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
       } catch {
         // An unusual input that cannot be observed safely is simply untapped.
       }
-      const pendingResponse = nativeFetch.apply(this as never, args)
+      let pendingResponse: ReturnType<typeof fetch>
+      try {
+        pendingResponse = nativeFetch.apply(this as never, args)
+      } catch (error) {
+        finishSubmission(paintSubmission)
+        throw error
+      }
       if (tile === null && paintBody === null) return pendingResponse
-      return pendingResponse.then((response) => {
-        if (paintBody !== null && paintSubmission !== null && response.ok) {
-          const submission = paintSubmission
+      return pendingResponse.then(
+        (response) => {
+          if (paintBody !== null && paintSubmission !== null && response.ok) {
+            const submission = paintSubmission
+            const accepted = nextPixelObservation()
+            try {
+              const responseBody = response
+                .clone()
+                .json()
+                .catch(() => null)
+              void Promise.all([paintBody, responseBody]).then(([body, answer]) => {
+                try {
+                  const paint = observedPaintFrom(body, answer, submission)
+                  if (paint !== null) notifyAcceptedPaint(paint, accepted)
+                } finally {
+                  finishSubmission(submission)
+                }
+              })
+            } catch {
+              finishSubmission(submission)
+              count('telemetry:paint-response-unreadable')
+            }
+          } else finishSubmission(paintSubmission)
+          if (tile === null) return response
+          const observedTile = tile
+          // Real tile pixels are only tapped, never composited with ours: that would make the two layers
+          // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
+          // origin tile, normalized to the transparent response wplace's service worker ordinarily gives.
           try {
-            const responseBody = response
-              .clone()
-              .json()
-              .catch(() => null)
-            void Promise.all([paintBody, responseBody]).then(([body, answer]) => {
-              const paint = observedPaintFrom(body, answer, submission)
-              if (paint !== null) notifyAcceptedPaint(paint)
-            })
-          } catch {
-            count('telemetry:paint-response-unreadable')
-          }
-        }
-        if (tile === null) return response
-        const observedTile = tile
-        // Real tile pixels are only tapped, never composited with ours: that would make the two layers
-        // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
-        // origin tile, normalized to the transparent response wplace's service worker ordinarily gives.
-        try {
-          // With no controlling service worker, the origin returns 404 HTML for an unpainted tile. The
-          // service worker normally turns that into a tiny transparent PNG; do the same so first visits
-          // still give MapLibre a texture and therefore give the overlay a quad to align against.
-          if (shouldNormalizeMissing) {
-            response = normalizeMissingTileResponse(response, realm)
-          }
-          if (!response.ok) return response
-          // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
-          // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
-          // inferred. Overriding blob()/arrayBuffer() as own properties shadows Response.prototype;
-          // without that the platform mints a fresh Blob on every call and the tag is lost, which is
-          // the whole reason the first attempt at this matched zero tiles.
-          // The native response is handed back, with only its two read methods shadowed. Replacing it
-          // with a freshly constructed `Response` lost `url`, `redirected` and `type`, and gave it an
-          // `arrayBuffer` that never set `bodyUsed` and never rejected on a second read — so any wplace
-          // code that consults ordinary response metadata got the wrong answer from a tap that claims to
-          // be transparent. Own properties shadow `Response.prototype`, which is what makes wplace call
-          // these and receive the objects this tagged, rather than fresh ones the platform mints.
-          const tappedResponse = response
-          const nativeArrayBuffer = response.arrayBuffer
-          const nativeBlob = response.blob
-          const recordRead = (bytes: number): void => {
-            // The size queue is only a last resort. Queue when the page actually consumes the body,
-            // rather than delaying fetch to duplicate every response pre-emptively.
-            enqueueBySize(bytes, observedTile)
-            log('fetch', `tile ${observedTile.x}/${observedTile.y}`, {
-              bytes,
-              status: response.status,
-              sizesWaiting: tilesByByteLength.size,
-            })
-          }
-          const wrappedArrayBuffer = {
-            arrayBuffer(this: Response): Promise<ArrayBuffer> {
-              return nativeArrayBuffer.call(this).then((own) => {
-                try {
-                  if (this === tappedResponse) {
-                    tileOfBuffer.set(own, observedTile)
-                    recordRead(own.byteLength)
-                    notifyFetchedTile(observedTile, new Uint8Array(own))
-                  }
-                } catch {
-                  // The native read already consumed the body successfully; observation cannot reject it.
-                }
-                return own
+            // With no controlling service worker, the origin returns 404 HTML for an unpainted tile. The
+            // service worker normally turns that into a tiny transparent PNG; do the same so first visits
+            // still give MapLibre a texture and therefore give the overlay a quad to align against.
+            if (shouldNormalizeMissing) {
+              response = normalizeMissingTileResponse(response, realm)
+            }
+            if (!response.ok) return response
+            // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
+            // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
+            // inferred. Overriding blob()/arrayBuffer() as own properties shadows Response.prototype;
+            // without that the platform mints a fresh Blob on every call and the tag is lost, which is
+            // the whole reason the first attempt at this matched zero tiles.
+            // The native response is handed back, with only its two read methods shadowed. Replacing it
+            // with a freshly constructed `Response` lost `url`, `redirected` and `type`, and gave it an
+            // `arrayBuffer` that never set `bodyUsed` and never rejected on a second read — so any wplace
+            // code that consults ordinary response metadata got the wrong answer from a tap that claims to
+            // be transparent. Own properties shadow `Response.prototype`, which is what makes wplace call
+            // these and receive the objects this tagged, rather than fresh ones the platform mints.
+            const tappedResponse = response
+            const nativeArrayBuffer = response.arrayBuffer
+            const nativeBlob = response.blob
+            const recordRead = (bytes: number): void => {
+              // The size queue is only a last resort. Queue when the page actually consumes the body,
+              // rather than delaying fetch to duplicate every response pre-emptively.
+              enqueueBySize(bytes, observedTile)
+              log('fetch', `tile ${observedTile.x}/${observedTile.y}`, {
+                bytes,
+                status: response.status,
+                sizesWaiting: tilesByByteLength.size,
               })
-            },
-          }.arrayBuffer
-          const wrappedBlob = {
-            blob(this: Response): Promise<Blob> {
-              return nativeBlob.call(this).then((blob) => {
-                try {
-                  if (this === tappedResponse) {
-                    tileOfBlob.set(blob, observedTile)
-                    recordRead(blob.size)
-                    if (interestedTileListeners(observedTile).length > 0) {
-                      void blob
-                        .arrayBuffer()
-                        .then((bytes) => notifyFetchedTile(observedTile, new Uint8Array(bytes)))
-                        .catch(() => {})
+            }
+            const wrappedArrayBuffer = {
+              arrayBuffer(this: Response): Promise<ArrayBuffer> {
+                return nativeArrayBuffer.call(this).then((own) => {
+                  try {
+                    if (this === tappedResponse) {
+                      tileOfBuffer.set(own, observedTile)
+                      recordRead(own.byteLength)
+                      notifyFetchedTile(observedTile, new Uint8Array(own))
                     }
+                  } catch {
+                    // The native read already consumed the body successfully; observation cannot reject it.
                   }
-                } catch {
-                  // The native read already consumed the body successfully; observation cannot reject it.
-                }
-                return blob
-              })
-            },
-          }.blob
-          const arrayBufferHook = installValueHook(response, 'arrayBuffer', wrappedArrayBuffer)
-          if (arrayBufferHook === null) return response
-          const blobHook = installValueHook(response, 'blob', wrappedBlob)
-          if (blobHook === null) {
-            arrayBufferHook.restore()
+                  return own
+                })
+              },
+            }.arrayBuffer
+            const wrappedBlob = {
+              blob(this: Response): Promise<Blob> {
+                return nativeBlob.call(this).then((blob) => {
+                  try {
+                    if (this === tappedResponse) {
+                      tileOfBlob.set(blob, observedTile)
+                      recordRead(blob.size)
+                      if (interestedTileListeners(observedTile).length > 0) {
+                        void blob
+                          .arrayBuffer()
+                          .then((bytes) => notifyFetchedTile(observedTile, new Uint8Array(bytes)))
+                          .catch(() => {})
+                      }
+                    }
+                  } catch {
+                    // The native read already consumed the body successfully; observation cannot reject it.
+                  }
+                  return blob
+                })
+              },
+            }.blob
+            const arrayBufferHook = installValueHook(response, 'arrayBuffer', wrappedArrayBuffer)
+            if (arrayBufferHook === null) return response
+            const blobHook = installValueHook(response, 'blob', wrappedBlob)
+            if (blobHook === null) {
+              arrayBufferHook.restore()
+              return response
+            }
+            return response
+          } catch (error) {
+            // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
+            warn(
+              'fetch',
+              `could not read body for ${observedTile.x}/${observedTile.y}`,
+              String(error),
+            )
             return response
           }
-          return response
-        } catch (error) {
-          // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
-          warn(
-            'fetch',
-            `could not read body for ${observedTile.x}/${observedTile.y}`,
-            String(error),
-          )
-          return response
-        }
-      })
+        },
+        (error: unknown) => {
+          finishSubmission(paintSubmission)
+          throw error
+        },
+      )
     },
   }.fetch as typeof globalThis.fetch
   return installValueHook(realm, 'fetch', wrappedFetch)
@@ -932,6 +956,101 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
  * drawer's source-only colour picker.
  */
 const pixelsOfTile = new Map<string, Uint8Array>()
+// Object identity carries request order through the existing buffer/blob/bitmap attribution taps.
+const submissionOrder = new WeakMap<object, number>()
+const pendingSubmissions = new Set<number>()
+const tileRequestOrder = new WeakMap<TileCoord, number>()
+const observedTileOrder = new Map<string, number>()
+interface AcceptedPixel {
+  readonly colour: number
+  readonly submitted: number
+  readonly accepted: number
+  pending: boolean
+}
+// Observed entries also fence late responses from older, overlapping submissions.
+const acceptedPixels = new Map<string, { pixels: Map<number, AcceptedPixel>; pending: number }>()
+const comparisonDrafts = new Map<string, Uint8Array>()
+
+const pruneSubmissionFences = (): void => {
+  const oldestPending = Math.min(...pendingSubmissions)
+  for (const [key, held] of acceptedPixels) {
+    for (const [offset, pixel] of held.pixels) {
+      if (!pixel.pending && pixel.submitted < oldestPending) held.pixels.delete(offset)
+    }
+    if (held.pixels.size === 0) acceptedPixels.delete(key)
+  }
+}
+
+const finishSubmission = (submission: PaintSubmission | null): void => {
+  if (submission === null) return
+  const submitted = submissionOrder.get(submission.identity)
+  if (submitted !== undefined) pendingSubmissions.delete(submitted)
+  pruneSubmissionFences()
+}
+
+const retainAcceptedPaint = (paint: AcceptedPaint, accepted: number): void => {
+  const submitted = submissionOrder.get(paint.submission.identity)
+  if (submitted === undefined) return
+  let total = 0
+  for (const tile of paint.tiles) {
+    const { x, y, colors } = tile.pixels
+    if (x.length !== y.length || x.length !== colors.length) return
+    if (x.some((value) => value < 0 || value >= TILE_SIZE)) return
+    if (y.some((value) => value < 0 || value >= TILE_SIZE)) return
+    if (colors.some((value) => value < 0 || value >= WPLACE_PALETTE.length)) return
+    total += x.length
+  }
+  // A count alone cannot identify which pixels succeeded in a partial submission.
+  if (total === 0 || paint.painted !== total) return
+  for (const tile of paint.tiles) {
+    const key = tileKey(tile)
+    let held = acceptedPixels.get(key)
+    if (held === undefined) {
+      held = { pixels: new Map(), pending: 0 }
+      acceptedPixels.set(key, held)
+    }
+    const triples: number[] = []
+    for (let i = 0; i < tile.pixels.x.length; i++) {
+      const x = tile.pixels.x[i] as number
+      const y = tile.pixels.y[i] as number
+      const offset = y * TILE_SIZE + x
+      const previous = held.pixels.get(offset)
+      if ((previous?.submitted ?? -1) >= submitted) continue
+      const colour = tile.pixels.colors[i] as number
+      const pending = (observedTileOrder.get(key) ?? 0) <= accepted
+      held.pending += Number(pending) - Number(previous?.pending === true)
+      held.pixels.set(offset, { colour, submitted, accepted, pending })
+      triples.push(x, y, colour)
+    }
+    notifyPixelBatch(
+      tile,
+      triples,
+      (observedTileOrder.get(key) ?? 0) > accepted ? 'observed' : 'accepted',
+    )
+  }
+}
+
+/** Native drafts override retained paint; an observation excludes paint confirmed before its request. */
+export const comparisonDraftPixels = (tile: TileCoord, observed = 0): Uint8Array | null => {
+  const key = tileKey(tile)
+  const native = draftPixels(tile)
+  const held = acceptedPixels.get(key)
+  if (held === undefined || held.pending === 0) return native
+  if (
+    observed > 0 &&
+    ![...held.pixels.values()].some((pixel) => pixel.pending && pixel.accepted > observed)
+  )
+    return native
+  const cached = comparisonDrafts.get(key)
+  if (observed === 0 && cached !== undefined) return cached
+  const combined = native?.slice() ?? new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
+  for (const [offset, pixel] of held.pixels) {
+    if (pixel.pending && pixel.accepted > observed && combined[offset] === UNPAINTED)
+      combined[offset] = pixel.colour
+  }
+  if (observed === 0) comparisonDrafts.set(key, combined)
+  return combined
+}
 const tilePixelAvailabilityListeners = new Set<(tile: TileCoord) => void>()
 const tilePixelEvictionListeners = new Set<(tile: TileCoord) => void>()
 const KEEP_TILE_PIXELS = tilePixelCacheLimit(
@@ -998,6 +1117,8 @@ const rememberTilePixels = (key: string, pixels: Uint8Array): void => {
     const oldest = pixelsOfTile.keys().next()
     if (oldest.done) break
     pixelsOfTile.delete(oldest.value)
+    comparisonDrafts.delete(oldest.value)
+    observedTileOrder.delete(oldest.value)
     const evicted = parseTileKey(oldest.value)
     if (evicted !== null) {
       for (const listener of tilePixelEvictionListeners) listener(evicted)
@@ -1244,7 +1365,7 @@ export const draftPixels = (tile: TileCoord): Uint8Array | null => {
 const transparentOfTile = new Map<string, Set<number>>()
 
 type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
-export type PixelChangeSource = 'draft' | 'server'
+export type PixelChangeSource = 'draft' | 'server' | 'accepted' | 'observed'
 type PixelBatchListener = (
   tile: TileCoord,
   triples: readonly number[],
@@ -1258,6 +1379,7 @@ const notifyPixelBatch = (
   triples: readonly number[],
   source: PixelChangeSource,
 ): void => {
+  comparisonDrafts.delete(tileKey(tile))
   if (triples.length === 0) return
   for (const listener of pixelBatchListeners) {
     try {
@@ -1677,7 +1799,20 @@ const capture = (
   dirty: CanvasWriteRect | null = null,
 ): boolean =>
   measureProfile(from === 'preview' ? 'Draft pixel capture' : 'Tile pixel capture', () => {
-    if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return false
+    const key = tileKey(tile)
+    const retained = from === 'tile' ? acceptedPixels.get(key) : undefined
+    if (
+      (retained?.pending ?? 0) === 0 &&
+      (!capturePixels || (captureInterest !== null && !captureInterest(tile)))
+    )
+      return false
+    const observation = tileRequestOrder.get(tile)
+    if (
+      from === 'tile' &&
+      observation !== undefined &&
+      observation < (observedTileOrder.get(key) ?? 0)
+    )
+      return false
     /**
      * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
      *
@@ -1691,7 +1826,6 @@ const capture = (
     const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
     if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return false
     try {
-      const key = tileKey(tile)
       if (from === 'preview' && dirty !== null && draftOfTile.has(key)) {
         const context = reusableCaptureContext()
         if (context === null) return false
@@ -1745,6 +1879,19 @@ const capture = (
         return true
       }
 
+      const retired: number[] = []
+      if (observation !== undefined) {
+        observedTileOrder.set(key, observation)
+        for (const [offset, pixel] of retained?.pixels ?? []) {
+          if (observation <= pixel.accepted) continue
+          if (pixel.pending && retained !== undefined) retained.pending--
+          pixel.pending = false
+          const x = offset % TILE_SIZE
+          retired.push(x, (offset - x) / TILE_SIZE, indices[offset] as number)
+        }
+      }
+      comparisonDrafts.delete(key)
+
       /**
        * A re-read of a tile we already hold becomes a diff, not a replacement.
        *
@@ -1755,12 +1902,18 @@ const capture = (
        */
       const existing = pixelsOfTile.get(key)
       if (existing === undefined || existing.length !== indices.length) {
+        if (observation !== undefined) recordPixelObservation(indices, observation)
         rememberTilePixels(key, indices)
+        notifyPixelBatch(tile, retired, 'observed')
+        pruneSubmissionFences()
         count('pixels:captured')
         return true
       }
       rememberTilePixels(key, existing)
+      if (observation !== undefined) recordPixelObservation(existing, observation)
       apply(tile, existing, indices, 'server')
+      notifyPixelBatch(tile, retired, 'observed')
+      pruneSubmissionFences()
       count('pixels:re-read as a diff')
       return true
     } catch (error) {

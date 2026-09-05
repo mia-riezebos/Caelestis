@@ -1,5 +1,6 @@
 import { decodeMismatchMask, type MismatchMask, TILE_SIZE, type TileCoord } from '@caelestis/shared'
 import { userscriptClientHeaders } from './client-metrics.js'
+import { nextPixelObservation, recordPixelObservation } from './pixel-observation.js'
 import {
   deleteCachedServerMismatch,
   deleteCachedServerMismatches,
@@ -104,6 +105,7 @@ const readMask = async (
     isCurrentServerConnection(server) &&
     (serverInvalidations.get(server.url) ?? 0) === serverInvalidation &&
     (tileInvalidations.get(invalidationKey) ?? 0) === invalidation
+  const requested = nextPixelObservation()
   const request = fetch(
     serverEndpoint(
       server.url,
@@ -169,8 +171,9 @@ const readMask = async (
     return
   }
   misses.delete(key)
-  if (cachedBytes !== null && equalBytes(cachedBytes, bytes)) return
-  void writeCachedServerMismatch(key, bytes)
+  recordPixelObservation(mask.packed, requested)
+  if (cachedBytes === null || !equalBytes(cachedBytes, bytes))
+    void writeCachedServerMismatch(key, bytes)
   masks.set(key, { server, mask, lastUsed: ++useGeneration })
   notify()
 }

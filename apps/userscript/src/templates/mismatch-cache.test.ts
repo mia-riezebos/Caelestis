@@ -30,6 +30,7 @@ const harness = vi.hoisted(() => ({
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
 vi.mock('../tile-transform.js', () => ({
   draftPixels: () => harness.draft,
+  comparisonDraftPixels: () => harness.draft,
   ensureTilePixels: vi.fn(),
   draftedPixelOffsets: function* () {
     if (harness.draft?.[0] !== 255) yield 0
