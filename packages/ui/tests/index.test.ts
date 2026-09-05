@@ -119,11 +119,9 @@ describe('@caelestis/ui', () => {
 
     const alarm = () => state.shadowRoot?.querySelector('[role="status"]')
     expect(state.shadowRoot?.querySelectorAll('[role="status"]')).toHaveLength(1)
-    expect(alarm()?.getAttribute('aria-label')).toBe(
-      'Template alarm: Grief detected · Regression · 0 pixels lost',
-    )
+    expect(alarm()?.getAttribute('aria-label')).toBe('Template alarm: Regression · 0 pixels lost')
     expect(alarm()?.getAttribute('aria-atomic')).toBe('true')
-    expect(alarm()?.textContent).toContain('Grief detected · Regression · 0 pixels lost')
+    expect(alarm()?.textContent).toContain('Regression · 0 pixels lost')
 
     state.alarmKind = 'sustained-griefing'
     state.pixelsLost = 1234

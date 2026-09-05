@@ -7,7 +7,7 @@
     finished = false,
     frozen = false,
     griefed = false,
-    containsGrief = false,
+    descendantAlarmKind,
     alarmKind,
     pixelsLost,
     compact = false,
@@ -19,8 +19,10 @@
     alarmKind === 'sustained-griefing'
       ? 'Sustained griefing'
       : alarmKind === 'regression'
-        ? griefDetected ? 'Grief detected · Regression' : 'Regression'
-        : griefDetected ? 'Grief detected' : containsGrief ? 'Contains griefed templates' : null,
+        ? 'Regression'
+        : griefDetected ? 'Grief detected'
+        : descendantAlarmKind === 'sustained-griefing' ? 'Contains griefed templates'
+        : descendantAlarmKind === 'regression' ? 'Contains templates with regression' : null,
   )
   const alarmLabel = $derived(
     alarmTitle === null

@@ -1,4 +1,5 @@
 import {
+  type AlarmKind,
   sameTemplateSurface,
   type TemplateSurface,
   WORLD_TEMPLATE_SURFACE,
@@ -325,7 +326,7 @@ const renderLevel = (
         )
       },
       ...(item.meta === undefined ? {} : { meta: item.meta }),
-      ...(item.containsGrief === undefined ? {} : { containsGrief: item.containsGrief }),
+      descendantAlarmKind: item.descendantAlarmKind,
       ...(item.lifecycle === undefined ? {} : { lifecycle: item.lifecycle }),
       ...(item.progress === undefined ? {} : { progress: item.progress }),
       ...(item.progressReader === undefined ? {} : { progressReader: item.progressReader }),
@@ -535,7 +536,7 @@ const buildTree = <Result>(
     const serverRows = server === undefined ? undefined : scopedRowsFor(server)
     const serverTemplates = (serverRows?.templates ?? []).filter((template) => template.published)
     // Walk the full hierarchy before filtering or collapsing rows, including pending moves.
-    const griefedNodes = new Set<string | null>()
+    const nodeAlarms = new Map<string | null, AlarmKind>()
     if (server !== undefined) {
       const parents = new Map(
         (serverRows?.nodes ?? []).map((node) => [
@@ -544,11 +545,15 @@ const buildTree = <Result>(
         ]),
       )
       for (const template of serverTemplates) {
-        if (serverAlarmFor(server, template) === null) continue
-        griefedNodes.add(null)
+        const alarm = serverAlarmFor(server, template)
+        if (alarm === null) continue
         let parentId = renderedParent(serverTemplateTreeKey(server, template.id), template.nodeId)
-        while (parentId !== null && !griefedNodes.has(parentId)) {
-          griefedNodes.add(parentId)
+        while (
+          nodeAlarms.get(parentId) !== 'sustained-griefing' &&
+          nodeAlarms.get(parentId) !== alarm.kind
+        ) {
+          nodeAlarms.set(parentId, alarm.kind)
+          if (parentId === null) break
           parentId = parents.get(parentId) ?? null
         }
       }
@@ -585,7 +590,7 @@ const buildTree = <Result>(
       name: target.name,
       // A rack and a folder are different things and read differently at a glance.
       kind: isLocal ? 'folder' : 'server',
-      containsGrief: griefedNodes.has(null),
+      descendantAlarmKind: nodeAlarms.get(null),
       depth: 0,
       container: true,
       forceExpanded: needle !== '',
@@ -723,7 +728,7 @@ const buildTree = <Result>(
               name: node.name,
               kind: 'folder',
               childrenOf: node.id,
-              containsGrief: griefedNodes.has(node.id),
+              descendantAlarmKind: nodeAlarms.get(node.id),
               createdAt: node.createdAt,
               visible: isScopeVisible(nodeScopeKey(server.url, node.id)),
               setVisible: (on) => setScopeVisible(nodeScopeKey(server.url, node.id), on),
@@ -795,7 +800,7 @@ const buildTree = <Result>(
               lifecycle: {
                 finished: template.finished === true,
                 frozen: template.timelapseFrozen === true,
-                griefed: alarm !== null,
+                griefed: alarm?.kind === 'sustained-griefing',
                 ...(alarm === null ? {} : { alarmKind: alarm.kind, pixelsLost: alarm.pixelsLost }),
               },
               ...(colourProgress === undefined
@@ -1090,7 +1095,7 @@ export const templateTreeAdapter = (
         ...(options.forceExpanded === true ? { forceExpanded: true } : {}),
         ...(options.muted === true ? { muted: true } : {}),
         ...(options.meta === undefined ? {} : { meta: options.meta }),
-        ...(options.containsGrief === undefined ? {} : { containsGrief: options.containsGrief }),
+        descendantAlarmKind: options.descendantAlarmKind,
         ...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
         ...(progress === undefined ? {} : { progress }),
         ...(colours === undefined

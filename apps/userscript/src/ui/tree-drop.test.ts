@@ -150,7 +150,7 @@ describe('tree drag and drop', () => {
     })
     const warnings = (query = '') =>
       treeRows(callbacks, query)
-        .filter((row) => row.containsGrief)
+        .filter((row) => row.descendantAlarmKind)
         .map((row) => row.key)
     expect(warnings()).toEqual([])
     telemetryHarness.alarms.set(TEMPLATE_A_ID, {
@@ -162,9 +162,20 @@ describe('tree drag and drop', () => {
       lastSeen: millis(1),
     })
     expect(warnings()).toEqual([rootKey, parentKey])
+    expect(treeRows(callbacks).find((row) => row.key === rootKey)?.descendantAlarmKind).toBe(
+      'regression',
+    )
     expect(warnings('Parent')).toEqual([rootKey, parentKey])
     setState({ collapsed: [childKey] })
     expect(warnings()).toEqual([rootKey, parentKey, childKey])
+    const alarm = telemetryHarness.alarms.get(TEMPLATE_A_ID)
+    if (!alarm) throw new Error('expected the regression fixture')
+    telemetryHarness.alarms.set(TEMPLATE_A_ID, { ...alarm, kind: 'sustained-griefing' })
+    expect(
+      treeRows(callbacks)
+        .filter((row) => row.descendantAlarmKind)
+        .every((row) => row.descendantAlarmKind === 'sustained-griefing'),
+    ).toBe(true)
     optimisticallyPlaceServerRow(server, serverTemplateTreeKey(server, TEMPLATE_A_ID), null)
     expect(warnings()).toEqual([rootKey])
     telemetryHarness.alarms.clear()

@@ -292,12 +292,13 @@
         {@const tallHeading = entry.progress !== undefined || (entry.actions?.length ?? 0) > 0 || (entry.leadingActions?.length ?? 0) > 0}
         {@const connectorWidth = (entry.branches?.length ?? 0) * branchIndent + (entry.container ? 0 : leafHeadingIndent)}
         {@const progressDetailOffset = entry.container ? leafHeadingIndent : 0}
-        {@const griefAlarm = entry.containsGrief || entry.lifecycle?.griefed}
+        {@const alarmKind = entry.descendantAlarmKind ?? entry.lifecycle?.alarmKind ?? (entry.lifecycle?.griefed ? 'sustained-griefing' : undefined)}
         <div
           class:tall-heading={tallHeading}
           class:muted={entry.muted}
           class:focused-template={model.focusedKey === entry.key}
-          class:grief-alarm={griefAlarm}
+          class:regression-alarm={alarmKind === 'regression'}
+          class:grief-alarm={alarmKind === 'sustained-griefing'}
           class:dragging={draggingKey === entry.key}
           class:drop-before={dropTarget?.key === entry.key && dropTarget.position === 'before'}
           class:drop-after={dropTarget?.key === entry.key && dropTarget.position === 'after'}
@@ -336,8 +337,8 @@
             <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
               <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
             </TemplateLifecycle>
-            {#if griefAlarm}
-              <TemplateState compact showLifecycle={false} containsGrief={entry.containsGrief ?? false} {...entry.lifecycle} />
+            {#if alarmKind !== undefined}
+              <TemplateState compact showLifecycle={false} {...(entry.descendantAlarmKind === undefined ? {} : { descendantAlarmKind: entry.descendantAlarmKind })} {...entry.lifecycle} />
             {/if}
             {#each entry.leadingActions ?? [] as item (item.id)}
               <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
@@ -460,8 +461,10 @@
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
   .row.focused-template { background: color-mix(in oklab, var(--caelestis-primary) 12%, transparent); }
   .row.focused-template::before { content: ''; position: absolute; inset-block: 0.25rem; inset-inline-start: 0; inline-size: 3px; border-radius: 999px; background: var(--caelestis-primary); }
-  .row.grief-alarm { background: color-mix(in oklab, var(--caelestis-danger) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--caelestis-danger) 65%, transparent); }
-  .row.grief-alarm:hover { background: color-mix(in oklab, var(--caelestis-danger) 20%, transparent); }
+  .row.regression-alarm { --row-alarm-color: oklch(from var(--caelestis-warning) l c 55); }
+  .row.grief-alarm { --row-alarm-color: var(--caelestis-danger); }
+  .row.regression-alarm, .row.grief-alarm { background: color-mix(in oklab, var(--row-alarm-color) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--row-alarm-color) 65%, transparent); }
+  .row.regression-alarm:hover, .row.grief-alarm:hover { background: color-mix(in oklab, var(--row-alarm-color) 20%, transparent); }
   .row:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .row.muted { opacity: 0.55; }
   .row.dragging { opacity: 0.25; }

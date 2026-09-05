@@ -60,29 +60,37 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
-  it('warns on a collapsed folder without giving it a finished lifecycle indicator', () => {
-    const component = mount(TemplateTree, {
-      target: document.body,
-      props: {
-        model: {
-          ...model,
-          entries: model.entries.map((entry) =>
-            entry.type === 'row' && entry.container
-              ? { ...entry, expanded: false, containsGrief: true }
-              : entry,
-          ),
+  it.each([
+    ['regression', 'regression-alarm', 'Contains templates with regression'],
+    ['sustained-griefing', 'grief-alarm', 'Contains griefed templates'],
+  ] as const)(
+    'shows %s on a collapsed folder without a lifecycle indicator',
+    (kind, className, title) => {
+      const component = mount(TemplateTree, {
+        target: document.body,
+        props: {
+          model: {
+            ...model,
+            entries: model.entries.map((entry) =>
+              entry.type === 'row' && entry.container
+                ? { ...entry, expanded: false, descendantAlarmKind: kind }
+                : entry,
+            ),
+          },
         },
-      },
-    })
-    flushSync()
-    const row = document.querySelector('.row[aria-expanded="false"]')
-    expect(row?.querySelector('[role="status"]')?.getAttribute('title')).toBe(
-      'Contains griefed templates',
-    )
-    expect(row?.querySelector('[aria-label="Finished"]')).toBeNull()
-    expect(row?.querySelector('.progress-detail')).toBeNull()
-    void unmount(component)
-  })
+      })
+      flushSync()
+      const row = document.querySelector('.row[aria-expanded="false"]')
+      expect(row?.querySelector('[role="status"]')?.getAttribute('title')).toBe(title)
+      expect(row?.classList.contains(className)).toBe(true)
+      expect(
+        row?.classList.contains(kind === 'regression' ? 'grief-alarm' : 'regression-alarm'),
+      ).toBe(false)
+      expect(row?.querySelector('[aria-label="Finished"]')).toBeNull()
+      expect(row?.querySelector('.progress-detail')).toBeNull()
+      void unmount(component)
+    },
+  )
   it('preserves focused-row controls and progress alongside combined lifecycle and alarm state', () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, {
