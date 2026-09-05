@@ -5,6 +5,7 @@ import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
+import { DirectStatusReadModel } from '../status-read-model/port.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
@@ -12,10 +13,12 @@ const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 const harness = async () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
+  const statusReadModel = new DirectStatusReadModel(sql)
   const context = makeBackendContext(
     blobs,
     sql,
     new MemoryCounterStore(sql, () => millis(Date.now())),
+    statusReadModel,
   )
   await sql.insertNode({
     id: NODE_ID,
@@ -27,7 +30,12 @@ const harness = async () => {
     description: null,
     createdAt: millis(Date.now()),
   })
-  return { blobs, sql, app: createApp(context, { bootstrapAdminToken: BOOTSTRAP }) }
+  return {
+    blobs,
+    sql,
+    statusReadModel,
+    app: createApp(context, { bootstrapAdminToken: BOOTSTRAP }),
+  }
 }
 
 const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
@@ -61,6 +69,48 @@ const mintReportToken = (app: Awaited<ReturnType<typeof harness>>['app']): Promi
   mintToken(app, 'report')
 
 describe('template routes', () => {
+  it('preserves unrelated tile acknowledgements when finishing, reopening, freezing, or thawing', async () => {
+    const { app, statusReadModel } = await harness()
+    const created = await app.request('/admin/templates', {
+      method: 'POST',
+      body: templateForm(await encodeIndexedPng(1, 1, new Uint8Array([0]))),
+      ...bearer(BOOTSTRAP),
+    })
+    const { templateId } = (await created.json()) as { templateId: string }
+    const tile = { x: 80, y: 80 }
+    const coverageToken =
+      (await statusReadModel.resolveCurrentTileOffers(1, 'admin', [])).coverageToken ?? ''
+    await statusReadModel.applyCommittedTileGeneration(1, {
+      tile,
+      hash: 'a'.repeat(64),
+      observedAt: millis(1_000),
+      commitOrder: 1,
+      coverageToken,
+      visibleToPublic: true,
+      visibleToAdmin: true,
+    })
+    for (const patch of [
+      { finished: true },
+      { finished: false },
+      { timelapseFrozen: false },
+      { timelapseFrozen: true },
+    ]) {
+      const response = await app.request(`/admin/templates/${templateId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+        ...bearer(BOOTSTRAP),
+      })
+      expect(response.status).toBe(200)
+      expect(
+        (
+          await statusReadModel.resolveCurrentTileOffers(1, 'admin', [
+            { deliveryId: 'unrelated', tile, hash: 'a'.repeat(64) },
+          ])
+        ).acknowledgedDeliveryIds,
+      ).toEqual(['unrelated'])
+    }
+  })
+
   it('stores a template and serves the exact stored chunk bytes', async () => {
     const { app, blobs } = await harness()
     const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))

@@ -41,7 +41,7 @@ describe('Durable Object status read-model adapter', () => {
       snapshot: { revision: 4, templates: [] },
     })
     const allianceSurface = { kind: 'alliance-banner' as const, allianceId: 42 }
-    await model.notifyManifestChange(8, allianceSurface)
+    await model.notifyManifestChange(8, allianceSurface, false)
     await model.notifyAlarmChange(8)
     await model.closeCredential(8, 'b'.repeat(64))
     await expect(model.prepareTileGenerationCommit(8, { x: 1, y: 2 })).resolves.toEqual({
@@ -83,7 +83,7 @@ describe('Durable Object status read-model adapter', () => {
     expect(namespace.getByName).toHaveBeenCalledWith('season:8')
     expect(stub.applyCommittedChangeMeasured).toHaveBeenCalledWith(8)
     expect(stub.reconcileSnapshotMeasured).toHaveBeenCalledWith(8, 'admin')
-    expect(stub.notifyManifestChange).toHaveBeenCalledWith(8, allianceSurface)
+    expect(stub.notifyManifestChange).toHaveBeenCalledWith(8, allianceSurface, false)
     expect(stub.notifyAlarmChange).toHaveBeenCalledWith(8)
     expect(stub.closeCredential).toHaveBeenCalledTimes(9)
     for (let season = 0; season <= 8; season++)

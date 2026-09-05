@@ -15,6 +15,7 @@ export type ManifestProjectionRead =
       readonly notModified: true
       readonly version: string
       readonly revision: number
+      readonly coverageRevision: number
       readonly cacheOutcome: 'hit' | 'miss' | 'stale'
       readonly revisionChanged: boolean
     }
@@ -23,6 +24,7 @@ export type ManifestProjectionRead =
       readonly manifest: Manifest
       readonly version: string
       readonly revision: number
+      readonly coverageRevision: number
       readonly cacheOutcome: 'hit' | 'miss' | 'stale'
       readonly revisionChanged: boolean
     }
@@ -39,20 +41,22 @@ export interface PersistedManifestProjection {
 export interface PersistedManifestReadModel {
   readonly season: number
   readonly revision: number
+  /** Absent in older snapshots, where every manifest revision also changed tile coverage. */
+  readonly coverageRevision?: number
   readonly entries: readonly PersistedManifestProjection[]
 }
 
 export interface ManifestReadModelPersistence {
   readonly load: () => Promise<PersistedManifestReadModel | null>
-  /** Read only the durable revision when the persistence format can avoid loading projections. */
-  readonly loadRevision?: () => Promise<number | null>
+  /** Read the durable tile coverage revision without loading manifest projections. */
+  readonly loadCoverageRevision?: () => Promise<number | null>
   readonly save: (state: PersistedManifestReadModel) => Promise<void>
 }
 
 export interface SeasonManifestReadModel {
   readonly read: (input: ManifestProjectionInput) => Promise<ManifestProjectionRead>
-  readonly invalidate: (surface?: TemplateSurface) => Promise<number>
-  readonly revision: () => Promise<number>
+  readonly invalidate: (surface?: TemplateSurface, affectsTileCoverage?: boolean) => Promise<number>
+  readonly coverageRevision: () => Promise<number>
   /** Current unexpired version, or null when an authoritative manifest read is required. */
   readonly knownVersion: (
     scope: ManifestVisibilityScope,
@@ -124,6 +128,7 @@ export const createSeasonManifestReadModel = (options: {
           const base = {
             version: held.manifest.version,
             revision: current.revision,
+            coverageRevision: current.coverageRevision ?? current.revision,
             cacheOutcome: 'hit' as const,
             revisionChanged: false,
           }
@@ -136,6 +141,9 @@ export const createSeasonManifestReadModel = (options: {
         const serializedBytes = new TextEncoder().encode(JSON.stringify(manifest)).byteLength
         const revisionChanged = keyed !== undefined && keyed.manifest.version !== manifest.version
         const revision = revisionChanged ? current.revision + 1 : current.revision
+        const coverageRevision = revisionChanged
+          ? revision
+          : (current.coverageRevision ?? current.revision)
         const configuredServerChanged = keyed !== undefined && keyed.configuredServer !== server
         const retained = configuredServerChanged
           ? []
@@ -165,12 +173,13 @@ export const createSeasonManifestReadModel = (options: {
             }
             return bounded
           }, [])
-        const next = { season: options.season, revision, entries }
+        const next = { season: options.season, revision, coverageRevision, entries }
         await options.persistence.save(next)
         state = next
         const base = {
           version: manifest.version,
           revision,
+          coverageRevision,
           cacheOutcome: keyed === undefined ? ('miss' as const) : ('stale' as const),
           revisionChanged,
         }
@@ -178,7 +187,7 @@ export const createSeasonManifestReadModel = (options: {
           ? { ...base, notModified: true as const }
           : { ...base, notModified: false as const, manifest }
       }),
-    invalidate: (surface) =>
+    invalidate: (surface, affectsTileCoverage = true) =>
       exclusive(async () => {
         const current = await load()
         const invalidatedKeys =
@@ -188,6 +197,9 @@ export const createSeasonManifestReadModel = (options: {
         const next = {
           season: options.season,
           revision: current.revision + 1,
+          coverageRevision: affectsTileCoverage
+            ? current.revision + 1
+            : (current.coverageRevision ?? current.revision),
           entries:
             invalidatedKeys === null
               ? []
@@ -197,11 +209,14 @@ export const createSeasonManifestReadModel = (options: {
         state = next
         return next.revision
       }),
-    revision: async () => {
-      if (options.persistence.loadRevision !== undefined) {
-        return (await options.persistence.loadRevision()) ?? 1
+    coverageRevision: async () => {
+      if (options.persistence.loadCoverageRevision !== undefined) {
+        return (await options.persistence.loadCoverageRevision()) ?? 1
       }
-      return exclusive(async () => (await load()).revision)
+      return exclusive(async () => {
+        const current = await load()
+        return current.coverageRevision ?? current.revision
+      })
     },
     knownVersion: (scope, surface) =>
       exclusive(async () => {
