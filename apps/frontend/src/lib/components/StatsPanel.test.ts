@@ -100,6 +100,31 @@ describe('retained history range', () => {
     expect(api.getHistory).toHaveBeenCalledWith(['finished', 'live'], 0, NOW_SECONDS + 1)
   })
 
+  it('advances and refreshes the history boundary while a template stays live', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_SECONDS * 1_000)
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        progress: { completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(api.getHistory).toHaveBeenCalledTimes(8)
+
+    await vi.advanceTimersByTimeAsync(15_000)
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(api.getHistory).toHaveBeenCalledTimes(16)
+    expect(api.getHistory).toHaveBeenLastCalledWith(['live'], 0, NOW_SECONDS + 16, {
+      maxResolution: 43_200,
+    })
+  })
+
   it('formats partial-day coverage without exposing floating-point noise', async () => {
     api.getHistory.mockImplementation((_templateIds, _from, _to, options) =>
       Promise.resolve(

@@ -140,10 +140,7 @@
   }
 
   const presets = $derived(availableRangePresets(span, MIN_SELECTION))
-  const presetWindow = (seconds: number): TimeWindow => ({
-    from: snapTime(to - seconds, resolution, from, to),
-    to,
-  })
+  const presetWindow = (seconds: number): TimeWindow => ({ from: to - seconds, to })
   const presetActive = (seconds: number): boolean =>
     view.to === to && view.from === presetWindow(seconds).from
 
@@ -183,7 +180,7 @@
     const firstBucket = Math.ceil(coverageStart / paceResolution) * paceResolution
     const filled: PacePoint[] = []
     let cumPlaced = 0
-    for (let t = firstBucket; t < to; t += paceResolution) {
+    for (let t = firstBucket; t + paceResolution <= to; t += paceResolution) {
       cumPlaced += placedByStart.get(t) ?? 0
       filled.push({ t, cumPlaced })
     }
@@ -195,7 +192,7 @@
     PACE_WINDOWS.map((pace) => {
       const retained = paceHistories.find((source) => source.window === pace.key)
       const source = windowUsable(pace.seconds, resolution)
-        ? { points, resolution }
+        ? { points: points.filter((point) => point.t + resolution <= to), resolution }
         : retained?.history.resolution !== undefined &&
             windowUsable(pace.seconds, retained.history.resolution)
           ? { points: retainedPacePoints(retained), resolution: retained.history.resolution }
@@ -287,12 +284,18 @@
   })
   const visiblePoints = $derived(windowPoints(shownView))
   const activePaces = $derived(
-    enabledPaces.map((pace) => ({
-      ...pace,
-      rank:
-        PACE_WINDOWS.findIndex((x) => x.key === pace.key) / Math.max(1, PACE_WINDOWS.length - 1),
-      series: clipSeries(pace.fullSeries, shownView.from, shownView.to, lerpRate),
-    })),
+    enabledPaces.map((pace) => {
+      const series = clipSeries(pace.fullSeries, shownView.from, shownView.to, lerpRate)
+      const last = series[series.length - 1]
+      if (last !== undefined && last.t < shownView.to) series.push({ ...last, t: shownView.to })
+      return {
+        ...pace,
+        rank:
+          PACE_WINDOWS.findIndex((x) => x.key === pace.key) /
+          Math.max(1, PACE_WINDOWS.length - 1),
+        series,
+      }
+    }),
   )
 
   const x = $derived(
@@ -305,9 +308,10 @@
   const yRight = $derived(
     (v: number) => height - pad.bottom - (v / shownAxes.current.rightMax) * plotHeight,
   )
-  /** The time under a pointer, given the plot's left edge on screen. */
-  const timeAt = (clientX: number, left: number): number =>
-    shownView.from + ((clientX - left - pad.left) / plotWidth) * (shownView.to - shownView.from)
+  /** The time under a pointer, given the plot's left edge and displayed domain. */
+  const timeIn = (range: TimeWindow, clientX: number, left: number): number =>
+    range.from + ((clientX - left - pad.left) / plotWidth) * (range.to - range.from)
+  const timeAt = (clientX: number, left: number): number => timeIn(shownView, clientX, left)
 
   const linePath = (series: readonly { t: number; v: number }[]): string =>
     series
@@ -494,8 +498,10 @@
   const onPlotPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || hoverSnapTimes.length === 0) return
     const plot = event.currentTarget as SVGSVGElement
-    const clampView = (t: number): number => Math.min(view.to, Math.max(view.from, t))
-    const anchor = clampView(timeAt(event.clientX, plot.getBoundingClientRect().left))
+    const dragView = { from: shownView.from, to: shownView.to }
+    void shownWindow.set(dragView, { duration: 0 })
+    const clampView = (t: number): number => Math.min(dragView.to, Math.max(dragView.from, t))
+    const anchor = clampView(timeIn(dragView, event.clientX, plot.getBoundingClientRect().left))
     const startX = event.clientX
     let moved = false
     event.preventDefault()
@@ -530,7 +536,7 @@
       listen('pointermove', (move) => {
         if (move.pointerId !== event.pointerId) return
         const left = plot.getBoundingClientRect().left
-        const current = clampView(timeAt(move.clientX, left))
+        const current = clampView(timeIn(dragView, move.clientX, left))
         if (!moved && Math.abs(move.clientX - startX) > 4) moved = true
         if (moved) plotDrag = { from: anchor, to: current }
         hoverPointer(move.clientX, left)
@@ -538,7 +544,9 @@
       listen('pointerup', (up) => {
         if (up.pointerId === event.pointerId) finish(up.clientX, up.clientY)
       }),
-      listen('pointercancel', () => finish()),
+      listen('pointercancel', (cancel) => {
+        if (cancel.pointerId === event.pointerId) finish()
+      }),
     ]
   }
 
@@ -571,8 +579,13 @@
   type BrushDrag = Edge | 'move' | 'new'
   let brushDrag = $state<BrushDrag | null>(null)
 
-  /** Grips get a 44px touch target, shrinking only when the window itself is narrower than two. */
-  const gripHitWidth = $derived(Math.min(44, Math.max(12, (bx(view.to) - bx(view.from)) / 2)))
+  const BRUSH_TARGET_SIZE = 44
+  const BRUSH_HANDLE_TARGET_SIZE = BRUSH_TARGET_SIZE * 1.5
+  const brushWindowWidth = $derived(bx(view.to) - bx(view.from))
+  const moveTargetWidth = $derived(Math.max(BRUSH_TARGET_SIZE, brushWindowWidth))
+  const moveTargetLeft = $derived(
+    (bx(view.from) + bx(view.to) - moveTargetWidth) / 2,
+  )
   const keyStep = $derived(windowKeyStep(span, resolution))
 
   const onBrushPointerDown = (event: PointerEvent): void => {
@@ -580,6 +593,10 @@
     const strip = event.currentTarget as HTMLDivElement
     const grip =
       event.target instanceof Element ? event.target.closest<HTMLElement>('[data-handle]') : null
+    const moveTarget =
+      event.target instanceof Element
+        ? event.target.closest<HTMLElement>('[data-brush-move]')
+        : null
     const t = brushTime(event.clientX, strip.getBoundingClientRect().left)
     const start = view
     const kind: BrushDrag =
@@ -587,7 +604,7 @@
         ? 'head'
         : grip?.dataset.handle === 'tail'
           ? 'tail'
-          : t > start.from && t < start.to
+          : moveTarget !== null || (t > start.from && t < start.to)
             ? 'move'
             : 'new'
     const grabOffset = t - start.from
@@ -629,7 +646,9 @@
       listen('pointerup', (up) => {
         if (up.pointerId === event.pointerId) finish()
       }),
-      listen('pointercancel', finish),
+      listen('pointercancel', (cancel) => {
+        if (cancel.pointerId === event.pointerId) finish()
+      }),
     ]
   }
 
@@ -683,7 +702,7 @@
   ])
 
   // ── Range presets as a segmented control ────────────────────────────────────────────────────
-  // transitions.dev "Tabs sliding": JS measures the active tab and writes its offset and width
+  // JS measures the active button and writes its offset and width
   // onto the pill; CSS owns the tween. The first paint and every re-measure snap without a
   // transition, and a window that matches no preset hides the pill instead of parking it.
   let tabsBar = $state<HTMLDivElement | null>(null)
@@ -712,10 +731,11 @@
     const pill = tabsPill
     const key = activePreset
     if (bar === null || pill === null) return
-    const tab = key === null ? null : bar.querySelector<HTMLElement>(`[data-range-preset="${key}"]`)
+    const button =
+      key === null ? null : bar.querySelector<HTMLElement>(`[data-range-preset="${key}"]`)
     const animate = pillKey !== undefined && pillKey !== null && pillKey !== key
     pillKey = key
-    if (tab !== null) movePill(pill, tab, animate)
+    if (button !== null) movePill(pill, button, animate)
   })
 
   $effect(() => {
@@ -723,11 +743,11 @@
     const pill = tabsPill
     if (bar === null || pill === null || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
-      const tab =
+      const button =
         activePreset === null
           ? null
           : bar.querySelector<HTMLElement>(`[data-range-preset="${activePreset}"]`)
-      if (tab !== null) movePill(pill, tab, false)
+      if (button !== null) movePill(pill, button, false)
     })
     observer.observe(bar)
     return () => observer.disconnect()
@@ -787,7 +807,7 @@
         <span class="text-base-content/65">range</span>
         <div
           class="t-tabs"
-          role="tablist"
+          role="group"
           aria-label="time range"
           data-empty={activePreset === null ? '' : undefined}
           bind:this={tabsBar}
@@ -796,9 +816,8 @@
           {#each presets as preset (preset.key)}
             <button
               type="button"
-              role="tab"
               class="t-tab tabular-nums"
-              aria-selected={activePreset === preset.key}
+              aria-pressed={activePreset === preset.key}
               data-range-preset={preset.key}
               title="Show {preset.label}"
               onclick={() => (selection = presetWindow(preset.seconds))}
@@ -808,9 +827,8 @@
           {/each}
           <button
             type="button"
-            role="tab"
             class="t-tab"
-            aria-selected={activePreset === 'all'}
+            aria-pressed={activePreset === 'all'}
             data-range-preset="all"
             title="Show the whole history"
             onclick={resetWindow}
@@ -1084,6 +1102,15 @@
           class="fill-primary/15 stroke-primary/70 {brushDrag === 'move' ? 'cursor-grabbing' : 'cursor-grab'}"
         />
       </svg>
+      {#if zoomed}
+        <span
+          data-brush-move
+          class="absolute inset-y-0 z-20 cursor-grab"
+          style:left="{moveTargetLeft}px"
+          style:width="{moveTargetWidth}px"
+          aria-hidden="true"
+        ></span>
+      {/if}
       {#each grips as grip (grip.edge)}
         <span
           role="slider"
@@ -1095,9 +1122,12 @@
           aria-valuemax={grip.max}
           aria-valuenow={grip.t}
           aria-valuetext={formatTime(grip.t)}
-          class="group absolute inset-y-0 flex -translate-x-1/2 cursor-ew-resize items-center justify-center outline-none"
-          style:left="{bx(grip.t)}px"
-          style:width="{gripHitWidth}px"
+          class="group absolute inset-y-0 z-10 flex cursor-ew-resize items-center outline-none {grip.edge ===
+          'head'
+            ? 'justify-end'
+            : 'justify-start'}"
+          style:left="{grip.edge === 'head' ? bx(grip.t) - BRUSH_HANDLE_TARGET_SIZE : bx(grip.t)}px"
+          style:width="{BRUSH_HANDLE_TARGET_SIZE}px"
           onkeydown={(event) => onGripKey(grip.edge, event)}
         >
           <span
