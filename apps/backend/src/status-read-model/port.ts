@@ -38,6 +38,8 @@ export interface StatusReadModelPort {
   readonly notifyManifestChange?: (season: number, surface?: TemplateSurface) => Promise<void>
   /** Optional on portable adapters; production wakes live clients after alarm state changes. */
   readonly notifyAlarmChange?: (season: number) => Promise<void>
+  /** Optional on portable adapters; production refreshes subscribed live dashboards after paints. */
+  readonly notifyDashboardChange?: (season: number) => Promise<void>
   /** Optional for compatibility adapters; prepared production and direct adapters cache manifests. */
   readonly readManifestProjection?: (
     input: ManifestProjectionInput,
@@ -166,6 +168,18 @@ export const publishAlarmChange = async (
 ): Promise<void> => {
   try {
     await readModel.notifyAlarmChange?.(season)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+/** Dashboard notifications are reconstructible hints; a failed hint never fails the paint. */
+export const publishDashboardChange = async (
+  readModel: StatusReadModelPort,
+  season: number,
+): Promise<void> => {
+  try {
+    await readModel.notifyDashboardChange?.(season)
   } catch (error) {
     console.error(error)
   }

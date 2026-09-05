@@ -1,10 +1,19 @@
 import {
+  encodeLiveTileUpload,
+  LIVE_PROTOCOL_V1,
+  LIVE_PROTOCOL_V2,
+  type LiveMutationError,
   type LiveProjectionResource,
   type LiveProjectionState,
+  LiveSnapshotAssembler,
   type LiveSyncServerEvent,
   type LiveTileOfferBatch,
   type LiveTileOfferCacheResponse,
+  type LiveTileOfferResponse,
+  type LiveTileUpload,
+  MAX_LIVE_MESSAGE_BYTES,
   MAX_LIVE_PROJECTIONS,
+  type PaintEvent,
   type ReconciliationReason,
   type SyncTransport,
   type TemplateSurface,
@@ -26,9 +35,7 @@ const INITIAL_POLL_MS = 60_000
 const MAX_UNCHANGED_POLL_MS = 5 * 60_000
 const JITTER_RANGE_MS = 30_000
 const REFRESH_CONCURRENCY = 4
-const LIVE_PROTOCOL = 'caelestis.live.v1'
 const LIVE_AUTH_PREFIX = 'caelestis.auth.b64.'
-const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_RECONNECT_MS = 30_000
 const MAX_FAST_RECONNECT_ATTEMPTS = 6
 const LIVE_HEARTBEAT_MS = 15 * 60_000
@@ -92,7 +99,7 @@ export interface ServerSyncResource {
   /** Manifest events invalidate this resource when their exact surface matches its active scope. */
   readonly reconcileOnManifestEvent?: boolean
   /** Optional resource-owned validation/application for a compact live event. */
-  readonly applyLiveEvent?: (server: ConnectedServer, event: unknown) => boolean
+  readonly applyLiveEvent?: (server: ConnectedServer, event: unknown) => boolean | Promise<boolean>
 }
 
 interface Schedule {
@@ -113,6 +120,7 @@ interface PendingResourceRequest {
 interface LiveConnection {
   readonly server: ConnectedServer
   socket: WebSocket | null
+  negotiatedProtocol: 1 | 2 | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
   bootstrapFallbackTimer: ReturnType<typeof setTimeout> | null
   fallbackReadRequested: boolean
@@ -123,6 +131,7 @@ interface LiveConnection {
   reconciled: boolean
   stateRequestId: string | null
   manifestRevision: number | null
+  readonly snapshots: LiveSnapshotAssembler
   readonly pendingTileOffers: Map<
     string,
     {
@@ -130,7 +139,33 @@ interface LiveConnection {
       readonly timer: ReturnType<typeof setTimeout>
     }
   >
+  readonly pendingCommands: Map<
+    string,
+    {
+      readonly resolve: (response: LiveCommandResponse | null) => void
+      readonly timer: ReturnType<typeof setTimeout>
+    }
+  >
 }
+
+type LiveCommandResponse =
+  | {
+      readonly type: 'paint-result'
+      readonly eventId: string
+      readonly result: 'recorded' | 'partial' | 'duplicate'
+      readonly error?: LiveMutationError
+    }
+  | {
+      readonly type: 'tile-offer-result'
+      readonly response: LiveTileOfferResponse
+      readonly error?: LiveMutationError
+    }
+  | {
+      readonly type: 'tile-upload-result'
+      readonly deliveryId: string
+      readonly accepted: boolean
+      readonly error?: LiveMutationError
+    }
 
 const resources = new Map<string, ServerSyncResource>()
 const schedules = new Map<string, Schedule>()
@@ -169,6 +204,13 @@ const scheduleFor = (
 const liveScope = (server: ConnectedServer): 'public' | 'admin' =>
   server.isAdmin ? 'admin' : 'public'
 
+const liveProtocolVersion = (server: ConnectedServer): 1 | 2 | undefined =>
+  server.info?.liveSyncMax ?? server.info?.liveSync
+
+const activeLiveProtocolVersion = (server: ConnectedServer): 1 | 2 | undefined =>
+  liveConnections.get(serverConnectionIdentity(server))?.negotiatedProtocol ??
+  liveProtocolVersion(server)
+
 const liveHealthy = (server: ConnectedServer): boolean => {
   const held = liveConnections.get(serverConnectionIdentity(server))
   return (
@@ -180,7 +222,10 @@ const liveHealthy = (server: ConnectedServer): boolean => {
 }
 
 const liveCapable = (server: ConnectedServer): boolean =>
-  server.info?.liveSync === 1 && typeof WebSocket !== 'undefined'
+  liveProtocolVersion(server) !== undefined && typeof WebSocket !== 'undefined'
+
+const socketOnly = (server: ConnectedServer, resource: ServerSyncResource): boolean =>
+  activeLiveProtocolVersion(server) === 2 && resource.live === true
 
 const liveCredentialProtocol = (token: string): string => {
   const bytes = new TextEncoder().encode(token)
@@ -310,6 +355,12 @@ const sweep = async (
       liveKeys.add(key)
       const explicit = requested?.get(resource.id)
       const targeted = explicit?.servers.get(serverConnectionIdentity(server))
+      if (
+        socketOnly(server, resource) &&
+        explicit?.allReason === undefined &&
+        targeted === undefined
+      )
+        continue
       if (requested !== null && explicit?.allReason === undefined && targeted === undefined)
         continue
       const scheduled = scheduleFor(server, scope, resource.id)
@@ -371,6 +422,7 @@ const requestAvailableServerSync = (reason: ReconciliationReason, onlyResource?:
   for (const server of connected()) {
     for (const resource of resources.values()) {
       if (onlyResource !== undefined && resource.id !== onlyResource) continue
+      if (socketOnly(server, resource)) continue
       if (resource.live === true && liveCapable(server) && !liveHealthy(server)) continue
       requestServerSync(reason, resource.id, server)
     }
@@ -531,18 +583,17 @@ export const applyServerSyncDelta = (
 }
 
 export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
-  if (
-    typeof data !== 'string' ||
-    new TextEncoder().encode(data).byteLength > MAX_LIVE_MESSAGE_BYTES
-  )
-    return null
-  const parsed: unknown = (() => {
-    try {
-      return JSON.parse(data)
-    } catch {
-      return null
-    }
-  })()
+  const parsed: unknown =
+    typeof data === 'string'
+      ? (() => {
+          if (new TextEncoder().encode(data).byteLength > MAX_LIVE_MESSAGE_BYTES) return null
+          try {
+            return JSON.parse(data)
+          } catch {
+            return null
+          }
+        })()
+      : data
   if (typeof parsed !== 'object' || parsed === null || !('type' in parsed)) return null
   const candidate = parsed as Record<string, unknown>
   if (candidate.type === 'state-correction') {
@@ -618,6 +669,16 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
   }
   if (candidate.type === 'alarms-reconcile') return { type: 'alarms-reconcile' }
   if (
+    candidate.type === 'manifest-snapshot' ||
+    candidate.type === 'status-snapshot' ||
+    candidate.type === 'alarms-snapshot' ||
+    candidate.type === 'dashboard-snapshot' ||
+    candidate.type === 'paint-result' ||
+    candidate.type === 'tile-offer-result' ||
+    candidate.type === 'tile-upload-result'
+  )
+    return candidate as unknown as ParsedLiveEvent
+  if (
     candidate.type === 'tile-offer-cache-result' &&
     typeof candidate.requestId === 'string' &&
     typeof candidate.response === 'object' &&
@@ -643,6 +704,25 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
   return null
 }
 
+type ParsedLiveMessage =
+  | { readonly status: 'event'; readonly value: unknown }
+  | { readonly status: 'pending' }
+  | { readonly status: 'invalid' }
+
+const parseLiveMessage = (connection: LiveConnection, data: unknown): ParsedLiveMessage => {
+  if (
+    typeof data !== 'string' ||
+    new TextEncoder().encode(data).byteLength > MAX_LIVE_MESSAGE_BYTES
+  )
+    return { status: 'invalid' }
+  try {
+    const value = connection.snapshots.push(JSON.parse(data))
+    return value === null ? { status: 'pending' } : { status: 'event', value }
+  } catch {
+    return { status: 'invalid' }
+  }
+}
+
 const completeLiveReconciliation = (connection: LiveConnection): void => {
   connection.reconciled = true
   connection.fallbackReadRequested = false
@@ -651,11 +731,13 @@ const completeLiveReconciliation = (connection: LiveConnection): void => {
   deferHealthyLiveSchedules(connection.server)
 }
 
-const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
+const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<void> => {
   if (!isCurrentServerConnection(server)) return
   const event = parseLiveServerEvent(raw)
   if (event === null) {
-    requestServerSync('revision-gap', 'telemetry-status', server)
+    const live = liveConnections.get(serverConnectionIdentity(server))
+    if (activeLiveProtocolVersion(server) === 2) live?.socket?.close(1002, 'invalid live event')
+    else requestServerSync('revision-gap', 'telemetry-status', server)
     return
   }
   if (event.type === 'state-correction') {
@@ -663,6 +745,7 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     if (live === undefined || live.stateRequestId !== event.requestId) return
     live.stateRequestId = null
     completeLiveReconciliation(live)
+    if (activeLiveProtocolVersion(server) === 2) return
     const currentRevision = revisionNumber(server, 'world', 'telemetry-status')
     const refreshStatus =
       currentRevision === null ||
@@ -708,13 +791,24 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     return
   }
   if (event.type === 'alarms-reconcile') {
+    if (activeLiveProtocolVersion(server) === 2) return
     requestServerSync('revision-gap', 'telemetry-alarms', server)
+    return
+  }
+  if (event.type === 'status-reconcile' && activeLiveProtocolVersion(server) === 2) {
+    liveConnections
+      .get(serverConnectionIdentity(server))
+      ?.socket?.close(1011, 'status snapshot required')
     return
   }
   if (event.type === 'status-delta') {
     const applied =
-      resources.get('telemetry-status')?.applyLiveEvent?.(server, event.delta) ?? false
-    if (!applied) requestServerSync('revision-gap', 'telemetry-status', server)
+      (await resources.get('telemetry-status')?.applyLiveEvent?.(server, event.delta)) ?? false
+    if (!applied) {
+      const live = liveConnections.get(serverConnectionIdentity(server))
+      if (activeLiveProtocolVersion(server) === 2) live?.socket?.close(1011, 'status revision gap')
+      else requestServerSync('revision-gap', 'telemetry-status', server)
+    }
     return
   }
   if (event.type === 'tile-offer-cache-result') {
@@ -726,6 +820,39 @@ const handleLiveEvent = (server: ConnectedServer, raw: unknown): void => {
     pending.resolve(event.response)
     return
   }
+  if (
+    event.type === 'paint-result' ||
+    event.type === 'tile-offer-result' ||
+    event.type === 'tile-upload-result'
+  ) {
+    const live = liveConnections.get(serverConnectionIdentity(server))
+    const pending = live?.pendingCommands.get(event.requestId)
+    if (pending === undefined) return
+    live?.pendingCommands.delete(event.requestId)
+    clearTimeout(pending.timer)
+    pending.resolve(event)
+    return
+  }
+  if (
+    event.type === 'manifest-snapshot' ||
+    event.type === 'status-snapshot' ||
+    event.type === 'alarms-snapshot'
+  ) {
+    const resourceId =
+      event.type === 'manifest-snapshot'
+        ? event.resource
+        : event.type === 'status-snapshot'
+          ? 'telemetry-status'
+          : 'telemetry-alarms'
+    const resource = resources.get(resourceId)
+    const applied = (await resource?.applyLiveEvent?.(server, event)) ?? false
+    if (!applied)
+      liveConnections
+        .get(serverConnectionIdentity(server))
+        ?.socket?.close(1011, 'invalid live snapshot')
+    return
+  }
+  if (event.type === 'dashboard-snapshot' || event.type === 'snapshot-part') return
   requestLiveRevision(server, 'world', 'telemetry-status', event.revision)
 }
 
@@ -741,6 +868,12 @@ const closeLiveConnection = (connection: LiveConnection, preserveReconnect = fal
     pending.resolve(null)
   }
   connection.pendingTileOffers.clear()
+  for (const pending of connection.pendingCommands.values()) {
+    clearTimeout(pending.timer)
+    pending.resolve(null)
+  }
+  connection.pendingCommands.clear()
+  connection.snapshots.clear()
   connection.bootstrapFallbackTimer = null
   connection.heartbeatTimer = null
   connection.heartbeatTimeout = null
@@ -801,6 +934,11 @@ const scheduleLiveReconnect = (connection: LiveConnection): void => {
 }
 
 const armLiveBootstrapFallback = (connection: LiveConnection): void => {
+  if (activeLiveProtocolVersion(connection.server) === 2) {
+    if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
+    connection.bootstrapFallbackTimer = null
+    return
+  }
   if (connection.bootstrapFallbackTimer !== null) clearTimeout(connection.bootstrapFallbackTimer)
   connection.bootstrapFallbackTimer = setTimeout(() => {
     connection.bootstrapFallbackTimer = null
@@ -823,7 +961,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
   if (
     !activeDocument() ||
     !isCurrentServerConnection(server) ||
-    server.info?.liveSync !== 1 ||
+    liveProtocolVersion(server) === undefined ||
     server.season === null ||
     typeof WebSocket === 'undefined' ||
     connection.socket !== null ||
@@ -841,7 +979,8 @@ const openLiveConnection = (connection: LiveConnection): void => {
   if (!authenticated) endpoint.searchParams.set('clientId', liveClientId(server.url))
   const revision = serverSyncRevision(server, 'world', 'telemetry-status')
   if (revision !== undefined) endpoint.searchParams.set('revision', revision)
-  const protocols = [LIVE_PROTOCOL]
+  const protocols =
+    liveProtocolVersion(server) === 2 ? [LIVE_PROTOCOL_V2, LIVE_PROTOCOL_V1] : [LIVE_PROTOCOL_V1]
   if (authenticated) {
     protocols.push(liveCredentialProtocol(server.token))
   }
@@ -857,6 +996,12 @@ const openLiveConnection = (connection: LiveConnection): void => {
   armLiveBootstrapFallback(connection)
   socket.addEventListener('open', () => {
     if (connection.socket !== socket || !isCurrentServerConnection(server)) return
+    connection.negotiatedProtocol =
+      socket.protocol === LIVE_PROTOCOL_V2 ? 2 : socket.protocol === LIVE_PROTOCOL_V1 ? 1 : null
+    if (connection.negotiatedProtocol === null) {
+      socket.close(1002, 'live protocol not negotiated')
+      return
+    }
     connection.healthy = true
     connection.reconciled = false
     armLiveHeartbeat(connection)
@@ -864,6 +1009,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
     const state = liveStateVector(server)
     connection.stateRequestId = state.requestId
     socket.send(JSON.stringify(state))
+    armLiveBootstrapFallback(connection)
     armTimer()
   })
   socket.addEventListener('message', (message) => {
@@ -872,8 +1018,17 @@ const openLiveConnection = (connection: LiveConnection): void => {
       confirmLiveConnection(connection)
       return
     }
-    handleLiveEvent(server, message.data)
+    const parsed = parseLiveMessage(connection, message.data)
+    if (parsed.status === 'invalid') {
+      if (activeLiveProtocolVersion(server) === 2) socket.close(1002, 'invalid live event')
+      else requestServerSync('revision-gap', 'telemetry-status', server)
+      return
+    }
     confirmLiveConnection(connection)
+    if (parsed.status === 'event')
+      void handleLiveEvent(server, parsed.value).catch(() =>
+        socket.close(1011, 'live event failed'),
+      )
   })
   socket.addEventListener('error', () => socket.close())
   socket.addEventListener('close', () => {
@@ -896,7 +1051,7 @@ const openLiveConnection = (connection: LiveConnection): void => {
 const reconcileLiveConnections = (): void => {
   const retained = new Set<object>()
   for (const server of connected()) {
-    if (server.info?.liveSync !== 1 || typeof WebSocket === 'undefined') continue
+    if (!liveCapable(server)) continue
     const owner = serverConnectionIdentity(server)
     retained.add(owner)
     let connection = liveConnections.get(owner)
@@ -904,6 +1059,7 @@ const reconcileLiveConnections = (): void => {
       connection = {
         server,
         socket: null,
+        negotiatedProtocol: null,
         reconnectTimer: null,
         bootstrapFallbackTimer: null,
         fallbackReadRequested: false,
@@ -914,7 +1070,9 @@ const reconcileLiveConnections = (): void => {
         reconciled: false,
         stateRequestId: null,
         manifestRevision: null,
+        snapshots: new LiveSnapshotAssembler(),
         pendingTileOffers: new Map(),
+        pendingCommands: new Map(),
       }
       liveConnections.set(owner, connection)
     }
@@ -934,6 +1092,7 @@ const recover = (reason: 'focus' | 'online'): void => {
       const connection = liveConnections.get(serverConnectionIdentity(server))
       if (connection !== undefined && liveHealthy(server)) probeLiveConnection(connection)
       for (const resource of resources.values()) {
+        if (socketOnly(server, resource)) continue
         if (resource.live === true && liveHealthy(server)) continue
         requestServerSync(reason, resource.id, server)
       }
@@ -979,6 +1138,9 @@ export const installServerSyncCoordinator = (): void => {
 
 export const serverLiveSyncHealthy = (server: ConnectedServer): boolean => liveHealthy(server)
 
+export const serverLiveSyncVersion = (server: ConnectedServer): 1 | 2 | undefined =>
+  activeLiveProtocolVersion(server)
+
 export const requestLiveTileOfferCache = (
   server: ConnectedServer,
   batch: LiveTileOfferBatch,
@@ -1006,4 +1168,64 @@ export const requestLiveTileOfferCache = (
       resolve(null)
     }
   })
+}
+
+const requestLiveCommand = (
+  server: ConnectedServer,
+  send: (socket: WebSocket, requestId: string) => void,
+): Promise<LiveCommandResponse | null> => {
+  const connection = liveConnections.get(serverConnectionIdentity(server))
+  if (
+    activeLiveProtocolVersion(server) !== 2 ||
+    !liveHealthy(server) ||
+    connection === undefined ||
+    connection.socket === null
+  )
+    return Promise.resolve(null)
+  const requestId = uuidV7()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      connection.pendingCommands.delete(requestId)
+      resolve(null)
+    }, LIVE_COMMAND_TIMEOUT_MS)
+    connection.pendingCommands.set(requestId, { resolve, timer })
+    try {
+      send(connection.socket as WebSocket, requestId)
+    } catch {
+      clearTimeout(timer)
+      connection.pendingCommands.delete(requestId)
+      resolve(null)
+    }
+  })
+}
+
+export const requestLivePaint = async (
+  server: ConnectedServer,
+  event: PaintEvent,
+): Promise<Extract<LiveCommandResponse, { readonly type: 'paint-result' }> | null> => {
+  const response = await requestLiveCommand(server, (socket, requestId) =>
+    socket.send(JSON.stringify({ type: 'paint-report', requestId, event })),
+  )
+  return response?.type === 'paint-result' ? response : null
+}
+
+export const requestLiveTileOffer = async (
+  server: ConnectedServer,
+  batch: LiveTileOfferBatch,
+): Promise<Extract<LiveCommandResponse, { readonly type: 'tile-offer-result' }> | null> => {
+  const response = await requestLiveCommand(server, (socket, requestId) =>
+    socket.send(JSON.stringify({ type: 'tile-offer', requestId, batch })),
+  )
+  return response?.type === 'tile-offer-result' ? response : null
+}
+
+export const requestLiveTileUpload = async (
+  server: ConnectedServer,
+  upload: Omit<LiveTileUpload, 'type' | 'requestId'>,
+  bytes: Uint8Array,
+): Promise<Extract<LiveCommandResponse, { readonly type: 'tile-upload-result' }> | null> => {
+  const response = await requestLiveCommand(server, (socket, requestId) =>
+    socket.send(encodeLiveTileUpload({ type: 'tile-upload', requestId, ...upload }, bytes)),
+  )
+  return response?.type === 'tile-upload-result' ? response : null
 }

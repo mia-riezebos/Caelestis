@@ -30,9 +30,11 @@ export interface ServerInfo {
   readonly name: string
   readonly description?: string
   readonly auth: 'none' | 'access_token'
-  /** Present only when the server supports the hibernating status/manifest live protocol. */
-  readonly liveSync?: 1
-  /** Present only when live sync accepts hash-cache tile offer commands. */
+  /** Legacy live protocol version. Keep this at v1 while v1 clients remain supported. */
+  readonly liveSync?: 1 | 2
+  /** Highest live protocol version accepted by this server. */
+  readonly liveSyncMax?: 1 | 2
+  /** Present only when the legacy v1 live channel accepts hash-cache tile offer commands. */
   readonly liveTileOffers?: 1
 }
 

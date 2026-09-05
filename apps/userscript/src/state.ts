@@ -1600,6 +1600,35 @@ export const listServerContents = async (
   }
 }
 
+/** Publish one authenticated live manifest through the same listeners as the initial read. */
+export const applyLiveServerManifest = (
+  server: ConnectedServer,
+  body: unknown,
+): ServerContents | null => {
+  if (server.info === null || server.season === null || !isCurrentServerConnection(server))
+    return null
+  const manifest = parseServerManifest(body, server.info)
+  if (manifest === null || manifest.season !== server.season) return null
+  const contents: ServerContents = {
+    revision: manifest.version,
+    nodes: manifest.nodes,
+    templates: manifest.templates,
+  }
+  const request = (latestManifestResponse.get(server.url) ?? 0) + 1
+  latestManifestResponse.set(server.url, request)
+  manifestResponseOf.set(contents, request)
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined || !isCurrentServerConnection(server)) return null
+  for (const listener of serverContentsListeners) {
+    try {
+      listener(current, contents)
+    } catch (error) {
+      warn('install', 'could not publish live manifest contents', String(error))
+    }
+  }
+  return contents
+}
+
 export type ServerNodesResult =
   | { readonly status: 'ok'; readonly nodes: readonly TreeNode[] }
   | { readonly status: 'unreachable' | 'not-admitted' }

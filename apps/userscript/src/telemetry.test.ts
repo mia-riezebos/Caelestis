@@ -1,7 +1,10 @@
 import {
   type LiveTileOfferBatch,
   type LiveTileOfferCacheResponse,
+  type LiveTileOfferResponse,
+  type LiveTileUpload,
   MAX_TILE_OFFERS,
+  type PaintEvent,
   type SyncTransport,
 } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -33,6 +36,39 @@ const coordinator = vi.hoisted(() => ({
       server: ConnectedServer,
       batch: LiveTileOfferBatch,
     ) => Promise<LiveTileOfferCacheResponse | null>
+  >(async () => null),
+  livePaint: vi.fn<
+    (
+      server: ConnectedServer,
+      event: PaintEvent,
+    ) => Promise<{
+      type: 'paint-result'
+      eventId: string
+      result: 'recorded' | 'partial' | 'duplicate'
+      error?: 'forbidden' | 'invalid' | 'unavailable'
+    } | null>
+  >(async () => null),
+  liveFullTileOffer: vi.fn<
+    (
+      server: ConnectedServer,
+      batch: LiveTileOfferBatch,
+    ) => Promise<{
+      type: 'tile-offer-result'
+      response: LiveTileOfferResponse
+      error?: 'forbidden' | 'invalid' | 'unavailable'
+    } | null>
+  >(async () => null),
+  liveTileUpload: vi.fn<
+    (
+      server: ConnectedServer,
+      upload: Omit<LiveTileUpload, 'type' | 'requestId'>,
+      bytes: Uint8Array,
+    ) => Promise<{
+      type: 'tile-upload-result'
+      deliveryId: string
+      accepted: boolean
+      error?: 'forbidden' | 'invalid' | 'unavailable'
+    } | null>
   >(async () => null),
   snapshots: [] as unknown[],
   requests: [] as Array<{ reason: string; resourceId?: string }>,
@@ -108,9 +144,22 @@ vi.mock('./server-sync-coordinator.js', () => ({
     apply()
     return 'applied'
   },
+  applyServerSyncRevision: (
+    _server: unknown,
+    _scope: string,
+    _resource: string,
+    revision: string,
+  ) => {
+    coordinator.revision = revision
+  },
   serverSyncRevision: () => coordinator.revision,
   serverLiveSyncHealthy: () => coordinator.liveHealthy,
+  serverLiveSyncVersion: (server: ConnectedServer) =>
+    server.info?.liveSyncMax ?? server.info?.liveSync,
   requestLiveTileOfferCache: coordinator.liveTileOffer,
+  requestLivePaint: coordinator.livePaint,
+  requestLiveTileOffer: coordinator.liveFullTileOffer,
+  requestLiveTileUpload: coordinator.liveTileUpload,
   registerServerSyncResource: (resource: {
     id: string
     refresh: (
@@ -198,6 +247,12 @@ beforeEach(() => {
   coordinator.revision = undefined
   coordinator.liveTileOffer.mockReset()
   coordinator.liveTileOffer.mockResolvedValue(null)
+  coordinator.livePaint.mockReset()
+  coordinator.livePaint.mockResolvedValue(null)
+  coordinator.liveFullTileOffer.mockReset()
+  coordinator.liveFullTileOffer.mockResolvedValue(null)
+  coordinator.liveTileUpload.mockReset()
+  coordinator.liveTileUpload.mockResolvedValue(null)
   coordinator.snapshots = []
   coordinator.requests = []
   harness.state = {
@@ -1270,6 +1325,142 @@ describe('server telemetry client', () => {
     expect(new Set(deliveryIds).size).toBe(10)
   })
 
+  it('delivers v2 paints, offers, and wanted tile bytes without HTTP fallback', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.liveHealthy = true
+    coordinator.livePaint.mockResolvedValue({
+      type: 'paint-result',
+      eventId: 'ignored',
+      result: 'recorded',
+    })
+    coordinator.liveFullTileOffer.mockImplementation(async (_server, batch) => ({
+      type: 'tile-offer-result',
+      response: {
+        acknowledgedDeliveryIds: [],
+        wanted: batch.offers.map(({ deliveryId }) => ({
+          deliveryId,
+          coverageToken: 'coverage',
+        })),
+        rejectedDeliveryIds: [],
+      },
+    }))
+    coordinator.liveTileUpload.mockImplementation(async (_server, upload) => ({
+      type: 'tile-upload-result',
+      deliveryId: upload.deliveryId,
+      accepted: true,
+    }))
+    const mutationHttp: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (
+          url.includes('/telemetry/paints') ||
+          url.includes('/telemetry/tiles/offers') ||
+          url.includes('/telemetry/tiles/1/2/')
+        )
+          mutationHttp.push(url)
+        if (url.includes('/telemetry/status')) return Response.json({ revision: 1, templates: [] })
+        if (url.includes('/telemetry/alarms'))
+          return Response.json({ version: 'a'.repeat(64), alarms: [] })
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    harness.acceptedPaint?.({
+      season: 0,
+      observedAt: 1_800_000_000,
+      painted: 1,
+      tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+    })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+
+    await vi.waitFor(() => expect(coordinator.liveTileUpload).toHaveBeenCalledOnce())
+    expect(coordinator.livePaint).toHaveBeenCalledOnce()
+    expect(mutationHttp).toEqual([])
+  })
+
+  it('does not upload v2 tile bytes after sharing is disabled', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.liveHealthy = true
+    let answerOffer!: (value: Awaited<ReturnType<typeof coordinator.liveFullTileOffer>>) => void
+    coordinator.liveFullTileOffer.mockImplementation(
+      () => new Promise((resolve) => (answerOffer = resolve)),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+    await vi.waitFor(() => expect(coordinator.liveFullTileOffer).toHaveBeenCalledOnce())
+
+    harness.state = { ...harness.state, shareTiles: false }
+    for (const listener of harness.stateListeners) listener()
+    const deliveryId = coordinator.liveFullTileOffer.mock.calls[0]?.[1].offers[0]?.deliveryId
+    if (deliveryId === undefined) throw new Error('tile offer was not sent')
+    answerOffer({
+      type: 'tile-offer-result',
+      response: {
+        acknowledgedDeliveryIds: [],
+        wanted: [{ deliveryId, coverageToken: 'coverage' }],
+        rejectedDeliveryIds: [],
+      },
+    })
+    await Promise.resolve()
+    expect(coordinator.liveTileUpload).not.toHaveBeenCalled()
+  })
+
+  it('retries one v2 paint with the same event id after its acknowledgement is lost', async () => {
+    vi.useFakeTimers()
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    harness.state = { ...harness.state, servers: [liveServer] }
+    coordinator.livePaint
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockImplementation(async (_server, event) => ({
+        type: 'paint-result',
+        eventId: event.eventId,
+        result: 'duplicate',
+      }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/telemetry/status')) return Response.json({ revision: 1, templates: [] })
+        if (url.includes('/telemetry/alarms'))
+          return Response.json({ version: 'a'.repeat(64), alarms: [] })
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(liveServer, { nodes: [], templates: [template] })
+    harness.acceptedPaint?.({
+      season: 0,
+      observedAt: 1_800_000_000,
+      painted: 1,
+      tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(coordinator.livePaint).toHaveBeenCalledTimes(4)
+    const eventIds = coordinator.livePaint.mock.calls.map(([, event]) => event.eventId)
+    expect(new Set(eventIds).size).toBe(1)
+  })
+
   it('falls back to the HTTP offer when the live request disconnects', async () => {
     const liveServer = {
       ...server,
@@ -1464,6 +1655,26 @@ describe('server telemetry client', () => {
 
   it('restores recent retries trimmed from a failed active batch', async () => {
     vi.useFakeTimers()
+    const digestCompletions: Array<() => void> = []
+    const nativeCrypto = globalThis.crypto
+    vi.stubGlobal('crypto', {
+      getRandomValues: nativeCrypto.getRandomValues.bind(nativeCrypto),
+      subtle: {
+        digest: vi.fn((_algorithm: AlgorithmIdentifier, data: BufferSource) => {
+          const bytes = ArrayBuffer.isView(data)
+            ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            : new Uint8Array(data)
+          const value = bytes[0] ?? 0
+          return new Promise<ArrayBuffer>((resolve) => {
+            digestCompletions[value] = () => {
+              const digest = new Uint8Array(32)
+              digest[0] = value
+              resolve(digest.buffer)
+            }
+          })
+        }),
+      },
+    })
     const mirror = { ...server, url: 'https://mirror.example' }
     harness.state = { ...harness.state, servers: [server, mirror] }
     const attempts = new Map<string, Array<{ offers: Array<{ tile: string }> }>>()
@@ -1513,6 +1724,9 @@ describe('server telemetry client', () => {
       bytes[0] = index
       harness.fetchedTile?.({ x: index, y: 11 }, bytes, 1_800_000_000 + index)
     }
+    expect(digestCompletions).toHaveLength(observationCount)
+    for (let index = observationCount - 1; index >= 0; index--) digestCompletions[index]?.()
+    await vi.advanceTimersByTimeAsync(0)
     await vi.waitFor(() => expect(attempts.get(server.url)).toHaveLength(1), { timeout: 2_000 })
 
     await vi.advanceTimersByTimeAsync(60_000)

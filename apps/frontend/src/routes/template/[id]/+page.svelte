@@ -341,7 +341,13 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {/if}
     </section>
 
-    <StatsPanel templates={[template]} season={app.manifest.season} {progress} />
+    <StatsPanel
+      templates={[template]}
+      season={app.manifest?.season ?? 0}
+      liveDashboard={app.liveProtocol === 2}
+      {progress}
+      subscribeDashboard={app.subscribeDashboard}
+    />
 
     {#if status?.colours !== undefined && status.colours.length > 0}
       <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">

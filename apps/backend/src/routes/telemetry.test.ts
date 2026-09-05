@@ -215,12 +215,13 @@ describe('telemetry routes', () => {
 
     await expect((await app.request('/server')).json()).resolves.toMatchObject({
       liveSync: 1,
+      liveSyncMax: 2,
       liveTileOffers: 1,
     })
     await expect(
       (await app.request('/manifest', { headers: bearer(readToken) })).json(),
     ).resolves.toMatchObject({
-      server: { liveSync: 1, liveTileOffers: 1 },
+      server: { liveSync: 1, liveSyncMax: 2, liveTileOffers: 1 },
     })
     expect(
       (
@@ -256,6 +257,7 @@ describe('telemetry routes', () => {
       lastRevision: 4,
       metricClient: 'userscript',
       metricClientVersion: '0.5.4',
+      protocol: 1,
     })
 
     const adminResponse = await app.request('/telemetry/live?season=7&scope=admin', {
@@ -273,6 +275,7 @@ describe('telemetry routes', () => {
       lastRevision: null,
       metricClient: 'unknown',
       metricClientVersion: 'unknown',
+      protocol: 1,
     })
 
     const downgradedResponse = await app.request('/telemetry/live?season=7&scope=public', {
@@ -290,7 +293,21 @@ describe('telemetry routes', () => {
       lastRevision: null,
       metricClient: 'unknown',
       metricClientVersion: 'unknown',
+      protocol: 1,
     })
+
+    const workerProxyResponse = await app.request('/telemetry/live?season=7&scope=public', {
+      headers: {
+        authorization: `Bearer ${readToken}`,
+        upgrade: 'websocket',
+        'sec-websocket-protocol': 'caelestis.live.v2',
+      },
+    })
+    expect(workerProxyResponse.status).toBe(204)
+    expect(connectStatusLive).toHaveBeenLastCalledWith(
+      expect.any(Request),
+      expect.objectContaining({ protocol: 2, credentialScope: 'read' }),
+    )
   })
 
   it('uses a browser client id instead of the network address for anonymous live capacity', async () => {
@@ -983,6 +1000,51 @@ describe('telemetry routes', () => {
       body: JSON.stringify({ ...event, eventId: '01890f3e-7b2c-7abc-8def-0123456789ad' }),
     })
     expect(forbidden.status).toBe(403)
+  })
+
+  it('refreshes live dashboards after an HTTP paint report', async () => {
+    const notifyDashboardChange = vi.fn(async () => undefined)
+    const { app } = await harness({
+      applyCommittedChange: vi.fn(async () => null),
+      reconcileSnapshot: vi.fn(async () => ({
+        cacheOutcome: 'hit' as const,
+        snapshot: { revision: 0, templates: [] },
+      })),
+      notifyDashboardChange,
+    })
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const bytes = await canvasTile()
+    const hash = await sha256Hex(bytes)
+    const now = seconds(Math.floor(Date.now() / 1_000))
+    await app.request(`/telemetry/tiles/0/0/${hash}`, {
+      method: 'PUT',
+      headers: {
+        ...bearer(reportToken),
+        'x-caelestis-season': '0',
+        'x-caelestis-observed-at': String(now),
+        'x-caelestis-wplace-user-id': '42',
+        'x-caelestis-display-name': 'Mia',
+      },
+      body: bytes,
+    })
+
+    const response = await app.request('/telemetry/paints', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        eventId: EVENT_ID,
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 0,
+        ts: now,
+        tiles: [{ x: 0, y: 0, pixels: { x: [2], y: [0], colors: [3] } }],
+        painted: 1,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(notifyDashboardChange).toHaveBeenCalledWith(0)
   })
 
   it('stops history for a finished template, keeps grief status live, and resumes after reopen', async () => {

@@ -16,16 +16,25 @@
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
   import type { Progress } from '$lib/tree'
+  import type { DashboardSnapshot } from '$lib/state/app.svelte'
 
   let {
     templates,
     season,
+    liveDashboard,
     progress,
+    subscribeDashboard,
   }: {
     templates: readonly Template[]
     season: number
+    liveDashboard: boolean
     /** The scope's live status — the progress chart's anchor and the ETA's numerator. */
     progress: Progress
+    subscribeDashboard: (
+      templateIds: readonly string[],
+      contributionsFrom: number,
+      listener: (snapshot: DashboardSnapshot) => void,
+    ) => () => void
   } = $props()
 
   const templateIds = $derived(templates.map((template) => template.id))
@@ -33,7 +42,7 @@
 
   const DAY_SECONDS = 86_400
   const RESOLUTION = 900
-  const LIVE_STATS_REFRESH_MS = 15_000
+  const COMPATIBILITY_REFRESH_MS = 15_000
 
   const now = Math.floor(Date.now() / 1_000)
   // Start at a day boundary so every retained tier can return the bucket containing creation.
@@ -95,34 +104,39 @@
   $effect(() => {
     if (templateIds.length === 0) return
     const ids = [...templateIds]
+    contributions = null
+    leaderboard = null
+    const contributionsFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
+    if (liveDashboard)
+      return subscribeDashboard(ids, contributionsFrom, (snapshot) => {
+        contributions = snapshot.contributions.days
+        leaderboard = snapshot.leaderboard.entries
+      })
+
     const generation = { cancelled: false }
     let refreshPending = false
     const refresh = (): void => {
       if (refreshPending) return
       refreshPending = true
       const requestedAt = Math.floor(Date.now() / 1_000)
-      const contributionFrom = requestedAt - 86_400 * 7 * 16
       void Promise.all([
-        getContributions(ids, contributionFrom, requestedAt)
-          .then((response) => {
-            if (!generation.cancelled) contributions = response.days
-          })
-          .catch(() => {}),
-        getLeaderboard(season, { templateIds: ids })
-          .then((response) => {
-            if (!generation.cancelled) leaderboard = response.entries
-          })
-          .catch(() => {}),
-      ]).finally(() => {
-        refreshPending = false
-      })
+        getContributions(ids, requestedAt - 86_400 * 7 * 16, requestedAt).then((response) => {
+          if (!generation.cancelled) contributions = response.days
+        }),
+        getLeaderboard(season, { templateIds: ids }).then((response) => {
+          if (!generation.cancelled) leaderboard = response.entries
+        }),
+      ])
+        .catch(() => {})
+        .finally(() => {
+          refreshPending = false
+        })
     }
     const refreshWhenVisible = (): void => {
       if (document.visibilityState === 'visible') refresh()
     }
-
     refresh()
-    const interval = setInterval(refreshWhenVisible, LIVE_STATS_REFRESH_MS)
+    const interval = setInterval(refreshWhenVisible, COMPATIBILITY_REFRESH_MS)
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       generation.cancelled = true
