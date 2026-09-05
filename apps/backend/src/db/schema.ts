@@ -815,6 +815,8 @@ export const templateAlarmStates = sqliteTable(
     probePixelsLost: integer('probe_pixels_lost'),
     /** Rejects a delayed evaluation whose evidence predates the state already persisted. */
     evaluatedAtMs: integer('evaluated_at_ms').$type<Millis>().notNull().default(sql`0`),
+    /** Last live tile commit evaluated, independent of scan timestamps and alarm CAS revisions. */
+    observationRevision: integer('observation_revision').notNull().default(0),
     /** Optimistic compare-and-swap guard for overlapping cron and follow-up evaluations. */
     revision: integer('revision').notNull().default(0),
   },

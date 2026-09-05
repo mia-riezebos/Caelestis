@@ -1644,6 +1644,12 @@ export class D1SqlStore implements SqlStore {
                      status.colours_json AS previous_colours_json,
                      status.observed_at_ms AS previous_observed_at_ms,
                      status.server_owned AS previous_server_owned,
+                     (SELECT coalesce(sum(held.correct), 0) FROM template_tile_statuses AS held
+                       WHERE held.template_id = incoming.template_id
+                         AND held.version_id = incoming.version_id) AS previous_template_correct,
+                     (SELECT coalesce(max(held.observed_at_ms), 0) FROM template_tile_statuses AS held
+                       WHERE held.template_id = incoming.template_id
+                         AND held.version_id = incoming.version_id) AS previous_template_observed_at_ms,
                      template.published_at IS NOT NULL AS published,
                      version.total_pixels,
                      version.colour_totals_json
@@ -1823,6 +1829,8 @@ export class D1SqlStore implements SqlStore {
       previous_colours_json: string | null
       previous_observed_at_ms: number | null
       previous_server_owned: number | null
+      previous_template_correct: number
+      previous_template_observed_at_ms: number
       published: number
       total_pixels: number
       colour_totals_json: string | null
@@ -1865,6 +1873,8 @@ export class D1SqlStore implements SqlStore {
         {
           published: row.published === 1,
           totalPixels: Number(row.total_pixels),
+          previousTemplateCorrect: Number(row.previous_template_correct),
+          previousTemplateObservedAt: millis(row.previous_template_observed_at_ms),
           ...(colourTotals === undefined ? {} : { colourTotals }),
           previous:
             row.previous_observed_at_ms === null
@@ -2396,32 +2406,6 @@ export class D1SqlStore implements SqlStore {
     return row.revision
   }
 
-  async readTemplateAlarmSnapshots(
-    templateIds: readonly string[],
-  ): Promise<readonly TemplateAlarmSnapshot[]> {
-    if (templateIds.length === 0) return []
-    const rows = await this.database
-      .select({
-        templateId: templates.id,
-        versionId: templateVersions.id,
-        total: templateVersions.totalPixels,
-        correct: sql<number>`sum(${templateTileStatuses.correct})`,
-        observedAt: sql<number>`max(${templateTileStatuses.observedAtMs})`,
-      })
-      .from(templates)
-      .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
-      .innerJoin(
-        templateTileStatuses,
-        and(
-          eq(templateTileStatuses.templateId, templates.id),
-          eq(templateTileStatuses.versionId, templateVersions.id),
-        ),
-      )
-      .where(inArray(templates.id, [...templateIds]))
-      .groupBy(templates.id, templateVersions.id, templateVersions.totalPixels)
-    return rows.map((row) => ({ ...row, observedAt: millis(row.observedAt) }))
-  }
-
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -2446,7 +2430,12 @@ export class D1SqlStore implements SqlStore {
       ) {
         return evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
       }
-      if (previousRow !== undefined && snapshot.observedAt < previousRow.evaluatedAtMs) {
+      if (
+        previousRow !== undefined &&
+        (snapshot.observedAt < previousRow.evaluatedAtMs ||
+          (snapshot.observationRevision !== undefined &&
+            snapshot.observationRevision <= previousRow.observationRevision))
+      ) {
         return { state: previousState as TemplateAlarmState, scheduleFollowUp: false }
       }
       const result = evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
@@ -2478,6 +2467,7 @@ export class D1SqlStore implements SqlStore {
             ? (alarm?.pixelsLost ?? null)
             : null,
         evaluatedAtMs: snapshot.observedAt,
+        observationRevision: snapshot.observationRevision ?? previousRow?.observationRevision ?? 0,
         revision: (previousRow?.revision ?? -1) + 1,
       }
       const write =
@@ -2512,7 +2502,7 @@ export class D1SqlStore implements SqlStore {
         lastSeenMs: null,
         probeDueAtMs: null,
         probePixelsLost: null,
-        evaluatedAtMs: sql`max(${templateAlarmStates.evaluatedAtMs}, ${now})`,
+        evaluatedAtMs: sql`max(${templateAlarmStates.evaluatedAtMs}, ${now}) + 1`,
         revision: sql`${templateAlarmStates.revision} + 1`,
       })
       .where(

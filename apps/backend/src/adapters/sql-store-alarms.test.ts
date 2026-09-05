@@ -69,34 +69,60 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
 
   afterEach(() => harness.close())
 
-  it('reads classified alarm baselines only for requested current template versions', async () => {
-    await store.recordTileObservation(
-      {
-        season: 1,
-        tile: { x: 0, y: 0 },
-        hash: 'd'.repeat(64),
-        observedAt: NOW,
-        reportedAt: seconds(NOW / 1_000),
-        reportedWithToken: TOKEN,
-        reportedByUserId: 42,
-      },
-      [
+  it('captures coherent commit counts and ignores reversed equal-time evaluations', async () => {
+    const commit = async (correct: number, suffix: string) => {
+      const hash = suffix.repeat(64)
+      await store.reserveTileBlobUpload(hash, hash, suffix, NOW, millis(NOW + 10_000))
+      const result = await store.commitTileBlobReservation(
+        suffix,
+        NOW,
         {
-          templateId: TEMPLATE_ID,
-          versionId: VERSION_ID,
+          season: 1,
           tile: { x: 0, y: 0 },
-          correct: 60_000,
-          wrong: 10_000,
-          blank: 30_000,
+          hash,
           observedAt: NOW,
+          reportedAt: seconds(NOW / 1_000),
+          reportedWithToken: TOKEN,
+          reportedByUserId: 42,
         },
-      ],
-    )
-    expect(await store.readTemplateAlarmSnapshots([])).toEqual([])
-    expect(await store.readTemplateAlarmSnapshots(['other'])).toEqual([])
-    expect(await store.readTemplateAlarmSnapshots([TEMPLATE_ID])).toEqual([snapshot(60_000)])
-    await store.insertTemplateVersion(version(NEXT_VERSION_ID), { requireExisting: true })
-    expect(await store.readTemplateAlarmSnapshots([TEMPLATE_ID])).toEqual([])
+        [
+          {
+            templateId: TEMPLATE_ID,
+            versionId: VERSION_ID,
+            tile: { x: 0, y: 0 },
+            correct,
+            wrong: 100_000 - correct,
+            blank: 0,
+            observedAt: NOW,
+          },
+        ],
+      )
+      const change = result?.statusChanges[0]
+      if (!change || result?.revision == null) throw new Error('expected a committed transition')
+      return { change, revision: result.revision }
+    }
+    await commit(60_000, 'a')
+    const loss = await commit(59_999, 'b')
+    const recovery = await commit(60_000, 'c')
+    expect(loss.change.previousTemplateCorrect).toBe(60_000)
+    expect(recovery.change.previousTemplateCorrect).toBe(59_999)
+    expect(recovery.revision).toBeGreaterThan(loss.revision)
+    for (const { change, revision } of [recovery, loss]) {
+      await store.evaluateTemplateAlarm(
+        {
+          ...snapshot(
+            change.previousTemplateCorrect -
+              (change.previous?.correct ?? 0) +
+              change.current.correct,
+          ),
+          observationRevision: revision,
+        },
+        { kind: 'observation', previousCorrect: change.previousTemplateCorrect },
+        ALARM_ID,
+      )
+    }
+    expect(await store.readActiveAlarms(1, false)).toEqual([])
+    expect(await store.nextAlarmProbeAt()).toBeNull()
   })
 
   it('keeps the first probe during live losses, recovery, and admin dismissal', async () => {
@@ -147,6 +173,8 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
     await expect(store.dismissTemplateAlarm(TEMPLATE_ID, ALARM_ID, PROBE_AT)).resolves.toBe(true)
     await expect(store.readActiveAlarms(1, false)).resolves.toEqual([])
     await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
+    await store.evaluateTemplateAlarm(snapshot(59_700, PROBE_AT), { kind: 'scan' }, 'equal-time')
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([])
     await store.evaluateTemplateAlarm(snapshot(60_000, SIX_HOURS_LATER), { kind: 'scan' }, 'stale')
     await store.evaluateTemplateAlarm(
       snapshot(59_700, PROBE_AT),

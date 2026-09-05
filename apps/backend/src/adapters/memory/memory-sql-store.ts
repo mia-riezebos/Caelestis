@@ -105,6 +105,7 @@ interface StoredTemplateAlarmState extends TemplateAlarmState {
   readonly probeDueAt: Millis | null
   readonly probePixelsLost: number | null
   readonly evaluatedAt: Millis
+  readonly observationRevision: number
 }
 
 const tileHistoryRowKey = (row: TileHistoryRow): string =>
@@ -937,8 +938,25 @@ export class MemorySqlStore implements SqlStore {
       }),
     )
     const canvasKey = `${observation.season}\u0000${tileKey(observation.tile)}`
+    const previousTemplateCounts = new Map(
+      acceptedStatuses.map(({ status }) => [
+        status.templateId,
+        [...this.templateTileStatuses.values()]
+          .filter(
+            (held) => held.templateId === status.templateId && held.versionId === status.versionId,
+          )
+          .reduce(
+            (total, held) => ({
+              correct: total.correct + held.correct,
+              observedAt: millis(Math.max(total.observedAt, held.observedAt)),
+            }),
+            { correct: 0, observedAt: millis(0) },
+          ),
+      ]),
+    )
     const previousCommitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
-    await this.recordTileObservation(
+    // recordTileObservation mutates synchronously. Capture this whole commit before yielding.
+    const recording = this.recordTileObservation(
       observation,
       acceptedStatuses.map(({ status }) => status),
       recordHistory,
@@ -954,6 +972,9 @@ export class MemorySqlStore implements SqlStore {
             {
               published: template.publishedAt !== null,
               totalPixels: version.totalPixels,
+              previousTemplateCorrect: previousTemplateCounts.get(status.templateId)?.correct ?? 0,
+              previousTemplateObservedAt:
+                previousTemplateCounts.get(status.templateId)?.observedAt ?? millis(0),
               ...(version.colourTotals === undefined ? {} : { colourTotals: version.colourTotals }),
               previous: before,
               current,
@@ -974,6 +995,7 @@ export class MemorySqlStore implements SqlStore {
     }
     const current = this.canvasTiles.get(canvasKey)
     const commitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
+    await recording
     return {
       revision,
       statusChanges,
@@ -1265,29 +1287,6 @@ export class MemorySqlStore implements SqlStore {
     return revision
   }
 
-  async readTemplateAlarmSnapshots(
-    templateIds: readonly string[],
-  ): Promise<readonly TemplateAlarmSnapshot[]> {
-    return templateIds.flatMap((templateId) => {
-      const template = this.templates.get(templateId)
-      const version = template && this.templateVersions.get(template.currentVersionId)
-      if (!version) return []
-      const statuses = [...this.templateTileStatuses.values()].filter(
-        (status) => status.templateId === templateId && status.versionId === version.versionId,
-      )
-      if (statuses.length === 0) return []
-      return [
-        {
-          templateId,
-          versionId: version.versionId,
-          total: version.totalPixels,
-          correct: statuses.reduce((sum, status) => sum + status.correct, 0),
-          observedAt: millis(Math.max(...statuses.map((status) => status.observedAt))),
-        },
-      ]
-    })
-  }
-
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -1304,7 +1303,12 @@ export class MemorySqlStore implements SqlStore {
     ) {
       return evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
     }
-    if (previous !== null && snapshot.observedAt < previous.evaluatedAt) {
+    if (
+      previous !== null &&
+      (snapshot.observedAt < previous.evaluatedAt ||
+        (snapshot.observationRevision !== undefined &&
+          snapshot.observationRevision <= previous.observationRevision))
+    ) {
       return { state: previous, scheduleFollowUp: false }
     }
     const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
@@ -1325,6 +1329,7 @@ export class MemorySqlStore implements SqlStore {
       ...result.state,
       ...probe,
       evaluatedAt: snapshot.observedAt,
+      observationRevision: snapshot.observationRevision ?? previous?.observationRevision ?? 0,
     })
     return result
   }
@@ -1338,7 +1343,7 @@ export class MemorySqlStore implements SqlStore {
       alarm: null,
       probeDueAt: null,
       probePixelsLost: null,
-      evaluatedAt: millis(Math.max(state.evaluatedAt, now)),
+      evaluatedAt: millis(Math.max(state.evaluatedAt, now) + 1),
     })
     return true
   }

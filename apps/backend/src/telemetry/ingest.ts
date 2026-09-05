@@ -482,19 +482,26 @@ const recordObservationPromise = async (
     ({ previous, current }) => previous === null || previous.correct !== current.correct,
   )
   // The fetcher evaluates its complete scan/follow-up after its authoritative tile batch.
-  if (options.authoritative !== true && alarmChanges.length > 0) {
-    const snapshots = await ports.sql.readTemplateAlarmSnapshots(
-      alarmChanges.map(({ current }) => current.templateId),
-    )
-    for (const snapshot of snapshots) {
-      const change = alarmChanges.find(({ current }) => current.templateId === snapshot.templateId)
-      if (change === undefined || change.current.versionId !== snapshot.versionId) continue
+  if (options.authoritative !== true && committed.revision !== null && alarmChanges.length > 0) {
+    for (const {
+      previous,
+      current,
+      previousTemplateCorrect,
+      previousTemplateObservedAt,
+      totalPixels,
+    } of alarmChanges) {
       await ports.sql.evaluateTemplateAlarm(
-        snapshot,
+        {
+          templateId: current.templateId,
+          versionId: current.versionId,
+          total: totalPixels,
+          correct: previousTemplateCorrect - (previous?.correct ?? 0) + current.correct,
+          observedAt: millis(Math.max(current.observedAt, previousTemplateObservedAt)),
+          observationRevision: committed.revision,
+        },
         {
           kind: 'observation',
-          previousCorrect:
-            snapshot.correct - change.current.correct + (change.previous?.correct ?? 0),
+          previousCorrect: previousTemplateCorrect,
         },
         uuidV7(),
       )

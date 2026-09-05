@@ -585,6 +585,8 @@ export interface TemplateAlarmSnapshot {
   readonly total: number
   readonly correct: number
   readonly observedAt: Millis
+  /** Present for live observations to order commits even when their timestamps are equal. */
+  readonly observationRevision?: number
 }
 
 export interface TemplateAlarmState {
@@ -708,6 +710,9 @@ export interface TemplateTileStatusChange {
   readonly colourTotals?: readonly { readonly index: number; readonly total: number }[]
   readonly previous: TemplateTileStatusRecord | null
   readonly current: TemplateTileStatusRecord
+  /** Template-wide correct count read before this tile changed, in the same transaction. */
+  readonly previousTemplateCorrect: number
+  readonly previousTemplateObservedAt: Millis
 }
 
 export interface TileObservationCommit {
@@ -1059,11 +1064,6 @@ export interface SqlStore {
     publicFingerprint: string,
     adminFingerprint: string,
   ): Promise<number | null>
-
-  /** Read current counts for only the templates touched by a tile observation. */
-  readTemplateAlarmSnapshots(
-    templateIds: readonly string[],
-  ): Promise<readonly TemplateAlarmSnapshot[]>
 
   /** Atomically evaluate and persist one template snapshot. */
   evaluateTemplateAlarm(
