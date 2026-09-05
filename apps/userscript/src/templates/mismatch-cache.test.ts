@@ -155,6 +155,9 @@ it.each(['pixels', 'mask'] as const)(
     // The outline renderer asks first and only needs the unpainted projection.
     pixelAccounting.frame(() => pixelAccounting.read(one).unpainted(tile))
     await Promise.resolve()
+    // A refresh must retain a complete drawable answer throughout; replacing it with a partial
+    // entry makes the entire tile disappear while the missing projection is scanned.
+    expect(read()?.markers.map(markLocalX)).toContain(33)
     await vi.waitFor(() => expect(read()?.markers.length).toBe(1))
     expect(read()?.markers.map(markLocalX)).toEqual(new Uint32Array([33]))
   },

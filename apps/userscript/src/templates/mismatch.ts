@@ -1352,7 +1352,14 @@ const mismatchAnswer = (
   const cacheKey = `${template.id}|${tile.x}/${tile.y}`
   requestedThisFrame?.add(cacheKey)
   const key = signature(template)
-  const collection = collectionFor(kind)
+  const requested = collectionFor(kind)
+  const held = cache.get(cacheKey)
+  // Once a tile has a complete drawable answer, refresh all of its collected projections
+  // together. A narrow outline refresh must not replace it with an incomplete marker result.
+  const collection = {
+    wrong: requested.wrong || held?.wrongComplete === true,
+    unpainted: requested.unpainted || held?.unpaintedComplete === true,
+  }
   const serverMask = serverMismatchMaskFor(template, tile)
   const superseded = supersededServerSource.get(cacheKey)
   if (superseded !== undefined && superseded !== template.serverUrl) {
