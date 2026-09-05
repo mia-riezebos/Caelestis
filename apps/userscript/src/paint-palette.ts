@@ -1,4 +1,10 @@
-import { latLngToCanvasPixel, sameTemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import {
+  formatCount,
+  formatPixels,
+  latLngToCanvasPixel,
+  sameTemplateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import type { CaelestisPaletteProgress } from '@caelestis/ui/elements'
 import { allianceBounds, alliancePointAt } from './alliance-coordinates.js'
 import { navigateAllianceArtboardTo } from './alliance-navigation.js'
@@ -368,6 +374,7 @@ export const paintPaletteProgress = (): readonly TemplateColourProgress[] => {
 }
 
 const originalLabels = new WeakMap<HTMLElement, string>()
+const originalTitles = new WeakMap<HTMLElement, string | null>()
 const wired = new WeakSet<HTMLElement>()
 
 const renderedPaletteOrder = (): readonly number[] => {
@@ -539,6 +546,12 @@ const render = (): void => {
       existing?.remove()
       const original = originalLabels.get(element)
       if (original !== undefined) element.setAttribute('aria-label', original)
+      if (originalTitles.has(element)) {
+        const title = originalTitles.get(element)
+        if (title == null) element.removeAttribute('title')
+        else element.title = title
+        originalTitles.delete(element)
+      }
       continue
     }
     const label =
@@ -546,11 +559,14 @@ const render = (): void => {
     originalLabels.set(element, label)
     element.setAttribute(
       'aria-label',
-      `${label}. ${remaining.toLocaleString()} ${remaining === 1 ? 'pixel' : 'pixels'} left in the focused template. Middle-click, or select it and press F, to go to its nearest ${navigationLabel} pixel.`,
+      `${label}. ${formatPixels(remaining)} left in the focused template. Middle-click, or select it and press F, to go to its nearest ${navigationLabel} pixel.`,
     )
+    if (!originalTitles.has(element)) originalTitles.set(element, element.getAttribute('title'))
+    const originalTitle = originalTitles.get(element)
+    element.title = `${originalTitle ? `${originalTitle}. ` : ''}${formatPixels(remaining)} left in the focused template`
     const badge = existing ?? document.createElement('caelestis-palette-progress')
     badge.className = 'caelestis-palette-progress'
-    const text = remaining.toLocaleString()
+    const text = formatCount(remaining)
     if (badge.model?.value !== text) badge.model = { value: text }
     if (existing === null) element.appendChild(badge)
   }

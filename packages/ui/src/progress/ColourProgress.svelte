@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { type TemplateColourStatus, WPLACE_PALETTE } from '@caelestis/shared'
+  import { formatCount, formatExactCount, formatPixels, type TemplateColourStatus, WPLACE_PALETTE } from '@caelestis/shared'
   import type { ColourProgressSort } from '../types.js'
 
   let { colours, sort = 'index', onSortChange }: {
@@ -54,12 +54,12 @@
 </div>
 <ul>
   {#each rows as { colour, palette, done } (colour.index)}
-    <li>
+    <li title={`${palette.name}: ${formatExactCount(colour.correct)} of ${formatPixels(colour.total)} complete`} aria-label={`${palette.name}: ${formatExactCount(colour.correct)} of ${formatPixels(colour.total)} complete`}>
       <span class="index">{colour.index}</span>
       <span class="swatch" style:background={palette.hex} title={`${palette.name} (${palette.kind})`}></span>
       <span class="name" title={palette.name}>{palette.name}</span>
       <span class="track"><span style:width={`${done * 100}%`} style:background={palette.hex}></span></span>
-      <span class="count" title={`${colour.correct.toLocaleString()} of ${colour.total.toLocaleString()} pixels`}>{colour.correct.toLocaleString()}/{colour.total.toLocaleString()}</span>
+      <span class="count">{formatCount(colour.correct)}/{formatCount(colour.total)}</span>
       <span class="percent">{(done * 100).toFixed(1)}%</span>
     </li>
   {/each}
@@ -70,7 +70,7 @@
   select { min-block-size: 1.75rem; inline-size: 9rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-raised-surface); color: var(--caelestis-text); }
   ul { display: flex; flex-direction: column; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
   li { display: grid; grid-template-columns: 1.5rem 1rem minmax(5rem, 9rem) minmax(4rem, 1fr) 8.5rem; align-items: center; gap: 0.5rem; color: var(--caelestis-text); font: 500 0.8rem/1.2 ui-sans-serif, system-ui, sans-serif; }
-  .index, .count, .percent { color: var(--caelestis-muted-text); text-align: end; font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+  .index, .count, .percent { color: var(--caelestis-muted-text); text-align: end; font-size: 0.72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .swatch { inline-size: 1rem; block-size: 1rem; border: 1px solid color-mix(in oklch, var(--caelestis-text) 20%, transparent); border-radius: 0.2rem; }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .track { block-size: 0.375rem; overflow: hidden; border-radius: 999px; background: var(--caelestis-raised-surface); }

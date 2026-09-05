@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatCount, formatPixels } from '@caelestis/shared'
   import type {
     ContributionDay,
     HistoryBucket,
@@ -162,7 +163,7 @@
       <h2 class="font-semibold">Progress &amp; pace</h2>
       <div class="text-xs tabular-nums text-base-content/60">
         {#if pace !== null}
-          {Math.round(pace.placed).toLocaleString()} px/h {pacePeriod}
+          <span class="whitespace-nowrap" title={`${formatPixels(pace.placed)} per hour`} aria-label={`${formatPixels(pace.placed)} per hour`}>{formatCount(pace.placed)} px/h</span> {pacePeriod}
           {#if eta !== null}
             · done in {formatEta(eta)} at this pace
           {/if}

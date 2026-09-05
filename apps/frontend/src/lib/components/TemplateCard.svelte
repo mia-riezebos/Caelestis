@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { CanvasTileSummary, TileKey } from '@caelestis/shared'
+import { formatCount, formatPixels, type CanvasTileSummary, type TileKey } from '@caelestis/shared'
 import { ProgressMeter, TemplateState } from '@caelestis/ui'
 import TemplateCanvas from '$lib/components/TemplateCanvas.svelte'
 import type { TreeTemplate } from '$lib/tree'
@@ -25,8 +25,8 @@ const { template } = $derived(entry)
   <div class="flex flex-col gap-2 p-3">
     <div class="flex items-baseline justify-between gap-2">
       <h3 class="truncate font-semibold group-hover:text-primary">{template.name}</h3>
-      <span class="shrink-0 text-xs tabular-nums text-base-content/50">
-        {template.totalPixels.toLocaleString()} px
+      <span class="shrink-0 whitespace-nowrap text-xs tabular-nums text-base-content/50" title={formatPixels(template.totalPixels)} aria-label={formatPixels(template.totalPixels)}>
+        {formatCount(template.totalPixels)} px
       </span>
     </div>
     <TemplateState

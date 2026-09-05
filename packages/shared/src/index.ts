@@ -1,4 +1,5 @@
 export * from './client-metrics.js'
+export * from './count.js'
 export { sha256Hex } from './hash.js'
 export * from './manifest.js'
 export * from './mismatch-mask.js'

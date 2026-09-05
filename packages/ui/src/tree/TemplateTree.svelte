@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatCount, formatPixels } from '@caelestis/shared'
   import Button from '../foundations/Button.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
@@ -381,9 +382,9 @@
                 <div class="progress-summary">
                   <ProgressMeter progress={entry.progress} size="sm" />
                   <div class="progress-legend">
-                    <span class="completed" title="Completed">{entry.progress.completed.toLocaleString()}</span>
-                    <span class="mismatched" title="Mismatched">{entry.progress.mismatched.toLocaleString()}</span>
-                    <span class="unpainted" title="Unpainted">{entry.progress.unpainted.toLocaleString()}</span>
+                    <span class="completed" title={`${formatPixels(entry.progress.completed)} completed`} aria-label={`${formatPixels(entry.progress.completed)} completed`}>{formatCount(entry.progress.completed)}</span>
+                    <span class="mismatched" title={`${formatPixels(entry.progress.mismatched)} mismatched`} aria-label={`${formatPixels(entry.progress.mismatched)} mismatched`}>{formatCount(entry.progress.mismatched)}</span>
+                    <span class="unpainted" title={`${formatPixels(entry.progress.unpainted)} unpainted`} aria-label={`${formatPixels(entry.progress.unpainted)} unpainted`}>{formatCount(entry.progress.unpainted)}</span>
                     {#if entry.progress.known < entry.progress.total}<span class="coverage">{scannedPercent(entry.progress)}% scanned</span>{/if}
                   </div>
                 </div>
@@ -475,17 +476,25 @@
   .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
   .progress-detail { display: flex; flex-basis: 100%; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
   .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
-  .progress-summary { display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
+  .progress-summary { container-type: inline-size; display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
   .progress-summary :global(.meter-wrap) { inline-size: 100%; }
   .progress-detail-action { position: absolute; inset-block-start: -0.4375rem; inset-inline-end: 0; inline-size: 1.5rem; block-size: 1.5rem; min-inline-size: 1.5rem; min-block-size: 1.5rem; }
   .progress-legend { display: flex; min-inline-size: 0; align-items: center; gap: 0.625rem; font-size: 0.625rem; font-variant-numeric: tabular-nums; }
-  .progress-legend span { display: inline-flex; align-items: center; gap: 0.2rem; }
+  .progress-legend span { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.2rem; white-space: nowrap; }
   .progress-legend span::before { content: ''; inline-size: 0.375rem; block-size: 0.375rem; border-radius: 999px; background: currentColor; }
   .progress-legend .completed { color: var(--caelestis-success); }
   .progress-legend .mismatched { color: var(--caelestis-danger); }
   .progress-legend .unpainted { opacity: 0.62; }
   .progress-legend .coverage { margin-inline-start: auto; opacity: 0.55; white-space: nowrap; }
   .progress-legend .coverage::before { display: none; }
+  @container (max-width: 15rem) {
+    .progress-legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 0.25rem; }
+    .progress-legend .coverage { grid-column: 1 / -1; }
+  }
+  @container (max-width: 9rem) {
+    .progress-legend { grid-template-columns: 1fr; row-gap: 0.125rem; }
+    .progress-legend .coverage { margin-inline-start: 0; }
+  }
   .colour-progress { display: flex; min-inline-size: 0; flex-direction: column; gap: 0.25rem; }
   .colour-progress-row { display: flex; min-inline-size: 0; align-items: center; gap: 0.375rem; }
   .colour-swatch { flex: 0 0 0.625rem; inline-size: 0.625rem; block-size: 0.625rem; border-radius: 999px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12); }

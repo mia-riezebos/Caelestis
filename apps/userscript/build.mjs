@@ -42,7 +42,7 @@ const options = {
     __CAELESTIS_USERSCRIPT_VERSION__: JSON.stringify(pkg.version),
   },
   banner: { js: metadata },
-  legalComments: 'none',
+  legalComments: 'eof',
   // Keep watch output readable for browser debugging. Release builds should not make every user
   // download and parse the development representation of the same program.
   minify: !development,

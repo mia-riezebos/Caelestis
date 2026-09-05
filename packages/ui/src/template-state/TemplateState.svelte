@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatCount, formatExactCount, formatPixels } from '@caelestis/shared'
   import type { TemplateStateProps } from '../types.js'
 
   let {
@@ -13,7 +14,12 @@
   const alarmLabel = $derived(
     alarmKind === undefined
       ? null
-      : `${alarmKind === 'sustained-griefing' ? 'Sustained griefing' : 'Regression'}${pixelsLost === undefined ? '' : ` · ${pixelsLost.toLocaleString()} px lost`}`,
+      : `${alarmKind === 'sustained-griefing' ? 'Sustained griefing' : 'Regression'}${pixelsLost === undefined ? '' : ` · ${formatPixels(pixelsLost)} lost`}`,
+  )
+  const alarmDisplay = $derived(
+    pixelsLost !== undefined
+      ? `${alarmKind === 'sustained-griefing' ? 'Sustained griefing' : 'Regression'} · ${compact ? formatCount(pixelsLost) : formatExactCount(pixelsLost)} px lost`
+      : alarmLabel,
   )
 </script>
 
@@ -22,7 +28,7 @@
     {#if finished}<span class="state finished">Finished</span>{/if}
     {#if frozen}<span class="state frozen">Timelapse frozen</span>{/if}
     {#if finished && griefed}<span class="state griefed" role="status">Grief detected</span>{/if}
-    {#if alarmLabel !== null}<span class="state alarm" class:sustained={alarmKind === 'sustained-griefing'} role="status">{alarmLabel}</span>{/if}
+    {#if alarmLabel !== null}<span class="state alarm" class:sustained={alarmKind === 'sustained-griefing'} role="status" title={alarmLabel} aria-label={alarmLabel}>{alarmDisplay}</span>{/if}
   </span>
 {/if}
 

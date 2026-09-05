@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { HistoryBucket } from '@caelestis/shared'
+  import { formatCount, formatExactCount, formatPixels, type HistoryBucket } from '@caelestis/shared'
   import { persisted } from '$lib/persisted.svelte'
   import {
     PACE_WINDOWS,
@@ -273,8 +273,6 @@
     })
   }
 
-  const formatCount = (v: number): string =>
-    v >= 1000 ? `${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k` : String(Math.round(v))
 
   interface HoverPoint {
     t: number
@@ -471,15 +469,17 @@
             x={pad.left - 6}
             y={yLeft(fraction * yMaxLeft) + 3}
             text-anchor="end"
-            class="fill-base-content/50 text-[10px] tabular-nums">{formatCount(fraction * yMaxLeft)}</text
+            aria-label={formatPixels(fraction * yMaxLeft)}
+            class="fill-base-content/50 text-[10px] tabular-nums"><title>{formatPixels(fraction * yMaxLeft)}</title>{formatCount(fraction * yMaxLeft)}</text
           >
           {#if activePaces.length > 0}
             <text
               x={width - pad.right + 6}
               y={yRight(fraction * yMaxRight) + 3}
               text-anchor="start"
+              aria-label={`${formatPixels(fraction * yMaxRight)} per hour`}
               class="fill-base-content/40 text-[10px] tabular-nums"
-              >{formatCount(fraction * yMaxRight)}</text
+              ><title>{formatPixels(fraction * yMaxRight)} per hour</title>{formatCount(fraction * yMaxRight)}</text
             >
           {/if}
         {/if}
@@ -619,7 +619,7 @@
           {@const value = hoverPace(pace.series, hover.t)}
           {#if value !== null}
             <div class="tabular-nums text-base-content/70">
-              pace {pace.key} · {formatCount(value)} px/h
+              pace {pace.key} · {formatExactCount(value)} px/h
             </div>
           {/if}
         {/each}
