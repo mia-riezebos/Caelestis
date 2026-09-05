@@ -1268,6 +1268,16 @@ const requestScan = (
     staleProgress.delete(cacheKey)
     return
   }
+  // A narrow scan can reuse only projections that were current when this job began. Starting
+  // the job removes the scheduling flag, so checking staleness at reply time is too late.
+  const held = cache.get(cacheKey)
+  const compatible =
+    !stale.has(cacheKey) &&
+    held?.source === source &&
+    held.templateSource === templateSource &&
+    held.key === key
+      ? held
+      : undefined
   // Identity by object, so the reply can tell "the entry is still mine" from "the answer is still
   // good". Those are different questions and folding them together leaked: a scan invalidated by a
   // paint left its entry behind, and `PendingScan.source` is the captured tile — a megabyte, pinned
@@ -1299,11 +1309,6 @@ const requestScan = (
     if (markers) {
       stale.delete(cacheKey)
       staleProgress.delete(cacheKey)
-      const held = cache.get(cacheKey)
-      const compatible =
-        held?.source === source && held.templateSource === templateSource && held.key === key
-          ? held
-          : undefined
       store(
         cacheKey,
         source,
@@ -1347,7 +1352,14 @@ const mismatchAnswer = (
   const cacheKey = `${template.id}|${tile.x}/${tile.y}`
   requestedThisFrame?.add(cacheKey)
   const key = signature(template)
-  const collection = collectionFor(kind)
+  const requested = collectionFor(kind)
+  const held = cache.get(cacheKey)
+  // Once a tile has a complete drawable answer, refresh all of its collected projections
+  // together. A narrow outline refresh must not replace it with an incomplete marker result.
+  const collection = {
+    wrong: requested.wrong || held?.wrongComplete === true,
+    unpainted: requested.unpainted || held?.unpaintedComplete === true,
+  }
   const serverMask = serverMismatchMaskFor(template, tile)
   const superseded = supersededServerSource.get(cacheKey)
   if (superseded !== undefined && superseded !== template.serverUrl) {

@@ -9,7 +9,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './local-store.js'
 import { markLocalX } from './mismatch-marks.js'
-import type { ScanOutcome } from './mismatch-scan.js'
+import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
 
 const harness = vi.hoisted(() => ({
   pixels: new Uint8Array(1_000 * 1_000).fill(1),
@@ -110,6 +110,58 @@ beforeEach(() => {
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
 })
+
+it.each(['pixels', 'mask'] as const)(
+  'does not restore cancelled bulk drafts from a stale wrong-colour list after an outline-only %s scan',
+  async (source) => {
+    const one: PlacedTemplate = {
+      ...template(0),
+      width: 34,
+      opaque: 34,
+      indices: new Uint8Array(34),
+      ...(source === 'mask' ? { serverUrl: 'https://templates.example' } : {}),
+    }
+    harness.templates = [one]
+    harness.pixels.fill(0)
+    harness.pixels[33] = 1
+    if (source === 'mask') {
+      const classes = new Uint8Array(34).fill(MATCH)
+      classes[33] = WRONG
+      harness.serverMask = decodeMismatchMask(
+        encodeMismatchMask({ left: 0, top: 0, width: 34, height: 1 }, classes),
+      )
+    }
+    const { pixelAccounting } = await import('./mismatch.js')
+    const tile = { x: 0, y: 0 }
+    const read = () => pixelAccounting.frame(() => pixelAccounting.read(one).tile(tile))
+    expect(read()?.markers.length).toBe(1)
+    const announce = harness.onTilePixels.mock.calls[0]?.[0]
+    const triples = Array.from({ length: 33 }, (_, x) => [x, 0, 1]).flat()
+    harness.draft = new Uint8Array(1_000_000).fill(255)
+    harness.draft.fill(1, 0, 33)
+    announce(tile, triples, 'draft')
+    expect(read()?.markers.length).toBe(34)
+
+    harness.draft = null
+    announce(
+      tile,
+      triples.map((value, i) => (i % 3 === 2 ? 255 : value)),
+      'draft',
+    )
+    harness.workerAvailable = true
+    harness.workerScan.mockImplementation(async (job, indices) =>
+      scanTile(job as ScanJob, indices as Uint8Array),
+    )
+    // The outline renderer asks first and only needs the unpainted projection.
+    pixelAccounting.frame(() => pixelAccounting.read(one).unpainted(tile))
+    await Promise.resolve()
+    // A refresh must retain a complete drawable answer throughout; replacing it with a partial
+    // entry makes the entire tile disappear while the missing projection is scanned.
+    expect(read()?.markers.map(markLocalX)).toContain(33)
+    await vi.waitFor(() => expect(read()?.markers.length).toBe(1))
+    expect(read()?.markers.map(markLocalX)).toEqual(new Uint32Array([33]))
+  },
+)
 
 afterEach(() => {
   vi.useRealTimers()

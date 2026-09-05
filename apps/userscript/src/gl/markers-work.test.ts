@@ -1,6 +1,21 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { packMismatchMark } from '../templates/mismatch-marks.js'
+
+afterEach(() => vi.restoreAllMocks())
+
+it('registers a new native draft on its first frame inside the previous reorder interval', async () => {
+  const { keepMarkersAboveDrafts } = await import('./markers.js')
+  const now = vi.spyOn(performance, 'now').mockReturnValue(10_000)
+  fixture.draftOrder = []
+  fixture.registerDraftCanvas.mockClear()
+  keepMarkersAboveDrafts()
+  now.mockReturnValue(10_016)
+  fixture.draftOrder.push('paint-preview-0.1-326,1782')
+  keepMarkersAboveDrafts()
+  expect(fixture.registerDraftCanvas).toHaveBeenCalledWith(fixture.draftCanvas, { x: 326, y: 1782 })
+  fixture.draftOrder = []
+})
 
 const fixture = vi.hoisted(() => ({
   appearance: {
@@ -29,10 +44,21 @@ const fixture = vi.hoisted(() => ({
   selectedFade: vi.fn((_id: string, target: number, _now = 0) => ({ value: target, done: true })),
   sceneSelected: new Set<number>(),
   sceneLatest: null as number | null,
+  draftOrder: [] as string[],
+  draftCanvas: {} as object,
+  registerDraftCanvas: vi.fn(),
+  moveLayer: vi.fn(),
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
-vi.mock('../map-handle.js', () => ({ getMap: () => ({ isMoving: () => fixture.moving }) }))
+vi.mock('../map-handle.js', () => ({
+  getMap: () => ({
+    isMoving: () => fixture.moving,
+    style: { _order: fixture.draftOrder },
+    getSource: () => ({ getCanvas: () => fixture.draftCanvas }),
+    moveLayer: fixture.moveLayer,
+  }),
+}))
 vi.mock('../profile.js', () => ({
   isProfileEnabled: () => false,
   measureProfile: (_name: string, run: () => unknown) => run(),
@@ -88,7 +114,8 @@ vi.mock('../templates/placement.js', () => ({
 vi.mock('../tile-transform.js', () => ({
   currentQuads: () => [fixture.quad],
   isDrawingTiles: () => true,
-  registerDraftCanvas: vi.fn(),
+  registerDraftCanvas: fixture.registerDraftCanvas,
+  retainDraftCanvases: vi.fn(),
 }))
 vi.mock('../wplace-paint.js', () => ({
   isPaintOpen: () => fixture.paintOpen,
