@@ -3,6 +3,7 @@
   import Button from '../foundations/Button.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
+  import TemplateLifecycle from '../template-state/TemplateLifecycle.svelte'
   import ProgressMeter from '../progress/ProgressMeter.svelte'
   import { tick } from 'svelte'
   import { SvelteMap } from 'svelte/reactivity'
@@ -329,7 +330,9 @@
             </span>
           {/if}
           {#if entry.container}<span class:open={entry.expanded} class="caret" aria-hidden="true">›</span>{/if}
-          <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+          <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
+            <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+          </TemplateLifecycle>
           {#each entry.leadingActions ?? [] as item (item.id)}
             <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
               <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
@@ -375,8 +378,8 @@
             <input type="checkbox" checked={entry.visible} aria-label={`Show ${entry.name}`} onclick={(event) => event.stopPropagation()} onchange={(event) => emit({ type: 'toggle-visible', key: entry.key, visible: event.currentTarget.checked })} />
             <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
           </label>
-          {#if entry.lifecycle?.finished || entry.lifecycle?.frozen}
-            <div class="lifecycle-detail" style:padding-inline-start={`${1.25 + (entry.leadingActions?.length ?? 0) * 2.25}rem`}><TemplateState compact {...entry.lifecycle} /></div>
+          {#if entry.lifecycle?.finished && entry.lifecycle.griefed}
+            <div class="alarm-detail" style:padding-inline-start={`${1.25 + (entry.leadingActions?.length ?? 0) * 2.25}rem`}><TemplateState compact showLifecycle={false} {...entry.lifecycle} /></div>
           {/if}
           {#if disclosure !== undefined && entry.progress !== undefined}
             <div class="progress-detail">
@@ -477,7 +480,7 @@
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
   .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
   .progress-detail { display: flex; flex-basis: 100%; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
-  .lifecycle-detail { flex-basis: 100%; min-inline-size: 0; }
+  .alarm-detail { flex-basis: 100%; min-inline-size: 0; }
   .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
   .progress-summary { container-type: inline-size; display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
   .progress-summary :global(.meter-wrap) { inline-size: 100%; }

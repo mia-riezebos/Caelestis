@@ -1,6 +1,6 @@
 <script lang="ts">
   import { formatCount, formatExactCount, formatPixels } from '@caelestis/shared'
-  import Icon from '../foundations/Icon.svelte'
+  import TemplateLifecycle from './TemplateLifecycle.svelte'
   import type { TemplateStateProps } from '../types.js'
 
   let {
@@ -10,6 +10,7 @@
     alarmKind,
     pixelsLost,
     compact = false,
+    showLifecycle = true,
   }: TemplateStateProps = $props()
 
   const griefDetected = $derived(finished && griefed)
@@ -32,13 +33,10 @@
   )
 </script>
 
-{#if finished || frozen || alarmLabel !== null}
+{#if (showLifecycle && (finished || frozen)) || alarmLabel !== null}
   <span class:compact class="states" aria-label="Template state">
-    {#if finished || frozen}
-      <span class="lifecycle">
-        {#if finished}<span class="finished"><Icon name="check" size="0.75rem" />Finished</span>{/if}
-        {#if frozen}<span class="frozen">Timelapse frozen</span>{/if}
-      </span>
+    {#if showLifecycle && (finished || frozen)}
+      <TemplateLifecycle {finished} {frozen} />
     {/if}
     {#if alarmLabel !== null}
       <span class="alarm" role="status" title={alarmLabel} aria-label={`Template alarm: ${alarmLabel}`} aria-atomic="true">
@@ -60,9 +58,6 @@
     color: var(--_text);
     font: 500 0.8125rem/1.25rem ui-sans-serif, system-ui, sans-serif;
   }
-
-  .lifecycle { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
-  .finished, .frozen { display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
 
   .alarm {
     display: flex;

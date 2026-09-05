@@ -81,9 +81,9 @@ describe('template tree', () => {
     const row = document.querySelector('[data-caelestis-tree-key="local:city"]')
     expect(row?.getAttribute('aria-current')).toBe('true')
     expect(row?.querySelector('[aria-label="75% complete"]')).not.toBeNull()
-    expect(row?.querySelector('.lifecycle-detail')?.textContent).toContain(
-      'Finished Timelapse frozen',
-    )
+    expect(row?.querySelector('.template-icon [aria-label="Finished"]')?.textContent).toBe('✅')
+    expect(row?.querySelector('[aria-label="Timelapse frozen"]')).toBeNull()
+    expect(row?.querySelector('.alarm-detail .lifecycle')).toBeNull()
     expect(row?.querySelector('[role="status"]')?.textContent).toContain('Grief detected')
     row?.querySelector<HTMLInputElement>('[aria-label="Show City"]')?.click()
     expect(onIntent).toHaveBeenCalledExactlyOnceWith({
@@ -93,6 +93,37 @@ describe('template tree', () => {
     })
     void unmount(component)
   })
+
+  it.each([
+    [true, true, 'Finished', '✅'],
+    [false, true, 'Timelapse frozen', '🧊'],
+  ])(
+    'overlays one passive status without a detail line (%s, %s)',
+    (finished, frozen, label, emoji) => {
+      const component = mount(TemplateTree, {
+        target: document.body,
+        props: {
+          model: {
+            ...model,
+            entries: model.entries.map((entry) =>
+              entry.type === 'row' && !entry.container
+                ? { ...entry, lifecycle: { finished, frozen, griefed: false } }
+                : entry,
+            ),
+          },
+        },
+      })
+      flushSync()
+      const row = document.querySelector('[data-caelestis-tree-key="local:city"]')
+      expect(row?.querySelectorAll('.lifecycle [role="img"]')).toHaveLength(1)
+      expect(
+        row?.querySelector(`.template-icon .overlay[aria-label="${label}"]`)?.textContent,
+      ).toBe(emoji)
+      expect(row?.querySelector('.alarm-detail')).toBeNull()
+      expect(row?.querySelector('.name')?.textContent).toBe('City')
+      void unmount(component)
+    },
+  )
 
   it('debounces search and emits sort, expansion, visibility, and action intents', () => {
     vi.useFakeTimers()
