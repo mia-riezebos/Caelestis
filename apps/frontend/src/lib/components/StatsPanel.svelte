@@ -36,7 +36,7 @@
   const RESOLUTION = 900
   const LIVE_STATS_REFRESH_MS = 15_000
 
-  const now = Math.floor(Date.now() / 1_000)
+  let liveTo = $state(Math.floor(Date.now() / 1_000) + 1)
   // Start at a day boundary so every retained tier can return the bucket containing creation.
   const from = $derived.by(
     () =>
@@ -44,10 +44,11 @@
         Math.min(...templates.map((template) => template.createdAt / 1_000)) / DAY_SECONDS,
       ) * DAY_SECONDS,
   )
+  const hasLiveTemplate = $derived(templates.some((template) => template.finishedAt === null))
   const to = $derived.by(() => {
     const finishedAt = templates.map((template) => template.finishedAt)
-    return finishedAt.some((finished) => finished === null)
-      ? now + 1
+    return hasLiveTemplate
+      ? liveTo
       : Math.floor(Math.max(...finishedAt.map((finished) => finished ?? 0)) / 1_000) + 1
   })
 
@@ -56,12 +57,17 @@
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   let failed = $state(false)
+  let historyScope: string | undefined
 
   $effect(() => {
     if (templateIds.length === 0) return
     const generation = { cancelled: false }
-    history = null
-    paceHistories = []
+    const scope = `${templateIds.join('\0')}:${from}`
+    if (historyScope !== scope) {
+      historyScope = scope
+      history = null
+      paceHistories = []
+    }
     failed = false
     getHistory(templateIds, from, to)
       .then((response) => {
@@ -102,6 +108,7 @@
       if (refreshPending) return
       refreshPending = true
       const requestedAt = Math.floor(Date.now() / 1_000)
+      if (hasLiveTemplate) liveTo = requestedAt + 1
       const contributionFrom = requestedAt - 86_400 * 7 * 16
       void Promise.all([
         getContributions(ids, contributionFrom, requestedAt)

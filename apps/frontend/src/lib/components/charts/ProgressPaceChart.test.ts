@@ -189,6 +189,32 @@ describe('rolling pace retention', () => {
     expect(tail?.getAttribute('aria-valuemax')).toBe(String(to))
   })
 
+  it('holds the latest complete pace through an unfinished bucket', () => {
+    stored.set('caelestis:pace-windows', JSON.stringify(['2h']))
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [
+          { ...bucket(3_600, 0), placed: 1 },
+          { ...bucket(3_600, 3_600), placed: 2 },
+          { ...bucket(3_600, 7_200), placed: 3 },
+          { ...bucket(3_600, 10_800), placed: 100 },
+        ],
+        resolution: 3_600,
+        from: 0,
+        to: 12_600,
+        anchorCorrect: 6,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const path = document.querySelector('path[data-pace-window="2h"]')?.getAttribute('d') ?? ''
+    const points = [...path.matchAll(/[ML]([^,]+),([^ML]+)/g)]
+    expect(points).toHaveLength(3)
+    expect(points.at(-1)?.[2]).toBe(points.at(-2)?.[2])
+  })
+
   it('keeps lifecycle-wide time labels sparse enough to read', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,
@@ -413,7 +439,7 @@ describe('time window', () => {
     expect(chart.querySelector('rect[data-plot-selection]')).toBeNull()
     expect(gripValue('head')).toBe(DAY / 2)
     expect(gripValue('tail')).toBe(1.5 * DAY)
-    expect(preset('all').getAttribute('aria-selected')).toBe('false')
+    expect(preset('all').getAttribute('aria-pressed')).toBe('false')
   })
 
   it('ignores a plain click on the plot', () => {
@@ -429,7 +455,7 @@ describe('time window', () => {
 
     expect(gripValue('head')).toBe(0)
     expect(gripValue('tail')).toBe(THREE_DAYS)
-    expect(preset('all').getAttribute('aria-selected')).toBe('true')
+    expect(preset('all').getAttribute('aria-pressed')).toBe('true')
   })
 
   it('offers presets narrower than the history and clears them with all', () => {
@@ -445,13 +471,103 @@ describe('time window', () => {
     flushSync()
     expect(gripValue('head')).toBe(2 * DAY)
     expect(gripValue('tail')).toBe(THREE_DAYS)
-    expect(preset('1d').getAttribute('aria-selected')).toBe('true')
-    expect(preset('all').getAttribute('aria-selected')).toBe('false')
+    expect(preset('1d').getAttribute('aria-pressed')).toBe('true')
+    expect(preset('all').getAttribute('aria-pressed')).toBe('false')
 
     preset('all').click()
     flushSync()
     expect(gripValue('head')).toBe(0)
-    expect(preset('all').getAttribute('aria-selected')).toBe('true')
+    expect(preset('all').getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('[aria-label="time range"]')?.getAttribute('role')).toBe('group')
+    expect(document.querySelector('[role="tab"]')).toBeNull()
+  })
+
+  it('keeps an unaligned minimum preset selected', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: Array.from({ length: 73 }, (_, hour) => bucket(3_600, hour * 3_600)),
+        resolution: 3_600,
+        from: 0,
+        to: THREE_DAYS + 1,
+        anchorCorrect: 73,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    preset('6h').click()
+    flushSync()
+
+    expect(gripValue('head')).toBe(THREE_DAYS + 1 - 6 * 3_600)
+    expect(gripValue('tail')).toBe(THREE_DAYS + 1)
+    expect(preset('6h').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('ignores cancellation from another pointer during a plot drag', () => {
+    mountThreeDays()
+    const chart = document.querySelector('svg[role="img"]')
+    if (!(chart instanceof SVGSVGElement)) throw new Error('missing chart')
+    chart.getBoundingClientRect = () => ({ left: 0, top: 0, right: 640, bottom: 240 }) as DOMRect
+
+    chart.dispatchEvent(
+      pointer('pointerdown', { pointerId: 1, clientX: px(DAY / 2), clientY: 100 }),
+    )
+    window.dispatchEvent(pointer('pointermove', { pointerId: 1, clientX: px(DAY), clientY: 100 }))
+    window.dispatchEvent(pointer('pointercancel', { pointerId: 2 }))
+    window.dispatchEvent(
+      pointer('pointermove', { pointerId: 1, clientX: px(1.5 * DAY), clientY: 100 }),
+    )
+    window.dispatchEvent(
+      pointer('pointerup', { pointerId: 1, clientX: px(1.5 * DAY), clientY: 100 }),
+    )
+    flushSync()
+
+    expect(gripValue('head')).toBe(DAY / 2)
+    expect(gripValue('tail')).toBe(1.5 * DAY)
+  })
+
+  it('ignores cancellation from another pointer during a brush drag', () => {
+    mountThreeDays()
+
+    grip('head').dispatchEvent(
+      pointer('pointerdown', { pointerId: 1, clientX: px(0), clientY: 300 }),
+    )
+    window.dispatchEvent(pointer('pointercancel', { pointerId: 2 }))
+    window.dispatchEvent(pointer('pointermove', { pointerId: 1, clientX: px(DAY), clientY: 300 }))
+    window.dispatchEvent(pointer('pointerup', { pointerId: 1, clientX: px(DAY), clientY: 300 }))
+    flushSync()
+
+    expect(gripValue('head')).toBe(DAY)
+  })
+
+  it('keeps narrow-window grips and its move target separately targetable', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(3_600, 0)],
+        resolution: 3_600,
+        from: 0,
+        to: 180 * DAY,
+        anchorCorrect: 1,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+    preset('6h').click()
+    flushSync()
+
+    const head = grip('head')
+    const tail = grip('tail')
+    const move = document.querySelector('[data-brush-move]')
+    if (!(move instanceof HTMLElement)) throw new Error('missing brush move target')
+
+    expect(head.style.width).toBe('66px')
+    expect(tail.style.width).toBe('66px')
+    expect(move.style.width).toBe('44px')
+    expect(Number.parseFloat(head.style.left) + 66).toBeCloseTo(
+      Number.parseFloat(tail.style.left) - (6 * 3_600 * PLOT_WIDTH) / (180 * DAY),
+    )
   })
 
   it('moves a grip with the keyboard', () => {
@@ -553,6 +669,40 @@ describe('motion', () => {
     await new Promise((resolve) => setTimeout(resolve, 800))
     flushSync()
     expect(timeLabels()).not.toEqual(before)
+  })
+
+  it('keeps a plot drag on the displayed domain while a refit is moving', () => {
+    const media = { matches: false }
+    vi.spyOn(window, 'matchMedia').mockReturnValue(media as MediaQueryList)
+    mountThreeDays()
+    const chart = document.querySelector('svg[role="img"]')
+    if (!(chart instanceof SVGSVGElement)) throw new Error('missing chart')
+    chart.getBoundingClientRect = () => ({ left: 0, top: 0, right: 640, bottom: 240 }) as DOMRect
+    const px = (t: number): number => 48 + (t / THREE_DAYS) * 544
+    const pointer = (type: string, init: PointerEventInit): PointerEvent =>
+      new PointerEvent(type, { bubbles: true, ...init })
+
+    document.querySelector<HTMLButtonElement>('button[data-range-preset="1d"]')?.click()
+    flushSync()
+    chart.dispatchEvent(
+      pointer('pointerdown', { pointerId: 1, clientX: px(DAY / 2), clientY: 100 }),
+    )
+    window.dispatchEvent(
+      pointer('pointermove', { pointerId: 1, clientX: px(1.5 * DAY), clientY: 100 }),
+    )
+    // Happy DOM has no Web Animations API. Keep the refit animated, then cut only this exit.
+    media.matches = true
+    window.dispatchEvent(
+      pointer('pointerup', { pointerId: 1, clientX: px(1.5 * DAY), clientY: 100 }),
+    )
+    flushSync()
+
+    expect(document.querySelector('[data-handle="head"]')?.getAttribute('aria-valuenow')).toBe(
+      String(DAY / 2),
+    )
+    expect(document.querySelector('[data-handle="tail"]')?.getAttribute('aria-valuenow')).toBe(
+      String(1.5 * DAY),
+    )
   })
 
   it('moves the window under a brush drag at once while the axis top keeps gliding', async () => {
