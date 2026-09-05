@@ -11,6 +11,8 @@ import type { PlacedTemplate } from './local-store.js'
 const harness = vi.hoisted(() => ({
   templates: [] as PlacedTemplate[],
   mask: null as MismatchMask | null,
+  masks: new Map<string, MismatchMask>(),
+  maskReads: vi.fn(),
 }))
 vi.mock('../debug.js', () => ({
   count: vi.fn(),
@@ -22,7 +24,10 @@ vi.mock('../server-mismatch.js', () => ({
   beginServerMismatchFrame: vi.fn(),
   endServerMismatchFrame: vi.fn(),
   onServerMismatchesChanged: vi.fn(),
-  serverMismatchMaskFor: () => harness.mask,
+  serverMismatchMaskFor: (template: PlacedTemplate) => {
+    harness.maskReads(template.id)
+    return harness.masks.get(template.id) ?? harness.mask
+  },
 }))
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
 vi.mock('./local-store.js', () => ({
@@ -40,6 +45,8 @@ vi.mock('./mismatch-worker.js', () => ({
 
 beforeEach(() => {
   vi.resetModules()
+  harness.masks.clear()
+  harness.maskReads.mockClear()
 })
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -73,6 +80,7 @@ const setup = async () => {
     encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
   )
   const pixels = await import('../tile-transform.js')
+  const observations = await import('../pixel-observation.js')
   const { pixelAccounting } = await import('./mismatch.js')
   class FakeCanvas {
     getContext() {
@@ -123,8 +131,8 @@ const setup = async () => {
     HTMLCanvasElement: FakeCanvas,
   } as unknown as Window & typeof globalThis
   pixels.install(realm, () => null)
-  const read = () =>
-    pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+  const read = (template = selected) =>
+    pixelAccounting.frame(() => pixelAccounting.read(template).tile({ x: 0, y: 0 }))
   const draft = (colour: number) => {
     const data = new Uint8Array(1_000_000).fill(pixels.UNPAINTED)
     data[0] = colour
@@ -145,8 +153,8 @@ const setup = async () => {
     responses[request]?.(new Response(JSON.stringify({ painted }), { status }))
     if (status === 200) await vi.waitFor(() => expect(observed.mock.calls.length).toBe(before + 1))
   }
-  const fetchTile = (colour = 255) => {
-    const pending = realm.fetch('https://backend.wplace.live/files/s0/tiles/0/0.png')
+  const fetchTile = (colour = 255, tileX = 0) => {
+    const pending = realm.fetch(`https://backend.wplace.live/files/s0/tiles/${tileX}/0.png`)
     const request = responses.length - 1
     return async () => {
       responses[request]?.(new Response(new Uint8Array([colour])))
@@ -162,7 +170,28 @@ const setup = async () => {
         deltas: pixelAccounting.read(selected).draftPixelDeltas,
       }
     })
-  return { pixels, read, draft, submit, accept, fetchTile, accounting }
+  const replaceMask = (requested = observations.nextPixelObservation()) => {
+    const mask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    ) as MismatchMask
+    observations.recordPixelObservation(mask.packed, requested)
+    harness.masks.set(selected.id, mask)
+  }
+  const respond = (request: number, response: Response) => responses[request]?.(response)
+  return {
+    pixels,
+    read,
+    draft,
+    submit,
+    accept,
+    fetchTile,
+    accounting,
+    observations,
+    replaceMask,
+    respond,
+    observed,
+    selected,
+  }
 }
 
 it('keeps a confirmed pixel matched after native cleanup while the tile refresh is delayed', async () => {
@@ -228,6 +257,7 @@ it('does not let a late older submission replace a newer accepted colour', async
 
 it('counts accepted paint once and ignores older responses after a fresh matching tile', async () => {
   const { pixels, read, draft, submit, accept, fetchTile, accounting } = await setup()
+  pixels.captureTilePixels(true)
   const staleTile = fetchTile(1)
   draft(0)
   const pending = submit()
@@ -242,6 +272,100 @@ it('counts accepted paint once and ignores older responses after a fresh matchin
   await fetchTile(1)()
   expect(read()?.mismatched).toHaveLength(1)
   expect(accounting().progress.completed).toBe(0)
+})
+
+it('lets a fresh mask replace accepted paint for only its own template', async () => {
+  const { pixels, read, draft, submit, accept, replaceMask, selected } = await setup()
+  const other = { ...selected, id: 'other' }
+  harness.templates.push(other)
+  draft(0)
+  const pending = submit()
+  await accept()
+  await pending
+  pixels.clearDraftPixels()
+  expect(read()?.mismatched).toHaveLength(0)
+  replaceMask()
+  expect(read()?.mismatched).toHaveLength(1)
+  expect(read(other)?.mismatched).toHaveLength(0)
+  draft(0)
+  expect(read()?.mismatched).toHaveLength(0)
+  pixels.clearDraftPixels()
+  expect(read()?.mismatched).toHaveLength(1)
+})
+
+it('keeps accepted paint above a mask request started before acceptance', async () => {
+  const { pixels, read, draft, submit, accept, replaceMask, observations } = await setup()
+  const requested = observations.nextPixelObservation()
+  draft(0)
+  const pending = submit()
+  await accept()
+  await pending
+  pixels.clearDraftPixels()
+  replaceMask(requested)
+  expect(read()?.mismatched).toHaveLength(0)
+})
+
+it.each([false, true])(
+  'orders tile refresh against response arrival before delayed parsing (decode first: %s)',
+  async (decodeFirst) => {
+    const { pixels, read, draft, submit, fetchTile, respond, observed } = await setup()
+    pixels.captureTilePixels(true)
+    expect(read()?.mismatched).toHaveLength(1)
+    draft(0)
+    const pending = submit()
+    const response = new Response(JSON.stringify({ painted: 1 }))
+    const clone = response.clone()
+    let finishBody: (body: { painted: number }) => void = () => {}
+    vi.spyOn(clone, 'json').mockReturnValue(
+      new Promise((resolve) => {
+        finishBody = resolve
+      }),
+    )
+    vi.spyOn(response, 'clone').mockReturnValue(clone)
+    respond(0, response)
+    await pending
+    const fresh = fetchTile()
+    if (decodeFirst) await fresh()
+    finishBody({ painted: 1 })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce())
+    pixels.clearDraftPixels()
+    if (!decodeFirst) await fresh()
+    expect(read()?.unpainted).toHaveLength(1)
+  },
+)
+
+it('stops forcing capture after paint retires and avoids fetching unrelated template masks', async () => {
+  const { pixels, read, draft, submit, accept, fetchTile, selected } = await setup()
+  harness.templates.push({ ...selected, id: 'unrelated', originX: 2000, tiles: new Set(['2/0']) })
+  expect(read()?.mismatched).toHaveLength(1)
+  draft(0)
+  const pending = submit()
+  await accept()
+  await pending
+  pixels.clearDraftPixels()
+  await fetchTile(0)()
+  expect(read()?.mismatched).toHaveLength(0)
+  await fetchTile(1)()
+  expect(pixels.tilePixels({ x: 0, y: 0 })?.[0]).toBe(0)
+  expect(harness.maskReads).not.toHaveBeenCalledWith('unrelated')
+})
+
+it('preserves a newer submission fence across tile eviction while an older request remains pending', async () => {
+  const { pixels, draft, submit, accept, fetchTile } = await setup()
+  draft(1)
+  const older = submit(1)
+  draft(0)
+  const newer = submit(0)
+  await accept(1)
+  await newer
+  pixels.clearDraftPixels()
+  await fetchTile(0)()
+  pixels.captureTilePixels(true)
+  for (let x = 1; x <= 65; x++) await fetchTile(255, x)()
+  expect(pixels.tilePixels({ x: 0, y: 0 })).toBeNull()
+  await accept(0)
+  await older
+  expect(pixels.comparisonDraftPixels({ x: 0, y: 0 })).toBeNull()
 })
 
 it.each([

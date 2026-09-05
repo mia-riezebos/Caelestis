@@ -1,5 +1,5 @@
 import { BLANK, encodeMismatchMask, WRONG } from '@caelestis/shared'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   server: {
@@ -137,6 +137,37 @@ describe('server mismatch masks', () => {
     expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).toBe(first)
     endServerMismatchFrame()
     expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('gives an identical network refresh newer authority than its persisted copy', async () => {
+    const body = encodeMismatchMask(
+      { left: 0, top: 0, width: 1, height: 1 },
+      new Uint8Array([WRONG]),
+    )
+    harness.cache.read.mockResolvedValue(body)
+    let finishFetch: (response: Response) => void = () => {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finishFetch = resolve
+          }),
+      ),
+    )
+    const { serverMismatchMaskFor } = await import('./server-mismatch.js')
+    const { pixelObservationOf } = await import('./pixel-observation.js')
+    serverMismatchMaskFor(template, { x: 3, y: 4 })
+    await vi.waitFor(() => expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).not.toBeNull())
+    const cached = serverMismatchMaskFor(template, { x: 3, y: 4 })
+    assert(cached !== null)
+    expect(pixelObservationOf(cached.packed)).toBe(0)
+    finishFetch(new Response(body.slice().buffer as ArrayBuffer, { status: 200 }))
+    await vi.waitFor(() => expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).not.toBe(cached))
+    const refreshed = serverMismatchMaskFor(template, { x: 3, y: 4 })
+    assert(refreshed !== null)
+    expect(pixelObservationOf(refreshed.packed)).toBeGreaterThan(0)
+    expect(harness.cache.write).not.toHaveBeenCalled()
   })
 
   it('invalidates both memory and persisted masks after a successful paint', async () => {

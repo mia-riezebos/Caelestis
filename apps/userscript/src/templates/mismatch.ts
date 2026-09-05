@@ -12,6 +12,7 @@ import {
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { count } from '../debug.js'
+import { pixelObservationOf } from '../pixel-observation.js'
 import { measureProfile } from '../profile.js'
 import {
   beginServerMismatchFrame,
@@ -1146,7 +1147,7 @@ const buildMaskJob = (
   const bandBottom = forWorker
     ? Math.max(bandTop, Math.min(TILE_SIZE, bottom - tileTop))
     : TILE_SIZE
-  const draft = comparisonDraftPixels(tile)
+  const draft = comparisonDraftPixels(tile, pixelObservationOf(mask.packed))
   return {
     kind: 'mask',
     templateKey: template.id,
@@ -1637,9 +1638,7 @@ const tileAccountingFor = (
  * between thousands and a million.
  */
 const patchTile = (tile: TileCoord, x: number, y: number): void => {
-  const draft = comparisonDraftPixels(tile)
   const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
-  const drafted = draft === null ? UNPAINTED : (draft[at] as number)
   // Counted whether or not this patch changes anything, so a scan in flight can see that the ground
   // moved under it and drop its result rather than writing a pre-paint answer over it.
   //
@@ -1700,13 +1699,18 @@ const patchTile = (tile: TileCoord, x: number, y: number): void => {
      * unpainted list is *shown* is not decided here — it is decided when the answer is read, and a
      * pixel that moves in or out of that list can change the ratio it is decided by.
      */
+    const serverMask = serverMismatchMaskFor(template, tile)
+    const maskIsCurrent =
+      serverMask !== null && supersededServerSource.get(cacheKey) !== template.serverUrl
+    const draft = comparisonDraftPixels(
+      tile,
+      maskIsCurrent ? pixelObservationOf(serverMask.packed) : 0,
+    )
+    const drafted = draft === null ? UNPAINTED : (draft[at] as number)
     let belongs: 'wrong' | 'unpainted' | null | undefined
     if (!asserted) belongs = null
     else if (drafted !== UNPAINTED) belongs = drafted === wanted ? null : 'wrong'
     else {
-      const serverMask = serverMismatchMaskFor(template, tile)
-      const maskIsCurrent =
-        serverMask !== null && supersededServerSource.get(cacheKey) !== template.serverUrl
       if (maskIsCurrent) {
         const classification = mismatchClassAt(
           serverMask,
@@ -1873,9 +1877,15 @@ const draftSourceBasis = (source: Uint8Array, tile: string): string => {
 
 onTilePixels((tile, triples, source) => {
   if (source === 'observed') {
-    for (const template of worldTemplates()) {
-      const mask = currentServerMismatchMaskFor(template, tile)
-      if (mask !== null) observedMasks.add(mask.packed)
+    const suffix = `|${tile.x}/${tile.y}`
+    const pixels = tilePixels(tile)
+    for (const [key, entry] of [...cache, ...inFlight]) {
+      if (
+        pixels !== null &&
+        key.endsWith(suffix) &&
+        pixelObservationOf(entry.source) <= pixelObservationOf(pixels)
+      )
+        observedMasks.add(entry.source)
     }
   }
   if (source === 'server' && triples.length > 0) {
