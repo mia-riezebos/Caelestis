@@ -14,6 +14,9 @@ export interface TreeItem {
   /** Its id as a container, so the renderer can ask for its children. Null for a leaf. */
   readonly childrenOf: string | null
   readonly createdAt?: number
+  readonly updatedAt?: number | undefined
+  readonly totalPixels?: number | undefined
+  readonly mismatched?: number | undefined
   readonly meta?: string | undefined
   readonly lifecycle?: {
     readonly finished: boolean

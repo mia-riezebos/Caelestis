@@ -341,10 +341,7 @@ export interface TreeStandaloneActionModel {
 
 export type TreeEntryModel = TreeRowModel | TreeNoticeModel | TreeStandaloneActionModel
 
-export interface TreeSortModel {
-  readonly field: 'custom' | 'name' | 'progress'
-  readonly direction: 'asc' | 'desc'
-}
+export type TreeSortModel = import('@caelestis/shared').TemplateSortOrder
 
 export interface TemplateTreeModel {
   readonly query: string

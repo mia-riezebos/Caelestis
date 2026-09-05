@@ -60,6 +60,43 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
+  it('ignores keyboard reorder outside Custom order', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          sort: { field: 'recent', direction: 'desc' },
+          entries: [
+            ...model.entries,
+            {
+              type: 'row',
+              key: 'other',
+              name: 'Other',
+              icon: 'folder',
+              depth: 0,
+              parentKey: null,
+              container: true,
+              expanded: false,
+              visible: true,
+              setSize: 2,
+              positionInSet: 2,
+            },
+          ],
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    document
+      .querySelector('[data-caelestis-tree-key="local"]')
+      ?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }),
+      )
+    expect(onIntent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'drop' }))
+    void unmount(component)
+  })
   it('debounces search and emits sort, expansion, visibility, and action intents', () => {
     vi.useFakeTimers()
     const onIntent = vi.fn()

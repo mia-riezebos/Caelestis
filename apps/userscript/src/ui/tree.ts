@@ -766,6 +766,9 @@ const buildTree = <Result>(
               kind: 'image',
               childrenOf: null,
               createdAt: template.updatedAt,
+              updatedAt: template.updatedAt,
+              totalPixels: template.totalPixels,
+              mismatched: serverProgressFor(server, template)?.mismatched,
               muted: !template.published,
               ...(template.published ? {} : { excludeFromRollup: true as const }),
               ...(progress === undefined ? {} : { progress }),
@@ -784,7 +787,7 @@ const buildTree = <Result>(
                     colourProgress: () =>
                       serverTemplateColourProgress(server, template) ?? colourProgress,
                   }),
-              ...(progress === undefined ? {} : { progressSortable: true as const }),
+              progressSortable: true,
               leadingActions: [
                 {
                   icon: 'search' as const,
@@ -909,6 +912,9 @@ const buildTree = <Result>(
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
+            updatedAt: template.updatedAt,
+            totalPixels: template.opaque,
+            mismatched: drawnProgress(template).mismatched,
             progress: drawnProgress(template),
             progressReader: () => drawnProgress(template),
             colourProgress: () => drawnColourProgress(template),
@@ -1183,6 +1189,7 @@ export const templateTreeAdapter = (
     target: TreeRowOptions,
     position: 'before' | 'inside' | 'after',
   ): void => {
+    if (!isReorderable(getState().sort)) return
     const destination = destinationFor(target, position)
     if (destination === null || dragged.key === destination.beforeKey) return
     const sourceParent = dragged.parentKey ?? null

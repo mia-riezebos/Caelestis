@@ -35,6 +35,7 @@ export {
 } from './slice.js'
 export * from './slug.js'
 export * from './telemetry.js'
+export * from './template-sort.js'
 export * from './template-surface.js'
 export * from './tiles.js'
 export * from './time.js'
