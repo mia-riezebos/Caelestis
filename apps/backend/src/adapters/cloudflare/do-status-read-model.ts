@@ -58,7 +58,10 @@ const mergeLiveMeasurement = (response: Response): Response => {
 }
 
 export class DurableObjectStatusReadModel implements StatusReadModelPort {
-  constructor(private readonly namespace: DurableObjectNamespace<StatusReadModelObject>) {}
+  constructor(
+    private readonly namespace: DurableObjectNamespace<StatusReadModelObject>,
+    private readonly scheduleAlarms?: () => Promise<void>,
+  ) {}
 
   private shard(season: number): DurableObjectStub<StatusReadModelObject> {
     return this.namespace.getByName(seasonName(season))
@@ -89,12 +92,17 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return measuredValue(measured)
   }
 
-  notifyManifestChange(season: number, surface?: TemplateSurface): Promise<void> {
-    return this.shard(season).notifyManifestChange(season, surface)
+  notifyManifestChange(
+    season: number,
+    surface?: TemplateSurface,
+    affectsTileCoverage = true,
+  ): Promise<void> {
+    return this.shard(season).notifyManifestChange(season, surface, affectsTileCoverage)
   }
 
-  notifyAlarmChange(season: number): Promise<void> {
-    return this.shard(season).notifyAlarmChange(season)
+  async notifyAlarmChange(season: number): Promise<void> {
+    await this.shard(season).notifyAlarmChange(season)
+    await this.scheduleAlarms?.()
   }
 
   async closeCredential(currentSeason: number, tokenHash: string): Promise<void> {

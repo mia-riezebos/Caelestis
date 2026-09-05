@@ -1,4 +1,4 @@
-import { millis, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { millis, seconds, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
@@ -68,6 +68,217 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
   })
 
   afterEach(() => harness.close())
+
+  const commit = async (correct: number, suffix: string, authoritative = false) => {
+    const hash = suffix.repeat(64)
+    await store.reserveTileBlobUpload(hash, hash, suffix, NOW, millis(NOW + 10_000))
+    const result = await store.commitTileBlobReservation(
+      suffix,
+      NOW,
+      {
+        season: 1,
+        tile: { x: 0, y: 0 },
+        hash,
+        observedAt: NOW,
+        reportedAt: seconds(NOW / 1_000),
+        reportedWithToken: TOKEN,
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: TEMPLATE_ID,
+          versionId: VERSION_ID,
+          tile: { x: 0, y: 0 },
+          correct,
+          wrong: 100_000 - correct,
+          blank: 0,
+          observedAt: NOW,
+        },
+      ],
+      true,
+      authoritative,
+    )
+    const change = result?.statusChanges[0]
+    if (!change || result?.revision == null) throw new Error('expected a committed transition')
+    return { change, revision: result.revision }
+  }
+
+  it.each(['observation', 'scan', 'follow-up'] as const)(
+    'fences delayed live loss after %s recovery',
+    async (phase) => {
+      if (phase === 'follow-up') {
+        await store.evaluateTemplateAlarm(
+          snapshot(60_000, millis(NOW - 600_001)),
+          { kind: 'scan' },
+          ALARM_ID,
+        )
+        await store.evaluateTemplateAlarm(
+          snapshot(59_999, millis(NOW - 600_000)),
+          { kind: 'scan' },
+          ALARM_ID,
+        )
+      }
+      await commit(60_000, 'a')
+      const loss = await commit(59_999, 'b')
+      const recovery = await commit(60_000, 'c', phase !== 'observation')
+      expect(loss.change.previousTemplateCorrect).toBe(60_000)
+      expect(recovery.change.previousTemplateCorrect).toBe(59_999)
+      expect(recovery.revision).toBeGreaterThan(loss.revision)
+      if (phase !== 'observation') {
+        const observation = await store.readAlarmStatusSnapshot(1)
+        const [status] = observation.templates
+        if (!status) throw new Error('expected authoritative recovery')
+        await store.evaluateTemplateAlarm(
+          {
+            ...snapshot(status.correct),
+            observedAt: NOW,
+            observationRevision: observation.revision,
+          },
+          phase === 'scan'
+            ? { kind: 'scan' }
+            : { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 1, dueAt: NOW },
+          ALARM_ID,
+        )
+      }
+      for (const { change, revision } of phase === 'observation' ? [recovery, loss] : [loss]) {
+        await store.evaluateTemplateAlarm(
+          {
+            ...snapshot(
+              change.previousTemplateCorrect -
+                (change.previous?.correct ?? 0) +
+                change.current.correct,
+            ),
+            observationRevision: revision,
+          },
+          { kind: 'observation', previousCorrect: change.previousTemplateCorrect },
+          ALARM_ID,
+        )
+      }
+      expect(await store.readActiveAlarms(1, false)).toEqual([])
+      expect(await store.nextAlarmProbeAt()).toBeNull()
+    },
+  )
+
+  it.each(['scan', 'follow-up'] as const)(
+    'preserves live loss committed between an authoritative write and its %s snapshot',
+    async (phase) => {
+      if (phase === 'follow-up') {
+        await store.evaluateTemplateAlarm(
+          snapshot(60_000, millis(NOW - 600_001)),
+          { kind: 'scan' },
+          ALARM_ID,
+        )
+        await store.evaluateTemplateAlarm(
+          snapshot(59_999, millis(NOW - 600_000)),
+          { kind: 'scan' },
+          ALARM_ID,
+        )
+      }
+      await commit(60_000, 'a', true)
+      const loss = await commit(59_999, 'b')
+      const authoritative = await store.readAlarmStatusSnapshot(1)
+      const status = authoritative.templates.find((row) => row.templateId === TEMPLATE_ID)
+      if (status) {
+        await store.evaluateTemplateAlarm(
+          { ...snapshot(status.correct), observationRevision: authoritative.revision },
+          phase === 'scan'
+            ? { kind: 'scan' }
+            : { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 1, dueAt: NOW },
+          ALARM_ID,
+        )
+      }
+      await store.evaluateTemplateAlarm(
+        { ...snapshot(59_999), observationRevision: loss.revision },
+        { kind: 'observation', previousCorrect: loss.change.previousTemplateCorrect },
+        ALARM_ID,
+      )
+      expect(await store.readActiveAlarms(1, false)).toEqual([
+        expect.objectContaining({ kind: 'regression', pixelsLost: 1 }),
+      ])
+      expect(await store.nextAlarmProbeAt()).not.toBeNull()
+    },
+  )
+
+  it('keeps the first probe during live losses, recovery, and admin dismissal', async () => {
+    await store.evaluateTemplateAlarm(
+      snapshot(59_999),
+      { kind: 'observation', previousCorrect: 60_000 },
+      ALARM_ID,
+    )
+    const dueAt = millis(NOW + 10 * 60 * 1_000)
+    await store.evaluateTemplateAlarm(
+      snapshot(59_998, millis(NOW + 1)),
+      { kind: 'observation', previousCorrect: 59_999 },
+      'unused',
+    )
+    expect(await store.listDueAlarmProbes(dueAt)).toEqual([
+      expect.objectContaining({ dueAt, pixelsLost: 1, alarmId: ALARM_ID }),
+    ])
+    await store.dismissTemplateAlarm(TEMPLATE_ID, ALARM_ID, millis(NOW + 2))
+    await store.evaluateTemplateAlarm(
+      snapshot(59_998, millis(NOW + 3)),
+      { kind: 'observation', previousCorrect: 59_998 },
+      'unused',
+    )
+    expect(await store.readActiveAlarms(1, false)).toEqual([])
+    await store.evaluateTemplateAlarm(
+      snapshot(59_997, millis(NOW + 4)),
+      { kind: 'observation', previousCorrect: 59_998 },
+      NEXT_VERSION_ID,
+    )
+    expect(await store.readActiveAlarms(1, false)).toEqual([
+      expect.objectContaining({ id: NEXT_VERSION_ID, pixelsLost: 1 }),
+    ])
+    await store.evaluateTemplateAlarm(
+      snapshot(59_998, millis(NOW + 5)),
+      { kind: 'observation', previousCorrect: 59_997 },
+      'unused',
+    )
+    expect(await store.readActiveAlarms(1, false)).toEqual([])
+    expect(await store.nextAlarmProbeAt()).toBeNull()
+  })
+
+  it('dismisses an episode durably without reopening it on unchanged or stale observations', async () => {
+    await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
+    await expect(store.dismissTemplateAlarm(TEMPLATE_ID, 'wrong-episode', PROBE_AT)).resolves.toBe(
+      false,
+    )
+    await expect(store.dismissTemplateAlarm(TEMPLATE_ID, ALARM_ID, PROBE_AT)).resolves.toBe(true)
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([])
+    await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
+    await store.evaluateTemplateAlarm(snapshot(59_700, PROBE_AT), { kind: 'scan' }, 'equal-time')
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([])
+    await store.evaluateTemplateAlarm(snapshot(60_000, SIX_HOURS_LATER), { kind: 'scan' }, 'stale')
+    await store.evaluateTemplateAlarm(
+      snapshot(59_700, PROBE_AT),
+      {
+        kind: 'follow-up',
+        alarmId: ALARM_ID,
+        pixelsLost: 100,
+        dueAt: PROBE_AT,
+      },
+      'stale-follow-up',
+    )
+    await store.evaluateTemplateAlarm(
+      snapshot(59_900, millis(PROBE_AT + 1)),
+      { kind: 'scan' },
+      'unchanged',
+    )
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([])
+    await store.evaluateTemplateAlarm(
+      snapshot(59_800, millis(PROBE_AT + 2)),
+      { kind: 'scan' },
+      NEXT_VERSION_ID,
+    )
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
+      expect.objectContaining({ id: NEXT_VERSION_ID, pixelsLost: 100 }),
+    ])
+    await expect(
+      store.dismissTemplateAlarm(TEMPLATE_ID, ALARM_ID, millis(PROBE_AT + 3)),
+    ).resolves.toBe(false)
+    await expect(store.readActiveAlarms(1, false)).resolves.toHaveLength(1)
+  })
 
   it('persists one alarm episode and promotes it only after a worsening due probe', async () => {
     await expect(

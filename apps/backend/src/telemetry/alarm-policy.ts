@@ -14,16 +14,12 @@ export type {
 
 export const ALARM_FOLLOW_UP_DELAY_MILLISECONDS = 10 * 60 * 1_000
 
-/** Scale ordinary templates while keeping both tiny and continent-sized art useful. */
-export const alarmThreshold = (total: number): number =>
-  Math.min(100, Math.max(10, Math.ceil(total * 0.001)))
-
 /**
- * Evaluate one complete server-owned template snapshot.
+ * Evaluate a server-classified template snapshot. Any loss of correct pixels opens a regression.
  *
  * The high-water mark is version-local. An active episode survives partial recovery and clears only
  * when the observed count reaches that mark again. A follow-up promotes only when it belongs to the
- * current episode and sees more loss than the six-hour scan that scheduled it.
+ * current episode and sees more loss than the observation that scheduled it.
  */
 export const evaluateAlarmSnapshot = (
   previous: TemplateAlarmState | null,
@@ -50,16 +46,15 @@ export const evaluateAlarmSnapshot = (
   }
 
   if (previous === null || previous.versionId !== snapshot.versionId) {
-    return {
-      state: {
-        templateId: snapshot.templateId,
-        versionId: snapshot.versionId,
-        total: snapshot.total,
-        peakCorrect: snapshot.correct,
-        alarm: null,
-      },
-      scheduleFollowUp: false,
+    const seeded = {
+      templateId: snapshot.templateId,
+      versionId: snapshot.versionId,
+      total: snapshot.total,
+      peakCorrect: phase.kind === 'observation' ? phase.previousCorrect : snapshot.correct,
+      alarm: null,
     }
+    if (phase.kind !== 'observation') return { state: seeded, scheduleFollowUp: false }
+    previous = seeded
   }
 
   const peakCorrect = Math.max(previous.peakCorrect, snapshot.correct)
@@ -75,10 +70,6 @@ export const evaluateAlarmSnapshot = (
   }
 
   const current = previous.alarm
-  if (current === null && pixelsLost < alarmThreshold(snapshot.total)) {
-    return { state: { ...baseState, alarm: null }, scheduleFollowUp: false }
-  }
-
   if (current === null) {
     return {
       state: {
@@ -92,7 +83,7 @@ export const evaluateAlarmSnapshot = (
           lastSeen: snapshot.observedAt,
         },
       },
-      scheduleFollowUp: phase.kind === 'scan',
+      scheduleFollowUp: phase.kind !== 'follow-up',
     }
   }
 
@@ -112,6 +103,8 @@ export const evaluateAlarmSnapshot = (
         lastSeen: snapshot.observedAt,
       },
     },
-    scheduleFollowUp: phase.kind === 'scan' && kind === 'regression',
+    scheduleFollowUp:
+      kind === 'regression' &&
+      (phase.kind === 'scan' || (phase.kind === 'observation' && pixelsLost > current.pixelsLost)),
   }
 }

@@ -1,4 +1,4 @@
-import type { TreeIcon } from '@caelestis/ui/elements'
+import type { TreeIcon, TreeRowModel } from '@caelestis/ui/elements'
 import { getState } from '../state.js'
 import type { TemplateColourProgress, TemplateProgress } from '../templates/mismatch.js'
 
@@ -20,9 +20,8 @@ export interface TreeRowOptions {
   readonly depth: number
   readonly branches?: readonly boolean[] | undefined
   readonly meta?: string | undefined
-  readonly lifecycle?:
-    | { readonly finished: boolean; readonly frozen: boolean; readonly griefed: boolean }
-    | undefined
+  readonly descendantAlarmKind?: TreeRowModel['descendantAlarmKind']
+  readonly lifecycle?: TreeRowModel['lifecycle']
   readonly progress?: TemplateProgress | undefined
   readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[] | undefined) | undefined

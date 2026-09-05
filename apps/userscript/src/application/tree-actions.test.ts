@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+
+import { type Alarm, millis } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ServerTemplate } from '../server-cache.js'
 import type { ConnectedServer } from '../state.js'
@@ -19,6 +21,16 @@ const copyState = vi.hoisted(() => ({
 const copyStore = vi.hoisted(() => ({
   templateById: vi.fn(),
 }))
+const alarmState = vi.hoisted(() => ({
+  current: null as Alarm | null,
+  dismiss: vi.fn(async () => ({ ok: true as const })),
+  refresh: vi.fn(),
+}))
+vi.mock('../telemetry.js', () => ({ serverAlarmFor: () => alarmState.current }))
+vi.mock('../server-sync-coordinator.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../server-sync-coordinator.js')>()),
+  requestServerSync: alarmState.refresh,
+}))
 const transferState = vi.hoisted(() => ({
   confirmDestructive: vi.fn(async () => true),
   moveServerTemplateToLocal: vi.fn(),
@@ -30,6 +42,7 @@ vi.mock('../state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../state.js')>()),
   getState: copyState.getState,
   listServerNodes: copyState.listServerNodes,
+  dismissTemplateAlarm: alarmState.dismiss,
 }))
 vi.mock('../templates/local-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../templates/local-store.js')>()),
@@ -71,6 +84,7 @@ const template = (published: boolean): ServerTemplate =>
   ({ id: 'template', nodeId: 'root', published }) as ServerTemplate
 
 afterEach(() => {
+  alarmState.current = null
   cancelTreeActionSetup(new Error('test cleanup'))
   finishRenaming()
   vi.clearAllMocks()
@@ -84,6 +98,37 @@ const menuText = (): string =>
   treeActionPresentation()
     .contextMenu?.items.map(({ label }) => label)
     .join('') ?? ''
+
+it('lets admins dismiss the exact grief episode from a template menu', async () => {
+  serverRows.rowsFor.mockReturnValue({ nodes: [], templates: [template(true)] })
+  alarmState.current = {
+    id: 'episode',
+    templateId: 'template',
+    kind: 'regression',
+    pixelsLost: 10,
+    firstSeen: millis(1),
+    lastSeen: millis(2),
+  }
+  const templateTarget = { ...target, templateId: 'template', key: 'st:template' }
+  openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
+  const menu = treeActionPresentation().contextMenu
+  const dismiss = menu?.items.find((item) => item.label === 'Dismiss grief alert')
+  if (menu === undefined || dismiss === undefined) throw new Error('missing dismissal action')
+  handleTreeActionPresentationIntent({
+    type: 'context-menu-action',
+    menuId: menu.id,
+    actionId: dismiss.id,
+  })
+  await Promise.resolve()
+  expect(alarmState.dismiss).toHaveBeenCalledExactlyOnceWith(server, 'template', 'episode')
+  expect(alarmState.refresh).toHaveBeenCalledWith('manual', 'telemetry-alarms', server)
+  openContextMenu(
+    { ...templateTarget, server: { ...server, isAdmin: false } },
+    new MouseEvent('contextmenu'),
+    vi.fn(),
+  )
+  expect(menuText()).not.toContain('Dismiss grief alert')
+})
 
 it('dispatches a typed menu selection without a DOM-owned action list', () => {
   const rerender = vi.fn()

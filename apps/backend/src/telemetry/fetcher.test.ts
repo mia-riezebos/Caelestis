@@ -521,6 +521,20 @@ describe('the 6-hour tile fetcher', () => {
     const fetchImpl = (async () => new Response((await canvas()).slice())) as typeof fetch
 
     await fetchCanvasTiles(ports, { season: 0, now: NOW, fetchImpl })
+    const delayedLiveSnapshot = (correct: number, observedAt: number, revision: number) => ({
+      templateId: 'watched',
+      versionId: 'watched-version',
+      total: 20,
+      correct,
+      observedAt: millis(observedAt * 1_000),
+      observationRevision: revision - 1,
+    })
+    await sql.evaluateTemplateAlarm(
+      delayedLiveSnapshot(19, NOW, await sql.readStatusProjectionRevision(0)),
+      { kind: 'observation', previousCorrect: 20 },
+      'stale-live-loss',
+    )
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
     notifyAlarmChange.mockClear()
     lost = 10
     const scanAt = seconds(NOW + 6 * 60 * 60)
@@ -548,6 +562,11 @@ describe('the 6-hour tile fetcher', () => {
       },
     )
     expect(notifyAlarmChange).toHaveBeenCalledTimes(2)
+    await sql.evaluateTemplateAlarm(
+      delayedLiveSnapshot(20, followAt, await sql.readStatusProjectionRevision(0)),
+      { kind: 'observation', previousCorrect: 9 },
+      'stale-live-recovery',
+    )
     await expect(sql.readActiveAlarms(0, false)).resolves.toEqual([
       expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 11 }),
     ])

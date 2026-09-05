@@ -133,6 +133,138 @@ const uploadCanvas = async (
 describe('telemetry routes', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it.each(['before', 'after'] as const)(
+    'keeps overlapping recovery clear when loss evaluates %s recovery',
+    async (order) => {
+      const { app, sql } = await harness()
+      const templateId = await createPublishedTemplate(app)
+      const token = await mintToken(app, 'report')
+      const versionId = (await sql.readTemplate(templateId))?.currentVersionId ?? ''
+      const at = Math.floor(Date.now() / 1_000) - 10
+      // Existing tile coverage from before immediate detection has no alarm baseline yet.
+      await sql.recordTileObservation(
+        {
+          season: 0,
+          tile: { x: 0, y: 0 },
+          hash: 'f'.repeat(64),
+          observedAt: millis((at - 1) * 1_000),
+          reportedAt: seconds(at - 1),
+          reportedWithToken: TOKEN,
+          reportedByUserId: 42,
+        },
+        [
+          {
+            templateId,
+            versionId,
+            tile: { x: 0, y: 0 },
+            correct: 1,
+            wrong: 0,
+            blank: 2,
+            observedAt: millis((at - 1) * 1_000),
+          },
+        ],
+      )
+      const barrier = () => {
+        let resolve = () => {}
+        const promise = new Promise<void>((done) => {
+          resolve = done
+        })
+        return { promise, resolve }
+      }
+      const lossCommitted = barrier()
+      const recoveryCommitted = barrier()
+      const releaseLoss = barrier()
+      const releaseRecovery = barrier()
+      const commit = sql.commitTileBlobReservation.bind(sql)
+      let commits = 0
+      vi.spyOn(sql, 'commitTileBlobReservation').mockImplementation(async (...args) => {
+        const sequence = ++commits
+        const result = await commit(...args)
+        if (sequence === 1) {
+          lossCommitted.resolve()
+          await releaseLoss.promise
+        } else {
+          recoveryCommitted.resolve()
+          await releaseRecovery.promise
+        }
+        return result
+      })
+      const lostBytes = await changedCanvasTile(3)
+      const recoveredBytes = await changedCanvasTile(0)
+      const loss = uploadCanvas(app, token, lostBytes, at)
+      await lossCommitted.promise
+      const recovery = uploadCanvas(app, token, recoveredBytes, at)
+      await recoveryCommitted.promise
+      if (order === 'before') {
+        releaseLoss.resolve()
+        await loss
+        releaseRecovery.resolve()
+        await recovery
+      } else {
+        releaseRecovery.resolve()
+        await recovery
+        releaseLoss.resolve()
+        await loss
+      }
+      expect(await sql.readActiveAlarms(0, false)).toEqual([])
+      expect(await sql.nextAlarmProbeAt()).toBeNull()
+    },
+  )
+
+  it('opens one-pixel regressions during ingestion and keeps the original follow-up deadline', async () => {
+    const notifyAlarmChange = vi.fn(async () => undefined)
+    const { app, sql } = await harness({
+      notifyAlarmChange,
+      applyCommittedChange: async () => null,
+      reconcileSnapshot: async () => ({
+        cacheOutcome: 'hit',
+        snapshot: { revision: 0, templates: [] },
+      }),
+    })
+    const templateId = await createPublishedTemplate(app)
+    const token = await mintToken(app, 'report')
+    const start = Math.floor(Date.now() / 1_000) - 30
+    const tile = async (pixels: number[]) => {
+      const indices = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+      indices.set(pixels)
+      return encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
+    }
+    await uploadCanvas(app, token, await tile([0, 1, TRANSPARENT_INDEX]), start)
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
+    // Painting a previously blank pixel incorrectly is not regression.
+    await uploadCanvas(app, token, await tile([0, 1, 3]), start + 1)
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
+    notifyAlarmChange.mockClear()
+    await uploadCanvas(app, token, await tile([3, 1, 3]), start + 2)
+    const [alarm] = await sql.readActiveAlarms(0, false)
+    expect(alarm).toMatchObject({ templateId, kind: 'regression', pixelsLost: 1 })
+    expect(notifyAlarmChange).toHaveBeenCalledWith(0)
+    const dueAt = millis((start + 2) * 1_000 + 10 * 60 * 1_000)
+    expect(await sql.nextAlarmProbeAt()).toBe(dueAt)
+    await uploadCanvas(app, token, await tile([3, 3, 3]), start + 3)
+    expect(await sql.nextAlarmProbeAt()).toBe(dueAt)
+    expect(await sql.listDueAlarmProbes(dueAt)).toEqual([
+      expect.objectContaining({ alarmId: alarm?.id, pixelsLost: 1, dueAt }),
+    ])
+    const [status] = await sql.readTemplateStatuses(0, false)
+    const template = await sql.readTemplate(templateId)
+    if (!status || !template?.currentVersionId || !alarm)
+      throw new Error('expected an ingested alarm snapshot')
+    await sql.evaluateTemplateAlarm(
+      { ...status, versionId: template.currentVersionId, observedAt: dueAt },
+      {
+        kind: 'follow-up',
+        alarmId: alarm.id,
+        pixelsLost: 1,
+        dueAt,
+      },
+      'unused',
+    )
+    expect(await sql.readActiveAlarms(0, false)).toEqual([
+      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 2 }),
+    ])
+  })
+
   it('reads historical status directly without creating a season read model', async () => {
     const reconcileSnapshot = vi.fn(async () => {
       throw new Error('historical status must not reach the read model')
@@ -326,6 +458,43 @@ describe('telemetry routes', () => {
     expect(connections[0]?.clientHash).toBe(connections[1]?.clientHash)
     expect(connections[2]?.clientHash).not.toBe(connections[0]?.clientHash)
     expect(connections.every((connection) => connection.anonymous)).toBe(true)
+  })
+
+  it('allows only admins to dismiss an exact grief episode and broadcasts the change', async () => {
+    const notifyAlarmChange = vi.fn(async () => undefined)
+    const { app, sql } = await harness({
+      notifyAlarmChange,
+      applyCommittedChange: async () => null,
+      reconcileSnapshot: async () => ({
+        cacheOutcome: 'hit',
+        snapshot: { revision: 0, templates: [] },
+      }),
+    })
+    const templateId = await createPublishedTemplate(app)
+    const versionId = (await sql.readTemplate(templateId))?.currentVersionId ?? ''
+    const snapshot = (correct: number) => ({
+      templateId,
+      versionId,
+      total: 100_000,
+      correct,
+      observedAt: millis(Date.now() - 1_000),
+    })
+    await sql.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, EVENT_ID)
+    await sql.evaluateTemplateAlarm(snapshot(59_900), { kind: 'scan' }, EVENT_ID)
+    const url = `/admin/templates/${templateId}/alarms/${EVENT_ID}`
+    const readToken = await mintToken(app, 'read')
+    expect((await app.request(url, { method: 'DELETE', headers: bearer(readToken) })).status).toBe(
+      403,
+    )
+    expect(await sql.readActiveAlarms(0, false)).toHaveLength(1)
+    expect((await app.request(url, { method: 'DELETE', headers: bearer(BOOTSTRAP) })).status).toBe(
+      200,
+    )
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
+    expect(notifyAlarmChange).toHaveBeenCalledExactlyOnceWith(0)
+    expect((await app.request(url, { method: 'DELETE', headers: bearer(BOOTSTRAP) })).status).toBe(
+      409,
+    )
   })
 
   it('serves active alarms with read scope and hides unpublished templates from readers', async () => {

@@ -265,8 +265,8 @@ export const fetchCanvasTiles = async (
     if (held === undefined) requiredTiles.set(row.templateId, [requirement])
     else held.push(requirement)
   }
-  const statuses = await ports.sql.readTemplateStatuses(season, true, { serverOwnedOnly: true })
-  const statusesById = new Map(statuses.map((status) => [status.templateId, status]))
+  const alarmSnapshot = await ports.sql.readAlarmStatusSnapshot(season)
+  const statusesById = new Map(alarmSnapshot.templates.map((status) => [status.templateId, status]))
   const scanCycleBatches = Math.max(1, Math.ceil(templateTiles.size / maxTiles))
   const freshnessCutoff =
     (now - scanCycleBatches * ALARM_SCAN_INTERVAL_SECONDS - ALARM_SCAN_JITTER_SECONDS) * 1_000
@@ -296,6 +296,7 @@ export const fetchCanvasTiles = async (
         total: status.total,
         correct: status.correct,
         observedAt: millis(now * 1_000),
+        observationRevision: alarmSnapshot.revision,
       },
       { kind: 'scan' },
       alarmIdFactory(),
@@ -453,9 +454,10 @@ export const fetchAlarmFollowUps = async (
       tiles = (await ports.sql.listAlarmTiles(probe.season)).filter(
         (row) => row.templateId === probe.templateId && row.versionId === probe.versionId,
       )
-      const status = (
-        await ports.sql.readTemplateStatuses(probe.season, true, { serverOwnedOnly: true })
-      ).find((candidate) => candidate.templateId === probe.templateId)
+      const alarmSnapshot = await ports.sql.readAlarmStatusSnapshot(probe.season)
+      const status = alarmSnapshot.templates.find(
+        (candidate) => candidate.templateId === probe.templateId,
+      )
       if (
         status === undefined ||
         status.total !== template.totalPixels ||
@@ -481,6 +483,7 @@ export const fetchAlarmFollowUps = async (
           total: status.total,
           correct: status.correct,
           observedAt: millis(now * 1_000),
+          observationRevision: alarmSnapshot.revision,
         },
         {
           kind: 'follow-up',

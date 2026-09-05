@@ -2,6 +2,7 @@ import {
   type Alarm,
   type ContributionDay,
   type Millis,
+  millis,
   type Seconds,
   sameTemplateSurface,
   seconds,
@@ -20,6 +21,7 @@ import {
   type AlarmEvaluationPhase,
   type AlarmPolicyResult,
   type AlarmProbe,
+  type AlarmStatusSnapshot,
   type AlarmTileRecord,
   assertValidAccessToken,
   assertValidBuckets,
@@ -104,6 +106,7 @@ interface StoredTemplateAlarmState extends TemplateAlarmState {
   readonly probeDueAt: Millis | null
   readonly probePixelsLost: number | null
   readonly evaluatedAt: Millis
+  readonly observationRevision: number
 }
 
 const tileHistoryRowKey = (row: TileHistoryRow): string =>
@@ -936,8 +939,25 @@ export class MemorySqlStore implements SqlStore {
       }),
     )
     const canvasKey = `${observation.season}\u0000${tileKey(observation.tile)}`
+    const previousTemplateCounts = new Map(
+      acceptedStatuses.map(({ status }) => [
+        status.templateId,
+        [...this.templateTileStatuses.values()]
+          .filter(
+            (held) => held.templateId === status.templateId && held.versionId === status.versionId,
+          )
+          .reduce(
+            (total, held) => ({
+              correct: total.correct + held.correct,
+              observedAt: millis(Math.max(total.observedAt, held.observedAt)),
+            }),
+            { correct: 0, observedAt: millis(0) },
+          ),
+      ]),
+    )
     const previousCommitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
-    await this.recordTileObservation(
+    // recordTileObservation mutates synchronously. Capture this whole commit before yielding.
+    const recording = this.recordTileObservation(
       observation,
       acceptedStatuses.map(({ status }) => status),
       recordHistory,
@@ -953,6 +973,9 @@ export class MemorySqlStore implements SqlStore {
             {
               published: template.publishedAt !== null,
               totalPixels: version.totalPixels,
+              previousTemplateCorrect: previousTemplateCounts.get(status.templateId)?.correct ?? 0,
+              previousTemplateObservedAt:
+                previousTemplateCounts.get(status.templateId)?.observedAt ?? millis(0),
               ...(version.colourTotals === undefined ? {} : { colourTotals: version.colourTotals }),
               previous: before,
               current,
@@ -973,6 +996,7 @@ export class MemorySqlStore implements SqlStore {
     }
     const current = this.canvasTiles.get(canvasKey)
     const commitOrder = this.canvasTileCommitOrders.get(canvasKey) ?? 0
+    await recording
     return {
       revision,
       statusChanges,
@@ -1264,6 +1288,22 @@ export class MemorySqlStore implements SqlStore {
     return revision
   }
 
+  async readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot> {
+    const revision = this.statusRevisions.get(season)?.revision ?? 0
+    // Both reads capture their counts synchronously, before this method yields.
+    const [authoritative, current] = await Promise.all([
+      this.readTemplateStatuses(season, true, { serverOwnedOnly: true }),
+      this.readTemplateStatuses(season, true),
+    ])
+    const currentCounts = new Map(current.map((status) => [status.templateId, status.correct]))
+    return {
+      revision,
+      templates: authoritative.filter(
+        (status) => currentCounts.get(status.templateId) === status.correct,
+      ),
+    }
+  }
+
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -1280,22 +1320,51 @@ export class MemorySqlStore implements SqlStore {
     ) {
       return evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
     }
-    if (previous !== null && snapshot.observedAt < previous.evaluatedAt) {
+    if (
+      previous !== null &&
+      (snapshot.observedAt < previous.evaluatedAt ||
+        (snapshot.observationRevision !== undefined &&
+          (snapshot.observationRevision < previous.observationRevision ||
+            (phase.kind === 'observation' &&
+              snapshot.observationRevision === previous.observationRevision))))
+    ) {
       return { state: previous, scheduleFollowUp: false }
     }
     const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
-    const probe = result.scheduleFollowUp
-      ? {
-          probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
-          probePixelsLost: result.state.alarm?.pixelsLost ?? null,
-        }
-      : { probeDueAt: null, probePixelsLost: null }
+    const preserveProbe =
+      phase.kind === 'observation' &&
+      result.state.alarm !== null &&
+      result.state.alarm.id === previous?.alarm?.id &&
+      previous.probeDueAt !== null
+    const probe = preserveProbe
+      ? { probeDueAt: previous.probeDueAt, probePixelsLost: previous.probePixelsLost }
+      : result.scheduleFollowUp
+        ? {
+            probeDueAt: (snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis,
+            probePixelsLost: result.state.alarm?.pixelsLost ?? null,
+          }
+        : { probeDueAt: null, probePixelsLost: null }
     this.alarmStates.set(snapshot.templateId, {
       ...result.state,
       ...probe,
       evaluatedAt: snapshot.observedAt,
+      observationRevision: snapshot.observationRevision ?? previous?.observationRevision ?? 0,
     })
     return result
+  }
+
+  async dismissTemplateAlarm(templateId: string, alarmId: string, now: Millis): Promise<boolean> {
+    const state = this.alarmStates.get(templateId)
+    if (state?.alarm?.id !== alarmId) return false
+    this.alarmStates.set(templateId, {
+      ...state,
+      peakCorrect: state.peakCorrect - state.alarm.pixelsLost,
+      alarm: null,
+      probeDueAt: null,
+      probePixelsLost: null,
+      evaluatedAt: millis(Math.max(state.evaluatedAt, now) + 1),
+    })
+    return true
   }
 
   async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {

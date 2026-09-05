@@ -314,8 +314,8 @@ export interface TileHistoryResponse {
 export type AlarmKind = 'regression' | 'sustained-griefing'
 
 /**
- * Derived from drift: the gap between what our own paint events imply and what the canvas actually
- * shows. `observed < derived` means our work is being overwritten.
+ * A server-observed loss from the template version's highest correct-pixel count. Dismissal resets
+ * that baseline to the latest observed count; subsequent loss can start a new episode.
  */
 export interface Alarm {
   readonly id: string

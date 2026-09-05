@@ -19,6 +19,7 @@ import {
   ResourceNotFoundError,
 } from '../runtime/errors.js'
 import {
+  publishAlarmChange,
   publishManifestChange,
   repairCommittedStatusProjection,
 } from '../status-read-model/port.js'
@@ -57,6 +58,31 @@ const templateFailure = (operation: string, cause: unknown): TemplateError => {
   }
   return new BackendStorageError({ operation, cause })
 }
+
+/** Dismiss only the episode the admin saw; future loss starts a fresh episode. */
+export const dismissTemplateAlarm = (templateId: string, alarmId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const readModel = yield* StatusReadModelService
+    const template = yield* Effect.tryPromise({
+      try: () => sql.readTemplate(templateId),
+      catch: (cause) => templateFailure('readTemplate', cause),
+    })
+    if (template === null)
+      return yield* Effect.fail(new ResourceNotFoundError({ message: 'not found' }))
+    const dismissed = yield* Effect.tryPromise({
+      try: () => sql.dismissTemplateAlarm(templateId, alarmId, millis(Date.now())),
+      catch: (cause) => templateFailure('dismissTemplateAlarm', cause),
+    })
+    if (!dismissed)
+      return yield* Effect.fail(
+        new ResourceConflictError({
+          message: 'That grief alert has changed; refresh and try again.',
+        }),
+      )
+    yield* Effect.promise(() => publishAlarmChange(readModel, template.season))
+    return { ok: true as const }
+  })
 
 export interface CreateTemplateInput {
   readonly surface: TemplateSurface
@@ -252,7 +278,12 @@ export const patchTemplate = (
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
     }
     yield* Effect.promise(() =>
-      publishManifestChange(statusReadModel, existing.season, existing.surface),
+      publishManifestChange(
+        statusReadModel,
+        existing.season,
+        existing.surface,
+        input.published !== undefined,
+      ),
     )
 
     return {

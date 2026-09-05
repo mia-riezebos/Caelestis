@@ -34,8 +34,12 @@ export interface StatusReadModelPort {
     season: number,
     scope: StatusVisibilityScope,
   ) => Promise<StatusSnapshotRead>
-  /** Optional on portable adapters; production uses it to wake hibernating manifest subscribers. */
-  readonly notifyManifestChange?: (season: number, surface?: TemplateSurface) => Promise<void>
+  /** Wake manifest subscribers; metadata-only edits can preserve cached tile coverage. */
+  readonly notifyManifestChange?: (
+    season: number,
+    surface?: TemplateSurface,
+    affectsTileCoverage?: boolean,
+  ) => Promise<void>
   /** Optional on portable adapters; production wakes live clients after alarm state changes. */
   readonly notifyAlarmChange?: (season: number) => Promise<void>
   /** Optional for compatibility adapters; prepared production and direct adapters cache manifests. */
@@ -151,9 +155,10 @@ export const publishManifestChange = async (
   readModel: StatusReadModelPort,
   season: number,
   surface?: TemplateSurface,
+  affectsTileCoverage = true,
 ): Promise<void> => {
   try {
-    await readModel.notifyManifestChange?.(season, surface)
+    await readModel.notifyManifestChange?.(season, surface, affectsTileCoverage)
   } catch (error) {
     console.error(error)
   }
@@ -259,9 +264,13 @@ export class DirectStatusReadModel implements StatusReadModelPort {
     return this.manifestModel(input.season).read(input)
   }
 
-  async notifyManifestChange(season: number, surface?: TemplateSurface): Promise<void> {
-    this.tileGenerations.get(season)?.invalidate()
-    await this.manifestModel(season).invalidate(surface)
+  async notifyManifestChange(
+    season: number,
+    surface?: TemplateSurface,
+    affectsTileCoverage = true,
+  ): Promise<void> {
+    if (affectsTileCoverage) this.tileGenerations.get(season)?.invalidate()
+    await this.manifestModel(season).invalidate(surface, affectsTileCoverage)
   }
 
   resolveCurrentTileOffers(

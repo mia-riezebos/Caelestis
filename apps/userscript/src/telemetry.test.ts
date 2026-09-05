@@ -301,7 +301,7 @@ describe('server telemetry client', () => {
     expect(mismatch.invalidateTile).not.toHaveBeenCalled()
   })
 
-  it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
+  it('keeps authoritative alarms on hidden templates while suppressing their notifications', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -323,7 +323,8 @@ describe('server telemetry client', () => {
         return Response.json({ templates: [] })
       }),
     )
-    const { installTelemetry, onServerAlarmChange, serverAlarmFor } = await import('./telemetry.js')
+    const { installTelemetry, onServerAlarmChange, serverAlarmFor, activeServerAlarms } =
+      await import('./telemetry.js')
     const changed = vi.fn()
     onServerAlarmChange(changed)
     installTelemetry()
@@ -346,13 +347,15 @@ describe('server telemetry client', () => {
     const unpublished = { ...template, published: false }
     harness.serverContents?.(server, { nodes: [], templates: [unpublished] })
     await vi.waitFor(() => expect(serverAlarmFor(server, unpublished)?.id).toBeDefined())
+    expect(activeServerAlarms()).toHaveLength(1)
 
     harness.state = {
       ...harness.state,
       hiddenScopes: [`srv:${encodeURIComponent(server.url)}:${template.id}`],
     }
     harness.stateListeners.at(-1)?.()
-    expect(serverAlarmFor(server, template)).toBeNull()
+    expect(serverAlarmFor(server, template)?.pixelsLost).toBe(12)
+    expect(activeServerAlarms()).toEqual([])
     expect(changed).toHaveBeenCalled()
   })
 

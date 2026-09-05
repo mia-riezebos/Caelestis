@@ -1,4 +1,4 @@
-import type { TreeIcon } from '@caelestis/ui/elements'
+import type { TreeIcon, TreeRowModel } from '@caelestis/ui/elements'
 import {
   pixelAccounting,
   type TemplateColourProgress,
@@ -15,6 +15,7 @@ export interface TreeItem {
   readonly childrenOf: string | null
   readonly createdAt?: number
   readonly meta?: string | undefined
+  readonly descendantAlarmKind?: TreeRowModel['descendantAlarmKind']
   readonly lifecycle?: {
     readonly finished: boolean
     readonly frozen: boolean

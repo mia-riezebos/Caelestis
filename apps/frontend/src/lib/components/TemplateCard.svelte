@@ -33,7 +33,6 @@ const { template } = $derived(entry)
       compact
       finished={template.finished}
       frozen={template.timelapseFrozen}
-      griefed={template.finished && entry.progress.mismatched > 0}
       alarmKind={entry.alarm?.kind}
       pixelsLost={entry.alarm?.pixelsLost}
     />

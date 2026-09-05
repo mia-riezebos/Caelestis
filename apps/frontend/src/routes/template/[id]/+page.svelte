@@ -194,7 +194,6 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       <TemplateState
         finished={template.finished}
         frozen={template.timelapseFrozen}
-        griefed={template.finished && progress.mismatched > 0}
         alarmKind={alarm?.kind}
         pixelsLost={alarm?.pixelsLost}
       />
@@ -210,7 +209,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {/if}
     </header>
 
-    <ProgressMeter {progress} griefWatch={template.finished} />
+    <ProgressMeter {progress} griefWatch={alarm !== undefined} />
     {#if progress.known < progress.total}
       <p class="-mt-2 text-xs text-base-content/50">
         {Math.round((progress.known / Math.max(1, progress.total)) * 100)}% of pixels scanned.

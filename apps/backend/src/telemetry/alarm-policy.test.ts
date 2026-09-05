@@ -1,6 +1,6 @@
 import { millis } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
-import { alarmThreshold, evaluateAlarmSnapshot, type TemplateAlarmState } from './alarm-policy.js'
+import { evaluateAlarmSnapshot, type TemplateAlarmState } from './alarm-policy.js'
 
 const TEMPLATE_ID = '01890f3a-6b7c-7def-8123-456789abcde1'
 const VERSION_ID = '01890f3a-6b7c-7def-8123-456789abcde2'
@@ -17,10 +17,15 @@ const snapshot = (correct: number, observedAt = FIRST_SCAN) => ({
 })
 
 describe('template alarm policy', () => {
-  it('calibrates the regression threshold between ten and one hundred pixels', () => {
-    expect(alarmThreshold(1_000)).toBe(10)
-    expect(alarmThreshold(58_880)).toBe(59)
-    expect(alarmThreshold(936_192)).toBe(100)
+  it('opens an immediate regression for one lost correct pixel, including an existing baseline', () => {
+    const result = evaluateAlarmSnapshot(
+      null,
+      snapshot(59_999),
+      { kind: 'observation', previousCorrect: 60_000 },
+      () => ALARM_ID,
+    )
+    expect(result.state.alarm).toMatchObject({ kind: 'regression', pixelsLost: 1 })
+    expect(result.scheduleFollowUp).toBe(true)
   })
 
   it('seeds a new template version without treating incomplete work as a regression', () => {

@@ -17,9 +17,13 @@ export interface TemplateStateProps {
   finished?: boolean
   frozen?: boolean
   griefed?: boolean
+  /** The most severe active alarm among a container's descendants. */
+  descendantAlarmKind?: AlarmKind
   alarmKind?: AlarmKind | undefined
   pixelsLost?: number | undefined
   compact?: boolean
+  /** Hide the lifecycle indicator when the host overlays it on its template icon. */
+  showLifecycle?: boolean
 }
 
 export interface TemplateAdminProps {
@@ -303,10 +307,14 @@ export interface TreeRowModel {
   readonly visible: boolean
   readonly muted?: boolean
   readonly meta?: string
+  /** Includes descendants hidden by collapsed folders or search. */
+  readonly descendantAlarmKind?: AlarmKind | undefined
   readonly lifecycle?: {
     readonly finished: boolean
     readonly frozen: boolean
     readonly griefed: boolean
+    readonly alarmKind?: AlarmKind | undefined
+    readonly pixelsLost?: number | undefined
   }
   readonly progress?: TreeProgressModel
   readonly colourProgress?: readonly TreeColourProgressModel[]

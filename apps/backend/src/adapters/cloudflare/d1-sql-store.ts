@@ -2,6 +2,7 @@ import {
   type Alarm,
   type ContributionDay,
   type Millis,
+  millis,
   type Seconds,
   sameTemplateSurface,
   seconds,
@@ -54,6 +55,7 @@ import {
   type AlarmEvaluationPhase,
   type AlarmPolicyResult,
   type AlarmProbe,
+  type AlarmStatusSnapshot,
   type AlarmTileRecord,
   assertValidBuckets,
   assertValidContributionQuery,
@@ -1643,6 +1645,12 @@ export class D1SqlStore implements SqlStore {
                      status.colours_json AS previous_colours_json,
                      status.observed_at_ms AS previous_observed_at_ms,
                      status.server_owned AS previous_server_owned,
+                     (SELECT coalesce(sum(held.correct), 0) FROM template_tile_statuses AS held
+                       WHERE held.template_id = incoming.template_id
+                         AND held.version_id = incoming.version_id) AS previous_template_correct,
+                     (SELECT coalesce(max(held.observed_at_ms), 0) FROM template_tile_statuses AS held
+                       WHERE held.template_id = incoming.template_id
+                         AND held.version_id = incoming.version_id) AS previous_template_observed_at_ms,
                      template.published_at IS NOT NULL AS published,
                      version.total_pixels,
                      version.colour_totals_json
@@ -1822,6 +1830,8 @@ export class D1SqlStore implements SqlStore {
       previous_colours_json: string | null
       previous_observed_at_ms: number | null
       previous_server_owned: number | null
+      previous_template_correct: number
+      previous_template_observed_at_ms: number
       published: number
       total_pixels: number
       colour_totals_json: string | null
@@ -1864,6 +1874,8 @@ export class D1SqlStore implements SqlStore {
         {
           published: row.published === 1,
           totalPixels: Number(row.total_pixels),
+          previousTemplateCorrect: Number(row.previous_template_correct),
+          previousTemplateObservedAt: millis(row.previous_template_observed_at_ms),
           ...(colourTotals === undefined ? {} : { colourTotals }),
           previous:
             row.previous_observed_at_ms === null
@@ -2395,6 +2407,52 @@ export class D1SqlStore implements SqlStore {
     return row.revision
   }
 
+  async readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot> {
+    const [revisionResult, statusResult] = await this.client.batch([
+      this.client
+        .prepare(
+          'SELECT coalesce((SELECT revision FROM status_read_model_revisions WHERE season = ?), 0) AS revision',
+        )
+        .bind(season),
+      this.client
+        .prepare(`SELECT template.id AS template_id, version.total_pixels AS total,
+        sum(status.correct) AS correct, sum(status.wrong) AS wrong, sum(status.blank) AS blank,
+        max(status.observed_at_ms) AS observed_at_ms
+        FROM templates AS template
+        INNER JOIN template_versions AS version ON version.id = template.current_version_id
+        INNER JOIN template_alarm_tile_statuses AS status
+          ON status.template_id = template.id AND status.version_id = version.id
+        WHERE template.season = ?
+        GROUP BY template.id, version.total_pixels
+        HAVING sum(status.correct) = (
+          SELECT sum(current.correct) FROM template_tile_statuses AS current
+          WHERE current.template_id = template.id AND current.version_id = version.id
+        )
+        ORDER BY template.id`)
+        .bind(season),
+    ])
+    const row = revisionResult?.results[0] as { revision: number }
+    const statuses = statusResult?.results as Array<{
+      template_id: string
+      total: number
+      correct: number
+      wrong: number
+      blank: number
+      observed_at_ms: number
+    }>
+    return {
+      revision: row.revision,
+      templates: statuses.map((status) => ({
+        templateId: status.template_id,
+        total: status.total,
+        correct: status.correct,
+        wrong: status.wrong,
+        blank: status.blank,
+        observedAt: millis(status.observed_at_ms),
+      })),
+    }
+  }
+
   async evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -2419,14 +2477,28 @@ export class D1SqlStore implements SqlStore {
       ) {
         return evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
       }
-      if (previousRow !== undefined && snapshot.observedAt < previousRow.evaluatedAtMs) {
+      if (
+        previousRow !== undefined &&
+        (snapshot.observedAt < previousRow.evaluatedAtMs ||
+          (snapshot.observationRevision !== undefined &&
+            (snapshot.observationRevision < previousRow.observationRevision ||
+              (phase.kind === 'observation' &&
+                snapshot.observationRevision === previousRow.observationRevision))))
+      ) {
         return { state: previousState as TemplateAlarmState, scheduleFollowUp: false }
       }
       const result = evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
       const alarm = result.state.alarm
-      const probeDueAt = result.scheduleFollowUp
-        ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
-        : null
+      const preserveProbe =
+        phase.kind === 'observation' &&
+        alarm !== null &&
+        alarm.id === previousState?.alarm?.id &&
+        previousRow?.probeDueAtMs != null
+      const probeDueAt = preserveProbe
+        ? previousRow.probeDueAtMs
+        : result.scheduleFollowUp
+          ? ((snapshot.observedAt + ALARM_FOLLOW_UP_DELAY_MILLISECONDS) as Millis)
+          : null
       const values = {
         templateId: snapshot.templateId,
         versionId: result.state.versionId,
@@ -2438,8 +2510,13 @@ export class D1SqlStore implements SqlStore {
         firstSeenMs: alarm?.firstSeen ?? null,
         lastSeenMs: alarm?.lastSeen ?? null,
         probeDueAtMs: probeDueAt,
-        probePixelsLost: result.scheduleFollowUp ? (alarm?.pixelsLost ?? null) : null,
+        probePixelsLost: preserveProbe
+          ? previousRow.probePixelsLost
+          : result.scheduleFollowUp
+            ? (alarm?.pixelsLost ?? null)
+            : null,
         evaluatedAtMs: snapshot.observedAt,
+        observationRevision: snapshot.observationRevision ?? previousRow?.observationRevision ?? 0,
         revision: (previousRow?.revision ?? -1) + 1,
       }
       const write =
@@ -2460,6 +2537,30 @@ export class D1SqlStore implements SqlStore {
       if (Number(write.meta.changes) > 0) return result
     }
     throw new Error(`alarm state stayed contended for template ${snapshot.templateId}`)
+  }
+
+  async dismissTemplateAlarm(templateId: string, alarmId: string, now: Millis): Promise<boolean> {
+    const write = await this.database
+      .update(templateAlarmStates)
+      .set({
+        peakCorrect: sql`${templateAlarmStates.peakCorrect} - ${templateAlarmStates.pixelsLost}`,
+        alarmId: null,
+        kind: null,
+        pixelsLost: null,
+        firstSeenMs: null,
+        lastSeenMs: null,
+        probeDueAtMs: null,
+        probePixelsLost: null,
+        evaluatedAtMs: sql`max(${templateAlarmStates.evaluatedAtMs}, ${now}) + 1`,
+        revision: sql`${templateAlarmStates.revision} + 1`,
+      })
+      .where(
+        and(
+          eq(templateAlarmStates.templateId, templateId),
+          eq(templateAlarmStates.alarmId, alarmId),
+        ),
+      )
+    return Number(write.meta.changes) > 0
   }
 
   async readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]> {

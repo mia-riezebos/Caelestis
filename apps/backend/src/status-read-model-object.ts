@@ -138,6 +138,7 @@ interface StoredManifestRetirement {
 interface StoredManifestCacheIndex {
   readonly season: number
   readonly revision: number
+  readonly coverageRevision?: number
   readonly entries: readonly StoredManifestProjection[]
   readonly retired: readonly StoredManifestRetirement[]
 }
@@ -145,7 +146,7 @@ interface StoredManifestCacheIndex {
 const manifestChunkKey = (generation: string, index: number): string =>
   `manifest-read-model:v1:chunk:${generation}:${index}`
 
-const tileCoverageToken = (manifestRevision: number): string => `manifest:${manifestRevision}`
+const tileCoverageToken = (coverageRevision: number): string => `manifest:${coverageRevision}`
 
 const liveMeasurementHeaders = (
   usage: D1Usage,
@@ -191,13 +192,18 @@ export const createChunkedManifestPersistence = (
     }
   }
   return {
-    loadRevision: async () => {
+    loadCoverageRevision: async () => {
       const stored = await loadIndex()
-      return stored?.season === season ? stored.revision : null
+      return stored?.season === season ? (stored.coverageRevision ?? stored.revision) : null
     },
     load: async () => {
       const stored = await loadIndex()
       if (stored === null || stored.season !== season) return null
+      const revisions = {
+        season: stored.season,
+        revision: stored.revision,
+        coverageRevision: stored.coverageRevision ?? stored.revision,
+      }
       const entries: PersistedManifestProjection[] = []
       for (const entry of stored.entries) {
         const parts: string[] = []
@@ -205,7 +211,7 @@ export const createChunkedManifestPersistence = (
           const part = await storage.get<string>(manifestChunkKey(entry.generation, chunk))
           if (part === undefined) {
             invalidGenerations.add(entry.generation)
-            return { season: stored.season, revision: stored.revision, entries: [] }
+            return { ...revisions, entries: [] }
           }
           parts.push(part)
         }
@@ -218,15 +224,15 @@ export const createChunkedManifestPersistence = (
             manifest.version !== entry.version
           ) {
             invalidGenerations.add(entry.generation)
-            return { season: stored.season, revision: stored.revision, entries: [] }
+            return { ...revisions, entries: [] }
           }
           entries.push({ ...entry, manifest: manifest as Manifest })
         } catch {
           invalidGenerations.add(entry.generation)
-          return { season: stored.season, revision: stored.revision, entries: [] }
+          return { ...revisions, entries: [] }
         }
       }
-      return { season: stored.season, revision: stored.revision, entries }
+      return { ...revisions, entries }
     },
     save: async (next) => {
       const previous = await loadIndex()
@@ -287,6 +293,7 @@ export const createChunkedManifestPersistence = (
       const published: StoredManifestCacheIndex = {
         season: next.season,
         revision: next.revision,
+        coverageRevision: next.coverageRevision ?? next.revision,
         entries,
         retired,
       }
@@ -516,7 +523,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   }
 
   private async loadTileGenerationCoverage(season: number): Promise<void> {
-    this.synchronizeTileGenerationCoverage(await this.manifestModel(season).revision())
+    this.synchronizeTileGenerationCoverage(await this.manifestModel(season).coverageRevision())
   }
 
   private send(socket: WebSocket, event: LiveSyncServerEvent): void {
@@ -649,7 +656,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   async readManifestProjection(input: ManifestProjectionInput): Promise<ManifestProjectionRead> {
     const projection = await this.manifestModel(input.season).read(input)
     if (projection.revisionChanged) {
-      this.synchronizeTileGenerationCoverage(projection.revision)
+      this.synchronizeTileGenerationCoverage(projection.coverageRevision)
       this.broadcastManifest(projection.revision)
     }
     return projection
@@ -670,11 +677,15 @@ export class StatusReadModelObject extends DurableObject<Env> {
     for (const socket of this.subscribers()) this.send(socket, event)
   }
 
-  async notifyManifestChange(season: number, surface?: TemplateSurface): Promise<void> {
+  async notifyManifestChange(
+    season: number,
+    surface?: TemplateSurface,
+    affectsTileCoverage = true,
+  ): Promise<void> {
     this.bindSeason(season)
-    this.tileGenerations.invalidate()
-    const revision = await this.manifestModel(season).invalidate(surface)
-    this.synchronizeTileGenerationCoverage(revision)
+    if (affectsTileCoverage) this.tileGenerations.invalidate()
+    const revision = await this.manifestModel(season).invalidate(surface, affectsTileCoverage)
+    await this.loadTileGenerationCoverage(season)
     this.broadcastManifest(revision, surface)
   }
 

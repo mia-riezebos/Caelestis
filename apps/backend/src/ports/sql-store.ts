@@ -578,13 +578,20 @@ export interface ManifestTemplateRecord {
   readonly updatedAt: Millis
 }
 
-/** One complete current-state observation used by the server-owned alarm policy. */
+/** Current classified pixels used by the server-owned alarm policy. */
 export interface TemplateAlarmSnapshot {
   readonly templateId: string
   readonly versionId: string
   readonly total: number
   readonly correct: number
   readonly observedAt: Millis
+  /** Orders the committed evidence, including authoritative scans with equal timestamps. */
+  readonly observationRevision?: number
+}
+
+export interface AlarmStatusSnapshot {
+  readonly revision: number
+  readonly templates: readonly TemplateStatus[]
 }
 
 export interface TemplateAlarmState {
@@ -597,6 +604,7 @@ export interface TemplateAlarmState {
 
 export type AlarmEvaluationPhase =
   | { readonly kind: 'scan' }
+  | { readonly kind: 'observation'; readonly previousCorrect: number }
   | {
       readonly kind: 'follow-up'
       readonly alarmId: string
@@ -707,6 +715,9 @@ export interface TemplateTileStatusChange {
   readonly colourTotals?: readonly { readonly index: number; readonly total: number }[]
   readonly previous: TemplateTileStatusRecord | null
   readonly current: TemplateTileStatusRecord
+  /** Template-wide correct count read before this tile changed, in the same transaction. */
+  readonly previousTemplateCorrect: number
+  readonly previousTemplateObservedAt: Millis
 }
 
 export interface TileObservationCommit {
@@ -1059,7 +1070,13 @@ export interface SqlStore {
     adminFingerprint: string,
   ): Promise<number | null>
 
-  /** Atomically evaluate and persist one complete template snapshot. */
+  /**
+   * Read authoritative counts and their observation fence in one transaction.
+   * Omit templates whose current correct count differs, so the fence cannot suppress live evidence.
+   */
+  readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot>
+
+  /** Atomically evaluate and persist one template snapshot. */
   evaluateTemplateAlarm(
     snapshot: TemplateAlarmSnapshot,
     phase: AlarmEvaluationPhase,
@@ -1067,6 +1084,9 @@ export interface SqlStore {
   ): Promise<AlarmPolicyResult>
 
   readActiveAlarms(season: number, includeUnpublished: boolean): Promise<readonly Alarm[]>
+
+  /** Clear the observed episode and reset its baseline, fencing older scans and follow-ups. */
+  dismissTemplateAlarm(templateId: string, alarmId: string, now: Millis): Promise<boolean>
 
   listDueAlarmProbes(now: Millis): Promise<readonly AlarmProbe[]>
 

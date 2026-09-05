@@ -1248,6 +1248,7 @@ const alarmEnabled = (server: ConnectedServer, template: ServerTemplate): boolea
   return true
 }
 
+/** Current authoritative episode, including templates hidden from the canvas. */
 export const serverAlarmFor = (
   server: ConnectedServer,
   template: Pick<ServerTemplate, 'id' | 'nodeId' | 'published'>,
@@ -1261,8 +1262,7 @@ export const serverAlarmFor = (
     snapshot === undefined ||
     !isCurrentServerConnection(snapshot.server) ||
     known.contents !== snapshot.contents ||
-    current === undefined ||
-    !alarmEnabled(server, current)
+    current === undefined
   )
     return null
   return known.value
@@ -1282,6 +1282,7 @@ export const activeServerAlarms = (): readonly {
     const contents = coverage.get(server.url)?.contents
     if (server.status !== 'connected' || contents === undefined) continue
     for (const template of contents.templates) {
+      if (!alarmEnabled(server, template)) continue
       const alarm = serverAlarmFor(server, template)
       if (alarm !== null) active.push({ server, template, alarm })
     }
