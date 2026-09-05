@@ -1070,7 +1070,10 @@ export interface SqlStore {
     adminFingerprint: string,
   ): Promise<number | null>
 
-  /** Read authoritative template counts and their observation fence in one transaction. */
+  /**
+   * Read authoritative counts and their observation fence in one transaction.
+   * Omit templates whose current correct count differs, so the fence cannot suppress live evidence.
+   */
   readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot>
 
   /** Atomically evaluate and persist one template snapshot. */

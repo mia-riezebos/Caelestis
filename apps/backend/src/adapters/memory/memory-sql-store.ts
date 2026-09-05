@@ -1290,8 +1290,18 @@ export class MemorySqlStore implements SqlStore {
 
   async readAlarmStatusSnapshot(season: number): Promise<AlarmStatusSnapshot> {
     const revision = this.statusRevisions.get(season)?.revision ?? 0
-    const templates = await this.readTemplateStatuses(season, true, { serverOwnedOnly: true })
-    return { revision, templates }
+    // Both reads capture their counts synchronously, before this method yields.
+    const [authoritative, current] = await Promise.all([
+      this.readTemplateStatuses(season, true, { serverOwnedOnly: true }),
+      this.readTemplateStatuses(season, true),
+    ])
+    const currentCounts = new Map(current.map((status) => [status.templateId, status.correct]))
+    return {
+      revision,
+      templates: authoritative.filter(
+        (status) => currentCounts.get(status.templateId) === status.correct,
+      ),
+    }
   }
 
   async evaluateTemplateAlarm(

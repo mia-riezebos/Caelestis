@@ -2423,7 +2423,12 @@ export class D1SqlStore implements SqlStore {
         INNER JOIN template_alarm_tile_statuses AS status
           ON status.template_id = template.id AND status.version_id = version.id
         WHERE template.season = ?
-        GROUP BY template.id, version.total_pixels ORDER BY template.id`)
+        GROUP BY template.id, version.total_pixels
+        HAVING sum(status.correct) = (
+          SELECT sum(current.correct) FROM template_tile_statuses AS current
+          WHERE current.template_id = template.id AND current.version_id = version.id
+        )
+        ORDER BY template.id`)
         .bind(season),
     ])
     const row = revisionResult?.results[0] as { revision: number }
