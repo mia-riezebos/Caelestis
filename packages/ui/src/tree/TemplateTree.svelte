@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatCount, formatPixels } from '@caelestis/shared'
   import Button from '../foundations/Button.svelte'
+  import SortMenu from './SortMenu.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import ProgressMeter from '../progress/ProgressMeter.svelte'
@@ -116,11 +117,6 @@
     searchTimer = setTimeout(() => emit({ type: 'search', query }), 100)
   }
 
-  const changeSort = (event: Event): void => {
-    const field = (event.currentTarget as HTMLSelectElement).value as 'custom' | 'name' | 'progress'
-    emit({ type: 'sort', sort: { field, direction: field === 'progress' ? 'desc' : 'asc' } })
-  }
-
   const action = (row: TreeRowModel, item: TreeActionModel, event: MouseEvent): void => {
     event.stopPropagation()
     emit({ type: 'action', key: row.key, actionId: item.id })
@@ -137,6 +133,7 @@
     const rows = model.entries.filter((entry): entry is TreeRowModel => entry.type === 'row')
     const index = rows.findIndex((entry) => entry.key === row.key)
     if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      if (model.sort.field !== 'custom') return
       const siblings = rows.filter((entry) => entry.parentKey === row.parentKey)
       const siblingIndex = siblings.findIndex((entry) => entry.key === row.key)
       const target =
@@ -232,16 +229,7 @@
     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.search} /></svg>
     <input type="search" placeholder="Search templates" aria-label="Search templates" value={query} oninput={search} />
   </label>
-  <select aria-label="Sort templates" value={model.sort.field} onchange={changeSort}>
-    <option value="custom">Custom</option>
-    <option value="name">Name</option>
-    <option value="progress">Progress</option>
-  </select>
-  {#if model.sort.field !== 'custom'}
-    <button class="direction" type="button" aria-label="Reverse sort direction" onclick={() => emit({ type: 'sort', sort: { ...model.sort, direction: model.sort.direction === 'asc' ? 'desc' : 'asc' } })}>
-      {model.sort.direction === 'asc' ? '↑' : '↓'}
-    </button>
-  {/if}
+  <SortMenu sort={model.sort} onSort={(sort) => emit({ type: 'sort', sort })} />
 </div>
 
 {#if model.operation !== undefined}
@@ -435,7 +423,7 @@
   .search { display: flex; flex: 1; align-items: center; gap: 0.5rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.75rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   .search svg { inline-size: 1rem; block-size: 1rem; opacity: 0.55; fill: currentColor; }
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
-  select, .direction { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
+  select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   select { padding-inline: 0.75rem 2rem; }
   .scroller { flex: 1; min-block-size: 0; overflow-y: auto; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }

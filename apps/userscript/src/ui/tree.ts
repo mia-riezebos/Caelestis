@@ -1189,6 +1189,7 @@ export const templateTreeAdapter = (
     target: TreeRowOptions,
     position: 'before' | 'inside' | 'after',
   ): void => {
+    if (!isReorderable(getState().sort)) return
     const destination = destinationFor(target, position)
     if (destination === null || dragged.key === destination.beforeKey) return
     const sourceParent = dragged.parentKey ?? null
