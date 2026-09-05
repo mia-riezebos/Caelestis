@@ -1,4 +1,6 @@
 import {
+  defaultTemplateSort,
+  isTemplateSortField,
   PALETTE_SIZE,
   type ReconciliationReason,
   type SyncTransport,
@@ -361,10 +363,13 @@ export const loadState = (): State => {
         ].slice(0, MAX_CUSTOM_ORDER)
       : []
     const sort: SortOrder =
-      stored.sort?.field === 'name' || stored.sort?.field === 'progress'
+      isTemplateSortField(stored.sort?.field) && stored.sort.field !== 'custom'
         ? {
             field: stored.sort.field,
-            direction: stored.sort.direction === 'desc' ? 'desc' : 'asc',
+            direction:
+              stored.sort.direction === 'asc' || stored.sort.direction === 'desc'
+                ? stored.sort.direction
+                : defaultTemplateSort(stored.sort.field).direction,
           }
         : DEFAULT_SORT
     const storedHiddenColours = Array.isArray(stored.hiddenColours)

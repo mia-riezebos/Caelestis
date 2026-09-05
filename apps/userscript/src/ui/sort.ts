@@ -1,13 +1,16 @@
-export type SortField = 'custom' | 'name' | 'progress'
-export type SortDirection = 'asc' | 'desc'
+import { defaultTemplateSort, type TemplateSortOrder } from '@caelestis/shared'
 
-export interface SortOrder {
-  readonly field: SortField
-  readonly direction: SortDirection
-}
+export type {
+  TemplateSortDirection as SortDirection,
+  TemplateSortField as SortField,
+  TemplateSortOrder as SortOrder,
+} from '@caelestis/shared'
 
-export const DEFAULT_SORT: SortOrder = { field: 'custom', direction: 'asc' }
+type SortOrder = TemplateSortOrder
+
+export const DEFAULT_SORT = defaultTemplateSort('custom')
 
 export const isReorderable = (order: SortOrder): boolean => order.field === 'custom'
 
-export const progressChangesCanReorder = (order: SortOrder): boolean => order.field === 'progress'
+export const progressChangesCanReorder = (order: SortOrder): boolean =>
+  order.field === 'progress' || order.field === 'mismatched'
