@@ -60,6 +60,72 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
+  it('preserves focused-row controls and progress alongside combined lifecycle and alarm state', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          focusedKey: 'local:city',
+          entries: model.entries.map((entry) =>
+            entry.type === 'row' && entry.key === 'local:city'
+              ? { ...entry, lifecycle: { finished: true, frozen: true, griefed: true } }
+              : entry,
+          ),
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    const row = document.querySelector('[data-caelestis-tree-key="local:city"]')
+    expect(row?.getAttribute('aria-current')).toBe('true')
+    expect(row?.querySelector('[aria-label="75% complete"]')).not.toBeNull()
+    expect(row?.querySelector('.template-icon [aria-label="Finished"]')?.textContent).toBe('✅')
+    expect(row?.querySelector('[aria-label="Timelapse frozen"]')).toBeNull()
+    expect(row?.querySelector('.row-heading [role="status"] .alarm-mark')?.textContent).toBe('⚠️')
+    expect(row?.querySelector('[role="status"]')?.getAttribute('title')).toBe('Grief detected')
+    expect(row?.querySelector('.progress-detail')).toBeNull()
+    row?.querySelector<HTMLInputElement>('[aria-label="Show City"]')?.click()
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'toggle-visible',
+      key: 'local:city',
+      visible: false,
+    })
+    void unmount(component)
+  })
+
+  it.each([
+    [true, true, 'Finished', '✅'],
+    [false, true, 'Timelapse frozen', '🧊'],
+  ])(
+    'overlays one passive status without a detail line (%s, %s)',
+    (finished, frozen, label, emoji) => {
+      const component = mount(TemplateTree, {
+        target: document.body,
+        props: {
+          model: {
+            ...model,
+            entries: model.entries.map((entry) =>
+              entry.type === 'row' && !entry.container
+                ? { ...entry, lifecycle: { finished, frozen, griefed: false } }
+                : entry,
+            ),
+          },
+        },
+      })
+      flushSync()
+      const row = document.querySelector('[data-caelestis-tree-key="local:city"]')
+      expect(row?.querySelectorAll('.lifecycle [role="img"]')).toHaveLength(1)
+      expect(
+        row?.querySelector(`.template-icon .overlay[aria-label="${label}"]`)?.textContent,
+      ).toBe(emoji)
+      expect(row?.querySelector('[role="status"]')).toBeNull()
+      expect(row?.querySelector('.name')?.textContent).toBe('City')
+      void unmount(component)
+    },
+  )
+
   it('debounces search and emits sort, expansion, visibility, and action intents', () => {
     vi.useFakeTimers()
     const onIntent = vi.fn()
@@ -199,7 +265,7 @@ describe('template tree', () => {
     void unmount(component)
   })
 
-  it('swaps compact progress and row actions in the same fixed-width tail', () => {
+  it('swaps compact progress and row actions in the same tail', () => {
     const entries: TemplateTreeModel['entries'] = model.entries.map((entry) =>
       entry.type === 'row' && entry.key === 'local:city'
         ? {
@@ -215,7 +281,7 @@ describe('template tree', () => {
     flushSync()
 
     const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local:city"]')
-    const tail = row?.querySelector<HTMLElement>(':scope > .row-tail')
+    const tail = row?.querySelector<HTMLElement>('.row-heading > .row-tail')
     expect(tail?.querySelector(':scope > .progress')).not.toBeNull()
     expect(tail?.querySelector(':scope > .actions [aria-label="Download"]')).not.toBeNull()
     expect(tail?.querySelector(':scope > .actions [aria-label="Expand progress"]')).not.toBeNull()
@@ -285,7 +351,7 @@ describe('template tree', () => {
     expect(getComputedStyle(connector?.querySelector('.connector-elbow') as Element).top).toBe(
       '20px',
     )
-    expect(getComputedStyle(connector?.closest('.row') as Element).alignContent).toBe('flex-start')
+    expect(getComputedStyle(connector?.closest('.row') as Element).flexDirection).toBe('column')
     const disclosure = document.querySelector<HTMLElement>('.progress-disclosure')
     const detailPercent = disclosure?.querySelector<HTMLElement>('.percent')
     const detailAction = disclosure?.querySelector<HTMLElement>('.progress-detail-action')

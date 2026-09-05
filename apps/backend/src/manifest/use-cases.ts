@@ -58,6 +58,7 @@ export const readManifestProjection = (
     const base = {
       version: manifest.version,
       revision: 1,
+      coverageRevision: 1,
       cacheOutcome: 'miss' as const,
       revisionChanged: false,
     }

@@ -89,8 +89,12 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     return measuredValue(measured)
   }
 
-  notifyManifestChange(season: number, surface?: TemplateSurface): Promise<void> {
-    return this.shard(season).notifyManifestChange(season, surface)
+  notifyManifestChange(
+    season: number,
+    surface?: TemplateSurface,
+    affectsTileCoverage = true,
+  ): Promise<void> {
+    return this.shard(season).notifyManifestChange(season, surface, affectsTileCoverage)
   }
 
   notifyAlarmChange(season: number): Promise<void> {

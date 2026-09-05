@@ -13,6 +13,11 @@ import { PaletteProgress, ShortcutHelp, TemplateAdmin, TemplateState } from '../
 
 beforeAll(() => registerCaelestisUi())
 
+const lifecycleLabels = (root: ParentNode | null) =>
+  Array.from(root?.querySelectorAll('.lifecycle [role="img"]') ?? [], (icon) =>
+    icon.getAttribute('aria-label'),
+  ).join(' ')
+
 describe('@caelestis/ui', () => {
   it('exposes ordinary Svelte components from the root entry', () => {
     expect(TemplateState).toBeTypeOf('function')
@@ -48,8 +53,9 @@ describe('@caelestis/ui', () => {
     await tick()
 
     expect(state).toBeInstanceOf(CaelestisTemplateState)
-    expect(state.shadowRoot?.textContent).toContain('Finished')
-    expect(state.shadowRoot?.textContent).toContain('Timelapse frozen')
+    expect(lifecycleLabels(state.shadowRoot)).toBe('Finished')
+    expect(state.shadowRoot?.querySelector('[aria-label="Finished"]')?.textContent).toBe('✅')
+    expect(state.shadowRoot?.querySelector('[aria-label="Timelapse frozen"]')).toBeNull()
     expect(state.childNodes).toHaveLength(0)
   })
 
@@ -73,11 +79,70 @@ describe('@caelestis/ui', () => {
     state.pixelsLost = 1234
     document.body.append(state)
     await tick()
-    expect(state.shadowRoot?.textContent).toContain('Regression · 1,234 px lost')
+    expect(state.shadowRoot?.textContent).toContain('Regression · 1,234 pixels lost')
 
     state.alarmKind = 'sustained-griefing'
     await tick()
-    expect(state.shadowRoot?.textContent).toContain('Sustained griefing · 1,234 px lost')
+    expect(state.shadowRoot?.textContent).toContain('Sustained griefing · 1,234 pixels lost')
+  })
+
+  it.each([
+    [true, false, 'Finished'],
+    [false, true, 'Timelapse frozen'],
+    [true, true, 'Finished'],
+  ])(
+    'keeps passive lifecycle states outside the live status region (%s, %s)',
+    async (finished, frozen, label) => {
+      const state = new CaelestisTemplateState()
+      state.finished = finished
+      state.frozen = frozen
+      document.body.append(state)
+      await tick()
+
+      expect(lifecycleLabels(state.shadowRoot)).toBe(label)
+      for (const icon of state.shadowRoot?.querySelectorAll('.lifecycle [role="img"]') ?? []) {
+        expect(icon.getAttribute('title')).toBe(icon.getAttribute('aria-label'))
+      }
+      expect(state.shadowRoot?.querySelector('[role="status"]')).toBeNull()
+      state.remove()
+    },
+  )
+
+  it('keeps completion and frozen history while updating one explicit alarm', async () => {
+    const state = new CaelestisTemplateState()
+    state.finished = true
+    state.frozen = true
+    state.griefed = true
+    state.alarmKind = 'regression'
+    state.pixelsLost = 0
+    document.body.append(state)
+    await tick()
+
+    const alarm = () => state.shadowRoot?.querySelector('[role="status"]')
+    expect(state.shadowRoot?.querySelectorAll('[role="status"]')).toHaveLength(1)
+    expect(alarm()?.getAttribute('aria-label')).toBe(
+      'Template alarm: Grief detected · Regression · 0 pixels lost',
+    )
+    expect(alarm()?.getAttribute('aria-atomic')).toBe('true')
+    expect(alarm()?.textContent).toContain('Grief detected · Regression · 0 pixels lost')
+
+    state.alarmKind = 'sustained-griefing'
+    state.pixelsLost = 1234
+    await tick()
+    expect(alarm()?.textContent).toContain('Sustained griefing · 1,234 pixels lost')
+    expect(alarm()?.textContent).not.toContain('Regression')
+    expect(lifecycleLabels(state.shadowRoot)).toBe('Finished')
+
+    state.alarmKind = undefined
+    await tick()
+    expect(alarm()?.textContent).toContain('Grief detected')
+    expect(alarm()?.textContent).not.toContain('pixels lost')
+
+    state.griefed = false
+    await tick()
+    expect(alarm()).toBeNull()
+    expect(lifecycleLabels(state.shadowRoot)).toBe('Finished')
+    state.remove()
   })
 
   it('emits composed lifecycle intents and disables both actions while busy', async () => {

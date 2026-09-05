@@ -24,6 +24,34 @@ const input = {
 }
 
 describe('manifest read model', () => {
+  it('advances metadata independently of tile coverage, including subsequent reads and restart', async () => {
+    let persisted: PersistedManifestReadModel | null = null
+    const source = vi.fn(async () => manifest('a'.repeat(64)))
+    const options = {
+      season: 7,
+      source,
+      persistence: {
+        load: async () => persisted,
+        save: async (next: PersistedManifestReadModel) => {
+          persisted = next
+        },
+      },
+    }
+    const model = createSeasonManifestReadModel(options)
+    await model.read(input)
+    source.mockResolvedValue(manifest('b'.repeat(64)))
+    await model.invalidate(input.surface, false)
+    await expect(model.read(input)).resolves.toMatchObject({
+      revision: 2,
+      coverageRevision: 1,
+      version: 'b'.repeat(64),
+    })
+    const restarted = createSeasonManifestReadModel(options)
+    await expect(restarted.coverageRevision()).resolves.toBe(1)
+    await restarted.invalidate(input.surface)
+    await expect(restarted.read(input)).resolves.toMatchObject({ revision: 3, coverageRevision: 3 })
+  })
+
   it('answers a conditional cache hit before invoking the assembly source', async () => {
     let persisted: PersistedManifestReadModel | null = null
     const source = vi.fn(async () => manifest('a'.repeat(64)))
@@ -260,21 +288,21 @@ describe('manifest read model', () => {
           releaseSource = resolve
         }),
     )
-    const loadRevision = vi.fn(async () => 9)
+    const loadCoverageRevision = vi.fn(async () => 9)
     const model = createSeasonManifestReadModel({
       season: 7,
       source,
       persistence: {
         load: async () => ({ season: 7, revision: 9, entries: [] }),
-        loadRevision,
+        loadCoverageRevision,
         save: async () => undefined,
       },
     })
     const refreshing = model.read(input)
     await vi.waitFor(() => expect(source).toHaveBeenCalledOnce())
 
-    await expect(model.revision()).resolves.toBe(9)
-    expect(loadRevision).toHaveBeenCalledOnce()
+    await expect(model.coverageRevision()).resolves.toBe(9)
+    expect(loadCoverageRevision).toHaveBeenCalledOnce()
     releaseSource(manifest('a'.repeat(64)))
     await refreshing
   })

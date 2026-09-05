@@ -20,6 +20,8 @@ export interface TemplateStateProps {
   alarmKind?: AlarmKind | undefined
   pixelsLost?: number | undefined
   compact?: boolean
+  /** Hide the lifecycle indicator when the host overlays it on its template icon. */
+  showLifecycle?: boolean
 }
 
 export interface TemplateAdminProps {

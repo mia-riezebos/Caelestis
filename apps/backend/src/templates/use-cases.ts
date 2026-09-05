@@ -252,7 +252,12 @@ export const patchTemplate = (
       yield* Effect.promise(() => repairCommittedStatusProjection(statusReadModel, existing.season))
     }
     yield* Effect.promise(() =>
-      publishManifestChange(statusReadModel, existing.season, existing.surface),
+      publishManifestChange(
+        statusReadModel,
+        existing.season,
+        existing.surface,
+        input.published !== undefined,
+      ),
     )
 
     return {
