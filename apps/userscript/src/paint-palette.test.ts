@@ -248,6 +248,39 @@ beforeEach(() => {
 })
 
 describe('Wplace paint palette progress', () => {
+  it('does not revisit every draft pixel for each palette colour', async () => {
+    const colourCount = 62
+    const pixelsPerColour = 100
+    harness.focused = { ...remote, opaque: colourCount * pixelsPerColour * 2 }
+    harness.serverProgress = Array.from({ length: colourCount }, (_, index) => ({
+      index,
+      completed: 0,
+      mismatched: 0,
+      unpainted: pixelsPerColour * 2,
+      known: pixelsPerColour * 2,
+      total: pixelsPerColour * 2,
+    }))
+    let colourReads = 0
+    harness.draftPixelDeltas = Array.from(
+      { length: colourCount * pixelsPerColour },
+      (_, offset) => ({
+        key: `0/0/${offset}`,
+        basis: 'server-tile',
+        get index() {
+          colourReads++
+          return offset % colourCount
+        },
+        completed: 1,
+        mismatched: 0,
+        unpainted: -1,
+      }),
+    )
+    const { paintPaletteProgress } = await import('./paint-palette.js')
+    expect(paintPaletteProgress().every((entry) => entry.completed === pixelsPerColour)).toBe(true)
+    // Work should depend on draft size, not draft size multiplied by the whole palette.
+    expect(colourReads).toBeLessThanOrEqual(harness.draftPixelDeltas.length * 8)
+  })
+
   it('compacts badges while keeping exact labels and restoring the native title', async () => {
     harness.localProgress = [
       { index: 0, completed: 0, mismatched: 0, unpainted: 12543, known: 12543, total: 12543 },
@@ -909,5 +942,59 @@ describe('Wplace paint palette progress', () => {
       x: -0.5,
       y: -0.5,
     })
+  })
+
+  it('keeps palette counts settled while repeatedly picking colours in an unchanged draft', async () => {
+    harness.focused = { ...remote, opaque: 2_000 }
+    harness.serverProgress = [
+      { index: 0, completed: 0, mismatched: 0, unpainted: 2_000, known: 2_000, total: 2_000 },
+    ]
+    harness.draftPixelDeltas = Array.from({ length: 1_000 }, (_, offset) => ({
+      key: `0/0/${offset}`,
+      basis: 'server-tile',
+      index: 0,
+      completed: 1,
+      mismatched: 0,
+      unpainted: -1,
+    }))
+    const swatch = document.createElement('button')
+    swatch.id = 'color-1'
+    document.body.append(swatch)
+    const { installPaintPaletteProgress } = await import('./paint-palette.js')
+    const { count } = await import('./debug.js')
+    installPaintPaletteProgress()
+    // Let mounting and the inserted badge finish their observer notifications.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    vi.mocked(count).mockClear()
+    for (let index = 0; index < 62; index++) {
+      harness.selectedColour = index
+      for (const listener of harness.paintListeners) listener()
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+    expect(
+      vi.mocked(count).mock.calls.filter(([name]) => name === 'paint:palette renders'),
+    ).toHaveLength(0)
+    harness.draftPixelDeltas.push({
+      key: '0/0/1000',
+      basis: 'server-tile',
+      index: 0,
+      completed: 1,
+      mismatched: 0,
+      unpainted: -1,
+    })
+    for (const listener of harness.draftListeners) listener()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(
+      swatch.querySelector<HTMLElement & { model: { value: string } }>('caelestis-palette-progress')
+        ?.model.value,
+    ).toBe('999')
+    harness.draftPixelDeltas = []
+    for (const listener of harness.draftListeners) listener()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(
+      swatch.querySelector<HTMLElement & { model: { value: string } }>('caelestis-palette-progress')
+        ?.model.value,
+    ).toBe('2K')
   })
 })

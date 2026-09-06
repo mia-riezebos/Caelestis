@@ -169,13 +169,15 @@ const samePixelDelta = (left: TemplateDraftPixelDelta, right: TemplateDraftPixel
   left.mismatched === right.mismatched &&
   left.unpainted === right.unpainted
 
-const aggregateColour = (
-  index: number,
+const aggregateColours = (
   pixels: Iterable<TemplateDraftPixelDelta>,
-): TemplateColourProgressDelta => {
-  let total = zeroDelta(index)
-  for (const pixel of pixels) if (pixel.index === index) total = addDelta(total, pixel)
-  return total
+): ReadonlyMap<number, TemplateColourProgressDelta> => {
+  const totals = new Map<number, TemplateColourProgressDelta>()
+  for (const pixel of pixels) {
+    const index = pixel.index
+    totals.set(index, addDelta(totals.get(index) ?? zeroDelta(index), pixel))
+  }
+  return totals
 }
 
 /**
@@ -217,6 +219,7 @@ const progressWithDrafts = (
       state.baselines.set(pixel.index, entry)
   }
 
+  const pendingByColour = aggregateColours(state.pending.values())
   for (const [index, baseline] of [...state.baselines]) {
     const entry = serverByIndex.get(index)
     if (entry === undefined) {
@@ -224,8 +227,8 @@ const progressWithDrafts = (
       for (const [key, pixel] of state.pending) if (pixel.index === index) state.pending.delete(key)
       continue
     }
-    const pending = aggregateColour(index, state.pending.values())
-    if (deltaIsEmpty(pending)) continue
+    const pending = pendingByColour.get(index)
+    if (pending === undefined || deltaIsEmpty(pending)) continue
     if (serverCovers(entry, applyColourProgressDelta(baseline, pending), baseline)) {
       for (const [key, pixel] of state.pending) {
         if (pixel.index !== index) continue
@@ -260,9 +263,10 @@ const progressWithDrafts = (
     effective.set(key, pixel)
   }
 
+  const effectiveByColour = aggregateColours(effective.values())
   const result = server.map((entry) => {
-    const delta = aggregateColour(entry.index, effective.values())
-    if (deltaIsEmpty(delta)) return entry
+    const delta = effectiveByColour.get(entry.index)
+    if (delta === undefined || deltaIsEmpty(delta)) return entry
     const baseline = state.baselines.get(entry.index) ?? entry
     const target = applyColourProgressDelta(baseline, delta)
     return serverCovers(entry, target, baseline) ? entry : target
@@ -666,7 +670,12 @@ export const installPaintPaletteProgress = (): void => {
   })
   // This watcher already crosses the userscript/page realm reliably and fires when Wplace mounts
   // or replaces its drawer. Keep the local observer as a second line for same-selection remounts.
-  onPaintSelectionChange(discoverPalette)
+  onPaintSelectionChange(() => {
+    // Picking a colour changes marker styling, not the draft totals. The observer handles swatch
+    // replacement while the drawer stays open; only a mount change needs discovery here.
+    const mounted = paintPaletteSwatches().length > 0
+    if (mounted !== paletteMounted) discoverPalette()
+  })
   if (document.documentElement === null) {
     document.addEventListener('DOMContentLoaded', observe, { once: true })
   } else {
