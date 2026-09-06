@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 
-import { defaultTemplateSort } from '@caelestis/shared'
+import { defaultTemplateSort, type TemplateSortOrder } from '@caelestis/shared'
 import { flushSync, mount, unmount } from 'svelte'
+import { createSubscriber } from 'svelte/reactivity'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SortMenu from '../src/tree/SortMenu.svelte'
 
@@ -33,7 +34,6 @@ const button = (selector: string) => {
 }
 const trigger = () => button('[aria-haspopup="menu"]')
 const choices = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
-const reverse = () => button('[role="menuitemcheckbox"]')
 const key = (target: Element | null, value: string) => {
   if (target === null) throw new Error('Missing keyboard target')
   target.dispatchEvent(
@@ -70,23 +70,45 @@ describe('template sort menu', () => {
     await unmount(component)
   })
 
-  it('exposes reversed state and emits the opposite direction', async () => {
-    const onSort = vi.fn()
-    const component = mount(SortMenu, {
-      target: document.body,
-      props: { sort: { field: 'size', direction: 'asc' }, onSort },
-    })
-    flushSync()
-    trigger().click()
-    flushSync()
-    expect(trigger().getAttribute('aria-label')).toBe('Sort templates: Size, ascending')
-    expect(reverse().getAttribute('aria-checked')).toBe('true')
-    reverse().click()
-    expect(onSort).toHaveBeenCalledWith({ field: 'size', direction: 'desc' })
-    await unmount(component)
-  })
+  it.each(['recent', 'name', 'progress', 'size', 'mismatched'] as const)(
+    'toggles %s repeatedly and exposes its direction',
+    async (field) => {
+      let sort: TemplateSortOrder = defaultTemplateSort(field)
+      let update = () => {}
+      const subscribe = createSubscriber((notify) => {
+        update = notify
+      })
+      const onSort = vi.fn((next: TemplateSortOrder) => {
+        sort = next
+        update()
+      })
+      const component = mount(SortMenu, {
+        target: document.body,
+        props: {
+          get sort() {
+            subscribe()
+            return sort
+          },
+          onSort,
+        },
+      })
+      flushSync()
+      for (let click = 0; click < 3; click++) {
+        const direction = sort.direction === 'asc' ? 'desc' : 'asc'
+        trigger().click()
+        flushSync()
+        button('[role="menuitemradio"][aria-checked="true"]').click()
+        flushSync()
+        expect(onSort).toHaveBeenLastCalledWith({ field, direction })
+        const directionLabel = direction === 'asc' ? 'ascending' : 'descending'
+        expect(trigger().getAttribute('aria-label')).toContain(directionLabel)
+        expect(button('[aria-checked="true"]').getAttribute('aria-label')).toContain(directionLabel)
+      }
+      await unmount(component)
+    },
+  )
 
-  it('supports arrows, Home, End and Escape while skipping disabled reversal', async () => {
+  it('supports arrows, Home, End and Escape', async () => {
     const component = mount(SortMenu, {
       target: document.body,
       props: { sort: defaultTemplateSort('custom'), onSort: vi.fn() },
@@ -95,7 +117,6 @@ describe('template sort menu', () => {
     trigger().focus()
     key(trigger(), 'ArrowDown')
     expect(document.activeElement).toBe(choices()[0])
-    expect(reverse().disabled).toBe(true)
     key(document.activeElement, 'ArrowUp')
     expect(document.activeElement).toBe(choices()[5])
     key(document.activeElement, 'Home')
@@ -115,8 +136,8 @@ describe('template sort menu', () => {
     })
     flushSync()
     key(trigger(), 'ArrowUp')
-    expect(document.activeElement).toBe(reverse())
-    key(reverse(), 'Tab')
+    expect(document.activeElement).toBe(choices()[5])
+    key(document.activeElement, 'Tab')
     expect(trigger().getAttribute('aria-expanded')).toBe('false')
     trigger().click()
     flushSync()

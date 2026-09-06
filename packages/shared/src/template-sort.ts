@@ -2,7 +2,7 @@
 export const TEMPLATE_SORTS = {
   custom: { label: 'Custom order', direction: 'asc' },
   recent: { label: 'Recent', direction: 'desc' },
-  name: { label: 'Name A-Z', direction: 'asc' },
+  name: { label: 'Name', direction: 'asc' },
   progress: { label: 'Progress', direction: 'desc' },
   size: { label: 'Size', direction: 'desc' },
   mismatched: { label: 'Most mismatched', direction: 'desc' },

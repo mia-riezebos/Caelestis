@@ -9,8 +9,8 @@
   let left = $state(0)
   let top = $state(0)
   const fields = Object.keys(TEMPLATE_SORTS).filter(isTemplateSortField)
-  const reversed = $derived(sort.direction !== TEMPLATE_SORTS[sort.field].direction)
-  const label = $derived(`Sort templates: ${TEMPLATE_SORTS[sort.field].label}${sort.field === 'custom' ? '' : `, ${sort.direction === 'asc' ? 'ascending' : 'descending'}`}`)
+  const selectedLabel = $derived(`${TEMPLATE_SORTS[sort.field].label}${sort.field === 'custom' ? '' : `, ${sort.direction === 'asc' ? 'ascending' : 'descending'}`}`)
+  const label = $derived(`Sort templates: ${selectedLabel}`)
 
   const close = (restoreFocus = false): void => {
     menu?.hidePopover()
@@ -26,7 +26,9 @@
     ;(last ? buttons[buttons.length - 1] : selected ?? buttons[0])?.focus()
   }
   const choose = (field: TemplateSortField): void => {
-    onSort(defaultTemplateSort(field))
+    onSort(field === sort.field && field !== 'custom'
+      ? { field, direction: sort.direction === 'asc' ? 'desc' : 'asc' }
+      : defaultTemplateSort(field))
     close(true)
   }
   const triggerKeydown = (event: KeyboardEvent): void => {
@@ -62,16 +64,13 @@
 </button>
 <div bind:this={menu} class="sort-menu" popover="auto" role="menu" aria-label="Sort templates" tabindex="-1" style:left={`${left}px`} style:top={`${top}px`} onbeforetoggle={(event) => open = event.newState === 'open'} onkeydown={menuKeydown}>
   {#each fields as field}
-    <button type="button" tabindex="-1" role="menuitemradio" aria-checked={sort.field === field} onclick={() => choose(field)}>
+    <button type="button" tabindex="-1" role="menuitemradio" aria-checked={sort.field === field} aria-label={sort.field === field ? selectedLabel : TEMPLATE_SORTS[field].label} title={sort.field === field && field !== 'custom' ? 'Click again to reverse order' : undefined} onclick={() => choose(field)}>
       <span>{TEMPLATE_SORTS[field].label}</span>
-      {#if sort.field === field}<span class="check"><Icon name="check" /></span>{/if}
+      {#if sort.field === field}
+        <span class="check" style:rotate={field === 'custom' ? undefined : sort.direction === 'asc' ? '90deg' : '-90deg'}><Icon name={field === 'custom' ? 'check' : 'arrowBack'} /></span>
+      {/if}
     </button>
   {/each}
-  <hr />
-  <button type="button" tabindex="-1" role="menuitemcheckbox" aria-checked={sort.field !== 'custom' && reversed} disabled={sort.field === 'custom'} onclick={() => { onSort({ ...sort, direction: sort.direction === 'asc' ? 'desc' : 'asc' }); close(true) }}>
-    <span>Reverse order</span>
-    {#if sort.field !== 'custom' && reversed}<span class="check"><Icon name="check" /></span>{/if}
-  </button>
 </div>
 
 <style>
@@ -81,7 +80,5 @@
   .sort-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; min-block-size: 2rem; padding-inline: 0.5rem; border: 0; border-radius: var(--sort-item-radius); background: transparent; color: inherit; cursor: pointer; text-align: start; font: inherit; }
   .sort-trigger:hover, .sort-menu button:hover, .sort-menu button:focus-visible, .sort-menu button[aria-checked='true'] { background: var(--caelestis-raised-surface); }
   .check { display: flex; margin-inline-start: auto; color: var(--caelestis-primary); }
-  hr { inline-size: calc(100% - 1rem); border: 0; border-block-start: 1px solid var(--caelestis-border); margin: 0.25rem 0.5rem; }
-  .sort-menu button:disabled { opacity: 0.45; cursor: default; }
   .sort-trigger:focus-visible, .sort-menu button:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
 </style>
