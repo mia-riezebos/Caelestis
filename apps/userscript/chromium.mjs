@@ -18,7 +18,8 @@
  * profile instead; sign into wplace there once and later runs retain the session.
  */
 import { spawn } from 'node:child_process'
-import { homedir } from 'node:os'
+import { closeSync, mkdtempSync, openSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CDP = 'http://127.0.0.1:9222'
@@ -66,14 +67,26 @@ const run = (command, args) =>
  * `open -a` on macOS returns as soon as the app is asked to start, but a Linux `chromium` stays in
  * the foreground for the whole session — awaiting its exit meant the script hung until the user
  * closed the browser it had just opened. Success here is "the process started", and the port check
- * that follows is what decides whether it worked.
+ * that follows is what decides whether it worked. Each launch writes diagnostics to a temporary
+ * log file so the browser cannot keep a task runner's captured stderr open after this script exits.
  */
 const launch = (command, args) =>
   new Promise((resolve) => {
-    // Keep startup failures visible, including a missing Linux display or a locked profile.
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'inherit'], detached: true })
-    child.on('error', () => resolve(false))
+    const directory = mkdtempSync(join(tmpdir(), 'caelestis-chromium-'))
+    const logPath = join(directory, 'browser.log')
+    const log = openSync(logPath, 'w', 0o600)
+    let child
+    try {
+      child = spawn(command, args, { stdio: ['ignore', 'ignore', log], detached: true })
+    } finally {
+      closeSync(log)
+    }
+    child.on('error', () => {
+      rmSync(directory, { recursive: true, force: true })
+      resolve(false)
+    })
     child.on('spawn', () => {
+      console.error(`Chromium output: ${logPath}`)
       child.unref()
       resolve(true)
     })
@@ -194,7 +207,7 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
     )
   }
   throw new Error(
-    'Chromium was launched but never opened the debugging port. Check the browser output above.',
+    'Chromium was launched but never opened the debugging port. Check the browser log listed above.',
   )
 }
 
