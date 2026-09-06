@@ -6,13 +6,7 @@
   "access": "restricted",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [
-    "@caelestis/backend",
-    "@caelestis/frontend",
-    "@caelestis/shared",
-    "@caelestis/ui",
-    "@caelestis/wire-schema"
-  ],
+  "ignore": ["@caelestis/shared", "@caelestis/ui", "@caelestis/wire-schema"],
   "privatePackages": {
     "version": true,
     "tag": false

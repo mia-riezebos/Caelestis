@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  assertNoMixedPackageKinds,
   assertPendingChangesetImmutable,
   validatePendingUserscriptChangeset,
   validateUserscriptChangeset,
@@ -8,6 +9,7 @@ import {
 
 const changeset = (body) => `---\n'@caelestis/userscript': patch\n---\n\n${body}\n`
 const backendChangeset = (body) => `---\n'@caelestis/backend': patch\n---\n\n${body}\n`
+const ignoredPackages = new Set(['@caelestis/shared', '@caelestis/ui'])
 
 describe('userscript Changeset release notes', () => {
   it('accepts a short summary with closely related detail bullets', () => {
@@ -93,6 +95,56 @@ describe('userscript Changeset release notes', () => {
           path: '.changeset/example.md',
         }),
       /add a new Changeset instead of editing a pending one/,
+    )
+  })
+
+  it('rejects edits to a pending backend Changeset', () => {
+    assert.throws(
+      () =>
+        validatePendingUserscriptChangeset({
+          current: backendChangeset('Rewrite the backend release note.'),
+          base: backendChangeset('Describe one backend change.'),
+          path: '.changeset/example.md',
+        }),
+      /add a new Changeset instead of editing a pending one/,
+    )
+  })
+
+  it('rejects mixed ignored and versioned package entries', () => {
+    const content = `---
+'@caelestis/userscript': patch
+'@caelestis/ui': patch
+---
+
+Keep the userscript UI useful.
+`
+
+    assert.throws(
+      () =>
+        assertNoMixedPackageKinds({
+          content,
+          ignoredPackages,
+          path: '.changeset/mixed.md',
+        }),
+      /record the change against each affected app/,
+    )
+  })
+
+  it('allows one change to target multiple versioned apps', () => {
+    const content = `---
+'@caelestis/userscript': patch
+'@caelestis/frontend': patch
+---
+
+Keep shared app behavior consistent.
+`
+
+    assert.doesNotThrow(() =>
+      assertNoMixedPackageKinds({
+        content,
+        ignoredPackages,
+        path: '.changeset/apps.md',
+      }),
     )
   })
 })

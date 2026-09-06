@@ -24,6 +24,17 @@ const COMMIT_IMPACT = {
   style: 5,
   test: 5,
 }
+const RELEASES = {
+  userscript: {
+    link: (repository) => ({
+      label: 'Install or update',
+      url: `https://github.com/${repository}/releases/latest/download/caelestis.user.js`,
+    }),
+  },
+  frontend: {
+    link: () => ({ label: 'Open dashboard', url: 'https://caelestis.mia.cx' }),
+  },
+}
 
 const commitKind = (subject) => {
   if (subject === undefined) return undefined
@@ -33,7 +44,7 @@ const commitKind = (subject) => {
   return { type, label: match[2] === undefined ? type : `${type}(${match[2]})` }
 }
 
-const parseChanges = (notes, commitSubject) => {
+const parseChanges = (notes, repository, commitSubject) => {
   const changes = []
   let level
   let lines = []
@@ -44,8 +55,12 @@ const parseChanges = (notes, commitSubject) => {
     const hash = prefix?.[1]
     const kind = commitKind(hash === undefined ? undefined : commitSubject(hash))
     const firstLine = prefix === null ? lines[0] : `- ${prefix[2]}`
+    const commit =
+      hash === undefined ? '' : `[${hash}](https://github.com/${repository}/commit/${hash}) `
     const label = kind === undefined ? '' : `\`${kind.label}\` `
-    const markdown = [`- ${label}${firstLine.slice(2)}`, ...lines.slice(1)].join('\n').trimEnd()
+    const markdown = [`- ${commit}${label}${firstLine.slice(2)}`, ...lines.slice(1)]
+      .join('\n')
+      .trimEnd()
     changes.push({ level, markdown, kind, order: changes.length })
     lines = []
   }
@@ -103,20 +118,22 @@ const renderSummary = (changes) => {
 }
 
 export const releaseAnnouncementPayloads = ({
+  app,
   version,
   tag,
   notes,
   repository,
   commitSubject = () => undefined,
 }) => {
-  if (!VERSION.test(version)) throw new Error(`invalid userscript version: ${version}`)
-  if (tag !== `userscript-v${version}`) throw new Error(`release tag does not match ${version}`)
+  const release = RELEASES[app]
+  if (release === undefined) throw new Error(`unsupported release app: ${app}`)
+  if (!VERSION.test(version)) throw new Error(`invalid ${app} version: ${version}`)
+  if (tag !== `${app}-v${version}`) throw new Error(`release tag does not match ${version}`)
   if (!REPOSITORY.test(repository)) throw new Error(`invalid GitHub repository: ${repository}`)
   if (notes.trim().length === 0) throw new Error('release notes are empty')
 
   const releaseUrl = `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`
-  const installerUrl = `https://github.com/${repository}/releases/latest/download/caelestis.user.js`
-  const changes = parseChanges(notes, commitSubject)
+  const changes = parseChanges(notes, repository, commitSubject)
   if (changes.length === 0) throw new Error('release notes contain no changes')
 
   return [
@@ -125,7 +142,7 @@ export const releaseAnnouncementPayloads = ({
       allowed_mentions: { parse: [] },
       embeds: [
         {
-          title: `Caelestis userscript v${version}`,
+          title: `Caelestis ${app} v${version}`,
           url: releaseUrl,
           description: renderSummary(changes),
           color: 0x6366f1,
@@ -135,7 +152,7 @@ export const releaseAnnouncementPayloads = ({
         {
           type: 1,
           components: [
-            { type: 2, style: 5, label: 'Install or update', url: installerUrl },
+            { type: 2, style: 5, ...release.link(repository) },
             { type: 2, style: 5, label: 'Read all changes', url: releaseUrl },
           ],
         },
@@ -240,17 +257,19 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
   }
 
   const version = argument('--version')
+  const app = argument('--app')
   const tag = argument('--tag')
   const notesFile = argument('--notes-file')
   // biome-ignore lint/suspicious/noUndeclaredEnvVars: This script runs directly in GitHub Actions, outside Turbo.
   const repository = argument('--repository') ?? process.env.GITHUB_REPOSITORY
   if (
+    app === undefined ||
     version === undefined ||
     tag === undefined ||
     notesFile === undefined ||
     repository === undefined
   ) {
-    throw new Error('--version, --tag, --notes-file, and --repository are required')
+    throw new Error('--app, --version, --tag, --notes-file, and --repository are required')
   }
 
   // biome-ignore lint/suspicious/noUndeclaredEnvVars: This script runs directly in GitHub Actions, outside Turbo.
@@ -258,6 +277,7 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
   if (webhookUrl === undefined) throw new Error('DISCORD_RELEASE_WEBHOOK_URL is not configured')
   const notes = readFileSync(resolve(notesFile), 'utf8')
   const payloads = releaseAnnouncementPayloads({
+    app,
     version,
     tag,
     notes,
