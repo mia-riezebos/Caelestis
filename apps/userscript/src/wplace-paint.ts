@@ -37,47 +37,49 @@ export const selectPaintColour = (index: number): boolean => {
   return true
 }
 
-/**
- * Wplace's paint drawer close button has no label or title. Locate it from the native palette's
- * stable structure instead: palette swatch -> wrapper -> grid -> palette section -> drawer, then
- * the header containing its titled Undo control and the last direct button in that header. Keeping
- * this traversal here avoids teaching the shortcut controller about Wplace's DOM.
- */
-const paintDrawerOf = (swatch: Element): HTMLElement | null => {
-  const drawer = swatch.parentElement?.parentElement?.parentElement?.parentElement
-  return drawer instanceof HTMLElement ? drawer : null
+const paintControl = (
+  root: ParentNode,
+  label: 'Undo' | 'Redo' | 'Close',
+): HTMLButtonElement | null =>
+  root.querySelector(`button[aria-label="${label}"], button[title="${label}"]`)
+
+/** Find the smallest palette ancestor containing native history controls, within the active root. */
+const paintDrawerOf = (swatch: Element, root: ParentNode): HTMLElement | null => {
+  for (let drawer = swatch.parentElement; drawer !== null; drawer = drawer.parentElement) {
+    if (drawer === document.body || drawer === document.documentElement) return null
+    if (paintControl(drawer, 'Undo') !== null && paintControl(drawer, 'Redo') !== null)
+      return drawer
+    if (drawer === root) return null
+  }
+  return null
 }
 
-const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
-  const drawer = paintDrawerOf(swatch)
-  if (drawer === null) return null
+/** Prefer native Close labels; retain the unlabeled header control used by older Wplace drawers. */
+const paintDrawerCloseButton = (drawer: HTMLElement): HTMLButtonElement | null => {
+  const close = paintControl(drawer, 'Close')
+  if (close !== null) return close
   const header = Array.from(drawer.children).find(
     (child) => child.querySelector('button[title="Undo"]') !== null,
   )
   if (header === undefined) return null
   const directButtons = Array.from(header.children).filter(
-    (child): child is HTMLButtonElement => child instanceof HTMLButtonElement,
+    (child): child is HTMLButtonElement =>
+      child instanceof HTMLButtonElement &&
+      !child.hasAttribute('title') &&
+      !child.hasAttribute('aria-label') &&
+      child.textContent?.trim() === '',
   )
-  return directButtons.at(-1) ?? null
+  return directButtons.length === 1 ? (directButtons[0] ?? null) : null
 }
 
-/** Wplace's authoritative submit control inside the mounted paint drawer. */
-const paintDrawerCommitButton = (swatch: Element): HTMLButtonElement | null => {
-  const drawer = paintDrawerOf(swatch)
-  if (drawer === null) return null
-  for (const button of drawer.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {
-    const dock = button.parentElement
-    if (
-      dock?.classList.contains('absolute') === true &&
-      dock.classList.contains('bottom-0') &&
-      dock.classList.contains('left-1/2') &&
-      dock.classList.contains('-translate-x-1/2') &&
-      button.textContent?.trim().toLowerCase().startsWith('paint') === true
-    ) {
-      return button
-    }
-  }
-  return null
+/** Match only the drawer's Paint action, including its optional countdown, without layout classes. */
+const paintDrawerCommitButton = (drawer: HTMLElement): HTMLButtonElement | null => {
+  const candidates = [...drawer.querySelectorAll<HTMLButtonElement>('button')].filter((button) => {
+    const label =
+      button.getAttribute('aria-label') ?? button.getAttribute('title') ?? button.textContent
+    return /^paint(?:\s*\([^)]*\))?$/i.test(label?.trim() ?? '')
+  })
+  return candidates.length === 1 ? (candidates[0] ?? null) : null
 }
 
 /**
@@ -89,12 +91,9 @@ const paintDrawerCommitButton = (swatch: Element): HTMLButtonElement | null => {
  * like a hand-painted pixel.
  */
 const movePaintHistory = (title: 'Undo' | 'Redo', root: ParentNode): boolean => {
-  const swatch = root.querySelector('[id^="color-"]')
-  const drawer = swatch === null ? null : paintDrawerOf(swatch)
-  const button =
-    drawer?.querySelector(`button[title="${title}"]`) ??
-    alliancePaintPanel(root)?.querySelector(`button[aria-label="${title}"]`)
-  if (!(button instanceof HTMLButtonElement) || button.disabled) return false
+  const drawer = nativePaintPanel(root)
+  const button = drawer === null ? null : paintControl(drawer, title)
+  if (button === null || button.disabled) return false
   button.click()
   return true
 }
@@ -135,22 +134,14 @@ const paintDockButton = (root: ParentNode): HTMLButtonElement | null => {
 }
 
 /**
- * Open Wplace's paint mode, or submit its current draft when it is already open. Prefer an exact
- * accessible label for opening, then the current structurally unique bottom-centre primary control.
- * The latter is needed because Wplace's live Paint button has dynamic timer text but no aria-label
- * or title. Neither path searches arbitrary page text, so a template action or dialog button cannot
- * be mistaken for paint mode.
+ * Open Wplace's paint mode, or submit through the palette's own panel when it is already open.
+ * Opening prefers an exact accessible label, then the native dock control. A mounted palette whose
+ * controls cannot be identified must not fall through to an unrelated action elsewhere on the page.
  */
 export const performPaintAction = (root: ParentNode = document): boolean => {
-  const swatch = root.querySelector('[id^="color-"]')
-  if (swatch !== null) {
-    const commit = paintDrawerCommitButton(swatch)
-    if (commit === null || commit.disabled) return false
-    commit.click()
-    return true
-  }
-  if (alliancePaletteSwatches(root).length > 0) {
-    const commit = paintDockButton(alliancePaintPanel(root) ?? root)
+  if (paintPaletteSwatches(root).length > 0) {
+    const drawer = nativePaintPanel(root)
+    const commit = drawer === null ? null : paintDrawerCommitButton(drawer)
     if (commit === null || commit.disabled) return false
     commit.click()
     return true
@@ -174,12 +165,8 @@ export const performPaintAction = (root: ParentNode = document): boolean => {
 
 /** Discard the current native Wplace draft, leaving unrelated Escape handling alone when closed. */
 export const cancelPaintDraft = (root: ParentNode = document): boolean => {
-  const swatch = root.querySelector('[id^="color-"]')
-  const close =
-    swatch === null
-      ? (alliancePaintPanel(root)?.querySelector<HTMLButtonElement>('button[aria-label="Close"]') ??
-        null)
-      : paintDrawerCloseButton(swatch)
+  const drawer = nativePaintPanel(root)
+  const close = drawer === null ? null : paintDrawerCloseButton(drawer)
   if (close === null || close.disabled) return false
   close.click()
   return true
@@ -232,9 +219,9 @@ export const paintPaletteSwatches = (root: ParentNode = activePaintRoot()): HTML
   ...alliancePaletteSwatches(root),
 ]
 
-const alliancePaintPanel = (root: ParentNode): HTMLElement | null => {
-  const swatch = alliancePaletteSwatches(root)[0]
-  return swatch?.parentElement?.parentElement?.parentElement ?? null
+const nativePaintPanel = (root: ParentNode): HTMLElement | null => {
+  const swatch = paintPaletteSwatches(root)[0]
+  return swatch === undefined ? null : paintDrawerOf(swatch, root)
 }
 
 const read = (): void => {

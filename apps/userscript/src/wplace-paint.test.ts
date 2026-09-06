@@ -249,6 +249,75 @@ describe('Wplace paint controls', () => {
     expect(cancelClick).toHaveBeenCalledOnce()
   })
 
+  it.each([1, 3])(
+    'finds native controls after %i extra palette and toolbar wrappers',
+    async (depth) => {
+      const { cancel, commit, drawer, redo, undo } = paintDrawer()
+      // Wplace's September drawer adds palette wrappers, labels Close, and moves Paint into flow.
+      const palette = drawer.children[1]
+      const header = drawer.firstElementChild
+      if (palette === undefined || header === null) throw new Error('Missing drawer fixture')
+      for (const element of [palette, header, undo, redo, cancel]) {
+        for (let i = 0; i < depth; i++) {
+          const wrapper = document.createElement('div')
+          element.replaceWith(wrapper)
+          wrapper.append(element)
+        }
+      }
+      cancel.setAttribute('aria-label', 'Close')
+      undo.removeAttribute('title')
+      undo.setAttribute('aria-label', 'Undo')
+      redo.removeAttribute('title')
+      redo.setAttribute('aria-label', 'Redo')
+      commit.className = ''
+      commit.parentElement?.removeAttribute('class')
+      const collapse = document.createElement('button')
+      collapse.setAttribute('aria-label', 'Collapse paint panel')
+      header.append(collapse)
+      const unrelated = document.createElement('button')
+      unrelated.textContent = 'Paint template settings'
+      drawer.append(unrelated)
+      document.body.append(drawer)
+      const clicked = [cancel, commit, redo, undo].map((button) => {
+        const listener = vi.fn()
+        button.addEventListener('click', listener)
+        return listener
+      })
+      const { cancelPaintDraft, performPaintAction, redoPaintDraft, undoPaintDraft } = await import(
+        './wplace-paint.js'
+      )
+
+      expect(performPaintAction()).toBe(true)
+      expect(cancelPaintDraft()).toBe(true)
+      expect(undoPaintDraft()).toBe(true)
+      expect(redoPaintDraft()).toBe(true)
+      for (const listener of clicked) expect(listener).toHaveBeenCalledOnce()
+
+      cancel.disabled = true
+      commit.disabled = true
+      expect(performPaintAction()).toBe(false)
+      expect(cancelPaintDraft()).toBe(false)
+      for (const listener of clicked) expect(listener).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('does not use unrelated page controls when only a palette remains', async () => {
+    const { drawer } = paintDrawer()
+    const palette = drawer.children[1]
+    if (palette === undefined) throw new Error('Missing palette fixture')
+    drawer.replaceChildren(palette)
+    const unrelated = paintDrawer()
+    unrelated.drawer.querySelector('[id^="color-"]')?.remove()
+    document.body.append(drawer, unrelated.drawer)
+    const { cancelPaintDraft, performPaintAction, undoPaintDraft } = await import(
+      './wplace-paint.js'
+    )
+
+    expect(performPaintAction()).toBe(false)
+    expect(cancelPaintDraft()).toBe(false)
+    expect(undoPaintDraft()).toBe(false)
+  })
+
   it('publishes drawer closure after native cancellation removes the palette', async () => {
     const { cancel, drawer } = paintDrawer()
     document.body.appendChild(drawer)
