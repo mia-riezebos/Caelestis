@@ -1,5 +1,11 @@
 # @caelestis/frontend
 
+## 0.2.0
+
+### Minor Changes
+
+- 30394fa: Improve the progress chart's range controls, accessibility, motion, and live updates.
+
 ## 0.1.0
 
 ### Minor Changes
