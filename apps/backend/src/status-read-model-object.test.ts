@@ -1,12 +1,17 @@
 import {
+  encodeIndexedPng,
   encodeLiveTileUpload,
   type Manifest,
   millis,
   seconds,
   sha256Hex,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+  uuidV7,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import { createSeasonManifestReadModel } from './manifest/read-model.js'
 import { LIVE_D1_USAGE_HEADER } from './status-read-model/live-measurement.js'
@@ -335,6 +340,102 @@ describe('status read-model Durable Object', () => {
       type: 'paint-result',
       result: 'duplicate',
     })
+  })
+
+  it('schedules alarm follow-ups and broadcasts alarms after a v2 tile upload', async () => {
+    database = new SqliteD1Database()
+    const sql = new D1SqlStore(database as unknown as D1Database)
+    const blobs = new Map<string, Uint8Array>()
+    const chunk = await encodeIndexedPng(2, 1, new Uint8Array([0, 0]))
+    const hash = await sha256Hex(chunk)
+    blobs.set(`chunks/${hash}`, chunk)
+    const templateId = uuidV7()
+    const at = Math.floor(Date.now() / 1_000) - 10
+    await sql.insertTemplateVersion({
+      templateId,
+      versionId: uuidV7(),
+      surface: WORLD_TEMPLATE_SURFACE,
+      season: 0,
+      nodeId: null,
+      name: 'Alarm follow-up',
+      createdWithToken: 'a'.repeat(64),
+      createdByUserId: null,
+      createdAt: millis(at * 1_000),
+      bbox: { minX: 0, minY: 0, maxX: 2, maxY: 1 },
+      totalPixels: 2,
+      chunks: [{ tileX: 0, tileY: 0, hash }],
+    })
+    await sql.setTemplatePublishedAt(templateId, millis(at * 1_000), millis(at * 1_000))
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 0,
+        scope: 'public',
+        credentialScope: 'report',
+        tokenHash: 'a'.repeat(64),
+        protocol: 2,
+        revocable: false,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const schedule = vi.fn(async () => undefined)
+    const object = new StatusReadModelObject(objectState(new Map(), Infinity, [socket]), {
+      DB: database,
+      BLOBS: {
+        get: async (key: string) => {
+          const bytes = blobs.get(key)
+          return bytes === undefined ? null : { arrayBuffer: async () => bytes.slice().buffer }
+        },
+        put: async (key: string, bytes: Uint8Array) => {
+          blobs.set(key, bytes.slice())
+        },
+      },
+      TELEMETRY: { getByName: () => ({}) },
+      ALARM_WATCHER: { getByName: () => ({ schedule }) },
+    } as unknown as Env)
+    const upload = async (colour: number, ts: number) => {
+      const pixels = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+      pixels[0] = colour
+      const payload = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, pixels)
+      const requestId = uuidV7()
+      const frame = encodeLiveTileUpload(
+        {
+          type: 'tile-upload',
+          requestId,
+          deliveryId: uuidV7(),
+          wplaceUserId: 42,
+          displayName: 'Painter',
+          season: 0,
+          tile: '0/0',
+          sha256: await sha256Hex(payload),
+          ts: seconds(ts),
+        },
+        payload,
+      )
+      await object.webSocketMessage(socket, frame.slice().buffer)
+      expect(send.mock.calls.map(([message]) => JSON.parse(String(message)))).toContainEqual(
+        expect.objectContaining({ type: 'tile-upload-result', requestId, accepted: true }),
+      )
+    }
+    await upload(0, at)
+    expect(await sql.readActiveAlarms(0, false)).toEqual([])
+    schedule.mockClear()
+    send.mockClear()
+
+    await upload(1, at + 1)
+
+    expect(await sql.readActiveAlarms(0, false)).toEqual([
+      expect.objectContaining({ templateId, kind: 'regression', pixelsLost: 1 }),
+    ])
+    expect(await sql.nextAlarmProbeAt()).toBe((at + 1) * 1_000 + 10 * 60 * 1_000)
+    expect(schedule).toHaveBeenCalledOnce()
+    expect(send.mock.calls.map(([message]) => JSON.parse(String(message)))).toContainEqual(
+      expect.objectContaining({
+        type: 'alarms-snapshot',
+        alarms: expect.objectContaining({ alarms: [expect.objectContaining({ templateId })] }),
+      }),
+    )
   })
 
   it('scope-checks binary tile uploads before reading their bytes', async () => {

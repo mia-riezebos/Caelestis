@@ -508,6 +508,10 @@ export class StatusReadModelObject extends DurableObject<Env> {
       finishTileGenerationCommit: (season, tile, commit) =>
         this.finishTileGenerationCommit(season, tile, commit),
       notifyDashboardChange: (season) => this.notifyDashboardChange(season),
+      notifyAlarmChange: async (season) => {
+        await this.notifyAlarmChange(season)
+        await this.bindings.ALARM_WATCHER.getByName('global').schedule()
+      },
     }
     this.runtime = createBackendRuntime(
       makeBackendContext(
