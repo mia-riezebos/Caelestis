@@ -134,8 +134,8 @@
     const rows = model.entries.filter((entry): entry is TreeRowModel => entry.type === 'row')
     const index = rows.findIndex((entry) => entry.key === row.key)
     if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
-      if (model.sort.field !== 'custom') return
-      const siblings = rows.filter((entry) => entry.parentKey === row.parentKey)
+      if (!row.draggable) return
+      const siblings = rows.filter((entry) => entry.parentKey === row.parentKey && entry.draggable)
       const siblingIndex = siblings.findIndex((entry) => entry.key === row.key)
       const target =
         event.key === 'ArrowUp' ? siblings[siblingIndex - 1] : siblings[siblingIndex + 1]

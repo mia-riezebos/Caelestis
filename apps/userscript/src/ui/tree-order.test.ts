@@ -14,9 +14,8 @@ const row = (key: string, value: number): OrderedTreeItem => ({
   totalPixels: value,
   mismatched: value,
   progress: { total: 100, completed: value, mismatched: value, known: 100, unpainted: 0 },
-  progressSortable: true,
 })
-const items = [row('B', 20), { key: 'folder', name: 'Folder' }, row('A', 10), row('C', 30)]
+const items = [row('B', 20), row('folder', 15), row('A', 10), row('C', 30)]
 const rank = new Map(items.map((item, index) => [item.key, index]))
 const keys = (values: readonly OrderedTreeItem[]) => values.map((item) => item.key)
 
@@ -26,11 +25,11 @@ beforeEach(() => {
 
 describe('template sort projections', () => {
   it.each(['recent', 'progress', 'size', 'mismatched'] as const)(
-    'sorts %s in both directions with fixed folder slots',
+    'sorts %s in both directions including folder aggregates',
     (field) => {
       state.sort = defaultTemplateSort(field)
       expect(state.sort.direction).toBe('desc')
-      expect(keys(orderedTreeItems(items, rank))).toEqual(['C', 'folder', 'B', 'A'])
+      expect(keys(orderedTreeItems(items, rank))).toEqual(['C', 'B', 'folder', 'A'])
       state.sort = { field, direction: 'asc' }
       expect(keys(orderedTreeItems(items, rank))).toEqual(['A', 'folder', 'B', 'C'])
       expect(keys(orderedTreeItems(items, rank, 2))).toEqual(['A', 'folder'])
@@ -65,7 +64,7 @@ describe('template sort projections', () => {
   it.each(['recent', 'progress', 'size', 'mismatched'] as const)(
     'keeps unknown %s values last without duplicating leaves',
     (field) => {
-      const unknown = { key: 'unknown', name: 'Unknown', progressSortable: true as const }
+      const unknown = { key: 'unknown', name: 'Unknown' }
       for (const direction of ['asc', 'desc'] as const) {
         state.sort = { field, direction }
         expect(keys(orderedTreeItems([unknown, row('known', 0)], new Map()))).toEqual([

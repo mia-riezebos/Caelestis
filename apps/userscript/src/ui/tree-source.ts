@@ -31,7 +31,6 @@ export interface TreeItem {
   readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined
   /** Show the row, but keep an unpublished template out of every ancestor rollup. */
   readonly excludeFromRollup?: true
-  readonly progressSortable?: true
   readonly muted?: boolean | undefined
   readonly visible: boolean
   readonly setVisible: (on: boolean) => boolean | Promise<boolean>
@@ -78,6 +77,26 @@ export const groupedTreeSource = (
     byParent.set(parentId, siblings)
   }
   const totals = new Map<string | null, TemplateProgress | undefined>()
+  const latestUpdates = new Map<string | null, number | undefined>()
+  const updateVisiting = new Set<string | null>()
+  // A folder's recency follows its newest descendant or its own creation time.
+  const latestUpdate = (parentId: string | null): number | undefined => {
+    if (latestUpdates.has(parentId)) return latestUpdates.get(parentId)
+    if (updateVisiting.has(parentId)) return undefined
+    updateVisiting.add(parentId)
+    let latest: number | undefined
+    for (const item of byParent.get(parentId) ?? []) {
+      if (item.excludeFromRollup === true) continue
+      const own = item.updatedAt ?? item.createdAt
+      const child = item.childrenOf === null ? undefined : latestUpdate(item.childrenOf)
+      for (const time of [own, child]) {
+        if (time !== undefined && (latest === undefined || time > latest)) latest = time
+      }
+    }
+    updateVisiting.delete(parentId)
+    latestUpdates.set(parentId, latest)
+    return latest
+  }
   const colourTotals = new Map<string | null, readonly TemplateColourProgress[] | undefined>()
   const colourAvailability = new Map<string | null, boolean>()
   const visiting = new Set<string | null>()
@@ -168,11 +187,22 @@ export const groupedTreeSource = (
         if (item.childrenOf === null) return item
         const total = progress(item.childrenOf)
         const hasColours = hasColourProgress(item.childrenOf)
+        const descendantUpdate = latestUpdate(item.childrenOf)
+        const ownUpdate = item.updatedAt ?? item.createdAt
         return {
           ...item,
+          updatedAt:
+            descendantUpdate === undefined
+              ? ownUpdate
+              : Math.max(descendantUpdate, ownUpdate ?? descendantUpdate),
           ...(total === undefined
             ? {}
-            : { progress: total, progressReader: () => progress(item.childrenOf) ?? total }),
+            : {
+                progress: total,
+                totalPixels: total.total,
+                mismatched: total.mismatched,
+                progressReader: () => progress(item.childrenOf) ?? total,
+              }),
           ...(hasColours ? { colourProgress: () => colourProgress(item.childrenOf) ?? [] } : {}),
         }
       }),

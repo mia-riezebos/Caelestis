@@ -64,7 +64,7 @@ import {
   sumColourProgress,
   sumProgress,
 } from './progress.js'
-import { isReorderable } from './sort.js'
+import { DEFAULT_SORT, isReorderable } from './sort.js'
 import { toast } from './toast.js'
 import {
   MAX_RENDERED_ROWS,
@@ -507,7 +507,15 @@ const buildTree = <Result>(
     })),
   ]
   const keys = categories.map((item) => item.key)
-  const ordered = orderedItems(categories, rank).map((item) => item.key)
+  const ordered = [
+    'local',
+    ...orderedItems(
+      categories.filter((item) => item.key !== 'local'),
+      rank,
+      undefined,
+      DEFAULT_SORT,
+    ).map((item) => item.key),
+  ]
   const needle = query.trim().toLocaleLowerCase()
   const budget: RenderBudget = {
     remaining: MAX_RENDERED_ROWS,
@@ -594,8 +602,8 @@ const buildTree = <Result>(
       depth: 0,
       container: true,
       forceExpanded: needle !== '',
-      siblings: ordered,
-      orderingSiblings: () => ordered,
+      siblings: isLocal ? [] : ordered.filter((key) => key !== 'local'),
+      orderingSiblings: () => ordered.filter((key) => key !== 'local'),
       destinationSiblings: (destinationParentKey) =>
         destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
       parentKey: null,
@@ -812,7 +820,6 @@ const buildTree = <Result>(
                     colourProgress: () =>
                       serverTemplateColourProgress(server, template) ?? colourProgress,
                   }),
-              progressSortable: true,
               leadingActions: [
                 {
                   icon: 'search' as const,
@@ -943,7 +950,6 @@ const buildTree = <Result>(
             progress: drawnProgress(template),
             progressReader: () => drawnProgress(template),
             colourProgress: () => drawnColourProgress(template),
-            progressSortable: true,
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),
             canReparent: true,
@@ -1045,6 +1051,9 @@ export interface TemplateTreeAdapter {
 const treeIcon = (name: TreeRowOptions['kind']): TreeRowModel['icon'] =>
   name === 'folder' || name === 'server' ? name : 'image'
 
+const canReorderRow = (row: TreeRowOptions): boolean =>
+  row.key !== 'local' && (row.kind === 'server' || isReorderable(getState().sort))
+
 const actionIcon = (name: string): TreeActionModel['icon'] => {
   switch (name) {
     case 'search':
@@ -1122,7 +1131,7 @@ export const templateTreeAdapter = (
           : { actions: actionModels(options.key, 'row', options.actions) }),
         ...(options.onRename === undefined ? {} : { renamable: true }),
         ...(options.onContextMenu === undefined ? {} : { contextMenu: true }),
-        ...(isReorderable(getState().sort) ? { draggable: true } : {}),
+        ...(canReorderRow(options) ? { draggable: true } : {}),
         ...(options.canReparent === true ? { canReparent: true } : {}),
       })
     },
@@ -1215,10 +1224,11 @@ export const templateTreeAdapter = (
     target: TreeRowOptions,
     position: 'before' | 'inside' | 'after',
   ): void => {
-    if (!isReorderable(getState().sort)) return
+    if (!canReorderRow(dragged)) return
     const destination = destinationFor(target, position)
     if (destination === null || dragged.key === destination.beforeKey) return
     const sourceParent = dragged.parentKey ?? null
+    if (sourceParent === null && destination.parentKey !== null) return
     const reparenting = sourceParent !== destination.parentKey
     if (reparenting && (dragged.canReparent !== true || target.canReparent !== true)) return
     const place = target.onDropAt
