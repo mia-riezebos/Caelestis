@@ -50,10 +50,26 @@ describe('app release workflow', () => {
   it('isolates userscript and frontend announcement retries', () => {
     assert.match(workflow, /userscript:\n[\s\S]*?name: Release userscript/)
     assert.match(workflow, /deployed-apps:\n[\s\S]*?name: Release deployed frontend and backend/)
-    assert.match(workflow, /has_changesets: \$\{\{ steps\.changesets\.outputs\.has-changesets \}\}/)
     assert.equal(workflow.match(/--json targetCommitish/g)?.length, 2)
     assert.equal(workflow.match(/outputs\.matches_sha == 'true'/g)?.length, 3)
     assert.doesNotMatch(workflow, /^\s+github\.run_attempt > 1 \|\|$/m)
+  })
+
+  it("does not let one app's pending changesets block another app release", () => {
+    for (const app of ['userscript', 'frontend', 'backend']) {
+      assert.match(
+        workflow,
+        new RegExp(`has_${app}_changesets: \\$\\{\\{ steps\\.pending\\.outputs\\.${app} \\}\\}`),
+      )
+    }
+    assert.match(
+      workflow,
+      /userscript:\n[\s\S]*?needs\.version\.outputs\.has_userscript_changesets == 'false'/,
+    )
+    assert.match(
+      workflow,
+      /deployed-apps:\n[\s\S]*?needs\.version\.outputs\.has_frontend_changesets == 'false'[\s\S]*?needs\.version\.outputs\.has_backend_changesets == 'false'/,
+    )
   })
 
   it('keeps production build identity tied to the deployment commit', () => {

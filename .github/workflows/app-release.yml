@@ -39,7 +39,9 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      has_changesets: ${{ steps.changesets.outputs.has-changesets }}
+      has_userscript_changesets: ${{ steps.pending.outputs.userscript }}
+      has_frontend_changesets: ${{ steps.pending.outputs.frontend }}
+      has_backend_changesets: ${{ steps.pending.outputs.backend }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -61,6 +63,19 @@ jobs:
       - name: Check release tooling
         run: pnpm test:release
 
+      - name: Find pending app changesets
+        id: pending
+        run: |
+          status="$RUNNER_TEMP/changeset-status.json"
+          pnpm changeset status --output="$status"
+          for app in userscript frontend backend; do
+            if jq -e --arg name "@caelestis/$app" '.releases | any(.name == $name)' "$status" >/dev/null; then
+              echo "$app=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$app=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
       - name: Open or update the app release pull request
         id: changesets
         uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2
@@ -76,7 +91,7 @@ jobs:
     name: Release userscript
     needs: version
     if: >-
-      needs.version.outputs.has_changesets == 'false' ||
+      needs.version.outputs.has_userscript_changesets == 'false' ||
       inputs.retry_userscript_announcement
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -193,7 +208,8 @@ jobs:
     name: Release deployed frontend and backend
     needs: version
     if: >-
-      needs.version.outputs.has_changesets == 'false' ||
+      needs.version.outputs.has_frontend_changesets == 'false' ||
+      needs.version.outputs.has_backend_changesets == 'false' ||
       inputs.retry_frontend_announcement
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -235,6 +251,9 @@ jobs:
 
       - name: Prepare frontend release
         id: frontend
+        if: >-
+          needs.version.outputs.has_frontend_changesets == 'false' ||
+          inputs.retry_frontend_announcement
         run: >-
           node .github/scripts/prepare-app-release.mjs
           --app frontend
@@ -243,6 +262,7 @@ jobs:
 
       - name: Prepare backend release
         id: backend
+        if: needs.version.outputs.has_backend_changesets == 'false'
         run: >-
           node .github/scripts/prepare-app-release.mjs
           --app backend
@@ -251,6 +271,9 @@ jobs:
 
       - name: Check whether this frontend version already exists
         id: frontend-existing
+        if: >-
+          needs.version.outputs.has_frontend_changesets == 'false' ||
+          inputs.retry_frontend_announcement
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.frontend.outputs.tag }}
@@ -270,6 +293,7 @@ jobs:
 
       - name: Check whether this backend version already exists
         id: backend-existing
+        if: needs.version.outputs.has_backend_changesets == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.backend.outputs.tag }}
@@ -281,7 +305,10 @@ jobs:
           fi
 
       - name: Create frontend GitHub release
-        if: steps.frontend-existing.outputs.exists == 'false'
+        if: >-
+          (needs.version.outputs.has_frontend_changesets == 'false' ||
+          inputs.retry_frontend_announcement) &&
+          steps.frontend-existing.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.frontend.outputs.tag }}
@@ -295,7 +322,9 @@ jobs:
             --latest=false
 
       - name: Create backend GitHub release
-        if: steps.backend-existing.outputs.exists == 'false'
+        if: >-
+          needs.version.outputs.has_backend_changesets == 'false' &&
+          steps.backend-existing.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.backend.outputs.tag }}
@@ -310,10 +339,12 @@ jobs:
 
       - name: Announce frontend release in Discord
         if: >-
-          steps.frontend-existing.outputs.exists == 'false' ||
+          (needs.version.outputs.has_frontend_changesets == 'false' ||
+          inputs.retry_frontend_announcement) &&
+          (steps.frontend-existing.outputs.exists == 'false' ||
           (steps.frontend-existing.outputs.matches_sha == 'true' &&
           github.run_attempt > 1) ||
-          inputs.retry_frontend_announcement
+          inputs.retry_frontend_announcement)
         env:
           DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_FRONTEND_RELEASE_WEBHOOK_URL }}
           NOTES: ${{ steps.frontend.outputs.notesPath }}
