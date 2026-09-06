@@ -60,6 +60,87 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
+  it('allows keyboard server reordering during automatic sorting and skips fixed Local', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          sort: { field: 'progress', direction: 'asc' },
+          entries: ['local', 'server:a', 'server:b'].map((key, index) => ({
+            type: 'row',
+            key,
+            name: key,
+            icon: 'server',
+            depth: 0,
+            parentKey: null,
+            container: true,
+            expanded: false,
+            visible: true,
+            draggable: key !== 'local',
+            setSize: 3,
+            positionInSet: index + 1,
+          })),
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    const press = (key: string) =>
+      document
+        .querySelector(`[data-caelestis-tree-key="${key}"]`)
+        ?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }),
+        )
+    press('server:a')
+    expect(onIntent).not.toHaveBeenCalled()
+    press('server:b')
+    expect(onIntent).toHaveBeenCalledWith({
+      type: 'drop',
+      draggedKey: 'server:b',
+      targetKey: 'server:a',
+      position: 'before',
+    })
+    void unmount(component)
+  })
+  it('ignores keyboard reorder for rows the adapter marks as fixed', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          sort: { field: 'recent', direction: 'desc' },
+          entries: [
+            ...model.entries.map((entry) => ({ ...entry, draggable: false })),
+            {
+              type: 'row',
+              key: 'other',
+              name: 'Other',
+              icon: 'folder',
+              depth: 0,
+              parentKey: null,
+              container: true,
+              expanded: false,
+              visible: true,
+              setSize: 2,
+              positionInSet: 2,
+            },
+          ],
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    document
+      .querySelector('[data-caelestis-tree-key="local"]')
+      ?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }),
+      )
+    expect(onIntent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'drop' }))
+    void unmount(component)
+  })
   it.each([
     ['regression', 'regression-alarm', 'Contains templates with regression'],
     ['sustained-griefing', 'grief-alarm', 'Contains griefed templates'],

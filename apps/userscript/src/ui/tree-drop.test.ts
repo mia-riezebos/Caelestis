@@ -91,6 +91,110 @@ const connectedServer = () => ({
   season: 0,
 })
 
+describe('server ordering', () => {
+  it.each([false, true])(
+    'keeps folders last when mismatch availability is incomplete (mixed=%s)',
+    (mixed) => {
+      const server = connectedServer()
+      const measuredId = '019fed50-87a1-7523-a88c-bdeafad49686'
+      telemetryHarness.progress.set(measuredId, {
+        completed: 90,
+        mismatched: 10,
+        unpainted: 0,
+        known: 100,
+        total: 100,
+      })
+      if (mixed)
+        telemetryHarness.progress.set(TEMPLATE_B_ID, {
+          completed: 99,
+          mismatched: 1,
+          unpainted: 0,
+          known: 100,
+          total: 100,
+        })
+      setState({
+        servers: [server],
+        collapsed: ['local'],
+        sort: { field: 'mismatched', direction: 'asc' },
+      })
+      acceptServerSnapshot(server, {
+        nodes: [serverNode(SOURCE_NODE_ID, 'A unknown')],
+        templates: [
+          serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'Unknown', 1),
+          serverTemplate(TEMPLATE_B_ID, SOURCE_NODE_ID, 'Maybe known', 2),
+          serverTemplate(measuredId, null, 'Z measured', 3),
+        ],
+      })
+      const callbacks: TreeCallbacks = {
+        onAddServer: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onImportTemplate: vi.fn(),
+        onContextMenu: vi.fn(),
+        onCopyToServer: vi.fn(),
+        onDropInLocal: vi.fn(),
+        onDropInServer: vi.fn(),
+      }
+      for (const direction of ['asc', 'desc'] as const) {
+        setState({ sort: { field: 'mismatched', direction } })
+        expect(
+          treeRows(callbacks)
+            .filter((row) => row.parentKey === `server:${SERVER_URL}`)
+            .map((row) => row.key),
+        ).toEqual([serverTemplateTreeKey(server, measuredId), nodeTreeKey(server, SOURCE_NODE_ID)])
+      }
+    },
+  )
+  it.each(['custom', 'name', 'recent', 'progress', 'size', 'mismatched'] as const)(
+    'pins Local and permits manual server ordering under %s sorting',
+    (field) => {
+      const first = connectedServer()
+      const second = {
+        ...first,
+        url: 'https://second.example.com',
+        info: { ...first.info, name: 'Alpha' },
+      }
+      const firstKey = `server:${first.url}`
+      const secondKey = `server:${second.url}`
+      const callbacks: TreeCallbacks = {
+        onAddServer: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onImportTemplate: vi.fn(),
+        onContextMenu: vi.fn(),
+        onCopyToServer: vi.fn(),
+        onDropInLocal: vi.fn(),
+        onDropInServer: vi.fn(),
+      }
+      setState({
+        servers: [first, second],
+        collapsed: ['local', firstKey, secondKey],
+        customOrder: [firstKey, 'local', secondKey],
+        sort: { field, direction: 'asc' },
+      })
+      const rootRows = () =>
+        templateTreeAdapter(callbacks, vi.fn()).model.entries.filter(
+          (entry) => entry.type === 'row' && entry.parentKey === null,
+        )
+      expect(rootRows().map((row) => row.key)).toEqual(['local', firstKey, secondKey])
+      expect(rootRows()).toEqual([
+        expect.not.objectContaining({ draggable: true }),
+        expect.objectContaining({ draggable: true }),
+        expect.objectContaining({ draggable: true }),
+      ])
+      const adapter = templateTreeAdapter(callbacks, vi.fn())
+      adapter.handle({
+        type: 'drop',
+        draggedKey: secondKey,
+        targetKey: firstKey,
+        position: 'before',
+      })
+      expect(rootRows().map((row) => row.key)).toEqual(['local', secondKey, firstKey])
+      adapter.handle({ type: 'drop', draggedKey: firstKey, targetKey: 'local', position: 'before' })
+      adapter.handle({ type: 'drop', draggedKey: 'local', targetKey: firstKey, position: 'after' })
+      expect(rootRows().map((row) => row.key)).toEqual(['local', secondKey, firstKey])
+    },
+  )
+})
+
 const serverNode = (id: string, name: string) => ({
   id,
   parentId: null,
@@ -317,41 +421,77 @@ describe('tree drag and drop', () => {
     ])
   })
 
-  it('sorts template progress without moving a folder slot', () => {
-    const server = connectedServer()
-    const folder = serverNode(SOURCE_NODE_ID, 'Folder')
-    const done = serverTemplateTreeKey(server, TEMPLATE_A_ID)
-    const todo = serverTemplateTreeKey(server, TEMPLATE_B_ID)
-    const folderKey = nodeTreeKey(server, SOURCE_NODE_ID)
-    telemetryHarness.progress.set(TEMPLATE_A_ID, {
-      completed: 90,
-      mismatched: 0,
-      unpainted: 10,
-      known: 100,
-      total: 100,
-    })
-    telemetryHarness.progress.set(TEMPLATE_B_ID, {
-      completed: 10,
-      mismatched: 0,
-      unpainted: 90,
-      known: 100,
-      total: 100,
-    })
-    setState({
-      servers: [server],
-      collapsed: ['local'],
-      customOrder: [done, folderKey, todo],
-      sort: { field: 'progress', direction: 'asc' },
-    })
-    acceptServerSnapshot(server, {
-      nodes: [folder],
-      templates: [
-        serverTemplate(TEMPLATE_A_ID, null, 'Done', 1),
-        serverTemplate(TEMPLATE_B_ID, null, 'Todo', 2),
-      ],
-    })
+  it.each(['progress', 'name', 'size', 'mismatched', 'recent'] as const)(
+    'sorts sibling folders and templates by %s',
+    (field) => {
+      const server = connectedServer()
+      const folder = serverNode(SOURCE_NODE_ID, 'Celeste')
+      const done = serverTemplateTreeKey(server, TEMPLATE_A_ID)
+      const todo = serverTemplateTreeKey(server, TEMPLATE_B_ID)
+      const folderKey = nodeTreeKey(server, SOURCE_NODE_ID)
+      telemetryHarness.progress.set(TEMPLATE_A_ID, {
+        completed: 90,
+        mismatched: 1,
+        unpainted: 9,
+        known: 100,
+        total: 100,
+      })
+      telemetryHarness.progress.set(TEMPLATE_B_ID, {
+        completed: 10,
+        mismatched: 5,
+        unpainted: 35,
+        known: 50,
+        total: 50,
+      })
+      setState({
+        servers: [server],
+        collapsed: ['local'],
+        customOrder: [done, folderKey, todo],
+        sort: { field, direction: 'asc' },
+      })
+      acceptServerSnapshot(server, {
+        nodes: [folder],
+        templates: [
+          serverTemplate(TEMPLATE_A_ID, null, 'Strawberry', 1),
+          { ...serverTemplate(TEMPLATE_B_ID, SOURCE_NODE_ID, 'Todo', 2), totalPixels: 50 },
+        ],
+      })
 
-    const keys = treeRows({
+      const callbacks: TreeCallbacks = {
+        onAddServer: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onImportTemplate: vi.fn(),
+        onContextMenu: vi.fn(),
+        onCopyToServer: vi.fn(),
+        onDropInLocal: vi.fn(),
+        onDropInServer: vi.fn(),
+      }
+      const keys = () =>
+        treeRows(callbacks)
+          .map((row) => row.key)
+          .filter((key): key is string => key === done || key === todo || key === folderKey)
+
+      const ascending =
+        field === 'recent' || field === 'mismatched'
+          ? [done, folderKey, todo]
+          : [folderKey, todo, done]
+      const descending =
+        field === 'recent' || field === 'mismatched'
+          ? [folderKey, todo, done]
+          : [done, folderKey, todo]
+      expect(keys()).toEqual(ascending)
+      setState({ sort: { field, direction: 'desc' } })
+      expect(keys()).toEqual(descending)
+      setState({ sort: { field: 'custom', direction: 'asc' } })
+      expect(keys()).toEqual([done, folderKey, todo])
+    },
+  )
+
+  it('counts finished descendants as complete when sorting nested folders and updates when reopened', () => {
+    const server = connectedServer()
+    const folderKey = nodeTreeKey(server, SOURCE_NODE_ID)
+    const activeKey = serverTemplateTreeKey(server, TEMPLATE_A_ID)
+    const callbacks: TreeCallbacks = {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
@@ -359,11 +499,51 @@ describe('tree drag and drop', () => {
       onCopyToServer: vi.fn(),
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
+    }
+    telemetryHarness.progress.set(TEMPLATE_A_ID, {
+      completed: 50,
+      mismatched: 50,
+      unpainted: 0,
+      known: 100,
+      total: 100,
     })
-      .map((row) => row.key)
-      .filter((key): key is string => key === done || key === todo || key === folderKey)
-
-    expect(keys).toEqual([todo, folderKey, done])
+    telemetryHarness.progress.set(TEMPLATE_B_ID, {
+      completed: 5,
+      mismatched: 95,
+      unpainted: 0,
+      known: 100,
+      total: 100,
+    })
+    setState({
+      servers: [server],
+      collapsed: ['local'],
+      sort: { field: 'progress', direction: 'asc' },
+    })
+    const snapshot = (finished: boolean) =>
+      acceptServerSnapshot(server, {
+        nodes: [
+          serverNode(SOURCE_NODE_ID, 'Folder'),
+          { ...serverNode(DESTINATION_NODE_ID, 'Nested'), parentId: SOURCE_NODE_ID },
+        ],
+        templates: [
+          serverTemplate(TEMPLATE_A_ID, null, 'Active', 1),
+          { ...serverTemplate(TEMPLATE_B_ID, DESTINATION_NODE_ID, 'Finished', 2), finished },
+        ],
+      })
+    const rootKeys = () =>
+      treeRows(callbacks)
+        .filter((row) => row.parentKey === `server:${SERVER_URL}`)
+        .map((row) => row.key)
+    snapshot(true)
+    expect(rootKeys()).toEqual([activeKey, folderKey])
+    expect(treeRows(callbacks).find((row) => row.key === folderKey)?.progress).toEqual(
+      expect.objectContaining({ completed: 5, mismatched: 95 }),
+    )
+    setState({ sort: { field: 'mismatched', direction: 'desc' } })
+    expect(rootKeys()).toEqual([folderKey, activeKey])
+    setState({ sort: { field: 'progress', direction: 'asc' } })
+    snapshot(false)
+    expect(rootKeys()).toEqual([folderKey, activeKey])
   })
 
   it('shows descendant progress on folder and server parent rows', () => {

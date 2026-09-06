@@ -98,6 +98,23 @@ afterEach(() => {
 })
 
 describe('local template lifecycle', () => {
+  it('persists update time on import and rename, then restores it', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000)
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    expect(added.updatedAt).toBe(1000)
+    vi.mocked(Date.now).mockReturnValue(2000)
+    await store.renameLocalTemplate(added.id, 'Renamed')
+    expect(store.localTemplates()[0]?.updatedAt).toBe(2000)
+    const saved = persistence.saveTemplate.mock.calls.at(-1)?.[0]
+    expect(saved).toMatchObject({ name: 'Renamed', updatedAt: 2000 })
+    vi.resetModules()
+    persistence.loadTemplates.mockResolvedValueOnce([saved])
+    const restored = await import('./local-store.js')
+    await restored.restoreLocalTemplates()
+    expect(restored.localTemplates()[0]?.updatedAt).toBe(2000)
+    vi.restoreAllMocks()
+  })
   it('persists alliance scope and rejects a folder from another surface', async () => {
     const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
     const { setState } = await import('../state.js')

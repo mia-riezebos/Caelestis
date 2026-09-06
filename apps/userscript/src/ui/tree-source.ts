@@ -14,6 +14,9 @@ export interface TreeItem {
   /** Its id as a container, so the renderer can ask for its children. Null for a leaf. */
   readonly childrenOf: string | null
   readonly createdAt?: number
+  readonly updatedAt?: number | undefined
+  readonly totalPixels?: number | undefined
+  readonly mismatched?: number | undefined
   readonly meta?: string | undefined
   readonly descendantAlarmKind?: TreeRowModel['descendantAlarmKind']
   readonly lifecycle?: {
@@ -24,11 +27,12 @@ export interface TreeItem {
     readonly pixelsLost?: number | undefined
   }
   readonly progress?: TemplateProgress
+  /** Completion used for sorting, including finished descendants. */
+  readonly sortCompletion?: number | undefined
   readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined
   /** Show the row, but keep an unpublished template out of every ancestor rollup. */
   readonly excludeFromRollup?: true
-  readonly progressSortable?: true
   readonly muted?: boolean | undefined
   readonly visible: boolean
   readonly setVisible: (on: boolean) => boolean | Promise<boolean>
@@ -75,6 +79,28 @@ export const groupedTreeSource = (
     byParent.set(parentId, siblings)
   }
   const totals = new Map<string | null, TemplateProgress | undefined>()
+  const completedForSort = new Map<string | null, number>()
+  const mismatchTotals = new Map<string | null, number | undefined>()
+  const latestUpdates = new Map<string | null, number | undefined>()
+  const updateVisiting = new Set<string | null>()
+  // A folder's recency follows its newest descendant or its own creation time.
+  const latestUpdate = (parentId: string | null): number | undefined => {
+    if (latestUpdates.has(parentId)) return latestUpdates.get(parentId)
+    if (updateVisiting.has(parentId)) return undefined
+    updateVisiting.add(parentId)
+    let latest: number | undefined
+    for (const item of byParent.get(parentId) ?? []) {
+      if (item.excludeFromRollup === true) continue
+      const own = item.updatedAt ?? item.createdAt
+      const child = item.childrenOf === null ? undefined : latestUpdate(item.childrenOf)
+      for (const time of [own, child]) {
+        if (time !== undefined && (latest === undefined || time > latest)) latest = time
+      }
+    }
+    updateVisiting.delete(parentId)
+    latestUpdates.set(parentId, latest)
+    return latest
+  }
   const colourTotals = new Map<string | null, readonly TemplateColourProgress[] | undefined>()
   const colourAvailability = new Map<string | null, boolean>()
   const visiting = new Set<string | null>()
@@ -85,6 +111,8 @@ export const groupedTreeSource = (
     if (current === revision) return
     revision = current
     totals.clear()
+    completedForSort.clear()
+    mismatchTotals.clear()
     colourTotals.clear()
   }
   const progress = (parentId: string | null): TemplateProgress | undefined => {
@@ -93,17 +121,34 @@ export const groupedTreeSource = (
     if (visiting.has(parentId)) return undefined
     visiting.add(parentId)
     const descendants: TemplateProgress[] = []
+    let completed = 0
+    let mismatched: number | undefined = 0
     for (const item of byParent.get(parentId) ?? []) {
       if (item.excludeFromRollup === true) continue
       const itemProgress =
         item.childrenOf === null
           ? (item.progressReader?.() ?? item.progress)
           : progress(item.childrenOf)
-      if (itemProgress !== undefined) descendants.push(itemProgress)
+      const itemMismatched =
+        item.childrenOf === null ? item.mismatched : mismatchTotals.get(item.childrenOf)
+      mismatched =
+        mismatched === undefined || itemMismatched === undefined
+          ? undefined
+          : mismatched + itemMismatched
+      if (itemProgress === undefined) continue
+      descendants.push(itemProgress)
+      completed +=
+        item.childrenOf === null
+          ? item.lifecycle?.finished === true
+            ? itemProgress.total
+            : itemProgress.completed
+          : (completedForSort.get(item.childrenOf) ?? 0)
     }
     visiting.delete(parentId)
     const total = sumProgress(descendants)
     totals.set(parentId, total)
+    completedForSort.set(parentId, completed)
+    mismatchTotals.set(parentId, mismatched)
     return total
   }
   const hasColourProgress = (parentId: string | null): boolean => {
@@ -165,11 +210,24 @@ export const groupedTreeSource = (
         if (item.childrenOf === null) return item
         const total = progress(item.childrenOf)
         const hasColours = hasColourProgress(item.childrenOf)
+        const descendantUpdate = latestUpdate(item.childrenOf)
+        const ownUpdate = item.updatedAt ?? item.createdAt
         return {
           ...item,
+          updatedAt:
+            descendantUpdate === undefined
+              ? ownUpdate
+              : Math.max(descendantUpdate, ownUpdate ?? descendantUpdate),
           ...(total === undefined
             ? {}
-            : { progress: total, progressReader: () => progress(item.childrenOf) ?? total }),
+            : {
+                progress: total,
+                sortCompletion:
+                  total.total <= 0 ? 0 : (completedForSort.get(item.childrenOf) ?? 0) / total.total,
+                totalPixels: total.total,
+                mismatched: mismatchTotals.get(item.childrenOf),
+                progressReader: () => progress(item.childrenOf) ?? total,
+              }),
           ...(hasColours ? { colourProgress: () => colourProgress(item.childrenOf) ?? [] } : {}),
         }
       }),

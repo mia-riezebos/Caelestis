@@ -35,6 +35,7 @@ export const createLocalFolder = (
     parentId,
     name,
     visible: true,
+    createdAt: Date.now(),
     surface,
   }
   return commitState({ localFolders: [...getState().localFolders, folder] }) ? folder : null
@@ -64,7 +65,13 @@ export const addLocalFolders = (folders: readonly LocalFolder[]): boolean => {
   if (folders.length === 0) return true
   const existing = getState().localFolders
   if (existing.length + folders.length > MAX_LOCAL_FOLDERS) return false
-  return commitState({ localFolders: [...existing, ...folders] })
+  const createdAt = Date.now()
+  return commitState({
+    localFolders: [
+      ...existing,
+      ...folders.map((folder) => ({ ...folder, createdAt: folder.createdAt ?? createdAt })),
+    ],
+  })
 }
 
 export const setLocalFolderVisible = (id: string, visible: boolean): boolean =>

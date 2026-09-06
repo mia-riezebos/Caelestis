@@ -8,6 +8,7 @@ describe('tree sort state', () => {
   })
 
   it('marks progress sorting as structurally sensitive to progress changes', () => {
+    expect(progressChangesCanReorder({ field: 'mismatched', direction: 'desc' })).toBe(true)
     expect(progressChangesCanReorder({ field: 'progress', direction: 'asc' })).toBe(true)
     expect(progressChangesCanReorder({ field: 'custom', direction: 'asc' })).toBe(false)
   })

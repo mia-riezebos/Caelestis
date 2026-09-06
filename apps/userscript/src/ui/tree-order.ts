@@ -1,3 +1,4 @@
+import type { TemplateSortOrder } from '@caelestis/shared'
 import { getState, setState } from '../state.js'
 import type { TemplateProgress } from '../templates/mismatch.js'
 import { completionRatio } from './progress.js'
@@ -8,10 +9,14 @@ export interface OrderedTreeItem {
   readonly key: string
   readonly name: string
   readonly createdAt?: number
-  /** Absent for structural rows; progress sorting leaves those in their durable slots. */
+  readonly updatedAt?: number | undefined
+  readonly totalPixels?: number | undefined
+  readonly mismatched?: number | undefined
+  /** Folder progress is aggregated from its descendants. */
   readonly progress?: TemplateProgress | undefined
-  /** Aggregated folder progress is display-only; only leaves move under progress sorting. */
-  readonly progressSortable?: true | undefined
+  /** Folder completion for sorting, counting finished descendants as fully complete. */
+  readonly sortCompletion?: number | undefined
+  readonly lifecycle?: { readonly finished: boolean } | undefined
 }
 
 const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
@@ -21,11 +26,12 @@ export const orderedTreeItems = <T extends OrderedTreeItem>(
   items: readonly T[],
   rank: ReadonlyMap<string, number>,
   limit = Number.POSITIVE_INFINITY,
+  sort: TemplateSortOrder = getState().sort,
 ): readonly T[] => {
   const bounded = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : items.length
   if (bounded === 0) return []
-  const takeFirst = (compare: (a: T, b: T) => number): readonly T[] => {
-    if (bounded >= items.length) return [...items].sort(compare)
+  const takeFirst = (candidates: readonly T[], compare: (a: T, b: T) => number): readonly T[] => {
+    if (bounded >= candidates.length) return [...candidates].sort(compare)
     const heap: T[] = []
     const siftUp = (start: number): void => {
       let index = start
@@ -64,7 +70,7 @@ export const orderedTreeItems = <T extends OrderedTreeItem>(
         index = worst
       }
     }
-    for (const item of items) {
+    for (const item of candidates) {
       if (heap.length < bounded) {
         heap.push(item)
         siftUp(heap.length - 1)
@@ -75,45 +81,62 @@ export const orderedTreeItems = <T extends OrderedTreeItem>(
     }
     return heap.sort(compare)
   }
-  if (getState().sort.field === 'name') {
-    const direction = getState().sort.direction === 'desc' ? -1 : 1
-    return takeFirst(
-      (a, b) => direction * NAME_COLLATOR.compare(a.name, b.name) || a.key.localeCompare(b.key),
-    )
-  }
-  const ranked: Array<{ readonly item: T; readonly rank: number }> = []
-  const unranked: T[] = []
-  for (const item of items) {
-    const itemRank = rank.get(item.key)
-    if (itemRank === undefined) unranked.push(item)
-    else ranked.push({ item, rank: itemRank })
-  }
-  ranked.sort((a, b) => a.rank - b.rank)
-  unranked.sort(
-    (a, b) => (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
-  )
-  const custom = [...ranked.map(({ item }) => item), ...unranked]
-  if (getState().sort.field !== 'progress') return custom.slice(0, bounded)
-
-  // A folder is a place, not a score. Preserve every structural slot from the user's own order and
-  // sort only template rows among the slots templates already occupy. That keeps the hierarchy
-  // legible while still bringing the least/most complete work together at every sibling level.
-  const direction = getState().sort.direction === 'desc' ? -1 : 1
-  const templates = custom
-    .filter(
-      (item): item is T & { readonly progress: TemplateProgress } =>
-        item.progressSortable === true && item.progress !== undefined,
-    )
-    .sort(
+  const { field, direction: sortDirection } = sort
+  if (field === 'custom') {
+    const ranked: Array<{ readonly item: T; readonly rank: number }> = []
+    const unranked: T[] = []
+    for (const item of items) {
+      const itemRank = rank.get(item.key)
+      if (itemRank === undefined) unranked.push(item)
+      else ranked.push({ item, rank: itemRank })
+    }
+    ranked.sort((a, b) => a.rank - b.rank)
+    unranked.sort(
       (a, b) =>
-        direction * (completionRatio(a.progress) - completionRatio(b.progress)) ||
-        NAME_COLLATOR.compare(a.name, b.name) ||
-        a.key.localeCompare(b.key),
+        (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
     )
-  let templateAt = 0
-  return custom
-    .map((item) => (item.progressSortable !== true ? item : (templates[templateAt++] ?? item)))
-    .slice(0, bounded)
+    const custom = [...ranked.map(({ item }) => item), ...unranked]
+    return custom.slice(0, bounded)
+  }
+
+  const direction = sortDirection === 'desc' ? -1 : 1
+  const value = (item: T): number | undefined => {
+    switch (field) {
+      case 'recent':
+        return item.updatedAt
+      case 'size':
+        return item.totalPixels
+      case 'mismatched':
+        return item.mismatched
+      case 'progress':
+        if (item.lifecycle?.finished === true) return 1
+        return (
+          item.sortCompletion ??
+          (item.progress === undefined ? undefined : completionRatio(item.progress))
+        )
+      default:
+        return undefined
+    }
+  }
+  return takeFirst(items, (a, b) => {
+    if (field === 'name') {
+      return direction * NAME_COLLATOR.compare(a.name, b.name) || a.key.localeCompare(b.key)
+    }
+    const av = value(a)
+    const bv = value(b)
+    // Unknown measurements stay last in both directions; ties never reverse.
+    return (
+      (av === undefined
+        ? bv === undefined
+          ? 0
+          : 1
+        : bv === undefined
+          ? -1
+          : direction * (av - bv)) ||
+      NAME_COLLATOR.compare(a.name, b.name) ||
+      a.key.localeCompare(b.key)
+    )
+  })
 }
 
 const reorderedSiblings = (
