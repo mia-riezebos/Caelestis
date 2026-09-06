@@ -801,7 +801,12 @@ const buildTree = <Result>(
               createdAt: template.updatedAt,
               updatedAt: template.updatedAt,
               totalPixels: template.totalPixels,
-              mismatched: serverProgressFor(server, template)?.mismatched,
+              mismatched:
+                surface.kind === 'world'
+                  ? serverProgressFor(server, template)?.mismatched
+                  : drawn === undefined || progress.known === 0
+                    ? undefined
+                    : progress.mismatched,
               muted: !template.published,
               ...(template.published ? {} : { excludeFromRollup: true as const }),
               ...(progress === undefined ? {} : { progress }),
@@ -907,6 +912,7 @@ const buildTree = <Result>(
             name: folder.name,
             kind: 'folder',
             childrenOf: folder.id,
+            ...(folder.createdAt === undefined ? {} : { createdAt: folder.createdAt }),
             visible: folder.visible,
             setVisible: (on) => setLocalFolderVisible(folder.id, on),
             canReparent: true,

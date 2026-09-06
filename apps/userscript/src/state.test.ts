@@ -23,6 +23,47 @@ afterEach(() => {
 })
 
 describe('server state boundaries', () => {
+  it('persists creation times for empty Local folders and restores Recent ordering', async () => {
+    let stored = '{}'
+    vi.stubGlobal('GM_getValue', () => stored)
+    vi.stubGlobal('GM_setValue', (_key: string, value: string) => {
+      stored = value
+    })
+    const { loadState, setState } = await import('./state.js')
+    const { createLocalFolder, addLocalFolders } = await import('./local-folders.js')
+    loadState()
+    vi.spyOn(Date, 'now').mockReturnValue(100)
+    const first = createLocalFolder(null, 'Z first')
+    vi.mocked(Date.now).mockReturnValue(200)
+    const second = createLocalFolder(null, 'A second')
+    addLocalFolders([{ id: 'batch', name: 'Batch', parentId: null, visible: true }])
+    expect(loadState().localFolders.map((folder) => folder.createdAt)).toEqual([100, 200, 200])
+    const { templateTreeAdapter } = await import('./ui/tree.js')
+    const callbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onContextMenu: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onDropInLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+    setState({ sort: { field: 'recent', direction: 'asc' } })
+    expect(
+      templateTreeAdapter(callbacks, vi.fn())
+        .model.entries.filter((entry) => entry.type === 'row' && entry.parentKey === 'local')
+        .map((entry) => entry.key),
+    ).toEqual([`lf:${first?.id}`, `lf:${second?.id}`, 'lf:batch'])
+    stored = JSON.stringify({
+      localFolders: [-1, 'bad', null].map((createdAt, index) => ({
+        id: String(index),
+        parentId: null,
+        name: 'Legacy',
+        createdAt,
+      })),
+    })
+    expect(loadState().localFolders.every((folder) => folder.createdAt === undefined)).toBe(true)
+  })
   it.each(['custom', 'recent', 'name', 'progress', 'size', 'mismatched'] as const)(
     'round-trips %s sorting without rewriting custom order',
     async (field) => {

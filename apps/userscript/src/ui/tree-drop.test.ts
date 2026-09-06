@@ -92,6 +92,58 @@ const connectedServer = () => ({
 })
 
 describe('server ordering', () => {
+  it.each([false, true])(
+    'keeps folders last when mismatch availability is incomplete (mixed=%s)',
+    (mixed) => {
+      const server = connectedServer()
+      const measuredId = '019fed50-87a1-7523-a88c-bdeafad49686'
+      telemetryHarness.progress.set(measuredId, {
+        completed: 90,
+        mismatched: 10,
+        unpainted: 0,
+        known: 100,
+        total: 100,
+      })
+      if (mixed)
+        telemetryHarness.progress.set(TEMPLATE_B_ID, {
+          completed: 99,
+          mismatched: 1,
+          unpainted: 0,
+          known: 100,
+          total: 100,
+        })
+      setState({
+        servers: [server],
+        collapsed: ['local'],
+        sort: { field: 'mismatched', direction: 'asc' },
+      })
+      acceptServerSnapshot(server, {
+        nodes: [serverNode(SOURCE_NODE_ID, 'A unknown')],
+        templates: [
+          serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'Unknown', 1),
+          serverTemplate(TEMPLATE_B_ID, SOURCE_NODE_ID, 'Maybe known', 2),
+          serverTemplate(measuredId, null, 'Z measured', 3),
+        ],
+      })
+      const callbacks: TreeCallbacks = {
+        onAddServer: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onImportTemplate: vi.fn(),
+        onContextMenu: vi.fn(),
+        onCopyToServer: vi.fn(),
+        onDropInLocal: vi.fn(),
+        onDropInServer: vi.fn(),
+      }
+      for (const direction of ['asc', 'desc'] as const) {
+        setState({ sort: { field: 'mismatched', direction } })
+        expect(
+          treeRows(callbacks)
+            .filter((row) => row.parentKey === `server:${SERVER_URL}`)
+            .map((row) => row.key),
+        ).toEqual([serverTemplateTreeKey(server, measuredId), nodeTreeKey(server, SOURCE_NODE_ID)])
+      }
+    },
+  )
   it.each(['custom', 'name', 'recent', 'progress', 'size', 'mismatched'] as const)(
     'pins Local and permits manual server ordering under %s sorting',
     (field) => {

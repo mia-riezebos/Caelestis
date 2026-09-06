@@ -164,6 +164,7 @@ export interface LocalFolder {
   readonly parentId: string | null
   readonly name: string
   readonly visible: boolean
+  readonly createdAt?: number
   /** Exact drawing surface. Records written before alliance support are world-scoped. */
   readonly surface?: TemplateSurface
 }
@@ -420,6 +421,11 @@ export const loadState = (): State => {
           id: candidate.id,
           parentId: candidate.parentId,
           name: candidate.name,
+          ...(typeof candidate.createdAt === 'number' &&
+          Number.isFinite(candidate.createdAt) &&
+          candidate.createdAt >= 0
+            ? { createdAt: candidate.createdAt }
+            : {}),
           // Records written before folder visibility existed were visible.
           visible: candidate.visible !== false,
           surface,

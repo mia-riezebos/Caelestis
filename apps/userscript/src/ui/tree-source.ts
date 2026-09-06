@@ -80,6 +80,7 @@ export const groupedTreeSource = (
   }
   const totals = new Map<string | null, TemplateProgress | undefined>()
   const completedForSort = new Map<string | null, number>()
+  const mismatchTotals = new Map<string | null, number | undefined>()
   const latestUpdates = new Map<string | null, number | undefined>()
   const updateVisiting = new Set<string | null>()
   // A folder's recency follows its newest descendant or its own creation time.
@@ -111,6 +112,7 @@ export const groupedTreeSource = (
     revision = current
     totals.clear()
     completedForSort.clear()
+    mismatchTotals.clear()
     colourTotals.clear()
   }
   const progress = (parentId: string | null): TemplateProgress | undefined => {
@@ -120,12 +122,19 @@ export const groupedTreeSource = (
     visiting.add(parentId)
     const descendants: TemplateProgress[] = []
     let completed = 0
+    let mismatched: number | undefined = 0
     for (const item of byParent.get(parentId) ?? []) {
       if (item.excludeFromRollup === true) continue
       const itemProgress =
         item.childrenOf === null
           ? (item.progressReader?.() ?? item.progress)
           : progress(item.childrenOf)
+      const itemMismatched =
+        item.childrenOf === null ? item.mismatched : mismatchTotals.get(item.childrenOf)
+      mismatched =
+        mismatched === undefined || itemMismatched === undefined
+          ? undefined
+          : mismatched + itemMismatched
       if (itemProgress === undefined) continue
       descendants.push(itemProgress)
       completed +=
@@ -139,6 +148,7 @@ export const groupedTreeSource = (
     const total = sumProgress(descendants)
     totals.set(parentId, total)
     completedForSort.set(parentId, completed)
+    mismatchTotals.set(parentId, mismatched)
     return total
   }
   const hasColourProgress = (parentId: string | null): boolean => {
@@ -215,7 +225,7 @@ export const groupedTreeSource = (
                 sortCompletion:
                   total.total <= 0 ? 0 : (completedForSort.get(item.childrenOf) ?? 0) / total.total,
                 totalPixels: total.total,
-                mismatched: total.mismatched,
+                mismatched: mismatchTotals.get(item.childrenOf),
                 progressReader: () => progress(item.childrenOf) ?? total,
               }),
           ...(hasColours ? { colourProgress: () => colourProgress(item.childrenOf) ?? [] } : {}),

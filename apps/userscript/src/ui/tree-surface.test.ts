@@ -1,8 +1,28 @@
 import type { TemplateSurface } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ServerManifest } from '../server-manifest.js'
+import type { PlacedTemplate } from '../templates/local-store.js'
 
-const scoped = vi.hoisted(() => ({ manifest: null as ServerManifest | null }))
+const scoped = vi.hoisted(() => ({
+  manifest: null as ServerManifest | null,
+  drawn: [] as PlacedTemplate[],
+}))
+
+vi.mock('../templates/local-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../templates/local-store.js')>()),
+  localTemplates: () => scoped.drawn,
+}))
+vi.mock('../gl/artboard-markers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../gl/artboard-markers.js')>()),
+  artboardTemplateProgress: (template: PlacedTemplate) => ({
+    completed: 10 - template.opaque,
+    mismatched: template.opaque,
+    unpainted: 0,
+    known: 10,
+    total: 10,
+  }),
+  artboardColourProgress: () => [],
+}))
 
 vi.mock('../alliance-server-sync.js', () => ({
   allianceManifestFor: (_server: unknown, _surface: TemplateSurface) => scoped.manifest,
@@ -41,11 +61,73 @@ const callbacks = {
 
 afterEach(() => {
   scoped.manifest = null
+  scoped.drawn = []
   vi.clearAllMocks()
-  setState({ servers: [], customOrder: [], collapsed: [], localFolders: [] })
+  setState({
+    servers: [],
+    customOrder: [],
+    collapsed: [],
+    localFolders: [],
+    sort: { field: 'custom', direction: 'asc' },
+  })
 })
 
 describe('surface-scoped template tree', () => {
+  it('sorts alliance server mismatches from the artboard and leaves undrawn templates unknown', () => {
+    const ids = [TEMPLATE_ID, SOURCE_NODE_ID, DESTINATION_NODE_ID]
+    scoped.manifest = {
+      version: 'alliance-manifest-v1',
+      season: 0,
+      surface,
+      server: serverInfo,
+      nodes: [],
+      templates: ids.map((id, index) => ({
+        id,
+        nodeId: null,
+        name: ['Alpha', 'Zulu', 'Unknown'][index] ?? '',
+        version: '019fed50-87a1-7523-a88c-bdeafad49684',
+        totalPixels: 10,
+        published: true,
+        finished: false,
+        finishedAt: null,
+        timelapseFrozen: false,
+        updatedAt: 1,
+        bbox: { minX: 0, minY: 0, maxX: 10, maxY: 1 },
+        chunks: [],
+        surface,
+      })),
+    }
+    scoped.drawn = ids.slice(0, 2).map((id, index) => ({
+      id,
+      name: id,
+      surface,
+      serverUrl: server.url,
+      serverTemplateId: id,
+      source: 'image',
+      originX: 0,
+      originY: 0,
+      width: 10,
+      height: 1,
+      indices: new Uint8Array(10),
+      moved: 0,
+      opaque: index === 0 ? 1 : 9,
+      tiles: new Set(),
+      visible: true,
+      everPlaced: true,
+      appearance: null,
+      revision: 0,
+      owns: [],
+      folderId: null,
+    }))
+    setState({ servers: [server], sort: { field: 'mismatched', direction: 'desc' } })
+    const names = () =>
+      templateTreeAdapter(callbacks, vi.fn(), '', surface).model.entries.flatMap((entry) =>
+        entry.type === 'row' && entry.parentKey === `server:${server.url}` ? [entry.name] : [],
+      )
+    expect(names()).toEqual(['Zulu', 'Alpha', 'Unknown'])
+    setState({ sort: { field: 'mismatched', direction: 'asc' } })
+    expect(names()).toEqual(['Alpha', 'Zulu', 'Unknown'])
+  })
   it('renders creation actions and only the selected alliance surface', () => {
     scoped.manifest = {
       version: 'alliance-manifest-v1',
