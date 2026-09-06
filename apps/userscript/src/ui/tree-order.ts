@@ -14,6 +14,9 @@ export interface OrderedTreeItem {
   readonly mismatched?: number | undefined
   /** Folder progress is aggregated from its descendants. */
   readonly progress?: TemplateProgress | undefined
+  /** Folder completion for sorting, counting finished descendants as fully complete. */
+  readonly sortCompletion?: number | undefined
+  readonly lifecycle?: { readonly finished: boolean } | undefined
 }
 
 const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
@@ -106,7 +109,11 @@ export const orderedTreeItems = <T extends OrderedTreeItem>(
       case 'mismatched':
         return item.mismatched
       case 'progress':
-        return item.progress === undefined ? undefined : completionRatio(item.progress)
+        if (item.lifecycle?.finished === true) return 1
+        return (
+          item.sortCompletion ??
+          (item.progress === undefined ? undefined : completionRatio(item.progress))
+        )
       default:
         return undefined
     }

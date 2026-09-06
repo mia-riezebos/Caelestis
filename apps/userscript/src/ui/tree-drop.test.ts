@@ -435,6 +435,65 @@ describe('tree drag and drop', () => {
     },
   )
 
+  it('counts finished descendants as complete when sorting nested folders and updates when reopened', () => {
+    const server = connectedServer()
+    const folderKey = nodeTreeKey(server, SOURCE_NODE_ID)
+    const activeKey = serverTemplateTreeKey(server, TEMPLATE_A_ID)
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onContextMenu: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onDropInLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+    telemetryHarness.progress.set(TEMPLATE_A_ID, {
+      completed: 50,
+      mismatched: 50,
+      unpainted: 0,
+      known: 100,
+      total: 100,
+    })
+    telemetryHarness.progress.set(TEMPLATE_B_ID, {
+      completed: 5,
+      mismatched: 95,
+      unpainted: 0,
+      known: 100,
+      total: 100,
+    })
+    setState({
+      servers: [server],
+      collapsed: ['local'],
+      sort: { field: 'progress', direction: 'asc' },
+    })
+    const snapshot = (finished: boolean) =>
+      acceptServerSnapshot(server, {
+        nodes: [
+          serverNode(SOURCE_NODE_ID, 'Folder'),
+          { ...serverNode(DESTINATION_NODE_ID, 'Nested'), parentId: SOURCE_NODE_ID },
+        ],
+        templates: [
+          serverTemplate(TEMPLATE_A_ID, null, 'Active', 1),
+          { ...serverTemplate(TEMPLATE_B_ID, DESTINATION_NODE_ID, 'Finished', 2), finished },
+        ],
+      })
+    const rootKeys = () =>
+      treeRows(callbacks)
+        .filter((row) => row.parentKey === `server:${SERVER_URL}`)
+        .map((row) => row.key)
+    snapshot(true)
+    expect(rootKeys()).toEqual([activeKey, folderKey])
+    expect(treeRows(callbacks).find((row) => row.key === folderKey)?.progress).toEqual(
+      expect.objectContaining({ completed: 5, mismatched: 95 }),
+    )
+    setState({ sort: { field: 'mismatched', direction: 'desc' } })
+    expect(rootKeys()).toEqual([folderKey, activeKey])
+    setState({ sort: { field: 'progress', direction: 'asc' } })
+    snapshot(false)
+    expect(rootKeys()).toEqual([folderKey, activeKey])
+  })
+
   it('shows descendant progress on folder and server parent rows', () => {
     const server = connectedServer()
     const folder = serverNode(SOURCE_NODE_ID, 'Folder')

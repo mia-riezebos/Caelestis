@@ -24,6 +24,23 @@ beforeEach(() => {
 })
 
 describe('template sort projections', () => {
+  it('sorts finished templates as complete without changing mismatch counts', () => {
+    const finished = { ...row('finished', 5), lifecycle: { finished: true }, mismatched: 90 }
+    const active = row('active', 50)
+    state.sort = { field: 'progress', direction: 'asc' }
+    expect(keys(orderedTreeItems([finished, active], new Map()))).toEqual(['active', 'finished'])
+    state.sort = { field: 'progress', direction: 'desc' }
+    expect(keys(orderedTreeItems([finished, active], new Map()))).toEqual(['finished', 'active'])
+    expect(
+      keys(orderedTreeItems([{ ...finished, progress: undefined }, active], new Map())),
+    ).toEqual(['finished', 'active'])
+    state.sort = { field: 'mismatched', direction: 'desc' }
+    expect(keys(orderedTreeItems([finished, active], new Map()))).toEqual(['finished', 'active'])
+    state.sort = { field: 'progress', direction: 'asc' }
+    expect(
+      keys(orderedTreeItems([{ ...finished, lifecycle: { finished: false } }, active], new Map())),
+    ).toEqual(['finished', 'active'])
+  })
   it.each(['recent', 'progress', 'size', 'mismatched'] as const)(
     'sorts %s in both directions including folder aggregates',
     (field) => {

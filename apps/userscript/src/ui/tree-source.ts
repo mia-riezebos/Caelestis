@@ -27,6 +27,8 @@ export interface TreeItem {
     readonly pixelsLost?: number | undefined
   }
   readonly progress?: TemplateProgress
+  /** Completion used for sorting, including finished descendants. */
+  readonly sortCompletion?: number | undefined
   readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined
   /** Show the row, but keep an unpublished template out of every ancestor rollup. */
@@ -77,6 +79,7 @@ export const groupedTreeSource = (
     byParent.set(parentId, siblings)
   }
   const totals = new Map<string | null, TemplateProgress | undefined>()
+  const completedForSort = new Map<string | null, number>()
   const latestUpdates = new Map<string | null, number | undefined>()
   const updateVisiting = new Set<string | null>()
   // A folder's recency follows its newest descendant or its own creation time.
@@ -107,6 +110,7 @@ export const groupedTreeSource = (
     if (current === revision) return
     revision = current
     totals.clear()
+    completedForSort.clear()
     colourTotals.clear()
   }
   const progress = (parentId: string | null): TemplateProgress | undefined => {
@@ -115,17 +119,26 @@ export const groupedTreeSource = (
     if (visiting.has(parentId)) return undefined
     visiting.add(parentId)
     const descendants: TemplateProgress[] = []
+    let completed = 0
     for (const item of byParent.get(parentId) ?? []) {
       if (item.excludeFromRollup === true) continue
       const itemProgress =
         item.childrenOf === null
           ? (item.progressReader?.() ?? item.progress)
           : progress(item.childrenOf)
-      if (itemProgress !== undefined) descendants.push(itemProgress)
+      if (itemProgress === undefined) continue
+      descendants.push(itemProgress)
+      completed +=
+        item.childrenOf === null
+          ? item.lifecycle?.finished === true
+            ? itemProgress.total
+            : itemProgress.completed
+          : (completedForSort.get(item.childrenOf) ?? 0)
     }
     visiting.delete(parentId)
     const total = sumProgress(descendants)
     totals.set(parentId, total)
+    completedForSort.set(parentId, completed)
     return total
   }
   const hasColourProgress = (parentId: string | null): boolean => {
@@ -199,6 +212,8 @@ export const groupedTreeSource = (
             ? {}
             : {
                 progress: total,
+                sortCompletion:
+                  total.total <= 0 ? 0 : (completedForSort.get(item.childrenOf) ?? 0) / total.total,
                 totalPixels: total.total,
                 mismatched: total.mismatched,
                 progressReader: () => progress(item.childrenOf) ?? total,
