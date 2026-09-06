@@ -3,6 +3,18 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 describe('production deployment', () => {
+  it('checks remote D1 access before running the code suite', async () => {
+    const workflow = await readFile(
+      join(process.cwd(), '../../.github/workflows/deploy.yml'),
+      'utf8',
+    )
+    const checkD1 = workflow.indexOf('wrangler d1 migrations list DB --remote')
+    const checkCode = workflow.indexOf('name: Check code')
+
+    expect(checkD1).toBeGreaterThan(-1)
+    expect(checkCode).toBeGreaterThan(checkD1)
+  })
+
   it('applies remote D1 migrations before deploying the backend worker', async () => {
     const workflow = await readFile(
       join(process.cwd(), '../../.github/workflows/deploy.yml'),

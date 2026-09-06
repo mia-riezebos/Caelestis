@@ -39,8 +39,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check Cloudflare credentials
-        run: test -n "$CLOUDFLARE_API_TOKEN"
+      - name: Check D1 access
+        run: pnpm --dir apps/backend exec wrangler d1 migrations list DB --remote
 
       - name: Check code
         run: |
