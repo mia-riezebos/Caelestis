@@ -1,3 +1,8 @@
+import { execFile } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import {
   launchersFor,
@@ -7,6 +12,40 @@ import {
 } from './chromium.mjs'
 
 describe('Chromium launcher policy', () => {
+  it('lets a captured launcher exit while retaining the browser and its diagnostics', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'caelestis-launch-test-'))
+    const pidFile = join(directory, 'browser.pid')
+    const browser = `
+      require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      console.error('browser startup diagnostic');
+      setInterval(() => console.error('browser still running'), 100);
+    `
+    const script = `
+      import { existsSync } from 'node:fs';
+      import { launchFirstReady } from ${JSON.stringify(new URL('./chromium.mjs', import.meta.url).href)};
+      await launchFirstReady(
+        [[process.execPath, ['-e', ${JSON.stringify(browser)}]]],
+        undefined,
+        async () => existsSync(${JSON.stringify(pidFile)}) ? 'test browser' : null,
+      );
+    `
+    try {
+      const { stderr } = await promisify(execFile)(
+        process.execPath,
+        ['--input-type=module', '-e', script],
+        { timeout: 2000, env: { ...process.env, TMPDIR: directory } },
+      )
+      expect(stderr).toMatch(/^Chromium output: /)
+      const logPath = stderr.trim().replace('Chromium output: ', '')
+      expect(readFileSync(logPath, 'utf8')).toContain('browser startup diagnostic')
+      const pid = Number(readFileSync(pidFile, 'utf8'))
+      expect(() => process.kill(pid, 0)).not.toThrow()
+    } finally {
+      if (existsSync(pidFile)) process.kill(Number(readFileSync(pidFile, 'utf8')))
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('uses a non-default persistent profile for the Google Chrome fallback', () => {
     const chrome = launchersFor('linux').find(([command]) => command === 'google-chrome')
 
