@@ -70,7 +70,8 @@ const run = (command, args) =>
  */
 const launch = (command, args) =>
   new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: 'ignore', detached: true })
+    // Keep startup failures visible, including a missing Linux display or a locked profile.
+    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'inherit'], detached: true })
     child.on('error', () => resolve(false))
     child.on('spawn', () => {
       child.unref()
@@ -192,7 +193,9 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
         `and restart it, or do it yourself:\n${restart}`,
     )
   }
-  throw new Error('Chromium was launched but never opened the debugging port')
+  throw new Error(
+    'Chromium was launched but never opened the debugging port. Check the browser output above.',
+  )
 }
 
 // Run directly to just make sure a debuggable browser exists.
