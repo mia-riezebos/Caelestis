@@ -17,6 +17,19 @@ const row = (
 })
 
 describe('tag search', () => {
+  it('matches folder tags and preserves ancestors without assigning tags to descendants', () => {
+    const root = row('Local', 'local')
+    const folder = row('Folder', 'folder', ['Repair'])
+    const child = row('Art', null)
+    const source = groupedTreeSource([
+      { parentId: null, item: root },
+      { parentId: 'local', item: folder },
+      { parentId: 'folder', item: child },
+    ])
+    expect(
+      [root, folder, child].filter(treeMatcher(source, 'repair')).map(({ key }) => key),
+    ).toEqual(['Local', 'Folder'])
+  })
   it('keeps the complete folder path to matching local and server templates', () => {
     for (const owner of ['Local', 'Server']) {
       const folder = row(owner, owner)

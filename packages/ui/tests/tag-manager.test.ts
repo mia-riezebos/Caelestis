@@ -42,7 +42,7 @@ const enter = (input: HTMLInputElement | null | undefined, value: string) => {
 
 describe('tag manager', () => {
   it('uses the same assignment interaction while naming the owning store', async () => {
-    const { root, onIntent } = await setup({ owner: 'Art server · Server', templateName: 'Tower' })
+    const { root, onIntent } = await setup({ owner: 'Art server · Server', targetName: 'Tower' })
     expect(root.shadowRoot?.textContent).toContain('Art server · Server')
     expect(root.shadowRoot?.querySelector('dialog')?.open).toBe(true)
     const checkbox = root.shadowRoot?.querySelector<HTMLInputElement>('input[type="checkbox"]')
@@ -80,11 +80,11 @@ describe('tag manager', () => {
     expect(onIntent).not.toHaveBeenCalled()
     button('Delete Repair')?.click()
     await tick()
-    expect(root.shadowRoot?.textContent).toContain('from every template?')
+    expect(root.shadowRoot?.textContent).toContain('from every template and folder?')
     expect(onIntent).not.toHaveBeenCalled()
     button('Cancel')?.click()
     await tick()
-    expect(root.shadowRoot?.textContent).not.toContain('from every template?')
+    expect(root.shadowRoot?.textContent).not.toContain('from every template and folder?')
     button('Delete Repair')?.click()
     await tick()
     button('Delete tag')?.click()

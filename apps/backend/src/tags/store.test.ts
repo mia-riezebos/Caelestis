@@ -33,6 +33,65 @@ describe.each(['memory', 'D1'])('%s tag storage', (adapter) => {
     return new D1SqlStore(database as unknown as D1Database)
   }
 
+  it('persists direct folder tags, scopes empty folders, and cascades deletion', async () => {
+    let sql = make()
+    for (const [id, season] of [
+      ['folder', 1],
+      ['other', 2],
+    ] as const)
+      await sql.insertNode({
+        id,
+        season,
+        surface: scope.surface,
+        parentId: null,
+        path: id,
+        name: id,
+        description: null,
+        createdAt: millis(1000),
+      })
+    await seed(sql, 'template')
+    await sql.mutateTag({ type: 'create', id: 'tag', name: 'Repair' }, millis(2000))
+    for (const folderId of ['folder', 'other'])
+      expect(
+        await sql.mutateTag(
+          { type: 'assign-folder', id: 'tag', folderId, attached: true },
+          millis(2001),
+        ),
+      ).toBe(true)
+    await sql.mutateTag(
+      { type: 'assign', id: 'tag', templateId: 'template', attached: true },
+      millis(2001),
+    )
+    await sql.mutateTag({ type: 'rename', id: 'tag', name: 'Priority' }, millis(3000))
+    if (database !== undefined) sql = new D1SqlStore(database as unknown as D1Database)
+    expect(await sql.listNodeTagIds('folder')).toEqual(['tag'])
+    expect(await sql.listManifestNodeTags(scope)).toEqual([
+      { nodeId: 'folder', tag: { id: 'tag', name: 'Priority' } },
+    ])
+    expect(await sql.listTagScopes()).toContainEqual({ ...scope, season: 2 })
+    await sql.mutateTag(
+      { type: 'assign-folder', id: 'tag', folderId: 'folder', attached: false },
+      millis(4000),
+    )
+    expect(await sql.listNodeTagIds('folder')).toEqual([])
+    expect(
+      await sql.mutateTag(
+        { type: 'assign-folder', id: 'tag', folderId: 'missing', attached: true },
+        millis(4000),
+      ),
+    ).toBe(false)
+    await sql.deleteNode('other')
+    expect(await sql.listNodeTagIds('other')).toEqual([])
+    await sql.mutateTag(
+      { type: 'assign-folder', id: 'tag', folderId: 'folder', attached: true },
+      millis(4001),
+    )
+    await sql.mutateTag({ type: 'delete', id: 'tag' }, millis(5000))
+    expect(await sql.listNodeTagIds('folder')).toEqual([])
+    expect(await sql.readNode('folder')).not.toBeNull()
+    expect(await sql.readTemplate('template')).not.toBeNull()
+  })
+
   it('renames every assignment, survives reopening, and deletes labels without deleting templates', async () => {
     let sql = make()
     await seed(sql, 'first')

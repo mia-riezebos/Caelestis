@@ -1,4 +1,4 @@
-import { encodeIndexedPng, millis } from '@caelestis/shared'
+import { encodeIndexedPng, millis, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
@@ -31,6 +31,50 @@ const harness = () => {
 }
 
 describe('v1 tag routes', () => {
+  it('syncs tags on empty folders and uses bounded assignment reads', async () => {
+    const { request, sql, notify, app } = harness()
+    const folderId = '01890f3a-6b7c-7def-8123-456789abcde0'
+    await sql.insertNode({
+      id: folderId,
+      season: 0,
+      surface: WORLD_TEMPLATE_SURFACE,
+      parentId: null,
+      path: folderId,
+      name: 'Empty folder',
+      description: null,
+      createdAt: millis(Date.now()),
+    })
+    const { id } = (await (await request('/admin/tags', 'POST', { name: 'Repair' })).json()) as {
+      id: string
+    }
+    const before = await request('/manifest')
+    const etag = before.headers.get('etag') ?? ''
+    expect((await request(`/admin/tags/${id}/folders/${folderId}`, 'PUT')).status).toBe(204)
+    expect(notify).toHaveBeenLastCalledWith(0, undefined, false)
+    const changed = await app.request('/v1/manifest', { headers: { 'if-none-match': etag } })
+    expect(changed.status).toBe(200)
+    expect(await changed.json()).toMatchObject({
+      nodes: [{ id: folderId, tags: [{ id, name: 'Repair' }] }],
+    })
+    const scan = vi
+      .spyOn(sql, 'listManifestNodeTags')
+      .mockRejectedValue(new Error('No manifest scan'))
+    expect(await (await request(`/admin/tags?folderId=${folderId}`)).json()).toMatchObject({
+      selected: [id],
+    })
+    scan.mockRestore()
+    expect((await request(`/admin/tags?folderId=${folderId}&templateId=${folderId}`)).status).toBe(
+      400,
+    )
+    await request(`/admin/tags/${id}`, 'PATCH', { name: 'Priority' })
+    expect(await (await request('/manifest')).json()).toMatchObject({
+      nodes: [{ tags: [{ id, name: 'Priority' }] }],
+    })
+    await request(`/admin/tags/${id}/folders/${folderId}`, 'DELETE')
+    expect(await (await request(`/admin/tags?folderId=${folderId}`)).json()).toMatchObject({
+      selected: [],
+    })
+  })
   it('syncs unassigned tags through an already-cached empty admin manifest', async () => {
     const { request } = harness()
     const before = (await (await request('/manifest')).json()) as { version: string }

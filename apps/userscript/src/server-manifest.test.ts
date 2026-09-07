@@ -44,6 +44,17 @@ const manifest = {
 }
 
 describe('server manifest template lifecycle', () => {
+  it('preserves folder tags and rejects malformed assignments', () => {
+    const tag = { id: TEMPLATE_ID, name: 'Repair' }
+    expect(
+      parseServerManifest({ ...manifest, nodes: [{ ...manifest.nodes[0], tags: [tag] }] }, server)
+        ?.nodes[0]?.tags,
+    ).toEqual([tag])
+    for (const tags of [[tag, tag], [{ ...tag, name: ' ' }], [{ ...tag, id: 'invalid' }]])
+      expect(
+        parseServerManifest({ ...manifest, nodes: [{ ...manifest.nodes[0], tags }] }, server),
+      ).toBeNull()
+  })
   it('preserves authoritative tags and rejects duplicate or malformed assignments', () => {
     const tag = { id: NODE_ID, name: 'Repair' }
     const tagged = { ...manifest, templates: [{ ...manifest.templates[0], tags: [tag] }] }

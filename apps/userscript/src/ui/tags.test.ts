@@ -22,13 +22,67 @@ vi.mock('./theme.js', () => ({ applyWplaceTheme: vi.fn() }))
 
 import { refreshAllianceManifest } from '../alliance-server-sync.js'
 import { refreshServerSnapshot } from '../application/tree-server-state.js'
-import { listServerTags } from '../state.js'
+import { listServerTags, mutateServerTag } from '../state.js'
 import { openTagManager } from './tags.js'
 
 beforeEach(() => {
   vi.resetAllMocks()
   contents.clear()
 })
+
+it.each(['folder', 'template'])(
+  'assigns the selected %s without confusing its parent folder',
+  async (kind) => {
+    const server: ConnectedServer = {
+      url: 'https://example.com',
+      info: null,
+      token: null,
+      status: 'connected',
+      isAdmin: true,
+      season: 0,
+    }
+    vi.mocked(listServerTags).mockResolvedValue({ ok: true, tags: [], selected: [] })
+    vi.mocked(mutateServerTag).mockResolvedValue({ ok: true })
+    vi.mocked(refreshServerSnapshot).mockResolvedValue({ status: 'admitted', changed: true })
+    openTagManager(
+      {
+        key: 'server:folder',
+        name: 'Selected',
+        nodeId: 'folder',
+        server,
+        ...(kind === 'template' ? { templateId: 'template' } : {}),
+      },
+      vi.fn(),
+    )
+    const manager = document.querySelector('caelestis-tag-manager') as HTMLElement & {
+      model: TagManagerModel
+    }
+    await vi.waitFor(() => expect(manager.model.ready).toBe(true))
+    expect(manager.model.targetName).toBe('Selected')
+    expect(listServerTags).toHaveBeenCalledWith(
+      server,
+      kind === 'template' ? 'template' : undefined,
+      kind === 'folder' ? 'folder' : undefined,
+    )
+    manager.dispatchEvent(
+      new CustomEvent('caelestis-tag-manager-intent', {
+        detail: { type: 'assign', id: 'tag', attached: true },
+      }),
+    )
+    await vi.waitFor(() =>
+      expect(mutateServerTag).toHaveBeenCalledWith(
+        server,
+        kind === 'folder'
+          ? { type: 'assign-folder', id: 'tag', folderId: 'folder', attached: true }
+          : { type: 'assign', id: 'tag', templateId: 'template', attached: true },
+      ),
+    )
+    await vi.waitFor(() => expect(manager.model.busy).toBe(false))
+    manager.dispatchEvent(
+      new CustomEvent('caelestis-tag-manager-intent', { detail: { type: 'close' } }),
+    )
+  },
+)
 
 it.each(['world', 'alliance'])(
   'retries a failed post-save %s refresh without repeating the mutation',

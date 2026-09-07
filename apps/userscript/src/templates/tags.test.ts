@@ -43,6 +43,35 @@ const seedLegacy = async () => {
 }
 
 describe('local tags in IndexedDB', () => {
+  it('shares tags with folders, reloads assignments, and removes deleted folder references', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: vi.fn() })
+    await seedLegacy()
+    const { createLocalFolder, removeLocalFolder } = await import('../local-folders.js')
+    const folder = createLocalFolder(null, 'Folder')
+    expect(folder).not.toBeNull()
+    const folderId = folder?.id ?? ''
+    const tags = await import('./tags.js')
+    const id = (await tags.mutateLocalTag({ type: 'create', name: 'Repair' }))[0]?.id ?? ''
+    await tags.mutateLocalTag({ type: 'assign', id, templateId: 'first', attached: true })
+    await tags.mutateLocalTag({ type: 'assign-folder', id, folderId, attached: true })
+    await tags.mutateLocalTag({ type: 'rename', id, name: 'Priority' })
+    expect(await tags.readLocalTags()).toEqual([
+      { id, name: 'Priority', templateIds: ['first'], folderIds: [folderId] },
+    ])
+    expect(tags.localFolderTags(folderId)).toMatchObject([{ id, name: 'Priority' }])
+    await tags.mutateLocalTag({ type: 'assign-folder', id, folderId, attached: false })
+    expect(tags.localFolderTags(folderId)).toEqual([])
+    await tags.mutateLocalTag({ type: 'assign-folder', id, folderId, attached: true })
+    expect(removeLocalFolder(folderId)).toBe(true)
+    expect(await tags.readLocalTags()).toEqual([
+      { id, name: 'Priority', templateIds: ['first'], folderIds: [] },
+    ])
+    await expect(
+      tags.mutateLocalTag({ type: 'assign-folder', id, folderId, attached: true }),
+    ).rejects.toThrow('no longer exists')
+    await tags.mutateLocalTag({ type: 'delete', id })
+    expect(await tags.readLocalTags()).toEqual([])
+  })
   it.each(['local', 'cache'])(
     'upgrades through the %s entry point without losing templates or tags',
     async (entry) => {

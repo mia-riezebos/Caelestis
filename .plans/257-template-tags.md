@@ -15,12 +15,15 @@ Keep template ownership, pixels, placement, and folder paths intact.
 - [x] Focused persistence, authorization, sync, search, and lifecycle tests pass.
 
 ## TODOs
+- [x] Extend the existing catalog to local and server folders, verify persistence and search, and update the PR.
 - [x] Add server tag persistence, authorized API, and manifest synchronization with focused tests.
 - [x] Add transactional local tag persistence and migration tests.
 - [x] Add the shared tag editor, ownership labels, and hierarchical tag search with focused tests.
 - [x] Verify rendered workflows and repository checks, add release notes, and prepare the PR.
 
 ## Notes
+- Folders share their owner's catalog with templates. Assignments belong directly to folders; they do not inherit to descendants. Migration 0016 stores server folder assignments; local records retain optional folder IDs.
+- Folder extension verification passes 2,251 package tests, checks, builds, lint, fixtures, capacity, and release tests. Heavy machine load required a 30-second CLI test timeout. Background Chromium verified actual folder actions, create/assign/rename, search, and reload for both stores; desktop light and phone dark screenshots were inspected.
 - Work in the supplied workspace; the harness renamed its branch to `t3code/resolve-issue-257` during implementation. Initial working tree was clean.
 - Server tags are reusable across its templates. Local tags remain browser-owned.
 - Use stable IDs and separate assignments so a rename is one record update; deletion cascades assignments only.
