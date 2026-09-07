@@ -96,9 +96,9 @@
       {/if}
     </div>
   {:else}
-    <p>No claims yet.</p>
+    <div class="person empty"><span>No claims yet.</span></div>
   {/each}
-  <div class="actions">
+  <div class="actions claim-actions">
     {#if model.canClaim}
       <Button
         label={model.mine ? 'Release claim' : 'Claim'}
@@ -192,17 +192,18 @@
     min-inline-size: 0;
   }
   small,
-  p {
+  .empty {
     color: var(--caelestis-muted-text);
-  }
-  p {
-    margin: 0.25rem 0;
   }
   .actions {
     display: flex;
     gap: 0.375rem;
     flex-wrap: wrap;
     margin-block-start: 0.375rem;
+  }
+  .claim-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   form {
     display: grid;
