@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest'
+import { coalesceServerRead } from '../server-read-coalescer.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
 
 const harness = vi.hoisted(() => ({
@@ -24,6 +25,7 @@ vi.mock('../templates/move.js', () => ({ movingId: harness.moving }))
 vi.mock('../state.js', () => ({
   getState: () => ({ servers: [harness.server] }),
   isCurrentServerConnection: () => true,
+  serverConnectionIdentity: (server: object) => server,
   admittedServerContentsFor: () => harness.manifest,
   listServerContents: harness.refresh,
   uploadTemplateVersion: harness.upload,
@@ -126,6 +128,45 @@ it('releases the operation after an upload failure without installing new pixels
   expect(harness.refresh).not.toHaveBeenCalled()
   expect(isUpdatingTemplateArtwork('test')).toBe(false)
 })
+it.each(['world', 'alliance-headquarters'] as const)(
+  'reconciles an ambiguous %s upload before releasing the operation',
+  async (kind) => {
+    serverTemplate()
+    if (kind !== 'world' && harness.template !== undefined)
+      harness.template = { ...harness.template, surface: { kind, allianceId: 1 } }
+    harness.upload.mockResolvedValue({ ok: false, ambiguous: true, message: 'Connection lost' })
+    await expect(updateTemplateArtwork('test')).rejects.toThrow('Connection lost')
+    expect(harness.refresh).toHaveBeenCalledWith(harness.server)
+    if (kind !== 'world')
+      expect(harness.refresh).toHaveBeenCalledWith(harness.server, { kind, allianceId: 1 })
+    expect(isUpdatingTemplateArtwork('test')).toBe(false)
+  },
+)
+it.each(['world', 'alliance-headquarters'] as const)(
+  'starts a new %s manifest request after upload while an older read is pending',
+  async (kind) => {
+    serverTemplate()
+    if (kind !== 'world' && harness.template !== undefined)
+      harness.template = { ...harness.template, surface: { kind, allianceId: 1 } }
+    let release!: (value: string) => void
+    const read = vi.fn(async () => 'new')
+    const old = coalesceServerRead(
+      harness.server,
+      kind,
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve
+        }),
+    )
+    harness.refresh.mockImplementation(() => coalesceServerRead(harness.server, kind, read))
+    const updating = updateTemplateArtwork('test')
+    await vi.waitFor(() => expect(harness.refresh).toHaveBeenCalled())
+    release('old')
+    await old
+    await updating
+    expect(read).toHaveBeenCalledOnce()
+  },
+)
 it('deduplicates clicks from either menu while capture is pending', async () => {
   let release = (_indices: Uint8Array): void => {}
   harness.capture.mockReturnValue(

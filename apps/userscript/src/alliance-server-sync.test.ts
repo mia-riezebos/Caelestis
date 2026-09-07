@@ -185,6 +185,34 @@ describe('alliance server sync', () => {
     },
   )
 
+  it('keeps the post-mutation alliance manifest when an older read finishes later', async () => {
+    let release!: (response: Response) => void
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              release = resolve
+            }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify(manifest(hq(), 0, 'New')))),
+    )
+    const { allianceManifestFor, installAllianceServerSync, refreshAllianceManifest } =
+      await import('./alliance-server-sync.js')
+    const { invalidateServerReads } = await import('./server-read-coalescer.js')
+    installAllianceServerSync()
+    await flush()
+    const old = coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
+    invalidateServerReads(connected)
+    await refreshAllianceManifest(connected, hq())
+    release(new Response(JSON.stringify(manifest(hq(), 0, 'Old'))))
+    await old
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(allianceManifestFor(connected, hq())?.version).toBe('New')
+  })
+
   it('refreshes a captured server through the current connection lifetime', async () => {
     const replacement = { ...connected, token: 'new-token' }
     vi.stubGlobal(

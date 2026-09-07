@@ -1,10 +1,12 @@
 import { encodeIndexedPng, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
+import { invalidateServerReads } from '../server-read-coalescer.js'
 import {
   admittedServerContentsFor,
   getState,
   isCurrentServerConnection,
   listServerContents,
+  serverConnectionIdentity,
   uploadTemplateVersion,
 } from '../state.js'
 import { captureCurrentArtwork } from '../templates/current-artwork.js'
@@ -75,9 +77,13 @@ export const updateTemplateArtwork = async (id: string): Promise<void> => {
       name: template.name,
       png,
     })
+    if (result.ok || result.ambiguous === true) {
+      invalidateServerReads(serverConnectionIdentity(server))
+      // Upload uncertainty is connection-wide and cleared by an admitted world manifest.
+      if (surface.kind === 'world' || !result.ok) await listServerContents(server)
+      if (surface.kind !== 'world') await refreshAllianceManifest(server, surface)
+    }
     if (!result.ok) throw new Error(result.message)
-    if (surface.kind === 'world') await listServerContents(server)
-    else await refreshAllianceManifest(server, surface)
   } finally {
     pending.delete(id)
   }
