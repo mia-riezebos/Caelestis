@@ -2,6 +2,7 @@ import {
   type AlarmKind,
   sameTemplateSurface,
   type TemplateSurface,
+  WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
@@ -326,6 +327,7 @@ const renderLevel = (
         )
       },
       ...(item.meta === undefined ? {} : { meta: item.meta }),
+      ...(item.preview === undefined ? {} : { preview: item.preview }),
       descendantAlarmKind: item.descendantAlarmKind,
       ...(item.lifecycle === undefined ? {} : { lifecycle: item.lifecycle }),
       ...(item.progress === undefined ? {} : { progress: item.progress }),
@@ -798,6 +800,15 @@ const buildTree = <Result>(
               name: template.name,
               kind: 'image',
               childrenOf: null,
+              preview: {
+                width:
+                  template.bbox.maxX > template.bbox.minX
+                    ? template.bbox.maxX - template.bbox.minX
+                    : WORLD_PIXELS - template.bbox.minX + template.bbox.maxX,
+                height: template.bbox.maxY - template.bbox.minY,
+                indices: drawn?.serverVersion === template.version ? drawn.indices : undefined,
+                ownership: `Server · ${server.info?.name ?? server.url}`,
+              },
               createdAt: template.updatedAt,
               updatedAt: template.updatedAt,
               totalPixels: template.totalPixels,
@@ -950,6 +961,12 @@ const buildTree = <Result>(
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
+            preview: {
+              width: template.width,
+              height: template.height,
+              indices: template.indices,
+              ownership: 'Local',
+            },
             updatedAt: template.updatedAt,
             totalPixels: template.opaque,
             mismatched: drawnProgress(template).mismatched,
@@ -1116,6 +1133,7 @@ export const templateTreeAdapter = (
         ...(options.forceExpanded === true ? { forceExpanded: true } : {}),
         ...(options.muted === true ? { muted: true } : {}),
         ...(options.meta === undefined ? {} : { meta: options.meta }),
+        ...(options.preview === undefined ? {} : { preview: options.preview }),
         descendantAlarmKind: options.descendantAlarmKind,
         ...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
         ...(progress === undefined ? {} : { progress }),
@@ -1200,6 +1218,7 @@ export const templateTreeAdapter = (
   const model: TemplateTreeModel = {
     query,
     sort: getState().sort,
+    displayMode: getState().templateDisplayMode,
     entries,
     ...(renamingKey === null ? {} : { renamingKey }),
   }

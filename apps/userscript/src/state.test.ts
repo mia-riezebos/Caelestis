@@ -23,6 +23,26 @@ afterEach(() => {
 })
 
 describe('server state boundaries', () => {
+  it('restores display mode without changing ordering, expansion, or visibility', async () => {
+    let stored = JSON.stringify({
+      customOrder: ['local:b'],
+      collapsed: ['lf:a'],
+      hiddenScopes: ['local'],
+    })
+    vi.stubGlobal('GM_getValue', () => stored)
+    vi.stubGlobal('GM_setValue', (_key: string, value: string) => {
+      stored = value
+    })
+    const { loadState, setState } = await import('./state.js')
+    const original = loadState()
+    expect(original.templateDisplayMode).toBe('tree')
+    for (const templateDisplayMode of ['grid', 'tree'] as const) {
+      setState({ templateDisplayMode })
+      expect(loadState()).toEqual({ ...original, templateDisplayMode })
+    }
+    stored = JSON.stringify({ templateDisplayMode: 'unknown' })
+    expect(loadState().templateDisplayMode).toBe('tree')
+  })
   it('persists creation times for empty Local folders and restores Recent ordering', async () => {
     let stored = '{}'
     vi.stubGlobal('GM_getValue', () => stored)

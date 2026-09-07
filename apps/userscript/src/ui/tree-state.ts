@@ -20,6 +20,7 @@ export interface TreeRowOptions {
   readonly depth: number
   readonly branches?: readonly boolean[] | undefined
   readonly meta?: string | undefined
+  readonly preview?: TreeRowModel['preview']
   readonly descendantAlarmKind?: TreeRowModel['descendantAlarmKind']
   readonly lifecycle?: TreeRowModel['lifecycle']
   readonly progress?: TemplateProgress | undefined

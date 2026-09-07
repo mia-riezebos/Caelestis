@@ -18,6 +18,7 @@ export interface TreeItem {
   readonly totalPixels?: number | undefined
   readonly mismatched?: number | undefined
   readonly meta?: string | undefined
+  readonly preview?: TreeRowModel['preview']
   readonly descendantAlarmKind?: TreeRowModel['descendantAlarmKind']
   readonly lifecycle?: {
     readonly finished: boolean

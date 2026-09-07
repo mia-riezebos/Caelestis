@@ -195,6 +195,7 @@ export interface State {
   /** Panel width in pixels, dragged by the handle on its left edge. */
   readonly panelWidth: number
   readonly sort: SortOrder
+  readonly templateDisplayMode: 'tree' | 'grid'
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
   /** World-canvas selected-colour mode. Alliance canvases keep their own value. */
@@ -218,6 +219,7 @@ const DEFAULT_STATE: State = {
   collapsed: [],
   panelWidth: 320,
   sort: DEFAULT_SORT,
+  templateDisplayMode: 'tree',
   hiddenColours: [],
   onlySelectedColour: false,
   colourNavigationOrder: 'unpainted-first',
@@ -524,6 +526,7 @@ export const loadState = (): State => {
       collapsed,
       panelWidth,
       sort,
+      templateDisplayMode: stored.templateDisplayMode === 'grid' ? 'grid' : 'tree',
       hiddenColours,
       onlySelectedColour: stored.onlySelectedColour === true,
       colourNavigationOrder:

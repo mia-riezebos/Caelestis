@@ -1031,6 +1031,9 @@ const buildSveltePanel = (): CaelestisPanel => {
         } else if (intent.intent.type === 'sort') {
           setState({ sort: intent.intent.sort })
           rerenderTree()
+        } else if (intent.intent.type === 'display-mode') {
+          setState({ templateDisplayMode: intent.intent.mode })
+          rerenderTree()
         } else {
           activeTreeAdapter?.handle(intent.intent)
         }

@@ -307,6 +307,13 @@ export interface TreeRowModel {
   readonly visible: boolean
   readonly muted?: boolean
   readonly meta?: string
+  readonly preview?: {
+    readonly width: number
+    readonly height: number
+    /** Shared source pixels; absent while the server template is unavailable locally. */
+    readonly indices?: Uint8Array | undefined
+    readonly ownership: string
+  }
   /** Includes descendants hidden by collapsed folders or search. */
   readonly descendantAlarmKind?: AlarmKind | undefined
   readonly lifecycle?: {
@@ -354,6 +361,7 @@ export type TreeSortModel = import('@caelestis/shared').TemplateSortOrder
 export interface TemplateTreeModel {
   readonly query: string
   readonly sort: TreeSortModel
+  readonly displayMode?: 'tree' | 'grid'
   readonly entries: readonly TreeEntryModel[]
   /** The template row at the centre of the active canvas. */
   readonly focusedKey?: string
@@ -392,6 +400,7 @@ export interface TreeOperationModel {
 }
 
 export type TemplateTreeIntent =
+  | { readonly type: 'display-mode'; readonly mode: 'tree' | 'grid' }
   | { readonly type: 'search'; readonly query: string }
   | { readonly type: 'sort'; readonly sort: TreeSortModel }
   | { readonly type: 'toggle-expanded'; readonly key: string }
