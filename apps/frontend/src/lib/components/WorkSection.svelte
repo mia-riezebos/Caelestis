@@ -42,13 +42,15 @@
   })
 </script>
 
-{#if label}
-  <details class="rounded-xl border border-base-300 bg-base-100 p-3" bind:open>
-    <summary class="cursor-pointer font-semibold">{label}</summary>
-    {#if open}<div class="mt-3"><WorkBoard {model} /></div>{/if}
-  </details>
-{:else}
-  <section class="rounded-xl border border-base-300 bg-base-100 p-4">
-    <WorkBoard {model} />
-  </section>
+{#if app.manifest !== null}
+  {#if label}
+    <details class="rounded-xl border border-base-300 bg-base-100 p-3" bind:open>
+      <summary class="cursor-pointer font-semibold">{label}</summary>
+      {#if open}<div class="mt-3"><WorkBoard {model} /></div>{/if}
+    </details>
+  {:else}
+    <section class="rounded-xl border border-base-300 bg-base-100 p-4">
+      <WorkBoard {model} />
+    </section>
+  {/if}
 {/if}
