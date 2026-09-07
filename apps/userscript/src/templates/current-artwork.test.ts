@@ -9,7 +9,7 @@ const pixels = vi.hoisted(() => ({
   read: vi.fn(),
   refresh: vi.fn(),
 }))
-vi.mock('../tile-transform.js', () => ({ loadTilePixels: pixels.load, UNPAINTED: 255 }))
+vi.mock('../tile-transform.js', () => ({ loadCommittedTilePixels: pixels.load, UNPAINTED: 255 }))
 vi.mock('../alliance-surface.js', () => ({ activeAllianceSurface: pixels.active }))
 vi.mock('../alliance-coordinates.js', () => ({ allianceBounds: pixels.bounds }))
 vi.mock('../gl/artboard-pixels.js', () => ({

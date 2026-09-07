@@ -14,7 +14,7 @@ import {
   type NativePixelWindow,
   nativePixelWindow,
 } from '../native-pixels.js'
-import { loadTilePixels, UNPAINTED } from '../tile-transform.js'
+import { loadCommittedTilePixels, UNPAINTED } from '../tile-transform.js'
 import type { PlacedTemplate } from './local-store.js'
 
 const overlayWindow = (
@@ -90,7 +90,7 @@ export const captureCurrentArtwork = async (template: PlacedTemplate): Promise<U
       const worldX = (template.originX + x) % WORLD_PIXELS
       const width = Math.min(TILE_SIZE - (worldX % TILE_SIZE), template.width - x)
       const tile = { x: Math.floor(worldX / TILE_SIZE), y: Math.floor(worldY / TILE_SIZE) }
-      const pixels = await loadTilePixels(tile)
+      const pixels = await loadCommittedTilePixels(tile)
       if (pixels === null)
         throw new Error(
           `Could not load committed Wplace tile ${tile.x}/${tile.y}. Load that area and try again.`,
