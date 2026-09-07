@@ -5,6 +5,7 @@ export const WORK_STATUSES = ['open', 'blocked', 'completed'] as const
 export const WORK_PRIORITIES = ['low', 'normal', 'high'] as const
 /** Bound each response page, without capping a server's retained work or history. */
 export const MAX_WORK_ITEMS = 500
+export const MAX_TEMPLATE_CLAIMANTS = 1000
 
 /** Coordination uses self-reported Wplace identities until personal authentication exists. */
 export interface WorkFields {
@@ -23,6 +24,8 @@ export interface WorkItem extends WorkFields {
   readonly season: number
   readonly surface: TemplateSurface
   readonly claimant: PainterIdentity | null
+  /** Independent participants on a template claim; older records use claimant. */
+  readonly claimants?: readonly PainterIdentity[]
   readonly revision: number
   readonly createdAt: number
   readonly updatedAt: number
@@ -39,12 +42,23 @@ export interface WorkActivity {
 }
 
 export interface WorkMutation {
-  readonly action: WorkAction | 'claim-template'
+  readonly action:
+    | WorkAction
+    | 'claim-template'
+    | 'release-template'
+    | 'assign-template'
+    | 'unassign-template'
   readonly actor: PainterIdentity
   readonly expectedRevision: number
   readonly fields?: WorkFields
   readonly claimant?: PainterIdentity | null
 }
+
+/** Read participants, including claims saved before multiple painters were supported. */
+export const workClaimants = (item: WorkItem): readonly PainterIdentity[] =>
+  item.status === 'completed'
+    ? []
+    : (item.claimants ?? (item.claimant === null ? [] : [item.claimant]))
 
 export interface WorkFilter {
   readonly state?: 'all' | 'open' | 'claimed' | 'blocked' | 'completed'
@@ -135,6 +149,12 @@ export const isWorkItem = (value: unknown): value is WorkItem => {
     Number(value.createdAt) >= 0 &&
     Number(value.updatedAt) >= Number(value.createdAt) &&
     (value.claimant === null || isWorkIdentity(value.claimant)) &&
+    (value.claimants === undefined ||
+      (Array.isArray(value.claimants) &&
+        value.claimants.length <= MAX_TEMPLATE_CLAIMANTS &&
+        value.claimants.every(isWorkIdentity) &&
+        new Set(value.claimants.map((person) => person.wplaceUserId)).size ===
+          value.claimants.length)) &&
     record(surface) &&
     ((surface.kind === 'world' && surface.allianceId === null) ||
       (['alliance-headquarters', 'alliance-picture', 'alliance-banner'].includes(

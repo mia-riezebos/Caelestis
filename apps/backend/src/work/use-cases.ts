@@ -1,9 +1,12 @@
 import {
+  MAX_TEMPLATE_CLAIMANTS,
   sameTemplateSurface,
   type TemplateSurface,
   uuidV7,
+  type WorkAction,
   type WorkItem,
   type WorkMutation,
+  workClaimants,
 } from '@caelestis/shared'
 import { Effect } from 'effect'
 import type { Caller } from '../auth/middleware.js'
@@ -22,6 +25,21 @@ const storage = <A>(run: () => Promise<A>) =>
     catch: (cause) => new BackendStorageError({ operation: 'coordination', cause }),
   })
 const invalid = (message: string) => Effect.fail(new RequestValidationError({ message }))
+
+const activityAction = (action: WorkMutation['action']): WorkAction => {
+  switch (action) {
+    case 'claim-template':
+      return 'claim'
+    case 'release-template':
+      return 'release'
+    case 'assign-template':
+      return 'assign'
+    case 'unassign-template':
+      return 'release'
+    default:
+      return action
+  }
+}
 
 /** Read a bounded page of work in one drawing scope, ordered by stable ID. */
 export const listWork = (season: number, surface: TemplateSurface, after = '') =>
@@ -51,12 +69,26 @@ export const mutateWork = (
     const sql = yield* SqlStoreService
     const live = yield* StatusReadModelService
     const planning =
-      mutation.action === 'create' || mutation.action === 'edit' || mutation.action === 'assign'
+      mutation.action === 'create' ||
+      mutation.action === 'edit' ||
+      mutation.action === 'assign' ||
+      mutation.action === 'assign-template' ||
+      mutation.action === 'unassign-template'
     if (caller.scope === 'read' || (planning && caller.scope !== 'admin')) {
       return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
     }
     const held = yield* storage(() => sql.work.read(id))
-    const templateClaim = mutation.action === 'claim-template'
+    const templateClaim =
+      mutation.action === 'claim-template' ||
+      mutation.action === 'release-template' ||
+      mutation.action === 'assign-template' ||
+      mutation.action === 'unassign-template'
+    const removing =
+      mutation.action === 'release-template' || mutation.action === 'unassign-template'
+    const person =
+      mutation.action === 'assign-template' || mutation.action === 'unassign-template'
+        ? mutation.claimant
+        : mutation.actor
     if (mutation.action !== 'create' && !templateClaim && held === null)
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'Work item not found' }))
     if (held !== null && (held.season !== season || !sameTemplateSurface(held.surface, surface)))
@@ -72,10 +104,11 @@ export const mutateWork = (
         return yield* invalid('Publish the template before claiming it')
       if (held !== null && (held.templateIds.length !== 1 || held.templateIds[0] !== id))
         return yield* invalid('This work item is not a template claim')
-      if (
-        held?.claimant?.wplaceUserId === mutation.actor.wplaceUserId &&
-        held.status !== 'completed'
-      ) {
+      if (person == null) return yield* invalid('A painter is required')
+      const included =
+        held !== null &&
+        workClaimants(held).some((claim) => claim.wplaceUserId === person.wplaceUserId)
+      if (held !== null && included !== removing) {
         yield* storage(() => publishManifestChange(live, season, surface, false))
         return { conflict: false, item: held }
       }
@@ -132,7 +165,19 @@ export const mutateWork = (
         return yield* invalid('Blocker is missing or belongs to a different drawing scope')
     }
     let claimant = held?.claimant ?? null
-    if (mutation.action === 'claim' || templateClaim) {
+    let claimants = held?.claimants
+    if (templateClaim && person != null) {
+      const previous = held === null ? [] : workClaimants(held)
+      claimants = removing
+        ? previous.filter((claim) => claim.wplaceUserId !== person.wplaceUserId)
+        : [...previous, person]
+      if (claimants.length > MAX_TEMPLATE_CLAIMANTS)
+        return yield* invalid('This template has reached its claim limit')
+      claimant = claimants[0] ?? null
+    }
+    if (!templateClaim && held?.claimants !== undefined && mutation.action !== 'edit')
+      return yield* invalid('Use template claim actions for this template')
+    if (mutation.action === 'claim') {
       if (held?.status === 'completed')
         return yield* invalid('Reopen completed work before claiming it')
       if (claimant !== null) return { conflict: true, item: held }
@@ -148,7 +193,7 @@ export const mutateWork = (
     const item: WorkItem = {
       title: fields.title.trim(),
       description: fields.description,
-      status: fields.status,
+      status: templateClaim ? 'open' : fields.status,
       priority: fields.priority,
       tags: fields.tags,
       blockerIds: fields.blockerIds,
@@ -158,6 +203,7 @@ export const mutateWork = (
       season,
       surface,
       claimant,
+      ...(claimants === undefined ? {} : { claimants }),
       revision: (held?.revision ?? 0) + 1,
       createdAt: held?.createdAt ?? now,
       updatedAt: Math.max(held?.updatedAt ?? now, now),
@@ -168,7 +214,7 @@ export const mutateWork = (
         mutation.expectedRevision,
         {
           id: uuidV7(),
-          action: templateClaim ? (held === null ? 'create' : 'claim') : mutation.action,
+          action: activityAction(mutation.action),
           actor: mutation.actor,
           item,
         },

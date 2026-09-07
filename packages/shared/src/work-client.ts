@@ -33,7 +33,7 @@ export const createWorkClient = (
         typeof body.error === 'string'
           ? body.error
           : `Work request failed (${response.status})`
-      throw new Error(message)
+      throw Object.assign(new Error(message), { status: response.status })
     }
     return body
   }

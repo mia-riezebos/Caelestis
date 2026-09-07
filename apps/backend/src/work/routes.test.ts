@@ -70,7 +70,7 @@ const setup = async () => {
 }
 
 describe('shared work routes', () => {
-  it('claims a template without planning permission and admits only one concurrent painter', async () => {
+  it('keeps independent claims and permits assignment only by admins', async () => {
     const h = await setup()
     const templateId = uuidV7()
     await h.sql.insertTemplateVersion({
@@ -111,20 +111,71 @@ describe('shared work routes', () => {
       200,
     )
     expect(await h.sql.work.history(templateId, Number.MAX_SAFE_INTEGER)).toHaveLength(1)
+    const second = item?.claimant?.wplaceUserId === actor.wplaceUserId ? other : actor
+    expect(
+      (await h.mutate(templateId, { ...claim, actor: second, expectedRevision: 1 }, h.report))
+        .status,
+    ).toBe(200)
+    expect((await h.sql.work.read(templateId))?.claimants).toEqual(
+      expect.arrayContaining([actor, other]),
+    )
     expect(
       (
         await h.mutate(
           templateId,
-          { action: 'release', actor: item?.claimant, expectedRevision: 1 },
+          {
+            action: 'assign-template',
+            actor,
+            claimant: { wplaceUserId: 3, displayName: 'Third' },
+            expectedRevision: 2,
+          },
+          h.report,
+        )
+      ).status,
+    ).toBe(403)
+    expect(
+      (
+        await h.mutate(
+          templateId,
+          { action: 'release-template', actor: item?.claimant, expectedRevision: 2 },
           h.report,
         )
       ).status,
     ).toBe(200)
     expect(
-      (await h.mutate(templateId, { ...claim, actor: other, expectedRevision: 2 }, h.report))
-        .status,
+      (
+        await h.mutate(templateId, {
+          action: 'assign-template',
+          actor,
+          claimant: item?.claimant,
+          expectedRevision: 3,
+        })
+      ).status,
     ).toBe(200)
-    expect(await h.sql.work.read(templateId)).toMatchObject({ claimant: other, revision: 3 })
+    expect(await h.sql.work.read(templateId)).toMatchObject({
+      claimants: [second, item?.claimant],
+      revision: 4,
+    })
+    expect(
+      (
+        await h.mutate(
+          templateId,
+          { action: 'unassign-template', actor, claimant: second, expectedRevision: 4 },
+          h.report,
+        )
+      ).status,
+    ).toBe(403)
+    expect(
+      (
+        await h.mutate(templateId, {
+          action: 'unassign-template',
+          actor,
+          claimant: second,
+          expectedRevision: 4,
+        })
+      ).status,
+    ).toBe(200)
+    expect((await h.sql.work.read(templateId))?.claimants).toEqual([item?.claimant])
   })
 
   it('enforces planning scope and releases only the self-reported claimant', async () => {

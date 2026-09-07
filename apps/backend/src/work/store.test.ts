@@ -95,6 +95,14 @@ describe.each(['memory', 'd1'] as const)('%s coordination storage', (adapter) =>
       expect(await store.history(initial.id, 2)).toHaveLength(1)
       expect(await store.list(1, WORLD_TEMPLATE_SURFACE)).toEqual([])
       expect(await store.list(0, { kind: 'alliance-headquarters', allianceId: 1 })).toEqual([])
+      if (winner === null) throw new Error('Winning revision missing')
+      const claimants = candidates.map((candidate) => candidate.claimant)
+      const joined = { ...winner, claimants, revision: 3 }
+      expect(await store.save(joined, 2, event(joined), 'a'.repeat(64))).toBe(true)
+      expect((await store.read(initial.id))?.claimants).toEqual(claimants)
+      expect((await store.history(initial.id, Number.MAX_SAFE_INTEGER))[0]?.item.claimants).toEqual(
+        claimants,
+      )
     } finally {
       database?.close()
     }
