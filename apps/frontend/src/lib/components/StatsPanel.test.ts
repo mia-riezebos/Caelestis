@@ -261,8 +261,8 @@ describe('live counts', () => {
 })
 
 describe('painter pace', () => {
-  it('draws the served painters and marks history before the fetched coverage unavailable', async () => {
-    // Sixteen weeks of coverage end today; a scope created on day zero predates them.
+  it('reads painter-days from the scope’s first day and draws the served painters', async () => {
+    // A scope created two hundred days ago: the server keeps its painter-days for its lifetime.
     const now = 200 * DAY_SECONDS
     vi.spyOn(Date, 'now').mockReturnValue(now * 1_000)
     mounted = mount(StatsPanel, {
@@ -301,11 +301,10 @@ describe('painter pace', () => {
       ).not.toBeNull(),
     )
     expect(document.querySelectorAll('[data-painter-pace] [data-painter-toggle]')).toHaveLength(1)
-    expect(
-      document
-        .querySelector('[data-painter-pace] [data-unavailable-before]')
-        ?.getAttribute('data-unavailable-before'),
-    ).toBe(String(Math.floor(contributionsFrom / DAY_SECONDS) * DAY_SECONDS))
+    // The request starts on the scope's creation day, so nothing before it is unavailable.
+    expect(contributionsFrom).toBe(0)
+    expect(document.querySelector('[data-painter-pace] [data-unavailable-before]')).toBeNull()
+    expect(document.querySelector('[data-painter-pace] [data-history-unavailable]')).toBeNull()
   })
 
   it('says so when the first contribution read fails', async () => {

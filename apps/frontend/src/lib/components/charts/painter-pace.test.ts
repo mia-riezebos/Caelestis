@@ -2,7 +2,10 @@ import { type ContributionDay, seconds } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import {
   DAY_SECONDS,
+  dailyPoints,
+  dayTimes,
   defaultVisiblePainters,
+  nextDayStart,
   painterColour,
   painterHue,
   painterLabel,
@@ -25,8 +28,8 @@ const row = (
 })
 
 describe('painterSeries', () => {
-  it('sums a painter-day across templates and zero-fills the days in between', () => {
-    const series = painterSeries(
+  it('sums a painter-day across templates and keeps only the served days', () => {
+    const [painter] = painterSeries(
       [
         row(1, 0, { placed: 10, correct: 8, repairs: 1 }, { templateId: 'a' }),
         row(1, 0, { placed: 5, correct: 5, repairs: 0 }, { templateId: 'b' }),
@@ -36,23 +39,39 @@ describe('painterSeries', () => {
       3 * DAY_SECONDS,
     )
 
-    expect(series).toEqual([
-      {
-        wplaceUserId: 1,
-        displayName: 'painter 1',
-        days: [
-          { day: 0, placed: 15, correct: 13, repairs: 1 },
-          { day: DAY_SECONDS, placed: 0, correct: 0, repairs: 0 },
-          { day: 2 * DAY_SECONDS, placed: 3, correct: 3, repairs: 2 },
-        ],
-        totals: { placed: 18, correct: 16, repairs: 3 },
-      },
+    expect(painter?.wplaceUserId).toBe(1)
+    expect(painter?.displayName).toBe('painter 1')
+    expect([...(painter?.byDay.values() ?? [])]).toEqual([
+      { day: 0, placed: 15, correct: 13, repairs: 1 },
+      { day: 2 * DAY_SECONDS, placed: 3, correct: 3, repairs: 2 },
+    ])
+    expect(painter?.totals).toEqual({ placed: 18, correct: 16, repairs: 3 })
+  })
+
+  it('zero-fills the days in between only when a painter is materialised', () => {
+    const [painter] = painterSeries(
+      [row(1, 0, { placed: 10 }), row(1, 2, { placed: 5 })],
+      0,
+      3 * DAY_SECONDS,
+    )
+    if (painter === undefined) throw new Error('missing painter')
+    expect(dailyPoints(painter, 0, 3 * DAY_SECONDS)).toEqual([
+      { day: 0, placed: 10, correct: 0, repairs: 0 },
+      { day: DAY_SECONDS, placed: 0, correct: 0, repairs: 0 },
+      { day: 2 * DAY_SECONDS, placed: 5, correct: 0, repairs: 0 },
+    ])
+    expect(dailyPoints(painter, DAY_SECONDS, 2 * DAY_SECONDS + 1)).toEqual([
+      { day: DAY_SECONDS, placed: 0, correct: 0, repairs: 0 },
+      { day: 2 * DAY_SECONDS, placed: 5, correct: 0, repairs: 0 },
     ])
   })
 
   it('covers every day of a range that does not start or end on a day boundary', () => {
-    const [painter] = painterSeries([row(1, 1, { placed: 1 })], 3_600, 2 * DAY_SECONDS + 1)
-    expect(painter?.days.map((day) => day.day)).toEqual([0, DAY_SECONDS, 2 * DAY_SECONDS])
+    expect(dayTimes(3_600, 2 * DAY_SECONDS + 1)).toEqual([0, DAY_SECONDS, 2 * DAY_SECONDS])
+    expect(dayTimes(DAY_SECONDS, DAY_SECONDS)).toEqual([DAY_SECONDS])
+    expect(nextDayStart(0)).toBe(0)
+    expect(nextDayStart(1)).toBe(DAY_SECONDS)
+    expect(nextDayStart(DAY_SECONDS)).toBe(DAY_SECONDS)
   })
 
   it('ignores rows outside the range instead of inventing days for them', () => {
@@ -61,17 +80,8 @@ describe('painterSeries', () => {
       DAY_SECONDS,
       3 * DAY_SECONDS,
     )
-    expect(series).toEqual([
-      {
-        wplaceUserId: 2,
-        displayName: 'painter 2',
-        days: [
-          { day: DAY_SECONDS, placed: 1, correct: 0, repairs: 0 },
-          { day: 2 * DAY_SECONDS, placed: 0, correct: 0, repairs: 0 },
-        ],
-        totals: { placed: 1, correct: 0, repairs: 0 },
-      },
-    ])
+    expect(series.map((painter) => painter.wplaceUserId)).toEqual([2])
+    expect(series[0]?.totals).toEqual({ placed: 1, correct: 0, repairs: 0 })
   })
 
   it('only builds series for painters the server served rows for', () => {
@@ -113,7 +123,7 @@ describe('painterSeries', () => {
       painterLabel({
         wplaceUserId: 1,
         displayName: '',
-        days: [],
+        byDay: new Map(),
         totals: { placed: 0, correct: 0, repairs: 0 },
       }),
     ).toBe('user 1')

@@ -123,15 +123,37 @@ describe('series', () => {
     expect(document.body.textContent).not.toContain('user 2')
   })
 
-  it('shows history before the fetched coverage as unavailable rather than as zero', () => {
+  it('starts on the first fully fetched day and shows earlier history as unavailable', () => {
+    // The server serves days at or after `coverageFrom`, so day 4 was never asked for.
     mountChart([row(1, 5, { placed: 10 })], { from: 0, to: 7 * DAY, coverageFrom: 4 * DAY + 1 })
 
     const note = document.querySelector('[data-unavailable-before]')
-    expect(note?.getAttribute('data-unavailable-before')).toBe(String(4 * DAY))
-    expect(note?.textContent).toContain('no longer available')
+    expect(note?.getAttribute('data-unavailable-before')).toBe(String(5 * DAY))
+    expect(note?.textContent).toContain('was not fetched')
     const points = vertices(1)
     expect(points[0]?.[0]).toBe(PLOT_LEFT)
-    expect(points).toHaveLength(4)
+    // Days 5 and 6, then the level held to the right edge.
+    expect(points).toHaveLength(3)
+    key({ key: 'Home' })
+    expect(announced()).toContain('Jan 6')
+  })
+
+  it('keeps an aligned coverage start as the first day', () => {
+    mountChart([row(1, 5, { placed: 10 })], { from: 0, to: 7 * DAY, coverageFrom: 4 * DAY })
+    expect(
+      document.querySelector('[data-unavailable-before]')?.getAttribute('data-unavailable-before'),
+    ).toBe(String(4 * DAY))
+    expect(vertices(1)).toHaveLength(4)
+  })
+
+  it('tells a scope that ended before the fetched range apart from an inactive one', () => {
+    mountChart([], { from: 0, to: 3 * DAY, coverageFrom: 10 * DAY })
+    expect(document.querySelector('svg[role="img"]')).toBeNull()
+    expect(document.querySelector('[data-history-unavailable]')?.textContent).toContain(
+      'was not fetched',
+    )
+    expect(document.body.textContent).not.toContain('No shared painter activity')
+    expect(document.querySelector('[data-unavailable-before]')).toBeNull()
   })
 
   it('renders an empty state when the server served no painters', () => {
