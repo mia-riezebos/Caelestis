@@ -107,9 +107,12 @@ export const requestTemplateArtworkUpdate = (id: string, rerender: () => void): 
   void (async () => {
     const confirmed = await confirmDestructive({
       title: `Use canvas artwork for “${template.name}”?`,
-      body: isServerTemplate(template)
-        ? 'Save committed canvas artwork as the new target for everyone using this server template. Previous versions cannot currently be restored.'
-        : 'Save committed canvas artwork as this local template’s new target. Previous versions cannot currently be restored.',
+      body:
+        'Merge committed canvas artwork with the current template. Current mismatches will be treated as correct in the new canonical version. ' +
+        (isServerTemplate(template)
+          ? 'This changes the target for everyone using this server template. '
+          : '') +
+        'You cannot currently revert to a previous version.',
       note: '',
       confirmLabel: 'Use canvas artwork',
       restoreFocusTo: trigger instanceof HTMLElement ? trigger : null,

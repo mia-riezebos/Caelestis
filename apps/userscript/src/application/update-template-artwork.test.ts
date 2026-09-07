@@ -123,7 +123,9 @@ it.each([false, true])('waits for confirmation before capture (accepted: %s)', a
   expect(harness.confirm).toHaveBeenCalledOnce()
   expect(harness.confirm).toHaveBeenCalledWith(
     expect.objectContaining({
-      body: expect.stringContaining('Previous versions cannot currently be restored.'),
+      body: expect.stringContaining(
+        'Current mismatches will be treated as correct in the new canonical version.',
+      ),
     }),
   )
   expect(harness.capture).not.toHaveBeenCalled()
