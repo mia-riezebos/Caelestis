@@ -125,6 +125,7 @@ import {
   ALARM_FOLLOW_UP_DELAY_MILLISECONDS,
   evaluateAlarmSnapshot,
 } from '../../telemetry/alarm-policy.js'
+import { D1WorkStore } from '../../work/d1-store.js'
 
 const storedAlarmState = (row: typeof templateAlarmStates.$inferSelect): TemplateAlarmState => {
   if (row.alarmId === null) {
@@ -294,10 +295,12 @@ const toTileBlobObject = (row: typeof tileBlobObjects.$inferSelect): TileBlobObj
 })
 
 export class D1SqlStore implements SqlStore {
+  readonly work: D1WorkStore
   private readonly database: DrizzleD1Database
   private readonly client: D1Database
 
   constructor(database: D1Database) {
+    this.work = new D1WorkStore(database)
     this.client = database
     this.database = drizzle(database)
   }
