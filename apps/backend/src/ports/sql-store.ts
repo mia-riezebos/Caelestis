@@ -138,6 +138,63 @@ export const compareBuckets = (left: TelemetryBucket, right: TelemetryBucket): n
   return left.bucketStart - right.bucketStart
 }
 
+/**
+ * One painter's share of a folded bucket: `telemetry_buckets` with a painter in the key.
+ *
+ * Painter buckets are written straight from each paint report rather than through the counter
+ * shard, and they add up rather than replace: every event is applied once, under the
+ * `applied_events` claim, so an additive upsert is exact and needs no retained-state reconciliation.
+ * The fold is additive for the same reason, which is what lets a late report land at whichever
+ * tier its window has already reached (`painterBucketResolution`) without a later fold overwriting
+ * it.
+ */
+export interface PainterTelemetryBucket extends TelemetryBucket {
+  readonly wplaceUserId: number
+}
+
+export const invalidPainterBucket = (bucket: PainterTelemetryBucket): string | null => {
+  if (!Number.isSafeInteger(bucket.wplaceUserId) || bucket.wplaceUserId < 0) {
+    return `wplaceUserId ${bucket.wplaceUserId} is not a non-negative integer`
+  }
+  return invalidBucket(bucket)
+}
+
+export const assertValidPainterBuckets = (buckets: readonly PainterTelemetryBucket[]): void => {
+  for (const bucket of buckets) {
+    const reason = invalidPainterBucket(bucket)
+    if (reason !== null) throw new Error(`painter bucket rejected ${bucket.templateId}: ${reason}`)
+  }
+}
+
+/** `compareBuckets` with the painter id between template and time, matching the primary key. */
+export const comparePainterBuckets = (
+  left: PainterTelemetryBucket,
+  right: PainterTelemetryBucket,
+): number => {
+  if (left.templateId < right.templateId) return -1
+  if (left.templateId > right.templateId) return 1
+  return left.wplaceUserId - right.wplaceUserId || left.bucketStart - right.bucketStart
+}
+
+/**
+ * The ladder tier a paint at `occurredAt` belongs to when it is written at `now`.
+ *
+ * Walks the decay edges with the fold's own predicate: once the target window containing the paint
+ * has aged past an edge's retention, the fold has moved (or will move) every finer row in that
+ * window up a tier, so a fresh finer row would only sit invisible under the coarser one until the
+ * next fold sums it in. Writing at the reached tier instead keeps late reports readable at once.
+ */
+export const painterBucketResolution = (occurredAt: Seconds, now: Seconds): number => {
+  let resolution = LADDER_RESOLUTIONS[0] ?? 60
+  for (const edge of TELEMETRY_DECAY_EDGES) {
+    if (edge.source !== resolution) break
+    const targetStart = Math.floor(occurredAt / edge.target) * edge.target
+    if (targetStart + edge.target > now - edge.retainSeconds) break
+    resolution = edge.target
+  }
+  return resolution
+}
+
 export interface BucketQuery {
   readonly templateIds: readonly string[]
   /** One exact tier for legacy callers, or several retained tiers for a lossless server-side read. */
@@ -153,7 +210,10 @@ export interface BucketQuery {
  * than on the whole store — a narrower dependency, and one that keeps its test doubles honest
  * instead of stubbing out credential methods they never call.
  */
-export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets' | 'foldTelemetryBuckets'>
+export type BucketStore = Pick<
+  SqlStore,
+  'appendBuckets' | 'readBuckets' | 'foldTelemetryBuckets' | 'foldPainterBuckets'
+>
 
 /**
  * What `readContributions` may be asked for.
@@ -743,6 +803,11 @@ export interface ContributionDelta {
 export interface PaintEventAccounting {
   readonly counters: readonly CounterDelta[]
   readonly contributions: readonly ContributionDelta[]
+  /**
+   * The painter's share of each template's counters at the ladder tier the paint's window had
+   * reached when it was applied. Absent on classifications stored before painter buckets existed.
+   */
+  readonly painterBuckets?: readonly PainterTelemetryBucket[]
 }
 
 export interface PaintEventApplication {
@@ -1165,6 +1230,26 @@ export interface SqlStore {
    * Rejects more than `MAX_READ_BUCKETS_TEMPLATE_IDS` distinct ids. Duplicate ids are read once.
    */
   readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]>
+
+  /**
+   * Fold and prune eligible painter delta buckets for templates touched by the current write.
+   *
+   * Additive, unlike `foldTelemetryBuckets`: the target gains the sum of its sources in the same
+   * transaction that removes them, so a late report already written at the target tier survives.
+   */
+  foldPainterBuckets(templateIds: readonly string[], now: Seconds): Promise<void>
+
+  /**
+   * Read per-painter folded buckets for a set of templates over a half-open range, ordered by
+   * `comparePainterBuckets`. Same id cap and duplicate handling as `readBuckets`.
+   */
+  readPainterBuckets(query: BucketQuery): Promise<readonly PainterTelemetryBucket[]>
+
+  /**
+   * The display name last seen for each of these painters; absent ids are left out so a caller
+   * falls back to the id itself, as `readContributions` does. Same id cap as `readBuckets`.
+   */
+  readPainterNames(wplaceUserIds: readonly number[]): Promise<ReadonlyMap<number, string>>
 
   /**
    * Per-painter-per-day contributions, reduced across reporters before anything sums them.

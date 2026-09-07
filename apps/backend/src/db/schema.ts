@@ -369,6 +369,51 @@ export const telemetryBuckets = sqliteTable(
   ],
 )
 
+/**
+ * `telemetry_buckets` with a painter in the key: one painter's share of each folded bucket, on
+ * the same ladder, so a dashboard draws a painter's rolling pace at the template's precision.
+ *
+ * Rows are additive. They are written per paint report under the `applied_events` claim, which is
+ * what makes a plain `+ excluded` upsert exact, and the fold sums sources into the target in one
+ * transaction with their removal. The template table replaces instead, because the counter shard
+ * rewrites whole buckets; nothing rewrites these.
+ */
+export const painterTelemetryBuckets = sqliteTable(
+  'painter_telemetry_buckets',
+  {
+    templateId: text('template_id').notNull(),
+    wplaceUserId: integer('wplace_user_id').notNull(),
+    resolution: integer('resolution').notNull(),
+    bucketStartS: integer('bucket_start_s').$type<Seconds>().notNull(),
+    placed: integer('placed').notNull(),
+    correct: integer('correct').notNull(),
+    repairs: integer('repairs').notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.templateId, table.wplaceUserId, table.resolution, table.bucketStartS],
+    }),
+    check(
+      'painter_telemetry_buckets_resolution_check',
+      sql`${table.resolution} IN (60, 300, 900, 3600, 21600)`,
+    ),
+    check(
+      'painter_telemetry_buckets_alignment_check',
+      sql`typeof(${table.bucketStartS}) = 'integer' AND ${table.bucketStartS} >= 0
+        AND ${table.bucketStartS} % ${table.resolution} = 0`,
+    ),
+    // wplace_user_id is reporter-supplied, so it gets the same type guard `contributions` gives it.
+    check(
+      'painter_telemetry_buckets_counter_check',
+      sql`typeof(${table.wplaceUserId}) = 'integer' AND ${table.wplaceUserId} >= 0
+        AND typeof(${table.placed}) = 'integer' AND typeof(${table.correct}) = 'integer'
+        AND typeof(${table.repairs}) = 'integer'
+        AND ${table.repairs} >= 0
+        AND ${table.repairs} <= ${table.correct} AND ${table.correct} <= ${table.placed}`,
+    ),
+  ],
+)
+
 export const contributions = sqliteTable(
   'contributions',
   {

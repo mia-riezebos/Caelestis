@@ -40,6 +40,7 @@ import {
   readContributions,
   readHistory,
   readLeaderboard,
+  readPainterHistory,
   readStatus,
   readTileHistory,
   selectTelemetryHistoryResolution,
@@ -408,6 +409,40 @@ export const createTelemetryRoutes = (
         templateIds,
         range,
         ...(typeof legacyResolution === 'number' ? { legacyResolution } : {}),
+        ...(typeof maxResolution === 'number' ? { maxResolution } : {}),
+        includeUnpublished: c.get('caller').scope === 'admin',
+      }),
+      (response) => c.json(response),
+    )
+  })
+
+  routes.get('/painter-history', requireScopeEffect(runtime, auth, 'read'), (c) => {
+    const templateIds = parseTemplateIds(c.req.query('templateIds'))
+    if (templateIds === null) {
+      return c.json(
+        { error: `templateIds must be 1..${MAX_READ_BUCKETS_TEMPLATE_IDS} comma-separated ids` },
+        400,
+      )
+    }
+    const requestedMaxResolution = c.req.query('maxResolution')
+    const maxResolution =
+      requestedMaxResolution === undefined ? undefined : wholeNumber(requestedMaxResolution)
+    if (
+      requestedMaxResolution !== undefined &&
+      (typeof maxResolution !== 'number' || maxResolution < (LADDER_RESOLUTIONS[0] ?? 0))
+    ) {
+      return c.json({ error: `maxResolution must be at least ${LADDER_RESOLUTIONS[0]}` }, 400)
+    }
+    const range = parseRange(c.req.query('from'), c.req.query('to'))
+    if (range === null) {
+      return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
+    }
+    return runBackendHttp(
+      c,
+      runtime,
+      readPainterHistory({
+        templateIds,
+        range,
         ...(typeof maxResolution === 'number' ? { maxResolution } : {}),
         includeUnpublished: c.get('caller').scope === 'admin',
       }),

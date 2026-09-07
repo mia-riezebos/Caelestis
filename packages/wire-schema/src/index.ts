@@ -911,6 +911,44 @@ export const HistoryResponse = HistoryResponseStruct.pipe(
   ),
 )
 
+const PainterHistoryBucketStruct = Schema.Struct({
+  templateId: Identifier,
+  resolution: LadderResolution,
+  bucketStart: Seconds,
+  placed: NonNegativeInteger,
+  correct: NonNegativeInteger,
+  repairs: NonNegativeInteger,
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+})
+
+export const PainterHistoryBucket = PainterHistoryBucketStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (bucket: Schema.Schema.Type<typeof PainterHistoryBucketStruct>) =>
+        bucket.bucketStart % bucket.resolution === 0 && orderedCounters(bucket),
+      'bucketStart must align to the resolution and counters must satisfy repairs <= correct <= placed',
+    ),
+  ),
+)
+
+const PainterHistoryResponseStruct = Schema.Struct({
+  resolution: Schema.optionalKey(LadderResolution),
+  coverageStart: Schema.optionalKey(Seconds),
+  buckets: boundedArray(PainterHistoryBucket, MAX_HISTORY_BUCKETS),
+})
+
+export const PainterHistoryResponse = PainterHistoryResponseStruct.pipe(
+  Schema.check(
+    booleanFilter((response: Schema.Schema.Type<typeof PainterHistoryResponseStruct>) => {
+      if (response.resolution === undefined || response.coverageStart === undefined) {
+        return response.resolution === undefined && response.coverageStart === undefined
+      }
+      return response.coverageStart % response.resolution === 0
+    }, 'resolution and coverageStart must appear together and the boundary must align to the resolution'),
+  ),
+)
+
 const ContributionDayStruct = Schema.Struct({
   templateId: Identifier,
   day: DaySeconds,
@@ -1098,6 +1136,10 @@ assertExact<Exact<Schema.Schema.Type<typeof NodeStatus>, Shared.NodeStatus>>()
 assertExact<Exact<Schema.Schema.Type<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof HistoryBucket>, Shared.HistoryBucket>>()
 assertExact<Exact<Schema.Schema.Type<typeof HistoryResponse>, Shared.HistoryResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof PainterHistoryBucket>, Shared.PainterHistoryBucket>>()
+assertExact<
+  Exact<Schema.Schema.Type<typeof PainterHistoryResponse>, Shared.PainterHistoryResponse>
+>()
 assertExact<Exact<Schema.Schema.Type<typeof ContributionDay>, Shared.ContributionDay>>()
 assertExact<Exact<Schema.Schema.Type<typeof ContributionsResponse>, Shared.ContributionsResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof LeaderboardEntry>, Shared.LeaderboardEntry>>()
@@ -1135,6 +1177,10 @@ assertExact<Exact<Schema.Codec.Encoded<typeof NodeStatus>, Shared.NodeStatus>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof HistoryBucket>, Shared.HistoryBucket>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof HistoryResponse>, Shared.HistoryResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PainterHistoryBucket>, Shared.PainterHistoryBucket>>()
+assertExact<
+  Exact<Schema.Codec.Encoded<typeof PainterHistoryResponse>, Shared.PainterHistoryResponse>
+>()
 assertExact<Exact<Schema.Codec.Encoded<typeof ContributionDay>, Shared.ContributionDay>>()
 assertExact<
   Exact<Schema.Codec.Encoded<typeof ContributionsResponse>, Shared.ContributionsResponse>

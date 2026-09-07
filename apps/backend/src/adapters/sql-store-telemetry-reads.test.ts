@@ -6,7 +6,12 @@ import type {
   TemplateVersionRecord,
   TileObservation,
 } from '../ports/index.js'
-import { EXPIRES_AFTER_SECONDS, TELEMETRY_DECAY_EDGES } from '../ports/index.js'
+import {
+  EXPIRES_AFTER_SECONDS,
+  type PainterTelemetryBucket,
+  painterBucketResolution,
+  TELEMETRY_DECAY_EDGES,
+} from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
 import { MemorySqlStore } from './memory/memory-sql-store.js'
@@ -588,5 +593,135 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
         toSeconds: now,
       }),
     ).resolves.toEqual([])
+  })
+})
+
+describe('painter bucket tier', () => {
+  it('lands a paint at the tier its window has already reached', () => {
+    const now = seconds(1_800_000_000)
+    expect(painterBucketResolution(now, now)).toBe(60)
+    // Inside the 6h retention of the first edge: still a minute bucket.
+    expect(painterBucketResolution(seconds(now - 5 * 3_600), now)).toBe(60)
+    // A 300s window that ended more than 6h ago has been folded up one tier.
+    expect(painterBucketResolution(seconds(now - 7 * 3_600), now)).toBe(300)
+    // The window containing the paint is what counts, not the paint itself.
+    const edge = now - 6 * 3_600
+    const windowStart = Math.floor(edge / 300) * 300
+    expect(painterBucketResolution(seconds(windowStart), now)).toBe(
+      windowStart + 300 <= edge ? 300 : 60,
+    )
+    expect(painterBucketResolution(seconds(now - 2 * 86_400), now)).toBe(900)
+    expect(painterBucketResolution(seconds(now - 8 * 86_400), now)).toBe(3_600)
+    expect(painterBucketResolution(seconds(now - 40 * 86_400), now)).toBe(21_600)
+  })
+})
+
+describe.each(adapters)('$name painter bucket contract', ({ make }) => {
+  let harness: Harness
+  let store: SqlStore
+
+  beforeEach(() => {
+    harness = make()
+    store = harness.store
+  })
+
+  afterEach(() => harness.close())
+
+  const bucket = (overrides: Partial<PainterTelemetryBucket>): PainterTelemetryBucket => ({
+    templateId: 'template-1',
+    wplaceUserId: 7,
+    resolution: 60,
+    bucketStart: seconds(1_800_000_000),
+    placed: 3,
+    correct: 2,
+    repairs: 1,
+    ...overrides,
+  })
+
+  const apply = (eventId: string, buckets: readonly PainterTelemetryBucket[]) =>
+    store.applyPaintEvent(eventId, 7, 'Ada', millis(1_800_000_000_000), {
+      counters: [],
+      contributions: [],
+      painterBuckets: buckets,
+    })
+
+  it('adds painter buckets per event, once per event id', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    await apply('event-1', [bucket({})])
+    await apply('event-2', [bucket({ placed: 5, correct: 4, repairs: 0 })])
+    await apply('event-2', [bucket({ placed: 5, correct: 4, repairs: 0 })])
+    await apply('event-3', [bucket({ wplaceUserId: 9 })])
+
+    await expect(
+      store.readPainterBuckets({
+        templateIds: ['template-1'],
+        resolution: 60,
+        fromSeconds: seconds(1_800_000_000),
+        toSeconds: seconds(1_800_000_060),
+      }),
+    ).resolves.toEqual([bucket({ placed: 8, correct: 6, repairs: 1 }), bucket({ wplaceUserId: 9 })])
+    await expect(store.readPainterNames([7, 9, 11])).resolves.toEqual(new Map([[7, 'Ada']]))
+  })
+
+  it('rejects a painter bucket off the ladder before it reaches the database', async () => {
+    await expect(
+      apply('event-1', [bucket({ resolution: 61, bucketStart: seconds(61) })]),
+    ).rejects.toThrow(/ladder tier/)
+    await expect(apply('event-2', [bucket({ wplaceUserId: -1 })])).rejects.toThrow(/wplaceUserId/)
+  })
+
+  it('folds each painter separately and adds into a target a late report already reached', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const now = seconds(1_800_000_000)
+    const cutoff = now - 6 * 3_600
+    const targetStart = seconds(cutoff - 300)
+    await apply('event-1', [
+      bucket({ bucketStart: targetStart, placed: 4, correct: 3, repairs: 1 }),
+      bucket({ bucketStart: seconds(targetStart + 60), placed: 6, correct: 5, repairs: 2 }),
+      bucket({
+        wplaceUserId: 9,
+        bucketStart: seconds(targetStart + 120),
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      }),
+      bucket({ bucketStart: seconds(cutoff), placed: 1, correct: 1, repairs: 0 }),
+    ])
+    // A late report written straight at the 300s tier, as `painterBucketResolution` would place it.
+    await apply('event-2', [
+      bucket({ resolution: 300, bucketStart: targetStart, placed: 10, correct: 10, repairs: 0 }),
+    ])
+
+    await store.foldPainterBuckets(['template-1'], now)
+    await store.foldPainterBuckets(['template-1'], now)
+
+    await expect(
+      store.readPainterBuckets({
+        templateIds: ['template-1'],
+        resolution: 300,
+        fromSeconds: targetStart,
+        toSeconds: seconds(cutoff),
+      }),
+    ).resolves.toEqual([
+      bucket({ resolution: 300, bucketStart: targetStart, placed: 20, correct: 18, repairs: 3 }),
+      bucket({
+        wplaceUserId: 9,
+        resolution: 300,
+        bucketStart: targetStart,
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      }),
+    ])
+    await expect(
+      store.readPainterBuckets({
+        templateIds: ['template-1'],
+        resolution: 60,
+        fromSeconds: targetStart,
+        toSeconds: seconds(cutoff + 60),
+      }),
+    ).resolves.toEqual([
+      bucket({ bucketStart: seconds(cutoff), placed: 1, correct: 1, repairs: 0 }),
+    ])
   })
 })

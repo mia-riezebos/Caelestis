@@ -344,6 +344,24 @@ export interface HistoryResponse {
 }
 
 /**
+ * One painter's share of a folded bucket, as `GET /telemetry/painter-history` serves it.
+ *
+ * Painter buckets ride the same decay ladder as `HistoryBucket`, so a dashboard can draw one
+ * painter's rolling pace with exactly the precision it draws the template's. They come from the
+ * same paint reports as `ContributionDay`: a painter whose client does not report is not in here.
+ */
+export interface PainterHistoryBucket extends HistoryBucket, PainterIdentity {}
+
+/** Per-painter pace history for a set of templates at one resolution over a half-open range. */
+export interface PainterHistoryResponse {
+  /** Selected bucket width when the caller bounds granularity. */
+  readonly resolution?: number
+  /** First bucket start whose selected-resolution coverage the server still guarantees. */
+  readonly coverageStart?: Seconds
+  readonly buckets: readonly PainterHistoryBucket[]
+}
+
+/**
  * One painter's day on one template.
  *
  * Already reduced across reporters: several clients report the same painter-day, and each carries

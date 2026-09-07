@@ -392,6 +392,58 @@ describe('telemetry read routes', () => {
     })
   })
 
+  it('serves per-painter history with names, gated like the template history', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const hiddenId = await createTemplate(app, false)
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const bucketStart = seconds(Math.floor((now - 60) / 60) * 60)
+    const painterBucket = (id: string, wplaceUserId: number) => ({
+      templateId: id,
+      wplaceUserId,
+      resolution: 60,
+      bucketStart,
+      placed: 2,
+      correct: 2,
+      repairs: 0,
+    })
+    await sql.applyPaintEvent('event-1', 42, 'Ada', millis(now * 1_000), {
+      counters: [],
+      contributions: [],
+      painterBuckets: [painterBucket(templateId, 42), painterBucket(hiddenId, 42)],
+    })
+    await sql.applyPaintEvent('event-2', 43, 'Bo', millis(now * 1_000), {
+      counters: [],
+      contributions: [],
+      painterBuckets: [painterBucket(templateId, 43)],
+    })
+
+    const response = await app.request(
+      `/telemetry/painter-history?templateIds=${templateId},${hiddenId}&maxResolution=900&from=${now - 3_600}&to=${now}`,
+      { headers: bearer(readToken) },
+    )
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      resolution: 60,
+      coverageStart: Math.ceil((now - 3_600) / 60) * 60,
+      buckets: [
+        { ...painterBucket(templateId, 42), displayName: 'Ada' },
+        { ...painterBucket(templateId, 43), displayName: 'Bo' },
+      ],
+    })
+
+    const malformed = await app.request(
+      `/telemetry/painter-history?templateIds=${templateId}&from=${now}&to=${now - 1}`,
+      { headers: bearer(readToken) },
+    )
+    expect(malformed.status).toBe(400)
+    const anonymous = await app.request(
+      `/telemetry/painter-history?templateIds=${templateId}&from=${now - 3_600}&to=${now}`,
+    )
+    expect(anonymous.status).toBe(401)
+  })
+
   it('serves only the retained fine part when a pace window bounds bucket width', async () => {
     const { app, sql } = await harness()
     const templateId = await createPublishedTemplate(app)

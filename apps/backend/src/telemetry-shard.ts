@@ -331,10 +331,11 @@ export class TelemetryShard extends DurableObject<Env> {
       try {
         const sql = new D1SqlStore(this.env.DB)
         await sql.appendBuckets(buckets)
-        await sql.foldTelemetryBuckets(
-          buckets.map((bucket) => bucket.templateId),
-          nowSeconds,
-        )
+        const templateIds = buckets.map((bucket) => bucket.templateId)
+        await sql.foldTelemetryBuckets(templateIds, nowSeconds)
+        // Painter buckets are written by the paint route, not flushed from here, but they age on
+        // the same ladder, so the flush that folds a template's buckets folds its painters' too.
+        await sql.foldPainterBuckets(templateIds, nowSeconds)
       } catch (error) {
         // Schedule the retry and return normally rather than rethrowing.
         //
