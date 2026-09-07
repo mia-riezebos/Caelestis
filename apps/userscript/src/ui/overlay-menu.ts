@@ -27,6 +27,7 @@ import {
   getState,
   getSurfaceAppearance,
   listServerContents,
+  patchTemplate,
   removeTreeStateKeys,
   uploadTemplateVersion,
 } from '../state.js'
@@ -264,6 +265,7 @@ interface Intent<T> {
  * of the second discarding the first.
  */
 const visibleIntents = new Map<string, Intent<boolean>>()
+const pendingLifecycle = new Map<string, 'finished' | 'frozen'>()
 let sequence = 0
 
 /**
@@ -523,10 +525,13 @@ const serverDraftIsEditable = (id: string): boolean => {
   return target !== null && !target.published
 }
 
-const refreshServerTemplateSurface = (server: ConnectedServer, template: PlacedTemplate): void => {
+const refreshServerTemplateSurface = async (
+  server: ConnectedServer,
+  template: PlacedTemplate,
+): Promise<void> => {
   const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
-  if (surface.kind === 'world') void listServerContents(server)
-  else void refreshAllianceManifest(server, surface)
+  if (surface.kind === 'world') await listServerContents(server)
+  else await refreshAllianceManifest(server, surface)
 }
 
 /** The template's name as it is *now* — a name captured at build time goes stale on a rename. */
@@ -615,6 +620,7 @@ const forget = (id: string): void => {
   overlayAppearanceState.forget(id)
   clearAppearancePreview(id)
   visibleIntents.delete(id)
+  pendingLifecycle.delete(id)
   queues.delete(id)
   overlayFailures.forget(id)
   confirming.delete(id)
@@ -628,6 +634,7 @@ const remembered = (): Set<string> =>
     ...placementRails.keys(),
     ...overlayAppearanceState.ids(),
     ...visibleIntents.keys(),
+    ...pendingLifecycle.keys(),
     ...queues.keys(),
     ...overlayFailures.ids(),
     ...confirming,
@@ -710,6 +717,52 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
   )
 }
 
+const commitLifecycle = (
+  id: string,
+  field: 'finished' | 'frozen',
+  value: boolean,
+  rerender: () => void,
+): void => {
+  if (isDoomed(id) || pendingLifecycle.has(id)) return
+  const template = templateFor(id)
+  const target = template === undefined ? null : serverActionTargetFor(template)
+  const lifecycle = template === undefined ? null : serverLifecycleFor(template)
+  if (template === undefined || target === null || lifecycle === null) {
+    recordFailure(id, field, () => 'Admin access to this template is no longer available.')
+    rerender()
+    return
+  }
+  if (field === 'frozen' && !value && lifecycle.finished && lifecycle.frozen) {
+    recordFailure(id, field, () => 'Reopen the template before thawing.')
+    rerender()
+    return
+  }
+  pendingLifecycle.set(id, field)
+  let message = 'Could not update this template. Try again.'
+  settle(
+    id,
+    [field],
+    async () => {
+      const result = await patchTemplate(
+        target.server,
+        target.templateId,
+        field === 'finished' ? { finished: value } : { timelapseFrozen: value },
+      )
+      if (!result.ok) message = result.message
+      await refreshServerTemplateSurface(target.server, template)
+      return result.ok
+    },
+    () => message,
+    () => pendingLifecycle.delete(id),
+    rerender,
+    () => {
+      const current = templateFor(id)
+      return current !== undefined && serverLifecycleFor(current)?.[field] === value
+    },
+    false,
+  )
+}
+
 /**
  * What the menu draws, as one comparable string.
  *
@@ -732,6 +785,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     visibleFor(id),
     lifecycle?.finished ?? false,
     lifecycle?.frozen ?? false,
+    pendingLifecycle.get(id),
     appearance.radius,
     appearance.translateX,
     appearance.translateY,
@@ -873,6 +927,7 @@ const overlayAppearanceModel = (template: PlacedTemplate): AppearanceEditorModel
 
 const overlayModel = (template: PlacedTemplate): OverlayControlsModel => {
   const lifecycle = serverLifecycleFor(template)
+  const pending = pendingLifecycle.get(template.id)
   return {
     name: template.name,
     ...(lifecycle === null
@@ -882,6 +937,8 @@ const overlayModel = (template: PlacedTemplate): OverlayControlsModel => {
             finished: lifecycle.finished,
             frozen: lifecycle.frozen,
             griefed: false,
+            editable: serverActionTargetFor(template) !== null,
+            ...(pending === undefined ? {} : { pending }),
           },
         }),
     failures: overlayFailures.render(template.id, template.name).map((failure) => ({
@@ -1045,7 +1102,7 @@ const moveServerDraft = async (id: string, originX: number, originY: number): Pr
   clearFailure(id, 'move')
   // The manifest coordinator updates both the tree and the rendered server copy. The placement
   // engine accepts its local preview immediately; this read supplies the new immutable version.
-  refreshServerTemplateSurface(currentTarget.server, current)
+  void refreshServerTemplateSurface(currentTarget.server, current)
   return true
 }
 
@@ -1237,7 +1294,7 @@ const confirmDelete = (id: string, rerender: () => void): void => {
             return false
           }
           await forgetServerTemplate(id)
-          if (current !== undefined) refreshServerTemplateSurface(serverTarget.server, current)
+          if (current !== undefined) void refreshServerTemplateSurface(serverTarget.server, current)
           return true
         })
   void removal.then(
@@ -1372,6 +1429,12 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
       }
       case 'appearance':
         handleOverlayAppearance(id, intent.intent, rerender)
+        break
+      case 'set-finished':
+        commitLifecycle(id, 'finished', intent.value, rerender)
+        break
+      case 'set-frozen':
+        commitLifecycle(id, 'frozen', intent.value, rerender)
         break
     }
   })
