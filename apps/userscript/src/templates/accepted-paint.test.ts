@@ -227,6 +227,25 @@ it('rejects an old tile observation and lets a later observation replace accepte
   expect(read()?.unpainted).toHaveLength(1)
 })
 
+it('captures accepted artwork above an older tile without including unrelated drafts', async () => {
+  const { pixels, draft, submit, accept, fetchTile } = await setup()
+  const tile = { x: 0, y: 0 }
+  pixels.captureTilePixels(true)
+  await fetchTile(1)()
+  const stale = fetchTile(1)
+  draft(0)
+  const pending = submit()
+  await accept()
+  await pending
+  draft(2)
+  await stale()
+  expect((await pixels.loadCommittedTilePixels(tile))?.[0]).toBe(0)
+  expect(pixels.tilePixels(tile)?.[0]).toBe(1)
+  expect(pixels.draftPixels(tile)?.[0]).toBe(2)
+  await fetchTile(1)()
+  expect((await pixels.loadCommittedTilePixels(tile))?.[0]).toBe(1)
+})
+
 it('keeps accepted paint when a newer unrelated draft is cancelled', async () => {
   const { pixels, read, draft, submit, accept } = await setup()
   draft(0)

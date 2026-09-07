@@ -27,6 +27,7 @@ import {
   deleteTemplate as deleteTemplateOnServer,
   dismissTemplateAlarm,
   getState,
+  hasServerAdminToken,
   isCurrentServerConnection,
   listServerNodes,
   MAX_LOCAL_FOLDERS,
@@ -90,6 +91,7 @@ import {
   templatesForServer,
   templatesOfNode,
 } from './tree-server-state.js'
+import { requestTemplateArtworkUpdate } from './update-template-artwork.js'
 
 type ContextAction = { readonly id: string; readonly run: () => void }
 type OperationState = {
@@ -1013,6 +1015,13 @@ export const openContextMenu = (
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): void => {
   const templateId = localTemplateId(target)
+  const updateArtwork = (): void => {
+    const id =
+      target.server !== null && target.templateId !== undefined
+        ? serverTemplateKey(target.server.url, target.templateId, surfaceOf(target))
+        : templateId
+    if (id !== null) requestTemplateArtworkUpdate(id, rerender)
+  }
   const rename: readonly [TreeIcon, string, () => void] = [
     'rename',
     'Rename',
@@ -1065,7 +1074,7 @@ export const openContextMenu = (
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
-      ? target.server?.isAdmin === false
+      ? target.server === null || !hasServerAdminToken(target.server)
         ? [['download', 'Export .wplace', () => void exportTemplate(target)]]
         : [
             ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
@@ -1103,6 +1112,7 @@ export const openContextMenu = (
                     void setServerTemplateLifecycle(target, { timelapseFrozen: true }, rerender),
                 ],
             ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
+            ['reset', 'Use canvas artwork', updateArtwork],
             rename,
             remove,
           ]
@@ -1129,6 +1139,7 @@ export const openContextMenu = (
               },
             ],
             ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
+            ['reset', 'Use canvas artwork', updateArtwork],
             rename,
             remove,
           ]

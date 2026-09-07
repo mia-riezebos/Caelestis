@@ -97,6 +97,41 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+it.each([true, false])(
+  'publishes replacement artwork only after a successful durable save (%s)',
+  async (succeeds) => {
+    const store = await import('./local-store.js')
+    await store.addLocalTemplate(template())
+    const previous = store.templateById('local-test')
+    if (previous === undefined) throw new Error('Template was not installed')
+    const changed = vi.fn()
+    store.onLocalChange(changed)
+    persistence.saveTemplate.mockResolvedValueOnce(
+      succeeds ? { status: 'saved', revision: previous.revision + 1 } : { status: 'unavailable' },
+    )
+    const update = store.replaceLocalArtwork(previous, new Uint8Array([5]))
+    if (succeeds) {
+      await update
+      expect(store.templateById(previous.id)).toMatchObject({
+        ...previous,
+        indices: new Uint8Array([5]),
+        revision: previous.revision + 1,
+        updatedAt: expect.any(Number),
+      })
+      expect(changed).toHaveBeenCalledOnce()
+    } else {
+      await expect(update).rejects.toThrow('Could not save')
+      expect(store.templateById(previous.id)).toBe(previous)
+      expect(changed).not.toHaveBeenCalled()
+    }
+    expect(persistence.saveTemplate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ indices: new Uint8Array([5]) }),
+      previous.revision,
+      true,
+    )
+  },
+)
+
 describe('local template lifecycle', () => {
   it('persists update time on import and rename, then restores it', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000)

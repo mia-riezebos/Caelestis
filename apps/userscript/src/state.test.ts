@@ -697,6 +697,49 @@ describe('server state boundaries', () => {
     expect(observed).toHaveBeenCalledWith(server, firstContents)
   })
 
+  it('keeps the post-mutation world manifest when an older read finishes later', async () => {
+    let release!: (response: Response) => void
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              release = resolve
+            }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ...manifest, version: 'new' }))),
+    )
+    const {
+      listServerContents,
+      onServerContents,
+      setState,
+      serverConnectionIdentity,
+      admitServerContents,
+      admittedServerContentsFor,
+    } = await import('./state.js')
+    const { invalidateServerReads } = await import('./server-read-coalescer.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+    onServerContents(admitServerContents)
+    const old = listServerContents(server)
+    invalidateServerReads(serverConnectionIdentity(server))
+    await listServerContents(server)
+    release(new Response(JSON.stringify(manifest)))
+    await old
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(admittedServerContentsFor(server)?.revision).toBe('new')
+  })
+
   it('gives a folder picker the admitted tree from a shared in-flight read', async () => {
     let finishPicker = (_response: Response): void => undefined
     vi.stubGlobal(

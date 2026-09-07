@@ -17,6 +17,10 @@ import type {
 } from '@caelestis/ui/elements'
 import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
 import type { ActiveAllianceSurface } from '../alliance-surface.js'
+import {
+  isUpdatingTemplateArtwork,
+  requestTemplateArtworkUpdate,
+} from '../application/update-template-artwork.js'
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
@@ -27,6 +31,7 @@ import {
   deleteTemplate as deleteTemplateOnServer,
   getState,
   getSurfaceAppearance,
+  hasServerAdminToken,
   listServerContents,
   patchTemplate,
   removeTreeStateKeys,
@@ -477,7 +482,7 @@ interface ServerActionTarget {
 const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | null => {
   if (!isServerTemplate(template) || template.serverTemplateId === undefined) return null
   const server = getState().servers.find(
-    (candidate) => candidate.url === template.serverUrl && candidate.isAdmin,
+    (candidate) => candidate.url === template.serverUrl && hasServerAdminToken(candidate),
   )
   if (server === undefined) return null
   const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
@@ -828,6 +833,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     appearance.otherColour,
     [...(template.owns ?? [])].sort().join('.'),
     confirming.has(id),
+    isUpdatingTemplateArtwork(id),
     isDoomed(id),
     // Drawn — it is Delete's `aria-disabled` — so it is a render input like the rest. A placement
     // beginning or ending while the menu is open otherwise leaves the button announcing the
@@ -948,6 +954,14 @@ const overlayModel = (template: PlacedTemplate): OverlayControlsModel => {
   const lifecycle = serverLifecycleFor(template)
   return {
     name: template.name,
+    ...(!isServerTemplate(template) || serverActionTargetFor(template) !== null
+      ? {
+          updateArtwork: {
+            pending: isUpdatingTemplateArtwork(template.id),
+            disabled: isDoomed(template.id) || movingId() === template.id,
+          },
+        }
+      : {}),
     ...(lifecycle === null
       ? {}
       : {
@@ -1475,6 +1489,9 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
   menu.addEventListener('caelestis-overlay-intent', (event) => {
     const intent = (event as CustomEvent<OverlayControlsIntent>).detail
     switch (intent.type) {
+      case 'update-artwork':
+        requestTemplateArtworkUpdate(id, rerender)
+        break
       case 'close':
         closeOverlayMenu()
         handBack(template.id)

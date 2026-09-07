@@ -1164,10 +1164,11 @@ let chasing = 0
  * refetch, which lands about ten seconds later and captures the tile anyway.
  */
 const CHASE_LIMIT = 4
+const requestedTilePixels = new Map<string, number>()
 
 export const ensureTilePixels = (tile: TileCoord): boolean => {
-  if (!capturePixels || tileUrlShape === null) return false
   const key = tileKey(tile)
+  if ((!capturePixels && !requestedTilePixels.has(key)) || tileUrlShape === null) return false
   if (pixelsOfTile.has(key)) return true
   if (chased.has(key) || chasing >= CHASE_LIMIT) return false
   chased.add(key)
@@ -1215,25 +1216,41 @@ export const loadTilePixels = async (
   const existing = tilePixels(tile)
   if (existing !== null) return existing
   const key = tileKey(tile)
-  let chase = activeChases.get(key)
-  if (chase === undefined) {
-    if (!ensureTilePixels(tile)) return null
-    chase = activeChases.get(key)
-  }
-  if (chase === undefined) return tilePixels(tile)
-
+  requestedTilePixels.set(key, (requestedTilePixels.get(key) ?? 0) + 1)
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {
+    let chase = activeChases.get(key)
+    if (chase === undefined) {
+      if (!ensureTilePixels(tile)) return null
+      chase = activeChases.get(key)
+    }
+    if (chase === undefined) return tilePixels(tile)
     await Promise.race([
       chase,
       new Promise<void>((resolve) => {
         timeout = setTimeout(resolve, Math.max(0, timeoutMs))
       }),
     ])
+    return tilePixels(tile)
   } finally {
     if (timeout !== undefined) clearTimeout(timeout)
+    const requests = (requestedTilePixels.get(key) ?? 1) - 1
+    if (requests === 0) requestedTilePixels.delete(key)
+    else requestedTilePixels.set(key, requests)
   }
-  return tilePixels(tile)
+}
+
+/** Capture the base tile plus fully accepted paint awaiting a newer tile, excluding native drafts. */
+export const loadCommittedTilePixels = async (tile: TileCoord): Promise<Uint8Array | null> => {
+  const base = await loadTilePixels(tile)
+  if (base === null) return null
+  const held = acceptedPixels.get(tileKey(tile))
+  if (held === undefined || held.pending === 0) return base
+  const committed = base.slice()
+  for (const [offset, pixel] of held.pixels) {
+    if (pixel.pending) committed[offset] = pixel.colour
+  }
+  return committed
 }
 
 /**
@@ -1805,6 +1822,7 @@ const capture = (
     const retained = from === 'tile' ? acceptedPixels.get(key) : undefined
     if (
       (retained?.pending ?? 0) === 0 &&
+      !(from === 'tile' && requestedTilePixels.has(key)) &&
       (!capturePixels || (captureInterest !== null && !captureInterest(tile)))
     )
       return false

@@ -23,7 +23,7 @@ import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 const DB_NAME = 'caelestis'
 const STORE = 'server-cache'
 // Shared with local template persistence. Opening an older version after v3 exists is a VersionError.
-const VERSION = 4
+const VERSION = 5
 
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
@@ -116,6 +116,9 @@ const open = (): Promise<IDBDatabase> =>
       // The local-template store lives in the same database and must survive this upgrade.
       if (!db.objectStoreNames.contains('local-templates')) {
         db.createObjectStore('local-templates', { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains('local-template-versions')) {
+        db.createObjectStore('local-template-versions', { keyPath: ['id', 'revision'] })
       }
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'url' })
       if (event.oldVersion < 4) {

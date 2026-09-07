@@ -31,9 +31,12 @@ import {
 const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
-const VERSION = 4
+const VERSION = 5
+const VERSIONS_STORE = 'local-template-versions'
 const MAX_PERSISTED_TEMPLATES = 64
 const MAX_PERSISTED_INDEX_PIXELS = 64 * 1024 * 1024
+const MAX_ARCHIVED_VERSIONS = 256
+const MAX_ARCHIVED_INDEX_PIXELS = 64 * 1024 * 1024
 let blockedOpenRequest: IDBOpenDBRequest | null = null
 let blockedOpenRecovery: Promise<void> | null = null
 let settleBlockedOpen: (() => void) | null = null
@@ -86,6 +89,9 @@ const open = (): Promise<IDBDatabase> => {
     request.onupgradeneeded = (event) => {
       const db = request.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
+      if (!db.objectStoreNames.contains(VERSIONS_STORE)) {
+        db.createObjectStore(VERSIONS_STORE, { keyPath: ['id', 'revision'] })
+      }
       if (!db.objectStoreNames.contains('server-cache')) {
         db.createObjectStore('server-cache', { keyPath: 'url' })
       }
@@ -125,12 +131,16 @@ const writeVersioned = async (
   operation: (templates: IDBObjectStore, nextRevision: number, current: unknown) => void,
   incrementRevision = true,
   creationPixels: number | null = null,
+  history?: 'archive' | 'delete',
 ): Promise<SaveResult> => {
   try {
     const db = await open()
     try {
       return await new Promise<SaveResult>((resolve, reject) => {
-        const transaction = db.transaction(STORE, 'readwrite')
+        const transaction = db.transaction(
+          history === undefined ? STORE : [STORE, VERSIONS_STORE],
+          'readwrite',
+        )
         const templates = transaction.objectStore(STORE)
         const request = templates.get(id)
         let result: SaveResult = { status: 'conflict' }
@@ -148,8 +158,39 @@ const writeVersioned = async (
             ? (expectedRevision ?? 0) + 1
             : (expectedRevision ?? 0)
           const commit = (): void => {
+            if (history === 'archive') {
+              transaction
+                .objectStore(VERSIONS_STORE)
+                .add({ ...current, id, revision: expectedRevision })
+            } else if (history === 'delete') {
+              transaction
+                .objectStore(VERSIONS_STORE)
+                .delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]))
+            }
             operation(templates, nextRevision, current)
             result = { status: 'saved', revision: nextRevision }
+          }
+          if (history === 'archive') {
+            let records = 0
+            let pixels = candidateIndexPixels(current)
+            const cursorRequest = transaction.objectStore(VERSIONS_STORE).openCursor()
+            cursorRequest.onsuccess = () => {
+              const cursor = cursorRequest.result
+              if (cursor !== null) {
+                records++
+                pixels = boundedPixelSum(pixels, candidateIndexPixels(cursor.value))
+              }
+              if (records >= MAX_ARCHIVED_VERSIONS || pixels > MAX_ARCHIVED_INDEX_PIXELS) {
+                result = { status: 'limit' }
+              } else if (cursor === null) {
+                commit()
+              } else {
+                cursor.continue()
+              }
+            }
+            cursorRequest.onerror = () =>
+              reject(cursorRequest.error ?? new Error('indexedDB history cursor failed'))
+            return
           }
           if (expectedRevision !== null || creationPixels === null) {
             commit()
@@ -210,9 +251,11 @@ export type SaveResult =
   | { readonly status: 'limit' }
   | { readonly status: 'unavailable' }
 
+/** Save metadata, or atomically archive the current image and install new artwork. */
 export const saveTemplate = async (
   template: StoredTemplate,
   expectedRevision: number | null,
+  archiveCurrent = false,
 ): Promise<SaveResult> => {
   const { indices, ...metadata } = template
   return await writeVersioned(
@@ -229,6 +272,7 @@ export const saveTemplate = async (
           ? current.indices
           : undefined
       const reusable =
+        !archiveCurrent &&
         hasCurrentPalette(current) &&
         (isUint8Array(currentIndices) || isStoredBlob(currentIndices)) &&
         candidateIndexPixels(current) === indices.length
@@ -252,6 +296,7 @@ export const saveTemplate = async (
     },
     true,
     expectedRevision === null ? indices.length : null,
+    archiveCurrent ? 'archive' : undefined,
   )
 }
 
@@ -351,6 +396,8 @@ export const deleteTemplate = async (
       // expected revision, so deleted IDs need no permanent side-store entry.
     },
     false,
+    null,
+    'delete',
   )
 
 const boundedStoredCandidate = (
