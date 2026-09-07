@@ -61,6 +61,8 @@ export interface ProfileSnapshot {
   readonly run: ProfileRun
   readonly actions: readonly ProfileAction[]
   readonly actionsDropped: number
+  readonly counters: Readonly<Record<string, number>>
+  readonly counterKeysDropped: number
   readonly cpu: {
     readonly main: ProfileStat & { readonly dutyPercent: number }
     readonly worker: ProfileStat & { readonly dutyPercent: number }
@@ -91,6 +93,7 @@ export interface ProfileSnapshot {
     readonly workload: string
     readonly context: string
     readonly actions: string
+    readonly counters: string
   }
 }
 
@@ -99,11 +102,13 @@ const RECENT_SAMPLES = 512
 const FRAME_SAMPLES = 600
 const MAX_ACTIONS = 200
 const MAX_ACTION_NAME = 100
+const MAX_COUNTERS = 256
 const SLOW_FRAME_MS = 1000 / 50
 const EMPTY_STAT: ProfileStat = { count: 0, totalMs: 0, averageMs: 0, maxMs: 0, p95Ms: 0 }
 
 let enabled = false
 let startedAt = performance.now()
+let windowId = 0
 const tasks = new Map<
   string,
   { readonly name: string; readonly kind: ProfileKind; readonly stat: MutableStat }
@@ -116,6 +121,8 @@ let startContext: ProfileContext | null = null
 let run: ProfileRun = { label: '', browserZoomPercent: null }
 let actions: ProfileAction[] = []
 let actionsDropped = 0
+const counters = new Map<string, number>()
+let counterKeysDropped = 0
 
 let frameRequest: number | null = null
 let previousFrameAt: number | null = null
@@ -168,6 +175,16 @@ export const recordProfileAction = (name: string, trusted: boolean | null = null
     actions.shift()
     actionsDropped++
   }
+}
+
+/** Count events or bytes within this profile window; disabled profiling keeps no counters. */
+export const recordProfileCounter = (name: string, by = 1): void => {
+  if (!enabled || !Number.isFinite(by) || by < 0) return
+  if (!counters.has(name) && counters.size >= MAX_COUNTERS) {
+    counterKeysDropped++
+    return
+  }
+  counters.set(name, (counters.get(name) ?? 0) + by)
 }
 
 const recordInput = (event: Event): void => {
@@ -289,6 +306,9 @@ const startObservers = (): void => {
 
 export const isProfileEnabled = (): boolean => enabled
 
+/** Identify the current reset window so delayed GPU results cannot enter a later measurement. */
+export const profileWindowId = (): number => windowId
+
 export const setProfileEnabled = (on: boolean): void => {
   if (enabled === on) return
   enabled = on
@@ -316,11 +336,14 @@ export const installProfile = (): void => {
 export const resetProfile = (): void => {
   recentByKind.clear()
   startedAt = performance.now()
+  windowId++
   previousFrameAt = null
   startContext = enabled ? (contextSource?.() ?? null) : null
   run = { label: '', browserZoomPercent: null }
   actions = []
   actionsDropped = 0
+  counters.clear()
+  counterKeysDropped = 0
   tasks.clear()
   workload.clear()
   frameCount = 0
@@ -407,6 +430,7 @@ interface TimerExtension {
 interface PendingGpuQuery {
   readonly query: WebGLQuery
   readonly name: string
+  readonly window: number
 }
 
 interface GpuTimerState {
@@ -454,6 +478,11 @@ const collectGpuQueries = (gl: WebGL2RenderingContext, state: GpuTimerState): vo
     while (state.pending.length > 0) {
       const pending = state.pending[0]
       if (pending === undefined) break
+      if (pending.window !== windowId) {
+        gl.deleteQuery(pending.query)
+        state.pending.shift()
+        continue
+      }
       if (!gl.getQueryParameter(pending.query, gl.QUERY_RESULT_AVAILABLE)) break
       const nanoseconds = Number(gl.getQueryParameter(pending.query, gl.QUERY_RESULT))
       if (Number.isFinite(nanoseconds) && nanoseconds >= 0) {
@@ -483,6 +512,7 @@ export const profileGpu = <T>(gl: WebGL2RenderingContext, name: string, draw: ()
   if (state.pending.length >= MAX_PENDING_GPU_QUERIES) return draw()
   const query = gl.createQuery()
   if (query === null) return draw()
+  const window = windowId
   try {
     gl.beginQuery(state.extension.TIME_ELAPSED_EXT, query)
   } catch {
@@ -494,7 +524,7 @@ export const profileGpu = <T>(gl: WebGL2RenderingContext, name: string, draw: ()
   } finally {
     try {
       gl.endQuery(state.extension.TIME_ELAPSED_EXT)
-      state.pending.push({ query, name })
+      state.pending.push({ query, name, window })
     } catch {
       gl.deleteQuery(query)
     }
@@ -535,6 +565,8 @@ export const profileSnapshot = (): ProfileSnapshot => {
     run: { ...run },
     actions: enabled ? actions.map((action) => ({ ...action })) : [],
     actionsDropped: enabled ? actionsDropped : 0,
+    counters: enabled ? Object.fromEntries(counters) : {},
+    counterKeysDropped: enabled ? counterKeysDropped : 0,
   }
   if (!enabled) {
     return {
@@ -567,6 +599,8 @@ export const profileSnapshot = (): ProfileSnapshot => {
           'Start and current metadata. Drawing is effective visibility; onscreen counts are render workload gauges. Browser zoom is supplied externally, never inferred from DPR or pinch scale.',
         actions:
           'Last 200 action markers in recording order, in milliseconds since reset. Trusted pointer events mark dispatch, not presentation or input latency.',
+        counters:
+          'Event and byte totals since reset; absent counters recorded no events. Canvas writes include all observed page canvases; tile-sized canvas uploads are draft candidates. Readback bytes count RGBA data returned, not texture traffic.',
       },
     }
   }
@@ -642,6 +676,8 @@ export const profileSnapshot = (): ProfileSnapshot => {
         'Start and current metadata. Drawing is effective visibility; onscreen counts are render workload gauges. Browser zoom is supplied externally, never inferred from DPR or pinch scale.',
       actions:
         'Last 200 action markers in recording order, in milliseconds since reset. Trusted pointer events mark dispatch, not presentation or input latency.',
+      counters:
+        'Event and byte totals since reset; absent counters recorded no events. Canvas writes include all observed page canvases; tile-sized canvas uploads are draft candidates. Readback bytes count RGBA data returned, not texture traffic.',
     },
   }
 }

@@ -6,6 +6,7 @@ import {
   profileGpu,
   profileSnapshot,
   recordProfileAction,
+  recordProfileCounter,
   recordProfileDuration,
   recordProfileWorkload,
   registerProfileContextSource,
@@ -32,6 +33,19 @@ afterEach(() => {
 })
 
 describe('performance profile', () => {
+  it('counts events only within the enabled window and bounds distinct keys', () => {
+    recordProfileCounter('bytes', 99)
+    setProfileEnabled(true)
+    recordProfileCounter('bytes', 4)
+    recordProfileCounter('bytes', 8)
+    expect(profileSnapshot().counters).toEqual({ bytes: 12 })
+    resetProfile()
+    expect(profileSnapshot().counters).toEqual({})
+    for (let i = 0; i < 257; i++) recordProfileCounter(`event ${i}`)
+    expect(Object.keys(profileSnapshot().counters)).toHaveLength(256)
+    expect(profileSnapshot().counterKeysDropped).toBe(1)
+  })
+
   it('captures start and current context without reading app state while disabled', () => {
     const context: ProfileContext = {
       build: { version: 'test', revision: 'abc', dirty: false, development: true },
@@ -230,6 +244,10 @@ describe('performance profile', () => {
     // stay below the p95 cutoff; evicting the newer 1 ms query crosses that cutoff.
     for (let i = 0; i < 511; i++) recordProfileDuration('markers', i < 25 ? 50 : 1, 'gpu')
     expect(profileSnapshot().gpu.p95Ms).toBe(1)
+    resetProfile()
+    await Promise.resolve()
+    profileGpu(gl, 'overlay', () => undefined)
+    expect(profileSnapshot().gpu.count).toBe(0)
     setProfileEnabled(false)
     profileGpu(gl, 'overlay', () => undefined)
   })

@@ -1,5 +1,11 @@
 import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@caelestis/shared'
-import { measureProfileDetail } from '../profile.js'
+import {
+  isProfileEnabled,
+  measureProfileDetail,
+  profileWindowId,
+  recordProfileCounter,
+  recordProfileWorkload,
+} from '../profile.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 
@@ -31,6 +37,9 @@ interface PendingTemplateGpuTile {
 }
 
 interface PendingTemplateGpu {
+  /** Age is observed only while profiling; a pre-existing queue starts at its first profiled advance. */
+  observedAt: number | null
+  profileWindow: number | null
   readonly indices: readonly PendingTemplateGpuTile[]
   readonly palette: WebGLTexture
   readonly width: number
@@ -117,6 +126,7 @@ export class TemplateGpuStore {
     const gl = this.gl
     gl.bindTexture(gl.TEXTURE_2D, entry.palette)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, PALETTE_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data)
+    recordProfileCounter('gpu:palette upload bytes', data.byteLength)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -249,6 +259,7 @@ export class TemplateGpuStore {
           ),
         )
         tile.uploadedPixels += count
+        recordProfileCounter('gpu:index upload bytes', pixels.byteLength)
         uploadedPixels += count
         left -= count
       }
@@ -306,6 +317,8 @@ export class TemplateGpuStore {
       const palette = this.gl.createTexture()
       if (palette === null) return { entry: null, status: 'failed', uploadedPixels: 0 }
       pending = {
+        observedAt: null,
+        profileWindow: null,
         indices: measureProfileDetail('Overlay upload planning', () =>
           this.plan(template.width, template.height),
         ),
@@ -318,6 +331,14 @@ export class TemplateGpuStore {
       this.pending.set(template.id, pending)
     }
     pending.lastUsed = generation
+    if (isProfileEnabled()) {
+      const now = performance.now()
+      if (pending.profileWindow !== profileWindowId()) pending.observedAt = null
+      pending.profileWindow = profileWindowId()
+      pending.observedAt ??= now
+      recordProfileWorkload('GPU observed upload queue age ms', now - pending.observedAt)
+      recordProfileWorkload('GPU pending templates', this.pending.size)
+    } else pending.observedAt = null
     const advanced = this.advanceUpload(pending, allowance)
     if (advanced.status === 'failed') {
       this.release(template.id)
@@ -339,6 +360,7 @@ export class TemplateGpuStore {
       }
       const pending = this.pending.get(id)
       if (pending !== undefined) {
+        recordProfileCounter('gpu:pending uploads released')
         for (const tile of pending.indices) {
           if (tile.texture !== null) this.gl.deleteTexture(tile.texture)
         }
@@ -365,7 +387,10 @@ export class TemplateGpuStore {
         exists: existing.has(id),
       })
     }
-    for (const id of gpuCacheEvictions(records, this.maximumBytes)) this.release(id)
+    for (const id of gpuCacheEvictions(records, this.maximumBytes)) {
+      recordProfileCounter('gpu:cache evictions')
+      this.release(id)
+    }
   }
 
   dispose(): void {

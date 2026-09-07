@@ -3,11 +3,16 @@ import { afterEach, expect, it, vi } from 'vitest'
 const fixture = vi.hoisted(() => ({ map: null as unknown }))
 vi.mock('../map-handle.js', () => ({ getMap: () => fixture.map }))
 
+import { profileSnapshot, setProfileEnabled } from '../profile.js'
 import { draftedPixelsIn } from './drafted.js'
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  setProfileEnabled(false)
+  vi.restoreAllMocks()
+})
 
 it('reuses occupancy until a native mutation, with bounded recovery for missed notifications', () => {
+  setProfileEnabled(true)
   const time = vi.spyOn(performance, 'now').mockReturnValue(0)
   const pixels = new Uint8Array(40_000)
   pixels[3] = 255
@@ -37,6 +42,12 @@ it('reuses occupancy until a native mutation, with bounded recovery for missed n
   pixels[7] = 0
   time.mockReturnValue(1_000)
   expect(draftedPixelsIn({ x: 0, y: 0 }, 1_000)).toEqual([])
+  expect(profileSnapshot().counters).toMatchObject({
+    'occupancy:patch scans': 3,
+    'occupancy:scanned entries': 120_000,
+    'occupancy:cache hits': 1,
+    'occupancy:recovery scans': 1,
+  })
 })
 
 it('scans an unsupported renderer instead of trusting stale array identity', () => {

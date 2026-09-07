@@ -1,5 +1,6 @@
 import type { TileCoord } from '@caelestis/shared'
 import { getMap } from '../map-handle.js'
+import { recordProfileCounter } from '../profile.js'
 
 /**
  * Which pixels have been drafted, from wplace's own crosshair layer.
@@ -95,11 +96,20 @@ export const draftedPixelsIn = (tile: TileCoord, tileSize: number): number[] => 
       const offsetY = row * PATCH
       let cached = patches.get(annotations)
       if (!observed || cached === undefined || now - cached.checkedAt >= RECOVERY_INTERVAL_MS) {
+        recordProfileCounter('occupancy:patch scans')
+        recordProfileCounter('occupancy:scanned entries', annotations.length)
+        recordProfileCounter(
+          !observed
+            ? 'occupancy:unsupported renderer scans'
+            : cached === undefined
+              ? 'occupancy:uncached scans'
+              : 'occupancy:recovery scans',
+        )
         const offsets: number[] = []
         for (let i = 0; i < annotations.length; i++) if (annotations[i] !== 0) offsets.push(i)
         cached = { offsets, checkedAt: now }
         if (observed) patches.set(annotations, cached)
-      }
+      } else recordProfileCounter('occupancy:cache hits')
       for (const i of cached.offsets) {
         found.push((offsetY + Math.floor(i / PATCH)) * tileSize + offsetX + (i % PATCH))
       }

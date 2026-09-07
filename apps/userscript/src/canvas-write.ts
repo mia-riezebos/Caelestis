@@ -1,3 +1,5 @@
+import { recordProfileCounter } from './profile.js'
+
 export interface CanvasWriteRect {
   readonly x: number
   readonly y: number
@@ -15,6 +17,9 @@ export const onCanvasWrite = (listener: CanvasWriteListener): (() => void) => {
   return () => listeners.delete(listener)
 }
 
+/** Publish a successful observed canvas write, with a bounded dirty rectangle when known. */
 export const announceCanvasWrite = (canvas: object, dirty: CanvasWriteRect | null = null): void => {
+  recordProfileCounter('canvas:observed writes')
+  if (dirty !== null) recordProfileCounter('canvas:written pixels', dirty.width * dirty.height)
   for (const listener of listeners) listener(canvas, dirty)
 }
