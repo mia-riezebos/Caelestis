@@ -5,20 +5,20 @@ Add reusable tags with stable identities. Local tags belong to this browser; eac
 Keep template ownership, pixels, placement, and folder paths intact.
 
 ## Acceptance criteria
-- [ ] Local tags and assignments survive reloads and migrations.
-- [ ] Server tags persist in D1 and sync through v1 manifests.
-- [ ] Server mutations require template metadata admin authorization.
-- [ ] One compact editor supports creation, renaming, deletion, attachment, and detachment.
-- [ ] Search matches tags and retains ancestor folders.
-- [ ] Rename and deletion update assignments atomically.
-- [ ] Empty, loading, duplicate, invalid, and offline states permit recovery.
-- [ ] Focused persistence, authorization, sync, search, and lifecycle tests pass.
+- [x] Local tags and assignments survive reloads and migrations.
+- [x] Server tags persist in D1 and sync through v1 manifests.
+- [x] Server mutations require template metadata admin authorization.
+- [x] One compact editor supports creation, renaming, deletion, attachment, and detachment.
+- [x] Search matches tags and retains ancestor folders.
+- [x] Rename and deletion update assignments atomically.
+- [x] Empty, loading, duplicate, invalid, and offline states permit recovery.
+- [x] Focused persistence, authorization, sync, search, and lifecycle tests pass.
 
 ## TODOs
 - [x] Add server tag persistence, authorized API, and manifest synchronization with focused tests.
 - [x] Add transactional local tag persistence and migration tests.
 - [x] Add the shared tag editor, ownership labels, and hierarchical tag search with focused tests.
-- [ ] Verify rendered workflows and repository checks, add release notes, and file the PR.
+- [x] Verify rendered workflows and repository checks, add release notes, and prepare the PR.
 
 ## Notes
 - Work in the supplied workspace; the harness renamed its branch to `t3code/resolve-issue-257` during implementation. Initial working tree was clean.
@@ -34,3 +34,8 @@ Keep template ownership, pixels, placement, and folder paths intact.
 - Shared editor tests pass (4); tree and manifest tests pass (24). UI check reports zero errors or warnings.
 - Full parallel tests encountered three backend timeout failures and cancelled the userscript suite. Rerun with bounded concurrency; do not change unrelated test timeouts.
 - Browser verification runs separately from /tmp/caelestis-257-verify.4kvZd5 against production components and isolated storage.
+- Final package suites pass: 2,239 tests with `pnpm exec turbo run test --concurrency=1 -- --maxWorkers=2`. Fixture (1), capacity (3), and release (32) tests pass. Full check, build, and lint pass.
+- Fixed the tag action icon mapping and updated the alliance action expectations. A failing recovery test proved that Reload tags skipped a failed post-save template refresh; retry now completes that refresh without repeating the mutation.
+- The separate verifier passed focused checks but its sandbox blocked CDP. Direct background CDP verification then passed the real userscript tag host, shared editor, IndexedDB persistence, portable backend routes, manifest refresh, and hierarchical search. Inspected desktop and phone screenshots in light and dark themes.
+- Browser review uses `http://127.0.0.1:41739` with isolated local data and the real backend's memory adapter. D1 persistence is covered separately by SQLite-backed adapter tests. No production migration or deployment ran.
+- Added one minor Changeset for the backend and userscript. File the non-draft PR after committing and rebasing this completed implementation.

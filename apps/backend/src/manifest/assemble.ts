@@ -163,7 +163,9 @@ const assembleManifestWithSql = async (
             : { liveTileOffers: options.server.liveTileOffers }),
         }
   const unsigned: Manifest = {
-    ...(catalog.length === 0 ? {} : { tags: [...catalog].sort((a, b) => a.id.localeCompare(b.id)) }),
+    ...(catalog.length === 0
+      ? {}
+      : { tags: [...catalog].sort((a, b) => a.id.localeCompare(b.id)) }),
     version: VERSION_PLACEHOLDER,
     season: options.season,
     ...(surface.kind === 'world' ? {} : { surface }),

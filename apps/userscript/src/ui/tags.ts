@@ -27,6 +27,7 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
       ? target.key.slice('local:'.length)
       : target.templateId
   const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  let refreshPending = false
   let model: TagManagerModel = {
     owner: server === null ? 'Local · This browser' : `${server.info?.name ?? server.url} · Server`,
     ...(templateId === undefined ? {} : { templateName: target.name }),
@@ -72,10 +73,21 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
       ? 'Could not reach the server. Check your connection and reload tags.'
       : message
   }
+  const refreshTemplates = async (): Promise<void> => {
+    if (server === null) return
+    checkConnection()
+    if (target.surface?.kind !== undefined && target.surface.kind !== 'world')
+      await refreshAllianceManifest(server, target.surface)
+    const result = await refreshServerSnapshot(server, rerender, true)
+    if (result.status !== 'admitted')
+      throw new Error('The template list could not refresh. Reload tags to retry.')
+    refreshPending = false
+  }
   const reload = async (): Promise<void> => {
     update({ loading: true, error: undefined })
     try {
       await read()
+      if (refreshPending) await refreshTemplates()
     } catch (error) {
       update({ error: failure(error) })
     } finally {
@@ -110,15 +122,10 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
         if (!result.ok) throw new Error(result.message)
       }
       committed = true
+      refreshPending = server !== null
       update({ revision: model.revision + 1 })
       await read()
-      if (server !== null) {
-        if (target.surface?.kind !== undefined && target.surface.kind !== 'world')
-          await refreshAllianceManifest(server, target.surface)
-        const result = await refreshServerSnapshot(server, rerender, true)
-        if (result.status !== 'admitted')
-          throw new Error('The template list could not refresh. Reload tags to retry.')
-      }
+      await refreshTemplates()
     } catch (error) {
       update({ error: `${committed ? 'Saved. ' : ''}${failure(error)}` })
     } finally {

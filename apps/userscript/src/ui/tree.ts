@@ -1172,6 +1172,7 @@ const canReorderRow = (row: TreeRowOptions): boolean =>
 
 const actionIcon = (name: string): TreeActionModel['icon'] => {
   switch (name) {
+    case 'tag':
     case 'search':
     case 'createFolder':
     case 'uploadFile':

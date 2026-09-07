@@ -253,6 +253,7 @@ describe('surface-scoped template tree', () => {
     expect(local).toMatchObject({
       type: 'row',
       actions: [
+        expect.objectContaining({ label: 'Manage tags', icon: 'tag' }),
         expect.objectContaining({ label: 'New folder' }),
         expect.objectContaining({ label: 'Import template' }),
       ],
@@ -260,6 +261,7 @@ describe('surface-scoped template tree', () => {
     expect(serverRoot).toMatchObject({
       type: 'row',
       actions: [
+        expect.objectContaining({ label: 'Manage tags', icon: 'tag' }),
         expect.objectContaining({ label: 'New folder' }),
         expect.objectContaining({ label: 'Import template' }),
       ],
@@ -277,8 +279,8 @@ describe('surface-scoped template tree', () => {
       expect.objectContaining({ type: 'row', name: 'World folder' }),
     )
 
-    adapter.handle({ type: 'action', key: 'local', actionId: 'row-0' })
-    adapter.handle({ type: 'action', key: `server:${server.url}`, actionId: 'row-1' })
+    adapter.handle({ type: 'action', key: 'local', actionId: 'row-1' })
+    adapter.handle({ type: 'action', key: `server:${server.url}`, actionId: 'row-2' })
     adapter.handle({ type: 'action', key: 'local-import', actionId: 'run' })
     adapter.handle({
       type: 'drop',
