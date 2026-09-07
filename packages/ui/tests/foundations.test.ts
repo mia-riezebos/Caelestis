@@ -51,11 +51,37 @@ describe('UI foundations', () => {
     flushSync()
     expect(onInput).toHaveBeenCalledWith(0.7)
     expect(document.body.textContent).toContain('70%')
+    expect(input.style.getPropertyValue('--fill')).toBe('70%')
 
     document.querySelector<HTMLButtonElement>('[aria-label="Reset opacity"]')?.click()
     flushSync()
     expect(onReset).toHaveBeenCalledWith(1)
     expect(input.value).toBe('1')
+    expect(input.style.getPropertyValue('--fill')).toBe('100%')
+    void unmount(component)
+  })
+
+  it.each([
+    [-1, '0%'],
+    [0, '50%'],
+    [1, '100%'],
+  ] as const)('positions a signed slider fill at %s', (value, expected) => {
+    const component = mount(SliderRow, {
+      target: document.body,
+      props: {
+        label: 'Offset X',
+        value,
+        defaultValue: 0,
+        min: -1,
+        max: 1,
+        step: 0.1,
+        format: String,
+      },
+    })
+    flushSync()
+    expect(
+      document.querySelector<HTMLInputElement>('input')?.style.getPropertyValue('--fill'),
+    ).toBe(expected)
     void unmount(component)
   })
 
