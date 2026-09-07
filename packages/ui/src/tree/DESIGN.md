@@ -1,6 +1,6 @@
 # Template display modes
 
-Template claims keep the original template icon and add a small corner dot. Clicking the icon opens a compact native popover with claimants and permitted actions. Counts belong in the participant list rather than widening the row. Opening, assigning, and dismissing claims never change tree layout. Progress totals and colour rows share the template icon column without an extra inset.
+Template claims keep the original template icon with a fixed-size count badge over its corner. The badge occupies no layout space, including when the count changes or disappears. Clicking the icon opens a compact native popover with claimants and permitted actions. Opening, assigning, and dismissing claims never change tree layout. Progress totals and colour rows share the template icon column without an extra inset.
 
 The grid helps people recognize artwork without knowing template names. Tree remains the default working view.
 

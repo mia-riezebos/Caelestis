@@ -40,9 +40,13 @@
     const scroll = (event: Event): void => {
       if (!event.composedPath().includes(popup)) close()
     }
+    const root = popup.getRootNode()
+    // Scroll events inside the userscript's shadow root do not reach window.
+    if (root instanceof ShadowRoot) root.addEventListener('scroll', scroll, true)
     window.addEventListener('scroll', scroll, true)
     return () => {
       observer.disconnect()
+      if (root instanceof ShadowRoot) root.removeEventListener('scroll', scroll, true)
       window.removeEventListener('scroll', scroll, true)
     }
   })
@@ -70,7 +74,7 @@
     popup.focus()
   }}>
   {@render children()}
-  {#if model.people.length > 0}<span class="claim-dot" class:mine={model.mine} aria-hidden="true"></span>{/if}
+  {#if model.people.length > 0}<span class="claim-count" class:mine={model.mine} aria-hidden="true">{model.people.length > 99 ? '99+' : model.people.length}</span>{/if}
 </button>
 <div bind:this={popup} id={popupId} class="claims" popover="auto" role="dialog" tabindex="-1" aria-label={`Claims for ${name}`}
   style:left={`${left}px`} style:top={`${top}px`}
@@ -171,11 +175,11 @@
     font: 400 0.75rem/1.25 ui-sans-serif, system-ui, sans-serif;
   }
   .claim-marker { position: relative; display: inline-flex; align-items: center; justify-content: center; inline-size: 1rem; block-size: 1rem; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
-  .claim-marker::before { content: ''; position: absolute; inset: -0.375rem; border-radius: 0.25rem; }
+  .claim-marker::before { content: ''; position: absolute; inset: -0.375rem -0.25rem; border-radius: 0.25rem; }
   .claim-marker:hover::before, .claim-marker[aria-expanded='true']::before { background: color-mix(in oklab, currentColor 10%, transparent); }
   .claim-marker:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 3px; }
-  .claim-dot { position: absolute; inset-inline-end: -0.125rem; inset-block-start: -0.125rem; inline-size: 0.375rem; block-size: 0.375rem; border-radius: 50%; background: var(--caelestis-muted-text); outline: 1px solid var(--caelestis-surface); }
-  .claim-dot.mine { background: var(--caelestis-primary); }
+  .claim-count { position: absolute; inset-inline-end: -0.25rem; inset-block-start: -0.375rem; display: grid; place-items: center; inline-size: 1.125rem; block-size: 0.75rem; border-radius: 0.25rem; background: var(--caelestis-raised-surface); color: var(--caelestis-text); outline: 1px solid var(--caelestis-surface); font: 600 0.5rem/1 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .claim-count.mine { color: var(--caelestis-primary); }
   .person {
     display: flex;
     align-items: center;
