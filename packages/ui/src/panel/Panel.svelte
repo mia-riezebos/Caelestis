@@ -111,11 +111,9 @@
 
   <header>
     {#if model.view !== 'tree'}
-    <span>
       <Button label="Back to templates" title="Back to templates" kind="ghost" size="compact" iconOnly onclick={() => emit({ type: 'navigate', view: 'tree' })}>
         <Icon name="arrowBack" />
       </Button>
-    </span>
     {/if}
     <h2>{title}</h2>
     <Button label={poppedOut ? 'Return to sidebar' : 'Pop out menu'} title={poppedOut ? 'Return to sidebar' : 'Pop out menu'} popup={poppedOut ? undefined : 'dialog'} kind="ghost" size="compact" iconOnly onclick={() => { if (poppedOut) void dock(); else poppedOut = true }}>
