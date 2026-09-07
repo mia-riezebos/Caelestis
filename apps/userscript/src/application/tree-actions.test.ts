@@ -26,6 +26,8 @@ const alarmState = vi.hoisted(() => ({
   dismiss: vi.fn(async () => ({ ok: true as const })),
   refresh: vi.fn(),
 }))
+const artworkUpdate = vi.hoisted(() => vi.fn())
+vi.mock('./update-template-artwork.js', () => ({ requestTemplateArtworkUpdate: artworkUpdate }))
 vi.mock('../telemetry.js', () => ({ serverAlarmFor: () => alarmState.current }))
 vi.mock('../server-sync-coordinator.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../server-sync-coordinator.js')>()),
@@ -128,6 +130,42 @@ it('lets admins dismiss the exact grief episode from a template menu', async () 
     vi.fn(),
   )
   expect(menuText()).not.toContain('Dismiss grief alert')
+})
+
+it('routes local and server artwork updates to the shared action with surface-qualified ids', () => {
+  const rerender = vi.fn()
+  const surface = { kind: 'alliance-headquarters', allianceId: 12 } as const
+  for (const current of [
+    { server: null, nodeId: null, key: 'local:art', name: 'Art' },
+    { ...target, surface, templateId: 'template', key: 'st:template' },
+  ]) {
+    openContextMenu(current, new MouseEvent('contextmenu'), rerender, surface)
+    const menu = treeActionPresentation().contextMenu
+    const action = menu?.items.find(
+      (item) => item.label === 'Update template to match current state',
+    )
+    if (menu === undefined || action === undefined) throw new Error('Missing artwork action')
+    handleTreeActionPresentationIntent({
+      type: 'context-menu-action',
+      menuId: menu.id,
+      actionId: action.id,
+    })
+    expect(artworkUpdate).toHaveBeenLastCalledWith(
+      current.server === null ? 'art' : serverTemplateKey(current.server.url, 'template', surface),
+      rerender,
+    )
+  }
+  openContextMenu(
+    {
+      ...target,
+      server: { ...server, isAdmin: false },
+      templateId: 'template',
+      key: 'st:template',
+    },
+    new MouseEvent('contextmenu'),
+    rerender,
+  )
+  expect(menuText()).not.toContain('Update template to match current state')
 })
 
 it('dispatches a typed menu selection without a DOM-owned action list', () => {

@@ -555,6 +555,7 @@ export interface OverlayFailureModel {
 
 export interface OverlayControlsModel {
   readonly name: string
+  readonly updateArtwork?: { readonly pending: boolean; readonly disabled: boolean }
   readonly lifecycle?: {
     readonly finished: boolean
     readonly frozen: boolean
@@ -568,6 +569,7 @@ export interface OverlayControlsModel {
 
 export type OverlayControlsIntent =
   | { readonly type: 'close' }
+  | { readonly type: 'update-artwork' }
   | { readonly type: 'cancel-delete' }
   | { readonly type: 'confirm-delete' }
   | { readonly type: 'appearance'; readonly intent: AppearanceEditorIntent }

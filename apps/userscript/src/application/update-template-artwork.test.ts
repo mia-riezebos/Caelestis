@@ -77,6 +77,12 @@ it('saves local artwork through version persistence', async () => {
   expect(harness.save).toHaveBeenCalledWith(harness.template, new Uint8Array([5]))
   expect(harness.upload).not.toHaveBeenCalled()
 })
+it('accepts imported geographic placement before the user has moved it', async () => {
+  if (harness.template === undefined) throw new Error('Missing test template')
+  harness.template = { ...harness.template, everPlaced: false }
+  await updateTemplateArtwork('test')
+  expect(harness.save).toHaveBeenCalledOnce()
+})
 it('uploads a new server version at the existing origin and refreshes consumers', async () => {
   serverTemplate()
   await updateTemplateArtwork('test')

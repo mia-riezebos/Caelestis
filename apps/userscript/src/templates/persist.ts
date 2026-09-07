@@ -129,14 +129,14 @@ const writeVersioned = async (
   operation: (templates: IDBObjectStore, nextRevision: number, current: unknown) => void,
   incrementRevision = true,
   creationPixels: number | null = null,
-  archiveCurrent = false,
+  history?: 'archive' | 'delete',
 ): Promise<SaveResult> => {
   try {
     const db = await open()
     try {
       return await new Promise<SaveResult>((resolve, reject) => {
         const transaction = db.transaction(
-          archiveCurrent ? [STORE, VERSIONS_STORE] : STORE,
+          history === undefined ? STORE : [STORE, VERSIONS_STORE],
           'readwrite',
         )
         const templates = transaction.objectStore(STORE)
@@ -156,10 +156,14 @@ const writeVersioned = async (
             ? (expectedRevision ?? 0) + 1
             : (expectedRevision ?? 0)
           const commit = (): void => {
-            if (archiveCurrent) {
+            if (history === 'archive') {
               transaction
                 .objectStore(VERSIONS_STORE)
                 .add({ ...current, id, revision: expectedRevision })
+            } else if (history === 'delete') {
+              transaction
+                .objectStore(VERSIONS_STORE)
+                .delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]))
             }
             operation(templates, nextRevision, current)
             result = { status: 'saved', revision: nextRevision }
@@ -268,7 +272,7 @@ export const saveTemplate = async (
     },
     true,
     expectedRevision === null ? indices.length : null,
-    archiveCurrent,
+    archiveCurrent ? 'archive' : undefined,
   )
 }
 
@@ -368,6 +372,8 @@ export const deleteTemplate = async (
       // expected revision, so deleted IDs need no permanent side-store entry.
     },
     false,
+    null,
+    'delete',
   )
 
 const boundedStoredCandidate = (

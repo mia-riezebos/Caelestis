@@ -42,6 +42,13 @@
   {/each}
 
   <AppearanceEditor model={model.appearance} onIntent={onAppearance} />
+  {#if model.updateArtwork !== undefined}
+    <div class="artwork-action">
+      <Button label="Update template to match current state" kind="ghost" size="small" control="update-artwork" disabled={model.updateArtwork.disabled || model.updateArtwork.pending} onclick={() => emit({ type: 'update-artwork' })}>
+        {model.updateArtwork.pending ? 'Updating template…' : 'Update template to match current state'}
+      </Button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -53,4 +60,6 @@
   .failure { padding: 0.45rem 0.55rem; background: color-mix(in oklch, var(--caelestis-danger) 14%, var(--caelestis-raised-surface)); color: var(--caelestis-danger); }
   .confirm { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.55rem 0.65rem; background: color-mix(in oklch, var(--caelestis-warning) 16%, var(--caelestis-raised-surface)); }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
+  .artwork-action { margin-block-start: 0.5rem; }
+  .artwork-action :global(button) { inline-size: 100%; block-size: auto; min-block-size: 2rem; padding-block: 0.5rem; line-height: 1.35; }
 </style>

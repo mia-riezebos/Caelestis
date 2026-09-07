@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const stored = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: 'loaded',
@@ -16,6 +16,10 @@ const stored = (overrides: Record<string, unknown> = {}): Record<string, unknown
   revision: 0,
   paletteMigration: 4,
   ...overrides,
+})
+
+beforeEach(() => {
+  vi.stubGlobal('IDBKeyRange', { bound: (lower: unknown, upper: unknown) => ({ lower, upper }) })
 })
 
 afterEach(() => {
@@ -567,6 +571,10 @@ describe('local template persistence', () => {
     deleteTransaction.oncomplete?.(new Event('complete'))
     await expect(deleting).resolves.toEqual({ status: 'saved', revision: 0 })
     expect(deleteStore.delete).toHaveBeenCalledWith('gone')
+    expect(deleteStore.delete).toHaveBeenCalledWith({
+      lower: ['gone', 0],
+      upper: ['gone', Number.MAX_SAFE_INTEGER],
+    })
 
     const loading = loadTemplates(64, 1)
     loadOpening.onsuccess?.(new Event('success'))

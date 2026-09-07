@@ -90,6 +90,7 @@ import {
   templatesForServer,
   templatesOfNode,
 } from './tree-server-state.js'
+import { requestTemplateArtworkUpdate } from './update-template-artwork.js'
 
 type ContextAction = { readonly id: string; readonly run: () => void }
 type OperationState = {
@@ -1013,6 +1014,13 @@ export const openContextMenu = (
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
 ): void => {
   const templateId = localTemplateId(target)
+  const updateArtwork = (): void => {
+    const id =
+      target.server !== null && target.templateId !== undefined
+        ? serverTemplateKey(target.server.url, target.templateId, surfaceOf(target))
+        : templateId
+    if (id !== null) requestTemplateArtworkUpdate(id, rerender)
+  }
   const rename: readonly [TreeIcon, string, () => void] = [
     'rename',
     'Rename',
@@ -1103,6 +1111,9 @@ export const openContextMenu = (
                     void setServerTemplateLifecycle(target, { timelapseFrozen: true }, rerender),
                 ],
             ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
+            ...(target.server?.isAdmin === true
+              ? [['reset', 'Update template to match current state', updateArtwork] as const]
+              : []),
             rename,
             remove,
           ]
@@ -1129,6 +1140,7 @@ export const openContextMenu = (
               },
             ],
             ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
+            ['reset', 'Update template to match current state', updateArtwork],
             rename,
             remove,
           ]

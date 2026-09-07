@@ -38,7 +38,7 @@ export const updateTemplateArtwork = async (id: string): Promise<void> => {
     const checkCurrent = (): void => {
       if (!isCurrentTemplate(template) || isDeletingLocal(id))
         throw new Error('That template changed during the update. Try again.')
-      if (movingId() === id || !template.everPlaced)
+      if (movingId() === id || (template.source === 'image' && !template.everPlaced))
         throw new Error('Finish placing this template before updating it.')
       if (!isServerTemplate(template)) return
       if (server === undefined || !server.isAdmin || !isCurrentServerConnection(server))
