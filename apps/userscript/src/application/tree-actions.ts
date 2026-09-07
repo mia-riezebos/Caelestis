@@ -1112,7 +1112,7 @@ export const openContextMenu = (
                 ],
             ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
             ...(target.server?.isAdmin === true
-              ? [['reset', 'Update template to match current state', updateArtwork] as const]
+              ? [['reset', 'Use canvas artwork', updateArtwork] as const]
               : []),
             rename,
             remove,
@@ -1140,7 +1140,7 @@ export const openContextMenu = (
               },
             ],
             ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
-            ['reset', 'Update template to match current state', updateArtwork],
+            ['reset', 'Use canvas artwork', updateArtwork],
             rename,
             remove,
           ]

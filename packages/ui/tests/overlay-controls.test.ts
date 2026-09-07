@@ -62,7 +62,7 @@ describe('overlay controls', () => {
     const button = document.querySelector<HTMLButtonElement>(
       '[data-caelestis-control="update-artwork"]',
     )
-    expect(button?.textContent).toContain('Update template to match current state')
+    expect(button?.textContent).toContain('Use canvas artwork')
     button?.click()
     expect(onIntent).toHaveBeenCalledWith({ type: 'update-artwork' })
     void unmount(component)

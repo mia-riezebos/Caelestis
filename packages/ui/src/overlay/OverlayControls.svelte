@@ -44,8 +44,8 @@
   <AppearanceEditor model={model.appearance} onIntent={onAppearance} />
   {#if model.updateArtwork !== undefined}
     <div class="artwork-action">
-      <Button label="Update template to match current state" kind="ghost" size="small" control="update-artwork" disabled={model.updateArtwork.disabled || model.updateArtwork.pending} onclick={() => emit({ type: 'update-artwork' })}>
-        {model.updateArtwork.pending ? 'Updating template…' : 'Update template to match current state'}
+      <Button label="Use canvas artwork" kind="ghost" size="small" control="update-artwork" disabled={model.updateArtwork.disabled || model.updateArtwork.pending} onclick={() => emit({ type: 'update-artwork' })}>
+        {model.updateArtwork.pending ? 'Updating…' : 'Use canvas artwork'}
       </Button>
     </div>
   {/if}

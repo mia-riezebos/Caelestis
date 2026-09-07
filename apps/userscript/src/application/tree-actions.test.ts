@@ -141,9 +141,7 @@ it('routes local and server artwork updates to the shared action with surface-qu
   ]) {
     openContextMenu(current, new MouseEvent('contextmenu'), rerender, surface)
     const menu = treeActionPresentation().contextMenu
-    const action = menu?.items.find(
-      (item) => item.label === 'Update template to match current state',
-    )
+    const action = menu?.items.find((item) => item.label === 'Use canvas artwork')
     if (menu === undefined || action === undefined) throw new Error('Missing artwork action')
     handleTreeActionPresentationIntent({
       type: 'context-menu-action',
@@ -165,7 +163,7 @@ it('routes local and server artwork updates to the shared action with surface-qu
     new MouseEvent('contextmenu'),
     rerender,
   )
-  expect(menuText()).not.toContain('Update template to match current state')
+  expect(menuText()).not.toContain('Use canvas artwork')
 })
 
 it('dispatches a typed menu selection without a DOM-owned action list', () => {
