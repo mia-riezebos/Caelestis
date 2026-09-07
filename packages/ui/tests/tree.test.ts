@@ -60,40 +60,54 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
-  it('shows grid progress and colours in a separate pane and returns focus on Escape', async () => {
-    const component = mount(TemplateTree, {
-      target: document.body,
-      props: { model: { ...model, displayMode: 'grid' }, allowGrid: true },
-    })
-    flushSync()
-    const card = document.querySelector('[data-caelestis-tree-key="local:city"]')
-    const trigger = card?.querySelector<HTMLButtonElement>('[aria-label="View progress"]')
-    if (trigger === null || trigger === undefined) throw new Error('missing progress control')
-    trigger.click()
-    await tick()
-    await tick()
-    const pane = document.querySelector('[aria-label="Progress for City"]')
-    expect(pane?.querySelector('h3')?.textContent).toBe('City')
-    expect(pane?.textContent).toContain('Complete')
-    expect(pane?.textContent).toContain('Mismatched')
-    expect(pane?.textContent).toContain('Black')
-    expect(card?.querySelector('.progress-detail')).toBeNull()
-    expect(trigger.getAttribute('aria-expanded')).toBe('true')
-    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close progress')
-    const escapeKey = new KeyboardEvent('keydown', {
-      key: 'Escape',
-      bubbles: true,
-      cancelable: true,
-    })
-    document.activeElement?.dispatchEvent(escapeKey)
-    await tick()
-    await tick()
-    expect(escapeKey.defaultPrevented).toBe(true)
-    expect(document.querySelector('[aria-label="Progress for City"]')).toBeNull()
-    expect(document.activeElement).toBe(trigger)
-    expect(trigger.getAttribute('aria-expanded')).toBe('false')
-    void unmount(component)
-  })
+  it.each([false, true])(
+    'opens named grid progress and restores focus for container=%s',
+    async (container) => {
+      const component = mount(TemplateTree, {
+        target: document.body,
+        props: {
+          model: {
+            ...model,
+            displayMode: 'grid',
+            entries: model.entries.map((entry) =>
+              entry.key === 'local:city' ? { ...entry, container } : entry,
+            ),
+          },
+          allowGrid: true,
+        },
+      })
+      flushSync()
+      const card = document.querySelector('[data-caelestis-tree-key="local:city"]')
+      const trigger = card?.querySelector<HTMLButtonElement>(
+        '[aria-label="View progress for City"]',
+      )
+      if (trigger === null || trigger === undefined) throw new Error('missing progress control')
+      trigger.click()
+      await tick()
+      await tick()
+      const pane = document.querySelector('[aria-label="Progress for City"]')
+      expect(pane?.querySelector('h3')?.textContent).toBe('City')
+      expect(pane?.textContent).toContain('Complete')
+      expect(pane?.textContent).toContain('Mismatched')
+      expect(pane?.textContent).toContain('Black')
+      expect(card?.querySelector('.progress-detail')).toBeNull()
+      expect(trigger.getAttribute('aria-expanded')).toBe('true')
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Close progress')
+      const escapeKey = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      })
+      document.activeElement?.dispatchEvent(escapeKey)
+      await tick()
+      await tick()
+      expect(escapeKey.defaultPrevented).toBe(true)
+      expect(document.querySelector('[aria-label="Progress for City"]')).toBeNull()
+      expect(document.activeElement).toBe(trigger)
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      void unmount(component)
+    },
+  )
 
   it.each(['tree', 'grid'] as const)(
     'preserves row order, focus, and core actions in %s mode',

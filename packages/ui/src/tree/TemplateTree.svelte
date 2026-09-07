@@ -50,9 +50,9 @@
     progressPane?.querySelector<HTMLButtonElement>('button')?.focus()
   }
   const closeProgress = (): void => {
-    const key = progressKey
+    const entry = progressEntry
     progressKey = null
-    if (key !== null) void focusRowAction(key, 'View progress')
+    if (entry !== undefined) void focusRowAction(entry.key, `View progress for ${entry.name}`)
   }
   const folderPaths = $derived.by(() => {
     const paths = new Map<string, string>()
@@ -434,7 +434,7 @@
                       <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
                     </button>
                   {/each}
-                  <button class="icon-action" type="button" title={grid ? 'View progress' : 'Expand progress'} aria-label={grid ? 'View progress' : 'Expand progress'} onclick={(event) => { event.stopPropagation(); if (grid) { void showProgress(entry); return }; if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
+                  <button class="icon-action" type="button" title={grid ? `View progress for ${entry.name}` : 'Expand progress'} aria-label={grid ? `View progress for ${entry.name}` : 'Expand progress'} aria-expanded={grid ? progressKey === entry.key : undefined} onclick={(event) => { event.stopPropagation(); if (grid) { void showProgress(entry); return }; if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
                   </button>
                 </span>
@@ -464,7 +464,7 @@
             </label>
           </div>
           {#if card && entry.progress !== undefined}
-            <button type="button" class="card-progress" aria-label="View progress" title={`View progress for ${entry.name}`} aria-expanded={progressKey === entry.key} onclick={(event) => { event.stopPropagation(); void showProgress(entry) }}>
+            <button type="button" class="card-progress" aria-label={`View progress for ${entry.name}`} title={`View progress for ${entry.name}`} aria-expanded={progressKey === entry.key} onclick={(event) => { event.stopPropagation(); void showProgress(entry) }}>
               <ProgressMeter progress={entry.progress} size="sm" /><Icon name="caret" size="0.875rem" />
             </button>
           {/if}
