@@ -29,17 +29,18 @@ describe('server state boundaries', () => {
     vi.stubGlobal('GM_setValue', (_key: string, value: string) => {
       stored = value
     })
-    const { loadState, setState } = await import('./state.js')
+    const { getState, loadState, setState } = await import('./state.js')
     const defaults = {
-      notifyRegressions: true,
-      notifyGriefing: true,
+      notifyRegressions: false,
+      notifyGriefing: false,
       notifyUpdates: true,
-      notifyActivity: true,
+      notifyActivity: false,
     }
+    expect(getState()).toMatchObject(defaults)
     expect(loadState()).toMatchObject(defaults)
     for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
-      setState({ ...defaults, [key]: false })
-      expect(loadState()).toMatchObject({ ...defaults, [key]: false })
+      setState({ ...defaults, [key]: !defaults[key] })
+      expect(loadState()).toMatchObject({ ...defaults, [key]: !defaults[key] })
     }
     stored = JSON.stringify({ notifyRegressions: 'false', notifyUpdates: null })
     expect(loadState()).toMatchObject(defaults)
