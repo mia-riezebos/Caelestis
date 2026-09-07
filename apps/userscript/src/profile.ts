@@ -1,4 +1,18 @@
+import type { ProfileContext } from './profile-context.js'
+
 export type ProfileKind = 'main' | 'worker' | 'gpu' | 'detail'
+
+export interface ProfileAction {
+  readonly atMs: number
+  readonly name: string
+  readonly trusted: boolean | null
+}
+
+export interface ProfileRun {
+  readonly label: string
+  /** Browser zoom cannot be inferred from DPR or pinch scale. Supply the browser's actual setting. */
+  readonly browserZoomPercent: number | null
+}
 
 interface MutableStat {
   count: number
@@ -40,6 +54,15 @@ export interface ProfileWorkload {
 export interface ProfileSnapshot {
   readonly enabled: boolean
   readonly elapsedMs: number
+  readonly context: {
+    readonly start: ProfileContext | null
+    readonly current: ProfileContext | null
+  }
+  readonly run: ProfileRun
+  readonly actions: readonly ProfileAction[]
+  readonly actionsDropped: number
+  readonly counters: Readonly<Record<string, number>>
+  readonly counterKeysDropped: number
   readonly cpu: {
     readonly main: ProfileStat & { readonly dutyPercent: number }
     readonly worker: ProfileStat & { readonly dutyPercent: number }
@@ -53,7 +76,7 @@ export interface ProfileSnapshot {
     readonly slow: number
     readonly estimatedFps: number | null
   }
-  readonly longTasks: ProfileStat
+  readonly longTasks: ProfileStat & { readonly supported: boolean; readonly observing: boolean }
   readonly memory: {
     readonly pageUsedJSHeapBytes: number | null
     readonly pageJSHeapLimitBytes: number | null
@@ -68,17 +91,24 @@ export interface ProfileSnapshot {
     readonly memory: string
     readonly pageSignals: string
     readonly workload: string
+    readonly context: string
+    readonly actions: string
+    readonly counters: string
   }
 }
 
 const PROFILE_KEY = 'caelestisProfile'
 const RECENT_SAMPLES = 512
 const FRAME_SAMPLES = 600
+const MAX_ACTIONS = 200
+const MAX_ACTION_NAME = 100
+const MAX_COUNTERS = 256
 const SLOW_FRAME_MS = 1000 / 50
 const EMPTY_STAT: ProfileStat = { count: 0, totalMs: 0, averageMs: 0, maxMs: 0, p95Ms: 0 }
 
 let enabled = false
 let startedAt = performance.now()
+let windowId = 0
 const tasks = new Map<
   string,
   { readonly name: string; readonly kind: ProfileKind; readonly stat: MutableStat }
@@ -86,6 +116,13 @@ const tasks = new Map<
 const workload = new Map<string, MutableWorkload>()
 const recentByKind = new Map<ProfileKind, number[]>()
 const memorySources = new Map<string, () => number>()
+let contextSource: (() => ProfileContext) | null = null
+let startContext: ProfileContext | null = null
+let run: ProfileRun = { label: '', browserZoomPercent: null }
+let actions: ProfileAction[] = []
+let actionsDropped = 0
+const counters = new Map<string, number>()
+let counterKeysDropped = 0
 
 let frameRequest: number | null = null
 let previousFrameAt: number | null = null
@@ -98,6 +135,75 @@ let recentFrames: number[] = []
 let longTaskObserver: PerformanceObserver | null = null
 let pageLongTasks: MutableStat = { count: 0, totalMs: 0, maxMs: 0, recent: [] }
 let gpuSupported: boolean | null = null
+
+const supportsLongTasks = (): boolean =>
+  typeof PerformanceObserver === 'function' &&
+  PerformanceObserver.supportedEntryTypes?.includes('longtask') === true
+
+/** Register the app-owned report context without making the profiler depend on app state. */
+export const registerProfileContextSource = (read: () => ProfileContext): (() => void) => {
+  contextSource = read
+  if (enabled) startContext = read()
+  return () => {
+    if (contextSource === read) contextSource = null
+  }
+}
+
+/** Annotate a run with its scenario and externally measured browser zoom. Resets clear annotations. */
+export const configureProfileRun = (value: ProfileRun): void => {
+  if (
+    typeof value.label !== 'string' ||
+    (value.browserZoomPercent !== null &&
+      (!Number.isFinite(value.browserZoomPercent) || value.browserZoomPercent <= 0))
+  )
+    throw new TypeError('Provide a label and a positive browserZoomPercent, or null when unknown.')
+  run = {
+    label: value.label.slice(0, MAX_ACTION_NAME),
+    browserZoomPercent: value.browserZoomPercent,
+  }
+}
+
+/** Mark an action relative to the current sample window, without retaining input text or DOM nodes. */
+export const recordProfileAction = (name: string, trusted: boolean | null = null): void => {
+  if (!enabled) return
+  actions.push({
+    atMs: Math.max(0, performance.now() - startedAt),
+    name: name.slice(0, MAX_ACTION_NAME),
+    trusted,
+  })
+  if (actions.length > MAX_ACTIONS) {
+    actions.shift()
+    actionsDropped++
+  }
+}
+
+/** Count events or bytes within this profile window; disabled profiling keeps no counters. */
+export const recordProfileCounter = (name: string, by = 1): void => {
+  if (!enabled || !Number.isFinite(by) || by < 0) return
+  if (!counters.has(name) && counters.size >= MAX_COUNTERS) {
+    counterKeysDropped++
+    return
+  }
+  counters.set(name, (counters.get(name) ?? 0) + by)
+}
+
+const recordInput = (event: Event): void => {
+  if (!event.isTrusted) return
+  if (event.type === 'keydown') {
+    const keyboard = event as KeyboardEvent
+    if (keyboard.key === 'Escape') recordProfileAction('Escape', true)
+    else if (
+      (keyboard.ctrlKey || keyboard.metaKey) &&
+      ['z', 'y'].includes(keyboard.key.toLowerCase())
+    )
+      recordProfileAction(
+        keyboard.key.toLowerCase() === 'y' || keyboard.shiftKey ? 'redo shortcut' : 'undo shortcut',
+        true,
+      )
+    return
+  }
+  recordProfileAction(event.type, true)
+}
 
 const percentile95 = (values: readonly number[]): number => {
   if (values.length === 0) return 0
@@ -137,6 +243,9 @@ const stopObservers = (): void => {
   previousFrameAt = null
   longTaskObserver?.disconnect()
   longTaskObserver = null
+  globalThis.document?.removeEventListener('pointerdown', recordInput, true)
+  globalThis.document?.removeEventListener('pointerup', recordInput, true)
+  globalThis.document?.removeEventListener('keydown', recordInput, true)
 }
 
 const visible = (): boolean =>
@@ -164,8 +273,7 @@ const startFrameObserver = (): void => {
 }
 
 const startLongTaskObserver = (): void => {
-  if (typeof PerformanceObserver !== 'function') return
-  if (!PerformanceObserver.supportedEntryTypes?.includes('longtask')) return
+  if (!supportsLongTasks()) return
   try {
     longTaskObserver = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
@@ -188,9 +296,18 @@ const startObservers = (): void => {
   stopObservers()
   startFrameObserver()
   startLongTaskObserver()
+  globalThis.document?.addEventListener('pointerdown', recordInput, {
+    capture: true,
+    passive: true,
+  })
+  globalThis.document?.addEventListener('pointerup', recordInput, { capture: true, passive: true })
+  globalThis.document?.addEventListener('keydown', recordInput, { capture: true, passive: true })
 }
 
 export const isProfileEnabled = (): boolean => enabled
+
+/** Identify the current reset window so delayed GPU results cannot enter a later measurement. */
+export const profileWindowId = (): number => windowId
 
 export const setProfileEnabled = (on: boolean): void => {
   if (enabled === on) return
@@ -215,9 +332,18 @@ export const installProfile = (): void => {
   setProfileEnabled(on)
 }
 
+/** Start a fresh measurement window, including context, annotations, actions, and samples. */
 export const resetProfile = (): void => {
   recentByKind.clear()
   startedAt = performance.now()
+  windowId++
+  previousFrameAt = null
+  startContext = enabled ? (contextSource?.() ?? null) : null
+  run = { label: '', browserZoomPercent: null }
+  actions = []
+  actionsDropped = 0
+  counters.clear()
+  counterKeysDropped = 0
   tasks.clear()
   workload.clear()
   frameCount = 0
@@ -304,6 +430,7 @@ interface TimerExtension {
 interface PendingGpuQuery {
   readonly query: WebGLQuery
   readonly name: string
+  readonly window: number
 }
 
 interface GpuTimerState {
@@ -351,6 +478,11 @@ const collectGpuQueries = (gl: WebGL2RenderingContext, state: GpuTimerState): vo
     while (state.pending.length > 0) {
       const pending = state.pending[0]
       if (pending === undefined) break
+      if (pending.window !== windowId) {
+        gl.deleteQuery(pending.query)
+        state.pending.shift()
+        continue
+      }
       if (!gl.getQueryParameter(pending.query, gl.QUERY_RESULT_AVAILABLE)) break
       const nanoseconds = Number(gl.getQueryParameter(pending.query, gl.QUERY_RESULT))
       if (Number.isFinite(nanoseconds) && nanoseconds >= 0) {
@@ -380,6 +512,7 @@ export const profileGpu = <T>(gl: WebGL2RenderingContext, name: string, draw: ()
   if (state.pending.length >= MAX_PENDING_GPU_QUERIES) return draw()
   const query = gl.createQuery()
   if (query === null) return draw()
+  const window = windowId
   try {
     gl.beginQuery(state.extension.TIME_ELAPSED_EXT, query)
   } catch {
@@ -391,7 +524,7 @@ export const profileGpu = <T>(gl: WebGL2RenderingContext, name: string, draw: ()
   } finally {
     try {
       gl.endQuery(state.extension.TIME_ELAPSED_EXT)
-      state.pending.push({ query, name })
+      state.pending.push({ query, name, window })
     } catch {
       gl.deleteQuery(query)
     }
@@ -424,9 +557,21 @@ const pageHeap = (): { used: number | null; limit: number | null } => {
 }
 
 export const profileSnapshot = (): ProfileSnapshot => {
+  const metadata = {
+    context: {
+      start: enabled ? startContext : null,
+      current: enabled ? (contextSource?.() ?? null) : null,
+    },
+    run: enabled ? { ...run } : { label: '', browserZoomPercent: null },
+    actions: enabled ? actions.map((action) => ({ ...action })) : [],
+    actionsDropped: enabled ? actionsDropped : 0,
+    counters: enabled ? Object.fromEntries(counters) : {},
+    counterKeysDropped: enabled ? counterKeysDropped : 0,
+  }
   if (!enabled) {
     return {
       enabled,
+      ...metadata,
       elapsedMs: 0,
       cpu: {
         main: { ...EMPTY_STAT, dutyPercent: 0 },
@@ -434,7 +579,7 @@ export const profileSnapshot = (): ProfileSnapshot => {
       },
       gpu: { ...EMPTY_STAT, supported: gpuSupported },
       frames: { count: 0, averageMs: 0, p95Ms: 0, maxMs: 0, slow: 0, estimatedFps: null },
-      longTasks: EMPTY_STAT,
+      longTasks: { ...EMPTY_STAT, supported: supportsLongTasks(), observing: false },
       memory: {
         pageUsedJSHeapBytes: null,
         pageJSHeapLimitBytes: null,
@@ -450,6 +595,12 @@ export const profileSnapshot = (): ProfileSnapshot => {
         pageSignals:
           'Whole-tab frame cadence, not input latency. Frame p95 uses the last 600 intervals.',
         workload: 'Per-frame Caelestis render inputs and retained work while profiling is enabled.',
+        context:
+          'Start and current metadata. Drawing is effective visibility; onscreen counts are render workload gauges. Browser zoom is supplied externally, never inferred from DPR or pinch scale.',
+        actions:
+          'Last 200 action markers in recording order, in milliseconds since reset. Trusted pointer events mark dispatch, not presentation or input latency.',
+        counters:
+          'Event and byte totals since reset; absent counters recorded no events. Canvas writes include all observed page canvases; tile-sized canvas uploads are draft candidates. Readback bytes count RGBA data returned, not texture traffic.',
       },
     }
   }
@@ -486,6 +637,7 @@ export const profileSnapshot = (): ProfileSnapshot => {
 
   return {
     enabled,
+    ...metadata,
     elapsedMs,
     cpu: {
       main: { ...main, dutyPercent: elapsedMs > 0 ? (main.totalMs / elapsedMs) * 100 : 0 },
@@ -500,7 +652,11 @@ export const profileSnapshot = (): ProfileSnapshot => {
       slow: slowFrames,
       estimatedFps: frameCount > 0 && frameTotalMs > 0 ? 1000 / (frameTotalMs / frameCount) : null,
     },
-    longTasks,
+    longTasks: {
+      ...longTasks,
+      supported: supportsLongTasks(),
+      observing: longTaskObserver !== null,
+    },
     memory: {
       pageUsedJSHeapBytes: heap.used,
       pageJSHeapLimitBytes: heap.limit,
@@ -516,6 +672,12 @@ export const profileSnapshot = (): ProfileSnapshot => {
       pageSignals:
         'Whole-tab frame cadence, not input latency. Frame p95 uses the last 600 intervals.',
       workload: 'Per-frame Caelestis render inputs and retained work while profiling is enabled.',
+      context:
+        'Start and current metadata. Drawing is effective visibility; onscreen counts are render workload gauges. Browser zoom is supplied externally, never inferred from DPR or pinch scale.',
+      actions:
+        'Last 200 action markers in recording order, in milliseconds since reset. Trusted pointer events mark dispatch, not presentation or input latency.',
+      counters:
+        'Event and byte totals since reset; absent counters recorded no events. Canvas writes include all observed page canvases; tile-sized canvas uploads are draft candidates. Readback bytes count RGBA data returned, not texture traffic.',
     },
   }
 }

@@ -1,8 +1,20 @@
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { build, context } from 'esbuild'
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 const development = process.argv.includes('--watch') || process.argv.includes('--development')
+let revision = null
+let dirty = null
+try {
+  revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+  dirty =
+    execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {
+      encoding: 'utf8',
+    }).trim() !== ''
+} catch {
+  // Source archives may have no Git metadata. Reports retain an explicit unknown value.
+}
 
 /**
  * The Violentmonkey metadata block. It must be the first thing in the output file, so it rides in
@@ -40,6 +52,7 @@ const options = {
   target: 'es2022',
   define: {
     __CAELESTIS_USERSCRIPT_VERSION__: JSON.stringify(pkg.version),
+    __CAELESTIS_BUILD__: JSON.stringify({ revision, dirty, development }),
   },
   banner: { js: metadata },
   legalComments: 'eof',
