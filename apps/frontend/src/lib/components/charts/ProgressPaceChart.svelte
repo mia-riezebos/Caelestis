@@ -1282,7 +1282,7 @@
                   style:background={paceColor(pace.rank)}
                 ></span>
                 <span class="text-base-content/70">pace {pace.key}</span>
-                <span class="text-end">{formatExactCount(value)} px/h</span>
+                <span class="text-end">{formatExactCount(Math.round(value * 10) / 10)} px/h</span>
               {/if}
             {/each}
             {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
@@ -1296,7 +1296,7 @@
                 <span class="truncate text-base-content/70"
                   >{painterLabel(line.painter)} {line.window}</span
                 >
-                <span class="text-end">{formatExactCount(value)} px/h</span>
+                <span class="text-end">{formatExactCount(Math.round(value * 10) / 10)} px/h</span>
               {/if}
             {/each}
           </div>
