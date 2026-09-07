@@ -18,7 +18,7 @@
     TreeRowModel,
   } from '../types.js'
 
-  let { model, onIntent }: { model: TemplateTreeModel; onIntent?: (intent: TemplateTreeIntent) => void } = $props()
+  let { model, allowGrid = false, onIntent }: { model: TemplateTreeModel; allowGrid?: boolean; onIntent?: (intent: TemplateTreeIntent) => void } = $props()
   let query = $state('')
   let activeKey = $state<string | null>(null)
   let renameDraft = $state('')
@@ -34,7 +34,7 @@
   let admittedMenuId: string | undefined
   let menuInvoker: HTMLElement | null = null
   let operationSelection = $state('')
-  const grid = $derived(model.displayMode === 'grid')
+  const grid = $derived(allowGrid && model.displayMode === 'grid')
   const folderPaths = $derived.by(() => {
     const paths = new Map<string, string>()
     for (const entry of model.entries) {
@@ -220,8 +220,13 @@
 
   const dismissTransient = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
-    if (model.contextMenu !== undefined) emit({ type: 'dismiss-context-menu', menuId: model.contextMenu.id })
-    else if (model.operation !== undefined && model.operation.cancellable !== false) emit({ type: 'tree-operation-cancel', operationId: model.operation.id })
+    if (model.contextMenu !== undefined) {
+      event.preventDefault()
+      emit({ type: 'dismiss-context-menu', menuId: model.contextMenu.id })
+    } else if (model.operation !== undefined && model.operation.cancellable !== false) {
+      event.preventDefault()
+      emit({ type: 'tree-operation-cancel', operationId: model.operation.id })
+    }
   }
 
   const navigateContextMenu = (event: KeyboardEvent): void => {
@@ -259,6 +264,7 @@
     <input type="search" placeholder="Search templates" aria-label="Search templates" value={query} oninput={search} />
   </label>
   <SortMenu sort={model.sort} onSort={(sort) => emit({ type: 'sort', sort })} />
+  {#if allowGrid}
   <div class="view-switcher" role="group" aria-label="Template display">
     <button type="button" aria-label="Tree view" title="Tree view" aria-pressed={!grid} onclick={() => emit({ type: 'display-mode', mode: 'tree' })}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h6v4H3zm8 0h10v4H11zM5 9h2v4h3v2H5zm7 2h9v4h-9zM5 17h2v2h3v2H5zm7 0h9v4h-9z" /></svg>
@@ -267,6 +273,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z" /></svg>
     </button>
   </div>
+  {/if}
 </div>
 
 {#if model.operation !== undefined}
@@ -388,7 +395,7 @@
               </button>
             {/each}
             {#if model.renamingKey === entry.key}
-              <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') emit({ type: 'cancel-rename', key: entry.key }) }} />
+              <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') { event.preventDefault(); emit({ type: 'cancel-rename', key: entry.key }) } }} />
             {:else}
               <span class="name" title={entry.name}>{entry.name}</span>
             {/if}

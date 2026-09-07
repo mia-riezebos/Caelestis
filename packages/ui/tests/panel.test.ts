@@ -79,6 +79,38 @@ const tree: TemplateTreeModel = {
 }
 
 describe('panel shell', () => {
+  it('limits grid browsing to the modal and restores the sidebar on dismissal', async () => {
+    const panel = new CaelestisPanel()
+    panel.model = model({ tree: { ...tree, displayMode: 'grid' } })
+    document.body.append(panel)
+    await tick()
+    const root = panel.shadowRoot
+    if (root === null) throw new Error('missing panel root')
+    const click = (label: string) =>
+      root.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)?.click()
+    expect(root.querySelector('.preview-grid')).toBeNull()
+    expect(root.querySelector('[aria-label="Template display"]')).toBeNull()
+    expect(root.querySelector('[aria-label="Pop out menu"]')?.getAttribute('aria-haspopup')).toBe(
+      'dialog',
+    )
+    for (const dismiss of ['cancel', 'Return to sidebar', 'Close']) {
+      click('Pop out menu')
+      await tick()
+      const dialog = root.querySelector('dialog')
+      expect(dialog?.open).toBe(true)
+      expect(dialog?.querySelector('.preview-grid')).not.toBeNull()
+      expect(dialog?.querySelector('[aria-label="Template display"]')).not.toBeNull()
+      expect(dialog?.querySelector('[role="separator"]')).toBeNull()
+      if (dismiss === 'cancel') dialog?.dispatchEvent(new Event('cancel', { cancelable: true }))
+      else click(dismiss)
+      await tick()
+      await tick()
+      expect(root.querySelector('dialog')).toBeNull()
+      expect(root.querySelector('.preview-grid')).toBeNull()
+      expect(root.activeElement?.getAttribute('aria-label')).toBe('Pop out menu')
+    }
+  })
+
   it('moves keyboard focus into card actions and returns it when dismissed', async () => {
     const panel = new CaelestisPanel()
     const row = {
@@ -102,6 +134,8 @@ describe('panel shell', () => {
     } as const
     panel.model = model({ tree: initial })
     document.body.append(panel)
+    await tick()
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.click()
     await tick()
     const root = panel.shadowRoot
     const trigger = root?.querySelector<HTMLButtonElement>('[aria-label="Actions for Artwork"]')
@@ -136,6 +170,15 @@ describe('panel shell', () => {
       new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
     )
     expect(root.activeElement?.textContent).toContain('Move')
+    const escapeKey = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    })
+    root.activeElement?.dispatchEvent(escapeKey)
+    expect(escapeKey.defaultPrevented).toBe(true)
+    expect(root.querySelector('dialog')?.open).toBe(true)
     panel.model = model({ tree: initial })
     await tick()
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -163,6 +206,8 @@ describe('panel shell', () => {
     const initial = { ...tree, entries, focusedKey: 'art' }
     panel.model = model({ tree: initial })
     document.body.append(panel)
+    await tick()
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.click()
     await tick()
     const root = panel.shadowRoot
     const row = root?.querySelector<HTMLElement>('[data-caelestis-tree-key="art"]')

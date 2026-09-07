@@ -152,9 +152,8 @@ import { findWplaceRail } from './wplace-rail.js'
  *    empty. So we append to a Svelte-rendered list, which means it can be re-rendered out from under
  *    us; see the observer below.
  *
- * The panel is deliberately **not a modal**. No backdrop, no focus trap, nothing to dismiss. Most of
- * what it controls is on the map behind it, so covering or freezing the map would hide the very
- * thing you opened it to change.
+ * The sidebar keeps the map interactive. Its popout opens the same menu in a modal for wider
+ * template browsing, with grid mode available there. Canvas actions return to the sidebar.
  */
 
 /**

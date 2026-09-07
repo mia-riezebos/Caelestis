@@ -76,7 +76,11 @@ describe('template tree', () => {
       )
       const component = mount(TemplateTree, {
         target: document.body,
-        props: { model: { ...model, entries, displayMode, focusedKey: 'local:city' }, onIntent },
+        props: {
+          model: { ...model, entries, displayMode, focusedKey: 'local:city' },
+          allowGrid: true,
+          onIntent,
+        },
       })
       flushSync()
       expect(
@@ -124,6 +128,7 @@ describe('template tree', () => {
     const component = mount(TemplateTree, {
       target: document.body,
       props: {
+        allowGrid: true,
         model: {
           ...model,
           displayMode: 'grid',
