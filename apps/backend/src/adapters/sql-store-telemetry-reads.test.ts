@@ -655,12 +655,50 @@ describe.each(adapters)('$name painter bucket contract', ({ make }) => {
     await expect(
       store.readPainterBuckets({
         templateIds: ['template-1'],
+        wplaceUserIds: [7, 9],
         resolution: 60,
         fromSeconds: seconds(1_800_000_000),
         toSeconds: seconds(1_800_000_060),
       }),
     ).resolves.toEqual([bucket({ placed: 8, correct: 6, repairs: 1 }), bucket({ wplaceUserId: 9 })])
     await expect(store.readPainterNames([7, 9, 11])).resolves.toEqual(new Map([[7, 'Ada']]))
+    // A read for one painter never carries the other; a read for none costs nothing.
+    await expect(
+      store.readPainterBuckets({
+        templateIds: ['template-1'],
+        wplaceUserIds: [9],
+        resolution: 60,
+        fromSeconds: seconds(1_800_000_000),
+        toSeconds: seconds(1_800_000_060),
+      }),
+    ).resolves.toEqual([bucket({ wplaceUserId: 9 })])
+    await expect(
+      store.readPainterBuckets({
+        templateIds: ['template-1'],
+        wplaceUserIds: Array.from({ length: 51 }, (_, index) => index),
+        resolution: 60,
+        fromSeconds: seconds(1_800_000_000),
+        toSeconds: seconds(1_800_000_060),
+      }),
+    ).rejects.toThrow(/at most 50 painters/)
+    // Totals sum in the store and come back leading first, cut at the limit.
+    await expect(
+      store.readPainterTotals(
+        {
+          templateIds: ['template-1'],
+          resolution: [60, 300],
+          fromSeconds: seconds(1_800_000_000),
+          toSeconds: seconds(1_800_000_060),
+        },
+        1,
+      ),
+    ).resolves.toEqual([{ wplaceUserId: 7, placed: 8, correct: 6, repairs: 1 }])
+  })
+
+  it('reports when painter collection began', async () => {
+    // The memory store has always collected; D1 learns the moment from the migration's row.
+    const start = await store.readPainterCollectionStart()
+    expect(start === null || Number.isSafeInteger(start)).toBe(true)
   })
 
   it('rejects a painter bucket off the ladder before it reaches the database', async () => {
@@ -698,6 +736,7 @@ describe.each(adapters)('$name painter bucket contract', ({ make }) => {
     await expect(
       store.readPainterBuckets({
         templateIds: ['template-1'],
+        wplaceUserIds: [7, 9],
         resolution: 300,
         fromSeconds: targetStart,
         toSeconds: seconds(cutoff),
@@ -716,6 +755,7 @@ describe.each(adapters)('$name painter bucket contract', ({ make }) => {
     await expect(
       store.readPainterBuckets({
         templateIds: ['template-1'],
+        wplaceUserIds: [7, 9],
         resolution: 60,
         fromSeconds: targetStart,
         toSeconds: seconds(cutoff + 60),

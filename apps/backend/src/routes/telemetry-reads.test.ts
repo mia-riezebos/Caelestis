@@ -420,7 +420,7 @@ describe('telemetry read routes', () => {
     })
 
     const response = await app.request(
-      `/telemetry/painter-history?templateIds=${templateId},${hiddenId}&maxResolution=900&from=${now - 3_600}&to=${now}`,
+      `/telemetry/painter-history?templateIds=${templateId},${hiddenId}&painters=42,43&maxResolution=900&from=${now - 3_600}&to=${now}`,
       { headers: bearer(readToken) },
     )
     expect(response.status).toBe(200)
@@ -433,13 +433,95 @@ describe('telemetry read routes', () => {
       ],
     })
 
+    // Only the named painters come back, so the response is bounded by who is drawn.
+    const one = await app.request(
+      `/telemetry/painter-history?templateIds=${templateId}&painters=43&maxResolution=900&from=${now - 3_600}&to=${now}`,
+      { headers: bearer(readToken) },
+    )
+    await expect(one.json()).resolves.toMatchObject({
+      buckets: [{ ...painterBucket(templateId, 43), displayName: 'Bo' }],
+    })
+
+    // Coverage never reaches back before this deployment started keeping painter buckets.
+    sql.painterCollectionStart = seconds(now - 600)
+    const clamped = await app.request(
+      `/telemetry/painter-history?templateIds=${templateId}&painters=42&maxResolution=900&from=${now - 3_600}&to=${now}`,
+      { headers: bearer(readToken) },
+    )
+    await expect(clamped.json()).resolves.toMatchObject({
+      coverageStart: Math.ceil((now - 600) / 60) * 60,
+    })
+
+    const unnamed = await app.request(
+      `/telemetry/painter-history?templateIds=${templateId}&from=${now - 3_600}&to=${now}`,
+      { headers: bearer(readToken) },
+    )
+    expect(unnamed.status).toBe(400)
     const malformed = await app.request(
-      `/telemetry/painter-history?templateIds=${templateId}&from=${now}&to=${now - 1}`,
+      `/telemetry/painter-history?templateIds=${templateId}&painters=42&from=${now}&to=${now - 1}`,
       { headers: bearer(readToken) },
     )
     expect(malformed.status).toBe(400)
     const anonymous = await app.request(
-      `/telemetry/painter-history?templateIds=${templateId}&from=${now - 3_600}&to=${now}`,
+      `/telemetry/painter-history?templateIds=${templateId}&painters=42&from=${now - 3_600}&to=${now}`,
+    )
+    expect(anonymous.status).toBe(401)
+  })
+
+  it('lists the painters of a range, leading first and cut at the limit', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const hiddenId = await createTemplate(app, false)
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const bucketStart = seconds(Math.floor((now - 60) / 60) * 60)
+    const painterBucket = (id: string, wplaceUserId: number, placed: number) => ({
+      templateId: id,
+      wplaceUserId,
+      resolution: 60,
+      bucketStart,
+      placed,
+      correct: placed,
+      repairs: 0,
+    })
+    await sql.applyPaintEvent('event-1', 42, 'Ada', millis(now * 1_000), {
+      counters: [],
+      contributions: [],
+      painterBuckets: [painterBucket(templateId, 42, 2), painterBucket(hiddenId, 42, 50)],
+    })
+    await sql.applyPaintEvent('event-2', 43, 'Bo', millis(now * 1_000), {
+      counters: [],
+      contributions: [],
+      painterBuckets: [painterBucket(templateId, 43, 5)],
+    })
+    await sql.applyPaintEvent('event-3', 44, 'Cyd', millis(now * 1_000), {
+      counters: [],
+      contributions: [],
+      painterBuckets: [painterBucket(templateId, 44, 1)],
+    })
+
+    const response = await app.request(
+      `/telemetry/painters?templateIds=${templateId},${hiddenId}&from=${now - 3_600}&to=${now}`,
+      { headers: bearer(readToken) },
+    )
+    expect(response.status).toBe(200)
+    // The unpublished template's fifty pixels do not count for a read-scoped caller.
+    await expect(response.json()).resolves.toEqual({
+      painters: [
+        { wplaceUserId: 43, displayName: 'Bo', placed: 5, correct: 5, repairs: 0 },
+        { wplaceUserId: 42, displayName: 'Ada', placed: 2, correct: 2, repairs: 0 },
+        { wplaceUserId: 44, displayName: 'Cyd', placed: 1, correct: 1, repairs: 0 },
+      ],
+    })
+    const limited = await app.request(
+      `/telemetry/painters?templateIds=${templateId}&limit=1&from=${now - 3_600}&to=${now}`,
+      { headers: bearer(readToken) },
+    )
+    await expect(limited.json()).resolves.toEqual({
+      painters: [{ wplaceUserId: 43, displayName: 'Bo', placed: 5, correct: 5, repairs: 0 }],
+    })
+    const anonymous = await app.request(
+      `/telemetry/painters?templateIds=${templateId}&from=${now - 3_600}&to=${now}`,
     )
     expect(anonymous.status).toBe(401)
   })

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "bf47ad57-866e-433c-a429-78684c5a31a9",
+  "id": "3f3986a5-5451-44cb-9976-90cfae2abb85",
   "prevId": "42dc9b9e-6c80-4e26-b9d8-32b60b7418cd",
   "tables": {
     "access_tokens": {
@@ -424,6 +424,35 @@
         }
       }
     },
+    "painter_bucket_collection": {
+      "name": "painter_bucket_collection",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "since_s": {
+          "name": "since_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "painter_bucket_collection_single_row_check": {
+          "name": "painter_bucket_collection_single_row_check",
+          "value": "\"painter_bucket_collection\".\"id\" = 1"
+        }
+      }
+    },
     "painter_telemetry_buckets": {
       "name": "painter_telemetry_buckets",
       "columns": {
@@ -480,14 +509,14 @@
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
-        "painter_telemetry_buckets_template_id_wplace_user_id_resolution_bucket_start_s_pk": {
+        "painter_telemetry_buckets_template_id_resolution_bucket_start_s_wplace_user_id_pk": {
           "columns": [
             "template_id",
-            "wplace_user_id",
             "resolution",
-            "bucket_start_s"
+            "bucket_start_s",
+            "wplace_user_id"
           ],
-          "name": "painter_telemetry_buckets_template_id_wplace_user_id_resolution_bucket_start_s_pk"
+          "name": "painter_telemetry_buckets_template_id_resolution_bucket_start_s_wplace_user_id_pk"
         }
       },
       "uniqueConstraints": {},

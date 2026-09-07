@@ -390,8 +390,10 @@ export const painterTelemetryBuckets = sqliteTable(
     repairs: integer('repairs').notNull(),
   },
   (table) => [
+    // Painter last: every read and fold constrains template, tier and time and only then cares
+    // who painted, so the key has to seek on those three before it fans out per painter.
     primaryKey({
-      columns: [table.templateId, table.wplaceUserId, table.resolution, table.bucketStartS],
+      columns: [table.templateId, table.resolution, table.bucketStartS, table.wplaceUserId],
     }),
     check(
       'painter_telemetry_buckets_resolution_check',
@@ -412,6 +414,21 @@ export const painterTelemetryBuckets = sqliteTable(
         AND ${table.repairs} <= ${table.correct} AND ${table.correct} <= ${table.placed}`,
     ),
   ],
+)
+
+/**
+ * When this deployment began keeping painter buckets. The table above starts empty and older
+ * `applied_events` carry no painter share to backfill, so a history read must not advertise the
+ * time before this row as covered: nobody was silent then, nobody was counted. One row, written by
+ * the migration that created the table.
+ */
+export const painterBucketCollection = sqliteTable(
+  'painter_bucket_collection',
+  {
+    id: integer('id').primaryKey(),
+    sinceS: integer('since_s').$type<Seconds>().notNull(),
+  },
+  (table) => [check('painter_bucket_collection_single_row_check', sql`${table.id} = 1`)],
 )
 
 export const contributions = sqliteTable(

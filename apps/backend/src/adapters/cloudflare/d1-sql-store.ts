@@ -36,6 +36,7 @@ import {
   canvasTiles,
   contributions,
   nodes,
+  painterBucketCollection,
   painters,
   painterTelemetryBuckets,
   serverSettings,
@@ -76,6 +77,7 @@ import {
   InvalidNodeParentError,
   type LatestTileObservation,
   MAX_NODE_PATH_LENGTH,
+  MAX_PAINTER_HISTORY_IDS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
@@ -88,7 +90,9 @@ import {
   NodeSubtreeChangedError,
   type PaintEventAccounting,
   type PaintEventApplication,
+  type PainterBucketQuery,
   type PainterTelemetryBucket,
+  type PainterTotalRow,
   READ_BUCKETS_CHUNK_SIZE,
   type ServerSettings,
   type SqlStore,
@@ -3038,8 +3042,14 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
-  async readPainterBuckets(query: BucketQuery): Promise<readonly PainterTelemetryBucket[]> {
-    if (query.templateIds.length === 0) return []
+  async readPainterBuckets(query: PainterBucketQuery): Promise<readonly PainterTelemetryBucket[]> {
+    const wplaceUserIds = [...new Set(query.wplaceUserIds)]
+    if (wplaceUserIds.length > MAX_PAINTER_HISTORY_IDS) {
+      throw new Error(
+        `readPainterBuckets accepts at most ${MAX_PAINTER_HISTORY_IDS} painters per call; received ${wplaceUserIds.length}`,
+      )
+    }
+    if (query.templateIds.length === 0 || wplaceUserIds.length === 0) return []
     const resolutions = [
       ...new Set(typeof query.resolution === 'number' ? [query.resolution] : query.resolution),
     ]
@@ -3061,6 +3071,7 @@ export class D1SqlStore implements SqlStore {
               gte(painterTelemetryBuckets.bucketStartS, query.fromSeconds),
               lt(painterTelemetryBuckets.bucketStartS, query.toSeconds),
               inArray(painterTelemetryBuckets.templateId, chunk),
+              inArray(painterTelemetryBuckets.wplaceUserId, wplaceUserIds),
             ),
           ),
       )
@@ -3096,6 +3107,63 @@ export class D1SqlStore implements SqlStore {
       for (const row of rows) names.set(row.wplaceUserId, row.displayName)
     }
     return names
+  }
+
+  async readPainterTotals(query: BucketQuery, limit: number): Promise<readonly PainterTotalRow[]> {
+    if (query.templateIds.length === 0) return []
+    const resolutions = [
+      ...new Set(typeof query.resolution === 'number' ? [query.resolution] : query.resolution),
+    ]
+    if (resolutions.length === 0) return []
+    const templateIds = [...new Set(query.templateIds)]
+    if (templateIds.length > MAX_READ_BUCKETS_TEMPLATE_IDS) {
+      throw tooManyTemplateIds(templateIds.length, 'readPainterTotals')
+    }
+    // Summed in SQL per chunk and merged here, so a scope's lifetime never leaves the database as
+    // rows; the caller gets at most `limit` painters however long the range.
+    const totals = new Map<number, { placed: number; correct: number; repairs: number }>()
+    for (let offset = 0; offset < templateIds.length; offset += READ_BUCKETS_CHUNK_SIZE) {
+      const chunk = templateIds.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)
+      const rows = await this.database
+        .select({
+          wplaceUserId: painterTelemetryBuckets.wplaceUserId,
+          placed: sql<number>`sum(${painterTelemetryBuckets.placed})`,
+          correct: sql<number>`sum(${painterTelemetryBuckets.correct})`,
+          repairs: sql<number>`sum(${painterTelemetryBuckets.repairs})`,
+        })
+        .from(painterTelemetryBuckets)
+        .where(
+          and(
+            inArray(painterTelemetryBuckets.resolution, resolutions),
+            gte(painterTelemetryBuckets.bucketStartS, query.fromSeconds),
+            lt(painterTelemetryBuckets.bucketStartS, query.toSeconds),
+            inArray(painterTelemetryBuckets.templateId, chunk),
+          ),
+        )
+        .groupBy(painterTelemetryBuckets.wplaceUserId)
+      for (const row of rows) {
+        const held = totals.get(row.wplaceUserId) ?? { placed: 0, correct: 0, repairs: 0 }
+        held.placed += Number(row.placed)
+        held.correct += Number(row.correct)
+        held.repairs += Number(row.repairs)
+        totals.set(row.wplaceUserId, held)
+      }
+    }
+    return [...totals]
+      .map(([wplaceUserId, held]) => ({ wplaceUserId, ...held }))
+      .sort(
+        (a, b) => b.correct - a.correct || b.placed - a.placed || a.wplaceUserId - b.wplaceUserId,
+      )
+      .slice(0, limit)
+  }
+
+  async readPainterCollectionStart(): Promise<Seconds | null> {
+    const [row] = await this.database
+      .select({ sinceS: painterBucketCollection.sinceS })
+      .from(painterBucketCollection)
+      .where(eq(painterBucketCollection.id, 1))
+      .limit(1)
+    return row?.sinceS ?? null
   }
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {

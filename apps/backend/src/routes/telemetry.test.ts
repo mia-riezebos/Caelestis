@@ -1166,6 +1166,7 @@ describe('telemetry routes', () => {
     await expect(
       sql.readPainterBuckets({
         templateIds: [templateId],
+        wplaceUserIds: [42],
         resolution: 60,
         fromSeconds: seconds(now - 120),
         toSeconds: seconds(now + 60),

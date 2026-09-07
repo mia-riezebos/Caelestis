@@ -195,6 +195,22 @@ export const painterBucketResolution = (occurredAt: Seconds, now: Seconds): numb
   return resolution
 }
 
+/** Painter ids one `readPainterBuckets` call may name: the wire bound on the history route. */
+export const MAX_PAINTER_HISTORY_IDS = 50
+
+/** One painter's counters summed over a range, before names are attached. */
+export interface PainterTotalRow {
+  readonly wplaceUserId: number
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
+}
+
+/** `BucketQuery` for named painters only, so a read is bounded by who is being drawn. */
+export interface PainterBucketQuery extends BucketQuery {
+  readonly wplaceUserIds: readonly number[]
+}
+
 export interface BucketQuery {
   readonly templateIds: readonly string[]
   /** One exact tier for legacy callers, or several retained tiers for a lossless server-side read. */
@@ -1240,10 +1256,25 @@ export interface SqlStore {
   foldPainterBuckets(templateIds: readonly string[], now: Seconds): Promise<void>
 
   /**
-   * Read per-painter folded buckets for a set of templates over a half-open range, ordered by
-   * `comparePainterBuckets`. Same id cap and duplicate handling as `readBuckets`.
+   * Read the named painters' folded buckets for a set of templates over a half-open range,
+   * ordered by `comparePainterBuckets`. Same template id cap and duplicate handling as
+   * `readBuckets`; at most `MAX_PAINTER_HISTORY_IDS` painters, so the result is bounded by who is
+   * drawn rather than by how long the scope has lived.
    */
-  readPainterBuckets(query: BucketQuery): Promise<readonly PainterTelemetryBucket[]>
+  readPainterBuckets(query: PainterBucketQuery): Promise<readonly PainterTelemetryBucket[]>
+
+  /**
+   * Every painter's counters summed over a half-open range at the queried tiers, leading first
+   * (correct, then placed, then id) and cut at `limit`. One row per painter, summed in the
+   * database, so a scope's whole lifetime costs the caller a bounded list.
+   */
+  readPainterTotals(query: BucketQuery, limit: number): Promise<readonly PainterTotalRow[]>
+
+  /**
+   * When this deployment started keeping painter buckets, or null before the table's migration
+   * ran. History reads clamp their coverage to it so the time before is unavailable, not silent.
+   */
+  readPainterCollectionStart(): Promise<Seconds | null>
 
   /**
    * The display name last seen for each of these painters; absent ids are left out so a caller

@@ -8,6 +8,7 @@ import {
   type LeaderboardResponse,
   type PainterHistoryBucket,
   type PainterHistoryResponse,
+  type PainterTotalsResponse,
   type Seconds,
   type StatusResponse,
   seconds,
@@ -335,6 +336,8 @@ const coalescePainterHistory = (
  */
 export const readPainterHistory = (input: {
   readonly templateIds: readonly string[]
+  /** The painters to draw; the read is bounded by this list, not by the scope's age. */
+  readonly wplaceUserIds: readonly number[]
   readonly range: HistoryRange
   readonly maxResolution?: number | undefined
   readonly includeUnpublished: boolean
@@ -354,11 +357,12 @@ export const readPainterHistory = (input: {
           sql.filterPublishedTemplateIds(input.templateIds),
         )
     const buckets =
-      visibleIds.length === 0
+      visibleIds.length === 0 || input.wplaceUserIds.length === 0
         ? []
         : yield* sqlRead('readPainterBuckets', () =>
             sql.readPainterBuckets({
               templateIds: visibleIds,
+              wplaceUserIds: input.wplaceUserIds,
               resolution: LADDER_RESOLUTIONS.filter((tier) => tier <= resolution),
               ...input.range,
             }),
@@ -370,14 +374,59 @@ export const readPainterHistory = (input: {
       ...bucket,
       displayName: names.get(bucket.wplaceUserId) ?? String(bucket.wplaceUserId),
     }))
+    // The ladder says how far back a tier is kept; the collection marker says how far back this
+    // deployment kept painters at all. Coverage is the later of the two, so the time before the
+    // table existed stays unavailable instead of reading as silence.
+    const collectionStart = yield* sqlRead('readPainterCollectionStart', () =>
+      sql.readPainterCollectionStart(),
+    )
+    const coverageStart = seconds(
+      Math.max(
+        telemetryCoverageStart(resolution, input.range, readAt),
+        collectionStart === null ? readAt : Math.ceil(collectionStart / resolution) * resolution,
+      ),
+    )
     return {
-      ...(input.maxResolution === undefined
-        ? {}
-        : {
-            resolution,
-            coverageStart: telemetryCoverageStart(resolution, input.range, readAt),
-          }),
+      ...(input.maxResolution === undefined ? {} : { resolution, coverageStart }),
       buckets: coalescePainterHistory(labelled, resolution, input.range),
+    }
+  })
+
+/**
+ * Who painted in a range and how much, leading first: the list a dashboard picks painters from.
+ * Summed in the database at the tier `/painter-history` would choose for the range, so a scope's
+ * lifetime costs one bounded list per read rather than every retained row.
+ */
+export const readPainterTotals = (input: {
+  readonly templateIds: readonly string[]
+  readonly range: HistoryRange
+  readonly limit: number
+  readonly includeUnpublished: boolean
+}): Effect.Effect<PainterTotalsResponse, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const visibleIds = input.includeUnpublished
+      ? input.templateIds
+      : yield* sqlRead('filterPublishedTemplateIds', () =>
+          sql.filterPublishedTemplateIds(input.templateIds),
+        )
+    const totals =
+      visibleIds.length === 0
+        ? []
+        : yield* sqlRead('readPainterTotals', () =>
+            sql.readPainterTotals(
+              { templateIds: visibleIds, resolution: LADDER_RESOLUTIONS, ...input.range },
+              input.limit,
+            ),
+          )
+    const names = yield* sqlRead('readPainterNames', () =>
+      sql.readPainterNames(totals.map((total) => total.wplaceUserId)),
+    )
+    return {
+      painters: totals.map((total) => ({
+        ...total,
+        displayName: names.get(total.wplaceUserId) ?? String(total.wplaceUserId),
+      })),
     }
   })
 

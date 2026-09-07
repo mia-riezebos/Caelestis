@@ -932,6 +932,30 @@ export const PainterHistoryBucket = PainterHistoryBucketStruct.pipe(
   ),
 )
 
+/** The route clamps `limit` to 500, so anything larger is not a response this server produced. */
+const MAX_PAINTER_TOTALS = 500
+
+const PainterTotalStruct = Schema.Struct({
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+  placed: NonNegativeInteger,
+  correct: NonNegativeInteger,
+  repairs: NonNegativeInteger,
+})
+
+export const PainterTotal = PainterTotalStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (total: Schema.Schema.Type<typeof PainterTotalStruct>) => orderedCounters(total),
+      'counters must satisfy repairs <= correct <= placed',
+    ),
+  ),
+)
+
+export const PainterTotalsResponse = Schema.Struct({
+  painters: boundedArray(PainterTotal, MAX_PAINTER_TOTALS),
+})
+
 const PainterHistoryResponseStruct = Schema.Struct({
   resolution: Schema.optionalKey(LadderResolution),
   coverageStart: Schema.optionalKey(Seconds),
@@ -1140,6 +1164,8 @@ assertExact<Exact<Schema.Schema.Type<typeof PainterHistoryBucket>, Shared.Painte
 assertExact<
   Exact<Schema.Schema.Type<typeof PainterHistoryResponse>, Shared.PainterHistoryResponse>
 >()
+assertExact<Exact<Schema.Schema.Type<typeof PainterTotal>, Shared.PainterTotal>>()
+assertExact<Exact<Schema.Schema.Type<typeof PainterTotalsResponse>, Shared.PainterTotalsResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof ContributionDay>, Shared.ContributionDay>>()
 assertExact<Exact<Schema.Schema.Type<typeof ContributionsResponse>, Shared.ContributionsResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof LeaderboardEntry>, Shared.LeaderboardEntry>>()
@@ -1180,6 +1206,10 @@ assertExact<Exact<Schema.Codec.Encoded<typeof HistoryResponse>, Shared.HistoryRe
 assertExact<Exact<Schema.Codec.Encoded<typeof PainterHistoryBucket>, Shared.PainterHistoryBucket>>()
 assertExact<
   Exact<Schema.Codec.Encoded<typeof PainterHistoryResponse>, Shared.PainterHistoryResponse>
+>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PainterTotal>, Shared.PainterTotal>>()
+assertExact<
+  Exact<Schema.Codec.Encoded<typeof PainterTotalsResponse>, Shared.PainterTotalsResponse>
 >()
 assertExact<Exact<Schema.Codec.Encoded<typeof ContributionDay>, Shared.ContributionDay>>()
 assertExact<
