@@ -35,6 +35,8 @@ const VERSION = 5
 const VERSIONS_STORE = 'local-template-versions'
 const MAX_PERSISTED_TEMPLATES = 64
 const MAX_PERSISTED_INDEX_PIXELS = 64 * 1024 * 1024
+const MAX_ARCHIVED_VERSIONS = 256
+const MAX_ARCHIVED_INDEX_PIXELS = 64 * 1024 * 1024
 let blockedOpenRequest: IDBOpenDBRequest | null = null
 let blockedOpenRecovery: Promise<void> | null = null
 let settleBlockedOpen: (() => void) | null = null
@@ -167,6 +169,28 @@ const writeVersioned = async (
             }
             operation(templates, nextRevision, current)
             result = { status: 'saved', revision: nextRevision }
+          }
+          if (history === 'archive') {
+            let records = 0
+            let pixels = candidateIndexPixels(current)
+            const cursorRequest = transaction.objectStore(VERSIONS_STORE).openCursor()
+            cursorRequest.onsuccess = () => {
+              const cursor = cursorRequest.result
+              if (cursor !== null) {
+                records++
+                pixels = boundedPixelSum(pixels, candidateIndexPixels(cursor.value))
+              }
+              if (records >= MAX_ARCHIVED_VERSIONS || pixels > MAX_ARCHIVED_INDEX_PIXELS) {
+                result = { status: 'limit' }
+              } else if (cursor === null) {
+                commit()
+              } else {
+                cursor.continue()
+              }
+            }
+            cursorRequest.onerror = () =>
+              reject(cursorRequest.error ?? new Error('indexedDB history cursor failed'))
+            return
           }
           if (expectedRevision !== null || creationPixels === null) {
             commit()

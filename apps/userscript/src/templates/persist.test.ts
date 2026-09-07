@@ -28,13 +28,14 @@ afterEach(() => {
 })
 
 describe('local template persistence', () => {
-  it.each(['saved', 'conflict', 'unavailable'] as const)(
+  it.each(['saved', 'conflict', 'unavailable', 'bytes', 'count'] as const)(
     'archives artwork in the same transaction as replacement (%s)',
     async (outcome) => {
       const previous = stored({ revision: outcome === 'conflict' ? 2 : 1 })
       const request = { result: previous } as IDBRequest<unknown>
       const currentStore = { get: vi.fn(() => request), put: vi.fn() }
-      const history = { add: vi.fn() }
+      const cursor = { result: null } as IDBRequest<IDBCursorWithValue | null>
+      const history = { add: vi.fn(), openCursor: vi.fn(() => cursor) }
       const transaction = {
         objectStore: vi.fn((name: string) =>
           name === 'local-template-versions' ? history : currentStore,
@@ -52,16 +53,25 @@ describe('local template persistence', () => {
       opening.onsuccess?.(new Event('success'))
       await Promise.resolve()
       request.onsuccess?.(new Event('success'))
+      const limited = outcome === 'bytes' || outcome === 'count'
+      if (limited) {
+        const indices = { size: outcome === 'bytes' ? 64 * 1024 * 1024 : 1, arrayBuffer: vi.fn() }
+        Object.assign(cursor, { result: { value: stored({ indices }), continue: vi.fn() } })
+      }
+      for (let index = 0; index < (outcome === 'count' ? 256 : 1); index++)
+        cursor.onsuccess?.(new Event('success'))
       if (outcome === 'unavailable') transaction.onabort?.(new Event('abort'))
       else transaction.oncomplete?.(new Event('complete'))
       await expect(saving).resolves.toEqual(
-        outcome === 'saved' ? { status: 'saved', revision: 2 } : { status: outcome },
+        outcome === 'saved'
+          ? { status: 'saved', revision: 2 }
+          : { status: limited ? 'limit' : outcome },
       )
       expect(db.transaction).toHaveBeenCalledWith(
         ['local-templates', 'local-template-versions'],
         'readwrite',
       )
-      if (outcome === 'conflict') {
+      if (outcome === 'conflict' || limited) {
         expect(history.add).not.toHaveBeenCalled()
         expect(currentStore.put).not.toHaveBeenCalled()
       } else {

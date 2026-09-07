@@ -1842,6 +1842,11 @@ export const replaceLocalArtwork = async (
     checkCurrent()
     const { tiles: _tiles, ...stored } = next
     const result = await saveTemplate(stored, expected.revision, true)
+    if (result.status === 'limit') {
+      throw new Error(
+        'Local version history is full. Remove an unused local template to free its history, then try again.',
+      )
+    }
     if (result.status !== 'saved') {
       throw new Error(
         result.status === 'conflict'
