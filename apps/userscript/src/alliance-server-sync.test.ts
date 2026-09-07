@@ -229,7 +229,10 @@ describe('alliance server sync', () => {
     await flush()
     await coordinator.resource?.refresh(connected, 'connect', 'compatibility-poll')
     state.current = { servers: [replacement] }
-    await refreshAllianceManifest(connected, hq())
+    expect(await refreshAllianceManifest(connected, hq())).toEqual({
+      status: 'unchanged',
+      revision: 'Replacement',
+    })
 
     expect(fetch).toHaveBeenCalledTimes(2)
     expect(new Headers(vi.mocked(fetch).mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
