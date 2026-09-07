@@ -18,6 +18,8 @@
   import {
     defaultVisiblePainters,
     MAX_PAINTER_OPTIONS,
+    MAX_SELECTED_PAINTERS,
+    togglePainterSelection,
   } from '$lib/components/charts/painter-pace'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
@@ -95,8 +97,9 @@
         .map((painter) => painter.wplaceUserId),
     ),
   )
+  // Never past the history route's bound: one refused request would take every line with it.
   const togglePainter = (wplaceUserId: number): void => {
-    painterOverrides = { ...painterOverrides, [wplaceUserId]: !painterShown(wplaceUserId) }
+    painterOverrides = togglePainterSelection(painterOverrides, selectedPainters, wplaceUserId)
   }
   /** The selected painters' retained tiers for each enabled rolling window, like `paceHistories`. */
   let painterHistories = $state<readonly PainterHistorySource[]>([])
@@ -243,7 +246,7 @@
     if (templateIds.length === 0) return
     const generation = { cancelled: false }
     const enabled = new Set(storedWindows.value)
-    const chosen = [...selectedPainters]
+    const chosen = [...selectedPainters].slice(0, MAX_SELECTED_PAINTERS)
     if (chosen.length === 0) {
       painterHistories = []
       return

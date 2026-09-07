@@ -7,6 +7,7 @@ import {
   painterHue,
   painterLabel,
   rankPainters,
+  togglePainterSelection,
 } from './painter-pace.js'
 
 const painter = (wplaceUserId: number, displayName = `painter ${wplaceUserId}`): PainterTotal => ({
@@ -23,6 +24,17 @@ describe('selection', () => {
     expect([...defaultVisiblePainters(crowd)]).toEqual([1, 2, 3, 4, 5])
     expect(defaultVisiblePainters(crowd, 2)).toEqual(new Set([1, 2]))
     expect(defaultVisiblePainters([])).toEqual(new Set())
+  })
+
+  it('toggles a painter but never grows the selection past the history bound', () => {
+    const selected = new Set([1, 2, 3])
+    expect(togglePainterSelection({}, selected, 4, 3)).toEqual({})
+    expect(togglePainterSelection({}, selected, 2, 3)).toEqual({ 2: false })
+    expect(togglePainterSelection({ 2: false }, new Set([1, 3]), 4, 3)).toEqual({
+      2: false,
+      4: true,
+    })
+    expect(togglePainterSelection({}, new Set(), 9)).toEqual({ 9: true })
   })
 
   it('labels a painter by name and falls back to the id', () => {

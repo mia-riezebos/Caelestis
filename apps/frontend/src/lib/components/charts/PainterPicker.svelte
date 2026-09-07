@@ -8,6 +8,7 @@
   import CheckIcon from '@lucide/svelte/icons/check'
   import { Combobox } from 'bits-ui'
   import {
+    MAX_SELECTED_PAINTERS,
     type PainterOption,
     painterColour,
     painterLabel,
@@ -20,6 +21,7 @@
     onToggle,
     onHover = () => {},
     pageSize = 50,
+    max = MAX_SELECTED_PAINTERS,
   }: {
     options: readonly PainterOption[]
     /** Painters currently drawn. */
@@ -28,7 +30,11 @@
     /** The row under the pointer or keyboard, so the chart can spotlight that painter's line. */
     onHover?: (wplaceUserId: number | null) => void
     pageSize?: number
+    /** The most painters that can be drawn at once; further rows wait until one is unticked. */
+    max?: number
   } = $props()
+
+  const full = $derived(selected.size >= max)
 
   let query = $state('')
   let open = $state(false)
@@ -42,7 +48,7 @@
       ? 'no painters'
       : selected.size === 1
         ? painterLabel(options.find((painter) => selected.has(painter.wplaceUserId)) ?? { wplaceUserId: [...selected][0] ?? 0, displayName: '' })
-        : `${selected.size} painters`,
+        : `${selected.size} painters${full ? ' (max)' : ''}`,
   )
 </script>
 
@@ -95,6 +101,7 @@
           <Combobox.Item
             value={String(painter.wplaceUserId)}
             label={painterLabel(painter)}
+            disabled={full && !selected.has(painter.wplaceUserId)}
             data-painter-option={painter.wplaceUserId}
             class="relative flex w-full cursor-default select-none items-center gap-2 rounded-md py-1 pe-7 ps-1.5 text-xs outline-hidden data-highlighted:bg-accent data-highlighted:text-accent-foreground"
             onpointerenter={() => onHover(painter.wplaceUserId)}

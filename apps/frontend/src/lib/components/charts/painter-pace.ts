@@ -14,6 +14,24 @@ export const DEFAULT_VISIBLE_PAINTERS = 5
 /** How many painters the panel asks the server to list; the route clamps to the same. */
 export const MAX_PAINTER_OPTIONS = 500
 
+/** How many painters may be drawn at once: the history route's `painters=` bound. */
+export const MAX_SELECTED_PAINTERS = 50
+
+/**
+ * The next override map after toggling one painter, refusing to grow the selection past `max`
+ * because `/painter-history` would refuse the request and every line would vanish with it.
+ */
+export const togglePainterSelection = (
+  overrides: Readonly<Record<number, boolean>>,
+  selected: ReadonlySet<number>,
+  wplaceUserId: number,
+  max = MAX_SELECTED_PAINTERS,
+): Record<number, boolean> => {
+  const shown = selected.has(wplaceUserId)
+  if (!shown && selected.size >= max) return overrides
+  return { ...overrides, [wplaceUserId]: !shown }
+}
+
 /** A painter the picker can offer: `GET /telemetry/painters` already sums and orders them. */
 export type PainterOption = PainterTotal
 
