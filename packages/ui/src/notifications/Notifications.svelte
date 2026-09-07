@@ -144,7 +144,7 @@
     min-block-size: 2.5rem;
     padding: 0.5rem 0.75rem;
     border: 1px solid color-mix(in oklch, currentColor 24%, transparent);
-    border-radius: var(--caelestis-card-radius, 0.75rem);
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     background: color-mix(in oklch, currentColor 12%, var(--caelestis-surface, white));
   }
 
@@ -176,7 +176,7 @@
     min-block-size: var(--caelestis-touch-target, 2.75rem);
     padding-inline: 0.75rem;
     border: 1px solid color-mix(in oklch, currentColor 32%, transparent);
-    border-radius: var(--caelestis-field-radius, 0.65rem);
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     color: currentColor;
     font-weight: 700;
     text-decoration: none;
@@ -191,7 +191,7 @@
     max-block-size: min(85vh, 42rem);
     padding: 0;
     border: 1px solid var(--caelestis-border, oklch(0.78 0.025 264 / 0.7));
-    border-radius: var(--caelestis-panel-radius, 0.9rem);
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     overflow: hidden;
     background: var(--caelestis-surface, oklch(0.97 0.01 264));
     color: var(--caelestis-text, oklch(0.26 0.025 264));
@@ -218,7 +218,7 @@
     min-block-size: var(--caelestis-touch-target, 2.75rem);
     padding-inline: 1rem;
     border: 1px solid var(--caelestis-border, oklch(0.78 0.025 264 / 0.7));
-    border-radius: var(--caelestis-field-radius, 0.65rem);
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     background: transparent;
     color: inherit;
     font: inherit;
@@ -231,7 +231,7 @@
   .button.primary { min-inline-size: 8rem; border-color: transparent; background: var(--caelestis-primary, oklch(0.58 0.17 252)); color: white; }
   .button.success { background: var(--caelestis-success, oklch(0.63 0.16 154)); }
   .button.warning { background: var(--caelestis-warning, oklch(0.68 0.15 75)); color: black; }
-  .secret { inline-size: 100%; min-block-size: 2.5rem; margin-block-start: 1rem; padding-inline: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-raised-surface, color-mix(in oklch, var(--caelestis-surface) 88%, black)); color: inherit; font: 500 0.85rem ui-monospace, monospace; }
+  .secret { inline-size: 100%; min-block-size: 2.5rem; margin-block-start: 1rem; padding-inline: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface, color-mix(in oklch, var(--caelestis-surface) 88%, black)); color: inherit; font: 500 0.85rem ui-monospace, monospace; }
   .button:focus-visible, .toast button:focus-visible, .toast-action:focus-visible { outline: 3px solid color-mix(in oklch, var(--caelestis-focus, oklch(0.62 0.17 252)) 55%, transparent); outline-offset: 2px; }
 
   @media (prefers-color-scheme: dark) {

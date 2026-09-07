@@ -324,7 +324,7 @@
     href="https://www.openstreetmap.org/copyright"
     target="_blank"
     rel="noreferrer"
-    class="absolute bottom-1 end-2 rounded bg-base-100/70 px-1.5 text-[10px] text-base-content/70"
+    class="absolute bottom-1 end-2 rounded-lg bg-base-100/70 px-1.5 text-[10px] text-base-content/70"
   >
     © OpenStreetMap
   </a>

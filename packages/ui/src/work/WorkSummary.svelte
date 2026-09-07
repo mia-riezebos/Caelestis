@@ -85,7 +85,7 @@
     align-items: center;
     justify-content: space-between;
     min-block-size: 44px;
-    border-radius: 0;
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     padding: 10px 12px;
     font-weight: 600;
     background: var(--caelestis-raised-surface, transparent);
@@ -104,7 +104,7 @@
     width: 100%;
     text-align: start;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     background: transparent;
     color: inherit;
     font: inherit;

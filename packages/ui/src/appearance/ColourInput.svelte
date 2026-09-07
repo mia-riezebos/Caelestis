@@ -231,14 +231,14 @@
 {/if}
 
 <style>
-  .swatch, .preview { display: block; inline-size: 1.75rem; block-size: 1.75rem; flex: 0 0 auto; border: 1px solid var(--caelestis-border); border-radius: 0.25rem; }
+  .swatch, .preview { display: block; inline-size: 1.75rem; block-size: 1.75rem; flex: 0 0 auto; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   .swatch { padding: 0; cursor: pointer; }
   .swatch:disabled { cursor: not-allowed; opacity: 0.45; }
-  .picker { position: fixed; inset: auto; z-index: 50; inline-size: min(15rem, calc(100vw - 1rem)); margin: 0; padding: 1rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.75rem); background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow, 0 16px 48px rgb(0 0 0 / 0.35)); }
-  .sv { position: relative; inline-size: 100%; aspect-ratio: 1.35; overflow: hidden; border-radius: var(--caelestis-field-radius, 0.5rem); cursor: crosshair; touch-action: none; }
+  .picker { position: fixed; inset: auto; z-index: 50; inline-size: min(15rem, calc(100vw - 1rem)); margin: 0; padding: 1rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow, 0 16px 48px rgb(0 0 0 / 0.35)); }
+  .sv { position: relative; inline-size: 100%; aspect-ratio: 1.35; overflow: hidden; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); cursor: crosshair; touch-action: none; }
   .handle { position: absolute; inline-size: 0.8rem; block-size: 0.8rem; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 0 1px black; transform: translate(-50%, -50%); pointer-events: none; }
   .hue { inline-size: 100%; margin-block: 0.65rem 0.35rem; accent-color: var(--caelestis-primary); }
   .bottom { display: flex; align-items: center; gap: 0.5rem; }
-  .hex { min-inline-size: 0; flex: 1; block-size: 2rem; padding-inline: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-raised-surface); color: inherit; font: 500 0.8rem ui-monospace, monospace; }
+  .hex { min-inline-size: 0; flex: 1; block-size: 2rem; padding-inline: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); color: inherit; font: 500 0.8rem ui-monospace, monospace; }
   .swatch:focus-visible, .sv:focus-visible, .hue:focus-visible, .hex:focus-visible { outline: 3px solid color-mix(in oklch, var(--caelestis-focus) 55%, transparent); outline-offset: 2px; }
 </style>

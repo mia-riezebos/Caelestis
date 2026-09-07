@@ -23,11 +23,5 @@ export const RAIL_BUTTON = 40
 /** The right edge of anything that has to clear the rail, since the rail is always on top of it. */
 export const CLEAR_OF_RAIL = EDGE + RAIL_BUTTON + GAP
 
-/**
- * Every floating surface: the panel, a per-overlay menu, a dropdown, the colour picker.
- *
- * One radius rather than a scale. These are all the same kind of thing — a rounded rectangle over
- * the map — and the panel being 8px while everything opening out of it was 12px was the one place
- * the difference was legible, as a corner that did not match the corner beside it.
- */
-export const SURFACE_RADIUS = '0.75rem'
+/** The context menu's corner radius, shared by every rectangular Caelestis control and surface. */
+export const SURFACE_RADIUS = 'calc(0.7rem + 1px)'

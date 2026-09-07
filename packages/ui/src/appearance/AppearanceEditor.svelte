@@ -197,8 +197,8 @@
   .editor.compact { padding: 0; font-size: 0.75rem; }
   .editor:not(.compact) > section { max-inline-size: 48rem; margin-inline: auto; }
   .defaults { display: flex; align-items: center; gap: 0.5rem; color: var(--caelestis-muted-text); font-size: 0.75rem; font-weight: 400; white-space: nowrap; }
-  .defaults input { --toggle-size: 1rem; --toggle-padding: calc(var(--toggle-size) * 0.125); appearance: none; display: inline-grid; flex-shrink: 0; grid-template-columns: 0fr 1fr 1fr; place-content: center; inline-size: calc((var(--toggle-size) * 2) - (var(--border, 1px) + var(--toggle-padding)) * 2); block-size: var(--toggle-size); margin: 0; padding: var(--toggle-padding); border: var(--border, 1px) solid currentColor; border-radius: calc(var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)) + var(--toggle-padding) + var(--border, 1px)); color: color-mix(in oklab, var(--caelestis-text) 50%, transparent); cursor: pointer; }
-  .defaults input::before { content: ''; position: relative; grid-column: 2; grid-row: 1; inline-size: 100%; block-size: 100%; aspect-ratio: 1; border-radius: var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)); background: currentColor; }
+  .defaults input { --toggle-size: 1rem; --toggle-padding: calc(var(--toggle-size) * 0.125); appearance: none; display: inline-grid; flex-shrink: 0; grid-template-columns: 0fr 1fr 1fr; place-content: center; inline-size: calc((var(--toggle-size) * 2) - (var(--border, 1px) + var(--toggle-padding)) * 2); block-size: var(--toggle-size); margin: 0; padding: var(--toggle-padding); border: var(--border, 1px) solid currentColor; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); color: color-mix(in oklab, var(--caelestis-text) 50%, transparent); cursor: pointer; }
+  .defaults input::before { content: ''; position: relative; grid-column: 2; grid-row: 1; inline-size: 100%; block-size: 100%; aspect-ratio: 1; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: currentColor; }
   .defaults input:checked { grid-template-columns: 1fr 1fr 0fr; background: var(--caelestis-surface); color: var(--caelestis-primary); }
   fieldset { min-inline-size: 0; margin: 0; padding: 0; border: 0; }
   fieldset:disabled { opacity: 0.7; pointer-events: none; }
@@ -211,7 +211,7 @@
   .presets, .same-colour, .colour-toolbar { display: flex; align-items: center; gap: 0.25rem; }
   .pixel-preset, .choice { --button-colour: var(--caelestis-raised-surface, var(--color-base-200)); display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; border: var(--border, 1px) solid color-mix(in oklab, var(--button-colour), #000 calc(var(--depth, 1) * 5%)); outline-color: var(--button-colour); background: var(--button-colour); color: var(--caelestis-text); box-shadow: 0 0.5px 0 0.5px oklch(100% 0 0 / calc(var(--depth, 1) * 6%)) inset, 0 3px 2px -2px color-mix(in oklab, var(--button-colour) calc(var(--depth, 1) * 30%), transparent); font: 600 0.75rem/1 ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
   .pixel-preset { inline-size: 2rem; block-size: 2rem; padding: 0; border-radius: 999px; }
-  .choice { block-size: 1.5rem; padding-inline: 0.5rem; border-radius: var(--caelestis-field-radius, var(--radius-field, 0.5rem)); font-size: 0.6875rem; }
+  .choice { block-size: 1.5rem; padding-inline: 0.5rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); font-size: 0.6875rem; }
   .only-selected { inline-size: 1.5rem; padding-inline: 0; }
   .pixel-preset.active { --button-colour: color-mix(in oklab, var(--caelestis-raised-surface, var(--color-base-200)) 95%, #000); box-shadow: none; }
   .choice.active { --button-colour: var(--caelestis-primary, var(--color-primary)); color: var(--color-primary-content, white); box-shadow: none; }
@@ -228,15 +228,15 @@
   @container (min-width: 17.5rem) { .palette { grid-template-columns: repeat(8, 1fr); } }
   @container (min-width: 35.5rem) { .palette { grid-template-columns: repeat(16, 1fr); } }
   @container (min-width: 71.5rem) { .palette { grid-template-columns: repeat(32, 1fr); } }
-  .palette-swatch { position: relative; min-inline-size: 1.5rem; aspect-ratio: 1; padding: 0; border: 1px solid rgb(0 0 0 / 0.25); border-radius: 0.25rem; outline: 2px solid transparent; outline-offset: 1px; opacity: 0.7; cursor: pointer; transition: opacity 100ms ease-out, outline-color 100ms ease-out; }
+  .palette-swatch { position: relative; min-inline-size: 1.5rem; aspect-ratio: 1; padding: 0; border: 1px solid rgb(0 0 0 / 0.25); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); outline: 2px solid transparent; outline-offset: 1px; opacity: 0.7; cursor: pointer; transition: opacity 100ms ease-out, outline-color 100ms ease-out; }
   .palette-swatch[data-on='true'] { outline-color: var(--caelestis-text); opacity: 1; }
   .palette-swatch[data-on='false']::after { content: ''; position: absolute; inset-inline-start: 15%; inset-block-start: calc(50% - 1px); inline-size: 70%; block-size: 2px; border-radius: 999px; background: currentColor; box-shadow: 0 0 0 1px var(--caelestis-surface, white); transform: rotate(-45deg); pointer-events: none; }
   .swatch-badge { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 80ms ease-out; pointer-events: none; }
   .palette-swatch:hover .swatch-badge, .palette-swatch:focus-visible .swatch-badge { opacity: 1; }
-  .swatch-badge > span { display: flex; align-items: center; justify-content: center; inline-size: 72%; block-size: 72%; border-radius: 0.25rem; box-sizing: border-box; }
+  .swatch-badge > span { display: flex; align-items: center; justify-content: center; inline-size: 72%; block-size: 72%; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); box-sizing: border-box; }
   .palette-swatch[data-on='true'] .swatch-badge > span { background: var(--caelestis-text); color: var(--caelestis-surface); }
   .palette-swatch[data-on='false'] .swatch-badge > span { border: 1.5px solid var(--caelestis-text); background: var(--caelestis-surface); color: var(--caelestis-text); }
-  select { min-block-size: 2rem; padding-inline: 0.75rem 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, var(--radius-field, 0.5rem)); background: var(--caelestis-surface); color: inherit; font: inherit; }
+  select { min-block-size: 2rem; padding-inline: 0.75rem 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; font: inherit; }
   button:focus-visible, select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   button:disabled, button[aria-disabled='true'] { pointer-events: none; cursor: not-allowed; opacity: 0.3; }
   @media (forced-colors: active) { .palette-swatch[data-on='true'] { outline: 3px solid CanvasText; } }

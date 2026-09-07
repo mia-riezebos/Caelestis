@@ -161,11 +161,11 @@
 
 <style>
   .docked { block-size: 100%; min-block-size: 0; }
-  dialog { position: fixed; inset: 0; inline-size: 96vw; block-size: 96dvh; max-inline-size: none; max-block-size: none; margin: auto; padding: 0; border: 1px solid var(--caelestis-border); border-radius: 0.75rem; overflow: visible; color: inherit; background: transparent; }
-  dialog .panel { border-radius: calc(0.75rem - 1px); }
+  dialog { position: fixed; inset: 0; inline-size: 96vw; block-size: 96dvh; max-inline-size: none; max-block-size: none; margin: auto; padding: 0; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); overflow: visible; color: inherit; background: transparent; }
+  dialog .panel { border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   dialog::backdrop { background: rgb(0 0 0 / 0.4); }
   .panel { container: panel / inline-size; }
-  .panel { --caelestis-content-inset: 1rem; position: relative; display: flex; flex-direction: column; min-block-size: 0; block-size: 100%; overflow: hidden; border-radius: var(--caelestis-panel-radius, 0.75rem); background: var(--caelestis-surface, oklch(0.97 0.01 264)); color: var(--caelestis-text, oklch(0.26 0.025 264)); box-shadow: var(--caelestis-shadow, 0 24px 80px rgb(0 0 0 / 0.35)); }
+  .panel { --caelestis-content-inset: 1rem; position: relative; display: flex; flex-direction: column; min-block-size: 0; block-size: 100%; overflow: hidden; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface, oklch(0.97 0.01 264)); color: var(--caelestis-text, oklch(0.26 0.025 264)); box-shadow: var(--caelestis-shadow, 0 24px 80px rgb(0 0 0 / 0.35)); }
   header { display: flex; flex: 0 0 auto; align-items: center; gap: 0.5rem; padding: 1rem 1.5rem; border-block-end: 1px solid var(--caelestis-border, oklch(0.78 0.025 264 / 0.7)); }
   h2 { flex: 1; margin: 0; font: 600 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .body { display: flex; flex: 1; flex-direction: column; min-block-size: 0; }

@@ -204,7 +204,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
         at ({template.bbox.minX}, {template.bbox.minY})
       </span>
       {#if wplaceUrl !== null}
-        <a href={wplaceUrl} target="_blank" rel="noreferrer" class="btn btn-xs btn-outline gap-1 rounded-full">
+        <a href={wplaceUrl} target="_blank" rel="noreferrer" class="btn btn-xs btn-outline gap-1 rounded-lg">
           <ExternalLink class="size-3" /> View on wplace
         </a>
       {/if}

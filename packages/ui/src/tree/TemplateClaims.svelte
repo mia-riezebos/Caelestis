@@ -167,7 +167,7 @@
     box-sizing: border-box;
     overflow: auto;
     border: 1px solid var(--caelestis-border);
-    border-radius: 0.375rem;
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     background: var(--caelestis-surface);
     color: var(--caelestis-text);
     white-space: normal;
@@ -175,10 +175,10 @@
     font: 400 0.75rem/1.25 ui-sans-serif, system-ui, sans-serif;
   }
   .claim-marker { position: relative; display: inline-flex; align-items: center; justify-content: center; inline-size: 1rem; block-size: 1rem; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
-  .claim-marker::before { content: ''; position: absolute; inset: -0.375rem -0.25rem; border-radius: 0.25rem; }
+  .claim-marker::before { content: ''; position: absolute; inset: -0.375rem -0.25rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   .claim-marker:hover::before, .claim-marker[aria-expanded='true']::before { background: color-mix(in oklab, currentColor 10%, transparent); }
   .claim-marker:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 3px; }
-  .claim-count { position: absolute; inset-inline-end: -0.25rem; inset-block-start: -0.375rem; display: grid; place-items: center; inline-size: 1.125rem; block-size: 0.75rem; border-radius: 0.25rem; background: var(--caelestis-raised-surface); color: var(--caelestis-text); outline: 1px solid var(--caelestis-surface); font: 600 0.5rem/1 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .claim-count { position: absolute; inset-inline-end: -0.25rem; inset-block-start: -0.375rem; display: grid; place-items: center; inline-size: 1.125rem; block-size: 0.75rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); color: var(--caelestis-text); outline: 1px solid var(--caelestis-surface); font: 600 0.5rem/1 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
   .claim-count.mine { color: var(--caelestis-primary); }
   .person {
     display: flex;
@@ -230,7 +230,7 @@
     color: var(--caelestis-text);
     background: var(--caelestis-surface);
     border: 1px solid var(--caelestis-border);
-    border-radius: var(--caelestis-field-radius, 0.25rem);
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
   }
   input:focus-visible {
     outline: 2px solid var(--caelestis-focus);

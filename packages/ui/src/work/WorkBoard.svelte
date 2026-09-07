@@ -651,7 +651,7 @@
     color: inherit;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--caelestis-field-radius, 6px);
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     font: inherit;
     padding: 7px 9px;
     min-height: 34px;
@@ -732,7 +732,7 @@
     text-align: start;
     border: 0;
     border-bottom: 1px solid var(--border);
-    border-radius: 0;
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     padding: 10px;
     overflow-wrap: anywhere;
   }

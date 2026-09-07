@@ -11,10 +11,7 @@ export interface CaelestisThemeTokens {
   readonly danger: string
   readonly finished: string
   readonly frozen: string
-  readonly fieldRadius: string
-  readonly selectorRadius: string
-  readonly cardRadius: string
-  readonly panelRadius: string
+  readonly radius: string
   readonly compactTarget: string
   readonly touchTarget: string
   readonly shadow: string
@@ -36,10 +33,7 @@ const PROPERTIES: Record<CaelestisThemeToken, `--caelestis-${string}`> = {
   danger: '--caelestis-danger',
   finished: '--caelestis-finished',
   frozen: '--caelestis-frozen',
-  fieldRadius: '--caelestis-field-radius',
-  selectorRadius: '--caelestis-selector-radius',
-  cardRadius: '--caelestis-card-radius',
-  panelRadius: '--caelestis-panel-radius',
+  radius: '--caelestis-radius',
   compactTarget: '--caelestis-compact-target',
   touchTarget: '--caelestis-touch-target',
   shadow: '--caelestis-shadow',

@@ -91,12 +91,12 @@
   .colour-toolbar { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 1rem; border-block: 1px solid var(--caelestis-border); }
   h4 { display: flex; gap: 0.375rem; margin: 0; font-size: inherit; font-weight: 600; }
   h4 span { color: var(--caelestis-muted-text); font-weight: 400; }
-  select { min-inline-size: 0; max-inline-size: 11rem; block-size: 2rem; padding-inline: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: 0.375rem; background: var(--caelestis-surface); color: inherit; font: inherit; }
+  select { min-inline-size: 0; max-inline-size: 11rem; block-size: 2rem; padding-inline: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; font: inherit; }
   select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   ul { flex: 1; min-block-size: 6rem; margin: 0; padding: 0 1rem 0.5rem; overflow-y: auto; list-style: none; overscroll-behavior: contain; }
   li { padding-block: 0.625rem; border-block-end: 1px solid var(--caelestis-border); }
   li:last-child { border-block-end: 0; }
   .colour-name { display: flex; align-items: center; gap: 0.5rem; margin-block-end: 0.375rem; }
-  .swatch { inline-size: 0.75rem; block-size: 0.75rem; flex: 0 0 auto; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15); }
+  .swatch { inline-size: 0.75rem; block-size: 0.75rem; flex: 0 0 auto; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15); }
   li :global(.percent.small) { font-size: 0.75rem; }
 </style>
