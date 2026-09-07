@@ -456,6 +456,8 @@ describe('transparent browser hooks', () => {
             getZoom: () => 1,
             getCenter: () => ({ lng: 0, lat: 0 }),
             getCanvas: () => mapCanvas as unknown as HTMLCanvasElement,
+            on: () => undefined,
+            off: () => undefined,
           }
 
     install(realm, mapHandle)

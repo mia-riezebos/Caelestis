@@ -31,6 +31,7 @@ import {
 } from './gl/markers.js'
 import { installKeyboardShortcuts } from './keyboard-shortcuts.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
+import { installPaintCursorTracking, syncPaintCursorMap } from './paint-cursor.js'
 import {
   installPaintPaletteProgress,
   paintPaletteProgress,
@@ -156,6 +157,7 @@ const attachOverlayLayer = (): void => {
     }
     if (getMap() === null) installMapCapture()
     installOverlayLayer()
+    syncPaintCursorMap(getMap())
   }
   attach()
   setInterval(attach, 1_000)
@@ -354,6 +356,7 @@ const main = (): void => {
   onFrame(refreshPaintPaletteFocus, 'Paint palette focus')
   onFrame(refreshWorldTemplateTreeFocus, 'Template tree focus')
   // Middle-click picking, answered from the template when the template is what you can see.
+  step('paint cursor', installPaintCursorTracking)
   step('colour picker', installColourPicker)
   step('keyboard shortcuts', () => {
     installKeyboardShortcuts(redraw)
