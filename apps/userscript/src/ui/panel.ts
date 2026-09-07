@@ -1119,6 +1119,9 @@ const buildSveltePanel = (): CaelestisPanel => {
           if (!setTemplateDisplayMode(intent.intent.mode))
             toast('Could not save the template view.')
           rerenderTree()
+        } else if (intent.intent.type === 'filter') {
+          setState({ filters: intent.intent.filters })
+          rerenderTree()
         } else {
           activeTreeAdapter?.handle(intent.intent)
         }

@@ -1,4 +1,9 @@
-import type { TemplateSurface } from '@caelestis/shared'
+import {
+  EMPTY_TEMPLATE_FILTERS,
+  parseTemplateFilters,
+  type TemplateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ServerManifest } from '../server-manifest.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
@@ -31,7 +36,7 @@ vi.mock('../alliance-server-sync.js', () => ({
 
 import { nodeTreeKey, serverTemplateTreeKey } from '../application/tree-server-state.js'
 import type { ConnectedServer } from '../state.js'
-import { setState } from '../state.js'
+import { getState, setState } from '../state.js'
 import { templateTreeAdapter } from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
@@ -68,11 +73,52 @@ afterEach(() => {
     customOrder: [],
     collapsed: [],
     localFolders: [],
+    filters: EMPTY_TEMPLATE_FILTERS,
     sort: { field: 'custom', direction: 'asc' },
   })
 })
 
 describe('surface-scoped template tree', () => {
+  it('filters local templates by inherited visibility within the current canvas', () => {
+    scoped.drawn = ['Hidden', 'Visible', 'Other canvas'].map((name, index) => ({
+      id: String(index),
+      name,
+      surface: index === 2 ? WORLD_TEMPLATE_SURFACE : surface,
+      source: 'image',
+      originX: 0,
+      originY: 0,
+      width: 1,
+      height: 1,
+      indices: new Uint8Array(1),
+      moved: 0,
+      opaque: 1,
+      tiles: new Set(),
+      visible: true,
+      everPlaced: true,
+      appearance: null,
+      revision: 0,
+      owns: [],
+      folderId: index === 0 ? 'hidden' : null,
+    }))
+    setState({
+      collapsed: ['local', 'lf:hidden'],
+      localFolders: [
+        { id: 'hidden', name: 'Hidden folder', parentId: null, visible: false, surface },
+      ],
+      filters: parseTemplateFilters({ source: ['local'], visibility: ['hidden'] }),
+    })
+    const names = () =>
+      templateTreeAdapter(callbacks, vi.fn(), '', surface).model.entries.flatMap((entry) =>
+        entry.type === 'row' ? [entry.name] : [],
+      )
+    expect(names()).toEqual(['Local', 'Hidden folder', 'Hidden'])
+    setState({ filters: parseTemplateFilters({ visibility: ['visible'] }) })
+    expect(names()).toEqual(['Local', 'Visible'])
+    setState({ filters: parseTemplateFilters({ lifecycle: ['active'] }) })
+    expect(names()).toEqual([])
+    expect(scoped.drawn.every((template) => template.visible)).toBe(true)
+    expect(getState().collapsed).toEqual(['local', 'lf:hidden'])
+  })
   it('sorts alliance server mismatches from the artboard and leaves undrawn templates unknown', () => {
     const ids = [TEMPLATE_ID, SOURCE_NODE_ID, DESTINATION_NODE_ID]
     scoped.manifest = {

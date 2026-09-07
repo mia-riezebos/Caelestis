@@ -5,6 +5,7 @@
   import TemplatePreview from './TemplatePreview.svelte'
   import TemplateClaims from './TemplateClaims.svelte'
   import ProgressDetails from './ProgressDetails.svelte'
+  import FilterMenu from './FilterMenu.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import TemplateLifecycle from '../template-state/TemplateLifecycle.svelte'
@@ -287,6 +288,9 @@
     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.search} /></svg>
     <input type="search" placeholder="Search templates" aria-label="Search templates" value={query} oninput={search} />
   </label>
+  {#if model.filters !== undefined}
+    <FilterMenu filters={model.filters} serverFiltersAvailable={model.serverFiltersAvailable ?? false} onFilter={(filters) => emit({ type: 'filter', filters })} />
+  {/if}
   <SortMenu sort={model.sort} onSort={(sort) => emit({ type: 'sort', sort })} />
   {#if allowGrid}
   <div class="view-switcher" role="group" aria-label="Template display">

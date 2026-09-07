@@ -385,6 +385,8 @@ export interface TemplateTreeModel {
   readonly query: string
   readonly sort: TreeSortModel
   readonly displayMode?: 'tree' | 'grid'
+  readonly filters?: import('@caelestis/shared').TemplateFilters
+  readonly serverFiltersAvailable?: boolean
   readonly entries: readonly TreeEntryModel[]
   /** The template row at the centre of the active canvas. */
   readonly focusedKey?: string
@@ -435,6 +437,7 @@ export type TemplateTreeIntent =
   | { readonly type: 'display-mode'; readonly mode: 'tree' | 'grid' }
   | { readonly type: 'search'; readonly query: string }
   | { readonly type: 'sort'; readonly sort: TreeSortModel }
+  | { readonly type: 'filter'; readonly filters: import('@caelestis/shared').TemplateFilters }
   | { readonly type: 'toggle-expanded'; readonly key: string }
   | { readonly type: 'toggle-visible'; readonly key: string; readonly visible: boolean }
   | { readonly type: 'action'; readonly key: string; readonly actionId: string }
