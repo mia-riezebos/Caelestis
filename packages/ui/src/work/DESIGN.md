@@ -1,6 +1,6 @@
 # Coordination
 
-Work belongs to the existing folder and template hierarchy. The frontend exposes a Work destination and scoped sections. The userscript lists active work below templates, with title and claimant on each row. The section collapses and its list scrolls independently so painting controls remain reachable. Clicking a row opens its details.
+Work belongs to the existing folder and template hierarchy. The frontend exposes a Work destination and scoped sections. The userscript has a collapsed Work drawer at the bottom of the template panel. Its persistent bar shows the active count and opens the list upward. The bounded list scrolls independently so painting controls remain reachable. Clicking a row opens its details.
 
 Right-click Claim uses the current Wplace identity and atomically creates the template's shared work record when absent. Painters need no planning form. The template ID also identifies this record, so concurrent claims cannot create duplicates. Existing work details retain release, planning and history actions.
 
@@ -10,4 +10,4 @@ Create and edit use one form. Claim and release are immediate actions. Assignmen
 
 Reuse folders and work-item tags for grouping. There are no campaign objects, milestone objects, or deadlines. Personal identity is temporarily self-reported; future authentication is tracked separately.
 
-Preserve the host's light or dark theme. Native controls own keyboard interaction; the userscript's native dialog handles Escape and focus return. Add no animation for this workflow.
+Preserve the host's light or dark theme. Native controls own keyboard interaction; the userscript's native dialog handles Escape and focus return. The drawer uses a 250ms grid expansion and chevron flip, disabled for reduced motion. Collapsed content is inert and hidden from assistive technology.
