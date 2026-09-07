@@ -2,4 +2,4 @@
 "@caelestis/frontend": minor
 ---
 
-Graph each painter's daily placed, correct, or repair pace for the selected template, folder, or canvas, with a legend that shows or hides painters and the same range presets, drag zoom, and keyboard reading as the progress chart.
+Draw each painter's rolling pace on the progress chart, with the same windows and precision as the template lines, a searchable painter picker whose rows toggle, and a placed / correct / repairs switch for the painter lines.
