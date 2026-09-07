@@ -4,19 +4,26 @@
     ContributionDay,
     HistoryBucket,
     LeaderboardEntry,
+    PainterHistoryResponse,
     Template,
   } from '@caelestis/shared'
-  import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
+  import {
+    getContributions,
+    getHistory,
+    getLeaderboard,
+    getPainterHistory,
+  } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
-  import PainterPaceChart from '$lib/components/charts/PainterPaceChart.svelte'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
     PACE_WINDOWS,
     type PaceHistorySource,
+    type PainterHistorySource,
     averagePace,
   } from '$lib/components/charts/progress-pace'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
+  import { persisted } from '$lib/persisted.svelte'
   import type { Progress } from '$lib/tree'
   import type { DashboardSnapshot } from '$lib/state/app.svelte'
 
@@ -65,10 +72,13 @@
   let history = $state<HistoryBucket[] | null>(null)
   let paceHistories = $state<readonly PaceHistorySource[]>([])
   let contributions = $state<readonly ContributionDay[] | null>(null)
-  /** The start of the range the served contribution days cover; earlier days were never asked for. */
-  let contributionsFrom = $state(0)
-  let contributionsFailed = $state(false)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
+  /** The rolling pace windows the chart draws; shared so painter lines are fetched for the same. */
+  const storedWindows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h'])
+  /** Every painter's buckets at the coarsest useful tier: the picker's list and the default set. */
+  let painterHistory = $state<PainterHistoryResponse | null>(null)
+  /** Per-painter retained tiers for each enabled rolling window, like `paceHistories`. */
+  let painterHistories = $state<readonly PainterHistorySource[]>([])
   let failed = $state(false)
   let historyScope: string | undefined
 
@@ -131,15 +141,13 @@
     if (templateIds.length === 0) return
     const ids = [...templateIds]
     contributions = null
-    contributionsFailed = false
     leaderboard = null
-    // The server keeps painter-days for a scope's whole lifetime, so read from its first day: the
-    // heatmap only looks at its last sixteen weeks, and the painter chart draws everything.
-    const requestFrom = from
+    // The heatmap draws sixteen weeks, and that is all this read is for: painter pace comes from
+    // the bucket ladder below, at whatever range the scope has.
+    const contributionsFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
     if (liveDashboard)
-      return subscribeDashboard(ids, requestFrom, (snapshot) => {
+      return subscribeDashboard(ids, contributionsFrom, (snapshot) => {
         contributions = snapshot.contributions.days
-        contributionsFrom = requestFrom
         leaderboard = snapshot.leaderboard.entries
       })
 
@@ -150,18 +158,9 @@
       refreshPending = true
       const requestedAt = Math.floor(Date.now() / 1_000)
       void Promise.all([
-        getContributions(ids, requestFrom, requestedAt)
-          .then((response) => {
-            if (generation.cancelled) return
-            contributions = response.days
-            contributionsFrom = requestFrom
-            contributionsFailed = false
-          })
-          .catch((error: unknown) => {
-            // A failed refresh keeps the last good chart; a failed first load says so.
-            if (!generation.cancelled && contributions === null) contributionsFailed = true
-            throw error
-          }),
+        getContributions(ids, requestedAt - 86_400 * 7 * 16, requestedAt).then((response) => {
+          if (!generation.cancelled) contributions = response.days
+        }),
         getLeaderboard(season, { templateIds: ids }).then((response) => {
           if (!generation.cancelled) leaderboard = response.entries
         }),
@@ -181,6 +180,50 @@
       generation.cancelled = true
       clearInterval(interval)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  })
+
+  // Painter lines read the same ladder as the template lines: one coarse pass for the picker and
+  // the default set, and one retained tier per enabled rolling window. A window nobody enabled is
+  // never fetched, so a crowded server pays for what it draws.
+  let painterScope: string | undefined
+  $effect(() => {
+    if (templateIds.length === 0) return
+    const generation = { cancelled: false }
+    const scope = `${templateIds.join('\0')}:${from}`
+    if (painterScope !== scope) {
+      painterScope = scope
+      painterHistory = null
+      painterHistories = []
+    }
+    const enabled = new Set(storedWindows.value)
+    getPainterHistory(templateIds, from, to, { maxResolution: 21_600 })
+      .then((response) => {
+        if (!generation.cancelled) painterHistory = response
+      })
+      .catch(() => {
+        // A server without painter buckets still draws the template lines.
+      })
+    Promise.all(
+      PACE_WINDOWS.filter((window) => enabled.has(window.key)).map(
+        async (window): Promise<PainterHistorySource | null> => {
+          try {
+            const history = await getPainterHistory(templateIds, from, to, {
+              maxResolution: window.seconds / 2,
+            })
+            return { window: window.key, history }
+          } catch {
+            return null
+          }
+        },
+      ),
+    ).then((responses) => {
+      if (!generation.cancelled) {
+        painterHistories = responses.filter((response) => response !== null)
+      }
+    })
+    return () => {
+      generation.cancelled = true
     }
   })
 
@@ -238,28 +281,9 @@
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
         live={templates.some((template) => template.finishedAt === null)}
-      />
-    {/if}
-  </section>
-
-  <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4" data-painter-pace>
-    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-      <h2 class="font-semibold">Painter pace</h2>
-      <span class="text-xs text-base-content/60">daily pixels per painter, from shared reports</span>
-    </div>
-    {#if contributionsFailed}
-      <div class="flex h-[240px] items-center justify-center text-sm text-base-content/50">
-        Could not load painter contributions.
-      </div>
-    {:else if contributions === null}
-      <Skeleton class="h-[240px] w-full" />
-    {:else}
-      <PainterPaceChart
-        days={contributions}
-        {from}
-        {to}
-        coverageFrom={contributionsFrom}
-        live={hasLiveTemplate}
+        {painterHistory}
+        {painterHistories}
+        windows={storedWindows}
       />
     {/if}
   </section>

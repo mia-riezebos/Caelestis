@@ -1,10 +1,27 @@
 <script lang="ts">
-  import { formatCount, formatExactCount, formatPixels, type HistoryBucket } from '@caelestis/shared'
+  import {
+    formatCount,
+    formatExactCount,
+    formatPixels,
+    type HistoryBucket,
+    type PainterHistoryBucket,
+    type PainterHistoryResponse,
+  } from '@caelestis/shared'
   import { untrack } from 'svelte'
   import { cubicOut } from 'svelte/easing'
   import { Tween } from 'svelte/motion'
   import { fade, type TransitionConfig } from 'svelte/transition'
-  import { persisted } from '$lib/persisted.svelte'
+  import { type Persisted, persisted } from '$lib/persisted.svelte'
+  import {
+    defaultVisiblePainters,
+    PAINTER_METRICS,
+    type PainterMetric,
+    type PainterOption,
+    painterColour,
+    painterLabel,
+    painterOptions,
+  } from '$lib/components/charts/painter-pace'
+  import PainterPicker from '$lib/components/charts/PainterPicker.svelte'
   import {
     availableRangePresets,
     axisScale,
@@ -15,12 +32,14 @@
     type PaceHistorySource,
     type PacePoint,
     type PaceRatePoint,
+    type PainterHistorySource,
     rollingPaceSeries,
     snapTime,
     timeTickStep,
     type TimeWindow,
     windowKeyStep,
   } from '$lib/components/charts/progress-pace'
+  import SlidingTabs from '$lib/components/charts/SlidingTabs.svelte'
 
   let {
     buckets,
@@ -31,10 +50,19 @@
     anchorCorrect,
     anchorMismatched,
     live = false,
+    painterHistory = null,
+    painterHistories = [],
+    windows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h']),
   }: {
     buckets: readonly HistoryBucket[]
     /** One server-selected retained source for each rolling window. */
     paceHistories?: readonly PaceHistorySource[]
+    /** Every painter's buckets over the range at a coarse tier: the picker and the default set. */
+    painterHistory?: PainterHistoryResponse | null
+    /** Per-painter retained sources for the enabled rolling windows, like `paceHistories`. */
+    painterHistories?: readonly PainterHistorySource[]
+    /** The enabled rolling windows, shared with whoever fetches the painter sources. */
+    windows?: Persisted<string[]>
     /** Bucket width in seconds; buckets are summed across templates per bucket start. */
     resolution: number
     from: number
@@ -55,7 +83,7 @@
    * Fetch deltas once and derive each chart series here. Stacked areas show correct and mismatched
    * pixels. Rolling pace windows use the right axis. Longer windows use darker, thicker lines.
    */
-  const storedWindows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h'])
+  const storedWindows = $derived(windows)
   const enabledWindows = $derived(new Set(storedWindows.value))
   const toggleWindow = (key: string): void => {
     const next = new Set(storedWindows.value)
@@ -122,7 +150,11 @@
     return filled
   })
 
-  const hasActivity = $derived(points.some((p) => p.placed > 0))
+  // Painter buckets are written per report while template buckets wait for the counter flush, so
+  // the plot also opens when only painters have reported yet.
+  const hasActivity = $derived(
+    points.some((p) => p.placed > 0) || (painterHistory?.buckets.length ?? 0) > 0,
+  )
 
   // ── Time window ──────────────────────────────────────────────────────────────────────────────
   // `null` shows the whole fetched range. Presets stay attached to a moving live edge, while
@@ -217,11 +249,117 @@
     paceWindows.filter((pace) => enabledWindows.has(pace.key) && pace.usable),
   )
 
+  // ── Painters ─────────────────────────────────────────────────────────────────────────────────
+  // Painter lines are the same rolling windows over the same ladder, one line per painter per
+  // enabled window. Colour says who, width says which window, exactly as for the template lines.
+  const storedMetric = persisted<PainterMetric>('caelestis:painter-metric', 'placed')
+  const painterMetric = $derived<PainterMetric>(
+    PAINTER_METRICS.some((candidate) => candidate.key === storedMetric.value)
+      ? storedMetric.value
+      : 'placed',
+  )
+  const painterMetricNoun = $derived(
+    PAINTER_METRICS.find((candidate) => candidate.key === painterMetric)?.noun ?? painterMetric,
+  )
+  const painters = $derived(painterOptions(painterHistory?.buckets ?? []))
+  // The leading painters draw by default. The picker records an override per painter, so the
+  // default set can shift with the data without undoing anyone's choices.
+  const defaultPainters = $derived(defaultVisiblePainters(painters))
+  let painterOverrides = $state<Record<number, boolean>>({})
+  const painterShown = (wplaceUserId: number): boolean =>
+    painterOverrides[wplaceUserId] ?? defaultPainters.has(wplaceUserId)
+  const selectedPainters = $derived(
+    new Set(
+      painters
+        .filter((painter) => painterShown(painter.wplaceUserId))
+        .map((painter) => painter.wplaceUserId),
+    ),
+  )
+  const togglePainter = (wplaceUserId: number): void => {
+    painterOverrides = { ...painterOverrides, [wplaceUserId]: !painterShown(wplaceUserId) }
+  }
+  /** The painter under the picker's pointer or keyboard, drawn on top with the others dimmed. */
+  let spotlightPainter = $state<number | null>(null)
+
+  /** One painter's cumulative points at a source's tier, zero-filled through complete buckets. */
+  const painterPacePoints = (
+    buckets: readonly PainterHistoryBucket[],
+    wplaceUserId: number,
+    resolution: number,
+    coverageStart: number,
+  ): PacePoint[] => {
+    const byStart = new Map<number, number>()
+    for (const bucket of buckets) {
+      if (bucket.wplaceUserId !== wplaceUserId) continue
+      byStart.set(
+        bucket.bucketStart,
+        (byStart.get(bucket.bucketStart) ?? 0) + bucket[painterMetric],
+      )
+    }
+    const firstBucket = Math.ceil(coverageStart / resolution) * resolution
+    const filled: PacePoint[] = []
+    let cumPlaced = 0
+    for (let t = firstBucket; t + resolution <= to; t += resolution) {
+      cumPlaced += byStart.get(t) ?? 0
+      filled.push({ t, cumPlaced })
+    }
+    return filled
+  }
+
+  interface PainterLine {
+    readonly painter: PainterOption
+    readonly window: (typeof PACE_WINDOWS)[number]['key']
+    readonly rank: number
+    readonly fullSeries: PaceRatePoint[]
+  }
+
+  // Each enabled window takes the coarse painter history when that tier can express it and the
+  // window's own retained tier otherwise, mirroring how the template lines pick their source.
+  const painterLines = $derived.by<PainterLine[]>(() => {
+    const lines: PainterLine[] = []
+    PACE_WINDOWS.forEach((pace, index) => {
+      if (!enabledWindows.has(pace.key)) return
+      const retained = painterHistories.find((source) => source.window === pace.key)?.history
+      const source =
+        painterHistory?.resolution !== undefined &&
+        windowUsable(pace.seconds, painterHistory.resolution)
+          ? painterHistory
+          : retained?.resolution !== undefined && windowUsable(pace.seconds, retained.resolution)
+            ? retained
+            : null
+      if (source?.resolution === undefined || source.coverageStart === undefined) return
+      for (const painter of painters) {
+        if (!selectedPainters.has(painter.wplaceUserId)) continue
+        const fullSeries = rollingPaceSeries(
+          painterPacePoints(
+            source.buckets,
+            painter.wplaceUserId,
+            source.resolution,
+            source.coverageStart,
+          ),
+          source.resolution,
+          pace.seconds,
+        )
+        if (fullSeries.length === 0) continue
+        lines.push({
+          painter,
+          window: pace.key,
+          rank: index / Math.max(1, PACE_WINDOWS.length - 1),
+          fullSeries,
+        })
+      }
+    })
+    return lines
+  })
+
   /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */
   const hoverSnapTimes = $derived.by(() => {
     const times = new Set(visiblePoints.map((point) => point.t))
     for (const pace of activePaces) {
       for (const point of pace.series) times.add(point.t)
+    }
+    for (const line of activePainterLines) {
+      for (const point of line.series) times.add(point.t)
     }
     return [...times].sort((a, b) => a - b)
   })
@@ -254,6 +392,9 @@
         0,
         ...enabledPaces.flatMap((pace) =>
           clipSeries(pace.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
+        ),
+        ...painterLines.flatMap((line) =>
+          clipSeries(line.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
         ),
       ),
       4,
@@ -307,6 +448,17 @@
       }
     }),
   )
+
+  const activePainterLines = $derived(
+    painterLines.map((line) => {
+      const series = clipSeries(line.fullSeries, shownView.from, shownView.to, lerpRate)
+      const last = series[series.length - 1]
+      if (last !== undefined && last.t < shownView.to) series.push({ ...last, t: shownView.to })
+      return { ...line, series }
+    }),
+  )
+  const painterLineOpacity = (wplaceUserId: number): number =>
+    spotlightPainter === null || spotlightPainter === wplaceUserId ? 0.9 : 0.25
 
   const x = $derived(
     (t: number) =>
@@ -450,11 +602,20 @@
       const value = hoverPace(pace.series, point.t)
       return value === null ? [] : [`${pace.key} pace ${formatCount(value)} px/h`]
     })
+    const painterPaces = activePainterLines.flatMap((line) => {
+      const value = hoverPace(line.series, point.t)
+      return value === null
+        ? []
+        : [
+            `${painterLabel(line.painter)} ${line.window} ${painterMetricNoun} ${formatCount(value)} px/h`,
+          ]
+    })
     return [
       `${formatTime(point.t)}${liveEdge !== null && point.t === liveEdge.t ? ' (now)' : ''}`,
       `${point.cumCorrect.toLocaleString()} correct`,
       `${point.cumMismatched.toLocaleString()} mismatched`,
       ...paces,
+      ...painterPaces,
     ].join(', ')
   }
 
@@ -772,7 +933,11 @@
   })
 
   const chartLabel = $derived(
-    `Cumulative pixels painted and rolling pace from ${formatTime(view.from)} to ${formatTime(view.to)}. Use the arrow keys to read values.`,
+    `Cumulative pixels painted and rolling pace from ${formatTime(view.from)} to ${formatTime(view.to)}${
+      painters.length > 0
+        ? `, with ${painterMetricNoun} pace lines for ${selectedPainters.size} of ${painters.length} painters`
+        : ''
+    }. Use the arrow keys to read values.`,
   )
 </script>
 
@@ -819,6 +984,33 @@
         </button>
       {/each}
     </div>
+
+    {#if painters.length > 0}
+      <div class="flex flex-wrap items-center gap-2" role="group" aria-label="painter pace lines">
+        <span class="text-base-content/65">painters</span>
+        <PainterPicker
+          options={painters}
+          selected={selectedPainters}
+          onToggle={togglePainter}
+          onHover={(wplaceUserId) => {
+            spotlightPainter = wplaceUserId
+          }}
+        />
+        <SlidingTabs
+          options={PAINTER_METRICS.map((candidate) => ({
+            key: candidate.key,
+            label: candidate.label,
+            title: `Draw painter lines from ${candidate.noun}`,
+          }))}
+          value={painterMetric}
+          label="painter metric"
+          name="painter-metric"
+          onselect={(key) => {
+            storedMetric.value = key as PainterMetric
+          }}
+        />
+      </div>
+    {/if}
 
     {#if hasActivity}
       <div class="ms-auto flex items-center gap-2">
@@ -978,6 +1170,22 @@
             />
           {/each}
 
+          {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
+            <path
+              in:fade={{ duration: motion(250) }}
+              out:fade={{ duration: motion(150) }}
+              data-painter-line={line.painter.wplaceUserId}
+              data-pace-window={line.window}
+              d={linePath(line.series)}
+              fill="none"
+              stroke={painterColour(line.painter.wplaceUserId)}
+              stroke-width={paceWidth(line.rank)}
+              stroke-opacity={painterLineOpacity(line.painter.wplaceUserId)}
+              stroke-linejoin="round"
+              stroke-linecap="round"
+            />
+          {/each}
+
           {#if liveEdge !== null}
             <circle
               cx={x(liveEdge.t)}
@@ -1043,6 +1251,19 @@
                 />
               {/if}
             {/each}
+            {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
+              {@const value = hoverPace(line.series, hover.t)}
+              {#if value !== null}
+                <circle
+                  cx={x(hover.t)}
+                  cy={yRight(value)}
+                  r="3"
+                  fill={painterColour(line.painter.wplaceUserId)}
+                  class="stroke-base-100"
+                  stroke-width="1.5"
+                />
+              {/if}
+            {/each}
           </g>
         {/if}
       </svg>
@@ -1077,6 +1298,20 @@
                   style:background={paceColor(pace.rank)}
                 ></span>
                 <span class="text-base-content/70">pace {pace.key}</span>
+                <span class="text-end">{formatExactCount(value)} px/h</span>
+              {/if}
+            {/each}
+            {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
+              {@const value = hoverPace(line.series, hover.t)}
+              {#if value !== null}
+                <span
+                  class="w-2 rounded-full"
+                  style:height="{paceWidth(line.rank)}px"
+                  style:background={painterColour(line.painter.wplaceUserId)}
+                ></span>
+                <span class="truncate text-base-content/70"
+                  >{painterLabel(line.painter)} {line.window}</span
+                >
                 <span class="text-end">{formatExactCount(value)} px/h</span>
               {/if}
             {/each}

@@ -7,6 +7,7 @@ import {
   LIVE_PROTOCOL_V1,
   LIVE_PROTOCOL_V2,
   type Manifest,
+  type PainterHistoryResponse,
   type ServerInfo,
   type StatusResponse,
   type TileHistoryResponse,
@@ -207,6 +208,19 @@ export const getHistory = (
 ): Promise<HistoryResponse> =>
   json(
     `/telemetry/history?templateIds=${templateIds.map(encodeURIComponent).join(',')}` +
+      `&from=${from}&to=${to}` +
+      (options.maxResolution === undefined ? '' : `&maxResolution=${options.maxResolution}`),
+  )
+
+/** Per-painter buckets on the same ladder as `getHistory`, so painter lines share its precision. */
+export const getPainterHistory = (
+  templateIds: readonly string[],
+  from: number,
+  to: number,
+  options: { readonly maxResolution?: number } = {},
+): Promise<PainterHistoryResponse> =>
+  json(
+    `/telemetry/painter-history?templateIds=${templateIds.map(encodeURIComponent).join(',')}` +
       `&from=${from}&to=${to}` +
       (options.maxResolution === undefined ? '' : `&maxResolution=${options.maxResolution}`),
   )
