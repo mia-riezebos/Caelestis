@@ -21,6 +21,7 @@ import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
 import {
+  activeServerToken,
   admittedServerContentsFor,
   type ConnectedServer,
   deleteTemplate as deleteTemplateOnServer,
@@ -496,6 +497,12 @@ const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | n
       }
 }
 
+/** Lifecycle mutations require both confirmed admin scope and a usable credential. */
+const serverLifecycleTargetFor = (template: PlacedTemplate): ServerActionTarget | null => {
+  const target = serverActionTargetFor(template)
+  return target !== null && activeServerToken(target.server) !== null ? target : null
+}
+
 /** Lifecycle state is visible to read-scoped users too; only the mutation target is admin-gated. */
 const serverLifecycleFor = (
   template: PlacedTemplate,
@@ -728,7 +735,7 @@ const commitLifecycle = (
 ): void => {
   if (isDoomed(id) || pendingLifecycle.has(id)) return
   const template = templateFor(id)
-  const target = template === undefined ? null : serverActionTargetFor(template)
+  const target = template === undefined ? null : serverLifecycleTargetFor(template)
   const lifecycle = template === undefined ? null : serverLifecycleFor(template)
   if (template === undefined || target === null || lifecycle === null) {
     recordFailure(id, field, () => 'Admin access to this template is no longer available.')
@@ -796,6 +803,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     visibleFor(id),
     lifecycle?.finished ?? false,
     lifecycle?.frozen ?? false,
+    serverLifecycleTargetFor(template) !== null,
     pendingLifecycle.get(id),
     appearance.radius,
     appearance.translateX,
@@ -1351,7 +1359,7 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
     readonly control: string
     readonly activate: () => void
   }> = [
-    ...(serverTarget === null || lifecycle === null
+    ...(serverLifecycleTargetFor(template) === null || lifecycle === null
       ? []
       : [
           {
@@ -2099,7 +2107,7 @@ const renderControls = (
       openFor === template.id
         ? isServerTemplate(template) && serverActionTargetFor(template) === null
           ? 1
-          : serverActionTargetFor(template) !== null && serverLifecycleFor(template) !== null
+          : serverLifecycleTargetFor(template) !== null && serverLifecycleFor(template) !== null
             ? 5
             : 3
         : 0

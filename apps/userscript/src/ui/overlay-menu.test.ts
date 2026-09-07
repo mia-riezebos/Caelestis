@@ -51,6 +51,7 @@ const harness = vi.hoisted(() => ({
     url: string
     isAdmin: boolean
     token: string | null
+    tokenUsable?: boolean
     status: 'connected'
     season: number
     info: { id: string; name: string; auth: 'access_token' }
@@ -95,6 +96,8 @@ vi.mock('../main.js', () => ({
   screenPointFor: harness.screenPointFor,
 }))
 vi.mock('../state.js', () => ({
+  activeServerToken: (server: { token: string | null; tokenUsable?: boolean }) =>
+    server.tokenUsable === false ? null : server.token,
   admittedServerContentsFor: () => ({ nodes: [], templates: harness.serverTemplates }),
   deleteTemplate: harness.deleteServerTemplate,
   getState: () => ({
@@ -507,22 +510,45 @@ describe('template-local lifecycle actions', () => {
     expect((await byKey('finished')).getAttribute('aria-disabled')).toBe('false')
   })
 
-  it('rechecks admin access when an already-rendered action is used', async () => {
-    connectServerTemplate(true)
-    openServerMenu()
-    const action = await byKey('finished')
-    const server = harness.servers[0]
-    if (server === undefined) throw new Error('missing server')
-    server.isAdmin = false
-    action.click()
-    expect(harness.patchTemplate).not.toHaveBeenCalled()
-    expect(
-      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="finished"]'),
-    ).toBeNull()
-    expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toContain(
-      'Admin access',
-    )
-  })
+  it.each([{ isAdmin: false }, { token: null }, { tokenUsable: false }])(
+    'rechecks lifecycle access after credentials change to %j',
+    async (credentials) => {
+      connectServerTemplate(true)
+      openServerMenu()
+      const action = await byKey('finished')
+      const server = harness.servers[0]
+      if (server === undefined) throw new Error('missing server')
+      Object.assign(server, credentials)
+      action.click()
+      expect(harness.patchTemplate).not.toHaveBeenCalled()
+      expect(
+        document.querySelector('[data-caelestis-rail-action][data-caelestis-control="finished"]'),
+      ).toBeNull()
+      expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toContain(
+        'Admin access',
+      )
+    },
+  )
+
+  it.each([{ isAdmin: false }, { token: null }, { tokenUsable: false }])(
+    'hides both lifecycle controls without an accepted admin token: %j',
+    async (credentials) => {
+      connectServerTemplate(true)
+      Object.assign(harness.servers[0] ?? {}, credentials)
+      openServerMenu()
+      for (const control of ['finished', 'frozen']) {
+        expect(
+          document.querySelector(
+            `[data-caelestis-rail-action][data-caelestis-control="${control}"]`,
+          ),
+        ).toBeNull()
+      }
+      Object.assign(harness.servers[0] ?? {}, { isAdmin: true, token: 'token', tokenUsable: true })
+      rerender()
+      expect(await byKey('finished')).toBeDefined()
+      expect(await byKey('frozen')).toBeDefined()
+    },
+  )
 
   it('hides lifecycle mutations for local and read-only templates', async () => {
     harness.localTemplates.mockReturnValue([template()])
