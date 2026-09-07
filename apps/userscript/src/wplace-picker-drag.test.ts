@@ -141,6 +141,19 @@ it('keeps the selected colour across gaps, unsupported colours, controls and off
   expect(harness.selected).toBe(7)
 })
 
+it('forwards mouse movement through repeated colours and transparent gaps', () => {
+  const hover = vi.fn()
+  map.addEventListener('mousemove', hover)
+  pointer('pointerdown')
+  pointer('pointermove', 0.5)
+  pointer('pointermove', 3)
+  expect(hover.mock.calls.map(([event]) => [event.clientX, event.buttons])).toEqual([
+    [0.6, 4],
+    [3.1, 4],
+  ])
+  expect(harness.select.mock.calls).toEqual([[12]])
+})
+
 it('resolves overlaps, transparent cells and hidden colours in the existing drawing order', () => {
   const top = source([23, TRANSPARENT_INDEX, 7, 23])
   top.hiddenColours = [7]
@@ -261,17 +274,12 @@ it.each(['closed drawer', 'placement', 'gap', 'unsupported', 'outside', 'swatch'
   },
 )
 
-it('blocks native pointer and compatibility mouse gestures only for the claimed sequence', async () => {
+it('keeps native hover movement while suppressing the claimed gesture start and release', async () => {
   const native = vi.fn()
-  for (const type of [
-    'pointerdown',
-    'pointermove',
-    'pointerup',
-    'mousedown',
-    'mousemove',
-    'mouseup',
-    'auxclick',
-  ]) {
+  const hover = vi.fn()
+  map.addEventListener('pointermove', hover)
+  map.addEventListener('mousemove', hover)
+  for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'auxclick']) {
     map.addEventListener(type, native)
   }
   pointer('pointerdown')
@@ -281,6 +289,7 @@ it('blocks native pointer and compatibility mouse gestures only for the claimed 
     )
   }
   pointer('pointermove', 1)
+  expect(hover).toHaveBeenCalledTimes(2)
   pointer('pointerup', 1, { buttons: 0 })
   pointer('lostpointercapture', 1, { buttons: 0 })
   for (const type of ['mouseup', 'auxclick']) {

@@ -10,6 +10,7 @@ import { log } from './debug.js'
 import { readArtboardPixels } from './gl/artboard-pixels.js'
 import { canvasPixelAt } from './main.js'
 import { nativePixelAt } from './native-pixels.js'
+import { forwardPaintMove, isForwardedPaintMove } from './paint-cursor.js'
 import { pickerIndex } from './picker-source.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
 import {
@@ -340,9 +341,9 @@ export const installColourPicker = (): void => {
     (event) => {
       const pick = middlePick
       if (pick === null || pick.pointerId !== event.pointerId) return
-      event.preventDefault()
-      event.stopImmediatePropagation()
       if ((event.buttons & MIDDLE_BUTTON_MASK) === 0 || !isPaintOpen() || isMoving()) {
+        event.preventDefault()
+        event.stopImmediatePropagation()
         // A middle release within a button chord arrives as pointermove rather than pointerup.
         endMiddlePick(event.button === 1 && (event.buttons & MIDDLE_BUTTON_MASK) === 0)
         return
@@ -354,9 +355,13 @@ export const installColourPicker = (): void => {
       const point = pickerPointAt(target, event.clientX, event.clientY)
       if (point === null) return
       const index = overlayIndexAt(point.surface, point.x, point.y)
-      if (index === null || index === pick.lastIndex) return
-      pick.lastIndex = index
-      selectPaintColour(index)
+      if (index !== null && index !== pick.lastIndex) {
+        pick.lastIndex = index
+        selectPaintColour(index)
+      }
+      // Cancelling pointerdown suppresses Chromium's compatibility mousemove. Wplace needs that
+      // event for both its world crosshair and Space painting, including repeated colours and gaps.
+      forwardPaintMove(target, event)
     },
     { capture: true },
   )
@@ -375,11 +380,13 @@ export const installColourPicker = (): void => {
   }
   window.addEventListener('blur', () => endMiddlePick(), { capture: true })
 
-  // Suppress native autoscroll and compatibility map gestures only for the sequence we claimed.
+  // The claimed press cannot start a native drag. Keep movement flowing so Wplace updates its
+  // crosshair and the pixel painted by Space while we select overlay colours.
   for (const type of ['mousedown', 'mousemove', 'mouseup', 'auxclick'] as const) {
     window.addEventListener(
       type,
       (event) => {
+        if (isForwardedPaintMove(event)) return
         const claimed =
           type === 'mousemove'
             ? middlePick !== null
