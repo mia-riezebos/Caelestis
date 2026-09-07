@@ -160,7 +160,7 @@
     position: fixed;
     inset: auto;
     margin: 0;
-    padding: 0.5rem;
+    padding: 0.375rem;
     inline-size: 15rem;
     max-inline-size: calc(100vw - 1rem);
     max-block-size: calc(100vh - 1rem);
@@ -186,6 +186,7 @@
     justify-content: space-between;
     gap: 0.5rem;
     min-block-size: 1.75rem;
+    padding-inline-start: calc(0.5rem + var(--border, 1px));
   }
   .person > span {
     overflow-wrap: anywhere;
@@ -203,7 +204,13 @@
   }
   .claim-actions {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr) max-content;
+    gap: 0.25rem;
+    margin-block-start: 0.25rem;
+  }
+  .claim-actions :global(button) {
+    white-space: nowrap;
+    justify-content: flex-start;
   }
   form {
     display: grid;

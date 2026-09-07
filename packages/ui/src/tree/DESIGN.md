@@ -2,6 +2,8 @@
 
 Template claims keep the original template icon with a fixed-size count badge over its corner. The badge occupies no layout space, including when the count changes or disappears. Clicking the icon opens a compact native popover with claimants and permitted actions. Opening, assigning, and dismissing claims never change tree layout. Progress totals and colour rows share the template icon column without an extra inset.
 
+The claim popover aligns participant and empty-state text with action labels. Both states use the same row height. The assignment action gets its full single-line label width; the personal action fills the remaining space so switching Claim and Release claim moves neither control.
+
 The grid helps people recognize artwork without knowing template names. Tree remains the default working view.
 
 Use the existing panel typography, colors, progress meter, lifecycle markers, and actions. The sidebar stays in tree mode. Its header opens the same menu in a native modal, where a compact view switcher sits beside sorting. Closing or docking restores the sidebar; the saved grid preference applies only inside the modal.
