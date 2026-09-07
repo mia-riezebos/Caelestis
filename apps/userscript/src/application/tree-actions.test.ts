@@ -245,7 +245,7 @@ describe('server template context menu', () => {
     templateId: 'template',
   }
 
-  it('offers Claim, work and export without template administration to an ordinary member', () => {
+  it('offers Claim and export without template administration to an ordinary member', () => {
     const memberTarget: TreeTarget = {
       server: { ...server, isAdmin: false },
       nodeId: 'root',
@@ -256,7 +256,7 @@ describe('server template context menu', () => {
 
     openContextMenu(memberTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(menuText()).toBe('ClaimWork itemsExport .wplace')
+    expect(menuText()).toBe('ClaimExport .wplace')
   })
 
   it('offers finish and freeze actions for a live template', () => {

@@ -4,19 +4,33 @@
   let {
     groups,
     onopen,
+    showOtherClaims = false,
+    onshowothers,
   }: {
     groups: NonNullable<PanelModel['work']>
     onopen: (key: string, itemId?: string) => void
+    showOtherClaims?: boolean
+    onshowothers: (show: boolean) => void
   } = $props()
   const count = $derived(groups.reduce((total, group) => total + group.items.length, 0))
   const drawerId = $props.id()
   let open = $state(false)
 </script>
 
-<section class="work t-acc" data-open={String(open)} aria-label="Work drawer">
+<section class="work t-acc" data-open={String(open)} aria-label="In progress drawer">
   <div class="t-acc-panel" id={drawerId} inert={!open} aria-hidden={!open}>
     <div class="t-acc-panel-inner">
       <div class="list">
+        {#if groups.some((group) => group.canShowOthers)}
+          <label class="visibility">
+            <input
+              type="checkbox"
+              checked={showOtherClaims}
+              onchange={(event) => onshowothers(event.currentTarget.checked)}
+            />
+            Show other claims
+          </label>
+        {/if}
         {#each groups as group (group.key)}
           <div class="group">
             <button
@@ -24,12 +38,12 @@
               onclick={() => onopen(group.key)}
               aria-label={`Browse work on ${group.name}`}
             >
-              <span>{groups.length > 1 ? group.name : 'All work'}</span><Icon name="popout" />
+              <span>{group.name}</span><Icon name="popout" />
             </button>
             {#if group.error}
               <p role="status">{group.error}</p>
             {:else if group.items.length === 0}
-              <p>No active work. Right-click a template to claim it.</p>
+              <p>No templates claimed. Right-click a template and choose Claim.</p>
             {:else}
               {#each group.items as item (item.id)}
                 <button class="item" onclick={() => onopen(group.key, item.id)}>
@@ -41,6 +55,8 @@
               {/each}
             {/if}
           </div>
+        {:else}
+          <p>Claim a server template to keep it here.</p>
         {/each}
       </div>
     </div>
@@ -53,7 +69,7 @@
       open = !open
     }}
   >
-    <span>Work <span class="count">{count}</span></span>
+    <span>In progress <span class="count">{count}</span></span>
     <span class="t-acc-chevron" aria-hidden="true">
       <svg
         width="16"
@@ -99,6 +115,18 @@
     max-block-size: min(220px, 40dvh);
     overflow-y: auto;
     padding: 0 6px 6px;
+  }
+  .visibility {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .visibility input {
+    margin: 0;
+    accent-color: var(--caelestis-primary);
   }
   button {
     width: 100%;

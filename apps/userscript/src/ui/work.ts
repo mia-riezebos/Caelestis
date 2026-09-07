@@ -21,7 +21,7 @@ import {
   serverConnectionSignal,
   serverEndpoint,
 } from '../state.js'
-import { accountIdentity } from '../wplace-account.js'
+import { accountIdentity, loadAccount } from '../wplace-account.js'
 import { applyWplaceTheme } from './theme.js'
 import { toast } from './toast.js'
 import type { TreeTarget } from './tree.js'
@@ -60,21 +60,21 @@ const previews = new Map<string, WorkPreview>()
 const previewKey = (server: ConnectedServer, surface: TemplateSurface): string =>
   `${server.url}:${server.season}:${surface.kind}:${surface.allianceId}`
 
-/** List active work below the tree, refreshed only when the admitted server revision changes. */
+/** List the current painter's active claims, refreshed by work revisions rather than painting updates. */
 export const workSectionModel = (
   surface: TemplateSurface,
   changed: () => void,
+  showOtherClaims = false,
 ): NonNullable<PanelModel['work']> =>
   getState().servers.flatMap((server) => {
     const contents =
       surface.kind === 'world'
         ? admittedServerContentsFor(server)
         : allianceManifestFor(server, surface)
-    if (server.season === null || contents === null || contents.workRevision === undefined)
-      return []
+    if (server.season === null || contents === null) return []
     const key = previewKey(server, surface)
     const signal = serverConnectionSignal(server)
-    const revision = String(contents.workRevision ?? 0)
+    const revision = String(contents.workRevision ?? 'unversioned')
     let preview = previews.get(key)
     if (preview?.signal !== signal) {
       preview = {
@@ -95,29 +95,38 @@ export const workSectionModel = (
     if (preview.revision !== revision) {
       preview.revision = revision
       const held = preview
-      void workClient(server, server.season, surface, signal)
-        .list()
-        .then(
-          (collection) => {
-            if (signal.aborted || held.revision !== revision) return
-            held.collection = collection
-            held.error = ''
-            changed()
-          },
-          (error: unknown) => {
-            if (signal.aborted || held.revision !== revision) return
-            held.error = error instanceof Error ? error.message : String(error)
-            changed()
-          },
-        )
+      void Promise.all([
+        workClient(server, server.season, surface, signal).list(),
+        loadAccount(),
+      ]).then(
+        ([collection]) => {
+          if (signal.aborted || held.revision !== revision) return
+          held.collection = collection
+          held.error = ''
+          changed()
+        },
+        (error: unknown) => {
+          if (signal.aborted || held.revision !== revision) return
+          held.error = error instanceof Error ? error.message : String(error)
+          changed()
+        },
+      )
     }
+    const canShowOthers = preview.collection.canPlan
+    const painterId = accountIdentity()?.wplaceUserId
     return [
       {
         key: server.url,
         name: server.info?.name ?? server.url,
         error: preview.error,
+        canShowOthers,
         items: preview.collection.items
-          .filter((item) => item.status !== 'completed')
+          .filter(
+            (item) =>
+              item.status !== 'completed' &&
+              item.claimant !== null &&
+              (item.claimant.wplaceUserId === painterId || (showOtherClaims && canShowOthers)),
+          )
           .map((item) => ({
             id: item.id,
             title: item.title,

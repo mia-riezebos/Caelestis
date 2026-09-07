@@ -98,6 +98,7 @@ export interface PanelModel {
     readonly key: string
     readonly name: string
     readonly error: string
+    readonly canShowOthers: boolean
     readonly items: readonly {
       readonly id: string
       readonly title: string
@@ -105,11 +106,13 @@ export interface PanelModel {
       readonly claimant: string
     }[]
   }[]
+  readonly showOtherClaims?: boolean
   readonly appearance?: AppearanceEditorModel
   readonly settings?: SettingsModel
 }
 
 export type PanelIntent =
+  | { readonly type: 'work-visibility'; readonly showOtherClaims: boolean }
   | { readonly type: 'work'; readonly key: string; readonly itemId?: string }
   | { readonly type: 'navigate'; readonly view: PanelView }
   | { readonly type: 'close' }

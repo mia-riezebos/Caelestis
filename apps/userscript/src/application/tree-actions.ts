@@ -1159,7 +1159,9 @@ export const openContextMenu = (
           ...(target.templateId === undefined
             ? []
             : [['check', 'Claim', () => void claimTemplate(target, rerender)] as const]),
-          ['check', 'Work items', () => openWork(target)],
+          ...(target.templateId === undefined
+            ? [['check', 'Work items', () => openWork(target)] as const]
+            : []),
           ...(target.server.isAdmin || target.templateId !== undefined ? existingEntries : []),
         ]
   closeContextMenu(false)

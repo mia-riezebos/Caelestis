@@ -194,6 +194,7 @@ const BUTTON_TOOLTIP = `${APP_NAME} — shared templates (C)`
 const panelSessions = new PanelSessions()
 let alarmBadge = 0
 let searchQuery = ''
+let showOtherClaims = false
 let panelSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE
 let panelHost: HTMLElement | null = null
 let allianceStage: HTMLElement | null = null
@@ -965,7 +966,8 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
   maxWidth: maximumPanelWidth(),
   ...(currentView() === 'tree' && activeTreeAdapter !== null
     ? {
-        work: workSectionModel(panelSurface, rerenderTree),
+        work: workSectionModel(panelSurface, rerenderTree, showOtherClaims),
+        showOtherClaims,
         tree: {
           ...activeTreeAdapter.model,
           ...focusedTreeModel(),
@@ -1006,6 +1008,10 @@ const buildSveltePanel = (): CaelestisPanel => {
     switch (intent.type) {
       case 'work':
         openPanelWork(intent.key, panelSurface, intent.itemId)
+        break
+      case 'work-visibility':
+        showOtherClaims = intent.showOtherClaims
+        rerenderTree()
         break
       case 'navigate':
         if (panelSurface.kind !== 'world' && intent.view === 'settings') break

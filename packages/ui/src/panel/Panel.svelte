@@ -136,8 +136,8 @@
   <div class="body">
     {#if model.view === 'tree' && model.tree !== undefined}
       <TemplateTree model={model.tree} allowGrid={poppedOut} onIntent={treeIntent} />
-      {#if model.work !== undefined && model.work.length > 0}
-        <WorkSummary groups={model.work} onopen={(key, itemId) => emit({ type: 'work', key, ...(itemId === undefined ? {} : { itemId }) })} />
+      {#if model.work !== undefined}
+        <WorkSummary groups={model.work} showOtherClaims={model.showOtherClaims ?? false} onshowothers={(showOtherClaims) => emit({ type: 'work-visibility', showOtherClaims })} onopen={(key, itemId) => emit({ type: 'work', key, ...(itemId === undefined ? {} : { itemId }) })} />
       {/if}
     {:else if model.view === 'appearance' && model.appearance !== undefined}
       <AppearanceEditor model={model.appearance} onIntent={(intent) => emit({ type: 'appearance', intent })} />

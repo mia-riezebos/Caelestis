@@ -22,7 +22,10 @@ vi.mock('../state.js', () => ({
 vi.mock('../alliance-server-sync.js', () => ({ allianceManifestFor: () => null }))
 vi.mock('../application/tree-server-state.js', () => ({}))
 vi.mock('../server-transport.js', () => ({ requestServerTree: state.request }))
-vi.mock('../wplace-account.js', () => ({ accountIdentity: () => state.identity }))
+vi.mock('../wplace-account.js', () => ({
+  accountIdentity: () => state.identity,
+  loadAccount: async () => {},
+}))
 vi.mock('./toast.js', () => ({ toast: state.toast }))
 
 import { claimTemplate, workSectionModel } from './work.js'
@@ -119,3 +122,35 @@ it('claims directly with the Wplace identity and current revision, without a pla
   expect(changed).toHaveBeenCalledOnce()
   expect(state.toast).toHaveBeenCalledWith('Claimed “Box art”.')
 })
+
+it.each([false, true])(
+  'keeps the drawer available and limits other claims to admins (admin=%s)',
+  async (canPlan) => {
+    const { item } = setup()
+    const otherId = uuidV7()
+    state.contents = { nodes: [], templates: [], revision: 'legacy-manifest' }
+    state.request.mockResolvedValue({
+      response: { status: 200 },
+      body: {
+        items: [
+          item,
+          { ...item, id: otherId, claimant: { wplaceUserId: 84, displayName: 'Other painter' } },
+          { ...item, id: uuidV7(), claimant: null },
+          { ...item, id: uuidV7(), status: 'completed' },
+        ],
+        canClaim: true,
+        canPlan,
+      },
+    })
+    const changed = vi.fn()
+    expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed)).toHaveLength(1)
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
+    const groups = workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+    expect(groups[0]?.items.map((row) => row.id)).toEqual([item.id])
+    expect(groups[0]?.canShowOthers).toBe(canPlan)
+    expect(
+      workSectionModel(WORLD_TEMPLATE_SURFACE, changed, true)[0]?.items.map((row) => row.id),
+    ).toEqual(canPlan ? [item.id, otherId] : [item.id])
+    expect(state.request).toHaveBeenCalledOnce()
+  },
+)
