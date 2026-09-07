@@ -16,12 +16,12 @@ Keep template ownership, pixels, placement, and folder paths intact.
 
 ## TODOs
 - [x] Add server tag persistence, authorized API, and manifest synchronization with focused tests.
-- [ ] Add transactional local tag persistence and migration tests.
+- [x] Add transactional local tag persistence and migration tests.
 - [ ] Add the shared tag editor, ownership labels, and hierarchical tag search with focused tests.
 - [ ] Verify rendered workflows and repository checks, add release notes, and file the PR.
 
 ## Notes
-- Work in the supplied branch `t3code/21405b48`; initial working tree is clean.
+- Work in the supplied workspace; the harness renamed its branch to `t3code/resolve-issue-257` during implementation. Initial working tree was clean.
 - Server tags are reusable across its templates. Local tags remain browser-owned.
 - Use stable IDs and separate assignments so a rename is one record update; deletion cascades assignments only.
 - Existing admin authorization and manifest notifications are the integration points.
@@ -29,3 +29,5 @@ Keep template ownership, pixels, placement, and folder paths intact.
 - Mia approved implementation. Server adapter, route, and schema drift tests pass (14 tests).
 - Backend typecheck passes. Full backend run passed 546 tests; three outdated manifest mocks were fixed and all 10 manifest tests then passed. Shared tag tests (2) and wire-schema tests (178) pass.
 - Use the existing debug Chromium.app through CDP for browser verification. Mia explicitly excludes Helium.
+- Local persistence, migration, and server-cache tests pass (30 tests); userscript typecheck passes.
+- Build directly in the real codebase. Browser tabs must open in the background without activating Chromium; retain CDP focus emulation for background rendering.

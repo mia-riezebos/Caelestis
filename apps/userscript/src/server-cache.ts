@@ -8,6 +8,7 @@ import {
   type TreeNode,
 } from './server-manifest.js'
 import { migrateTemplateStorePalette } from './templates/palette-migration.js'
+import { upgradeLocalTags } from './templates/tag-schema.js'
 
 /**
  * What a server told us, kept between sessions.
@@ -23,7 +24,7 @@ import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 const DB_NAME = 'caelestis'
 const STORE = 'server-cache'
 // Shared with local template persistence. Opening an older version after v3 exists is a VersionError.
-const VERSION = 5
+const VERSION = 6
 
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
@@ -113,6 +114,7 @@ const open = (): Promise<IDBDatabase> =>
     let abandoned = false
     request.onupgradeneeded = (event) => {
       const db = request.result
+      upgradeLocalTags(db)
       // The local-template store lives in the same database and must survive this upgrade.
       if (!db.objectStoreNames.contains('local-templates')) {
         db.createObjectStore('local-templates', { keyPath: 'id' })

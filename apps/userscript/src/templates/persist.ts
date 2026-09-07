@@ -14,6 +14,7 @@ import {
   remapPaletteIndices,
   remapStoredAppearance,
 } from './palette-migration.js'
+import { LOCAL_TAG_STORE, upgradeLocalTags } from './tag-schema.js'
 
 /**
  * Local templates on disk.
@@ -31,7 +32,7 @@ import {
 const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
-const VERSION = 5
+const VERSION = 6
 const VERSIONS_STORE = 'local-template-versions'
 const MAX_PERSISTED_TEMPLATES = 64
 const MAX_PERSISTED_INDEX_PIXELS = 64 * 1024 * 1024
@@ -88,6 +89,7 @@ const open = (): Promise<IDBDatabase> => {
     let abandoned = false
     request.onupgradeneeded = (event) => {
       const db = request.result
+      upgradeLocalTags(db)
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
       if (!db.objectStoreNames.contains(VERSIONS_STORE)) {
         db.createObjectStore(VERSIONS_STORE, { keyPath: ['id', 'revision'] })
@@ -125,10 +127,18 @@ const open = (): Promise<IDBDatabase> => {
 const normaliseRevision = (value: unknown): number =>
   Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 
+/** Share the existing database upgrade and blocked-connection handling with tag persistence. */
+export { open as openTemplateDatabase }
+
 const writeVersioned = async (
   id: IDBValidKey,
   expectedRevision: number | null,
-  operation: (templates: IDBObjectStore, nextRevision: number, current: unknown) => void,
+  operation: (
+    templates: IDBObjectStore,
+    nextRevision: number,
+    current: unknown,
+    transaction: IDBTransaction,
+  ) => void,
   incrementRevision = true,
   creationPixels: number | null = null,
   history?: 'archive' | 'delete',
@@ -138,7 +148,7 @@ const writeVersioned = async (
     try {
       return await new Promise<SaveResult>((resolve, reject) => {
         const transaction = db.transaction(
-          history === undefined ? STORE : [STORE, VERSIONS_STORE],
+          history === undefined ? [STORE, LOCAL_TAG_STORE] : [STORE, VERSIONS_STORE, LOCAL_TAG_STORE],
           'readwrite',
         )
         const templates = transaction.objectStore(STORE)
@@ -167,7 +177,7 @@ const writeVersioned = async (
                 .objectStore(VERSIONS_STORE)
                 .delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]))
             }
-            operation(templates, nextRevision, current)
+            operation(templates, nextRevision, current, transaction)
             result = { status: 'saved', revision: nextRevision }
           }
           if (history === 'archive') {
@@ -390,8 +400,20 @@ export const deleteTemplate = async (
   await writeVersioned(
     id,
     expectedRevision,
-    (templates) => {
+    (templates, _revision, _current, transaction) => {
       templates.delete(id)
+      const cursorRequest = transaction.objectStore(LOCAL_TAG_STORE).openCursor()
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result
+        if (cursor === null) return
+        const tag = cursor.value as { templateIds: string[] }
+        if (tag.templateIds.includes(String(id)))
+          cursor.update({
+            ...tag,
+            templateIds: tag.templateIds.filter((templateId) => templateId !== id),
+          })
+        cursor.continue()
+      }
       // Record absence is itself the tombstone: a stale mutation requires an existing record with the
       // expected revision, so deleted IDs need no permanent side-store entry.
     },

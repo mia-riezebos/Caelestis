@@ -175,7 +175,7 @@ describe('local template persistence', () => {
     } as IDBOpenDBRequest
     vi.stubGlobal('indexedDB', {
       open: vi.fn((_name: string, version: number) => {
-        expect(version).toBe(5)
+        expect(version).toBe(6)
         queueMicrotask(() => {
           opening.onupgradeneeded?.({ oldVersion: 3 } as IDBVersionChangeEvent)
           queueMicrotask(driveUpgrade)
@@ -550,7 +550,11 @@ describe('local template persistence', () => {
       continue: vi.fn(),
     }
     const loadRequest = { result: cursor } as unknown as IDBRequest<IDBCursorWithValue | null>
-    const deleteStore = { get: vi.fn(() => templateRequest), delete: vi.fn() }
+    const deleteStore = {
+      get: vi.fn(() => templateRequest),
+      delete: vi.fn(),
+      openCursor: vi.fn(() => ({ result: null })),
+    }
     const loadStore = { openCursor: vi.fn(() => loadRequest) }
     const deleteTransaction = {
       objectStore: vi.fn(() => deleteStore),
@@ -878,7 +882,11 @@ describe('local template persistence', () => {
     const saveRequest = { result: maxRecord } as unknown as IDBRequest<unknown>
     const deleteRequest = { result: maxRecord } as unknown as IDBRequest<unknown>
     const saveStore = { get: vi.fn(() => saveRequest), put: vi.fn() }
-    const deleteStore = { get: vi.fn(() => deleteRequest), delete: vi.fn() }
+    const deleteStore = {
+      get: vi.fn(() => deleteRequest),
+      delete: vi.fn(),
+      openCursor: vi.fn(() => ({ result: null })),
+    }
     const saveTransaction = { objectStore: vi.fn(() => saveStore) } as unknown as IDBTransaction
     const deleteTransaction = {
       objectStore: vi.fn(() => deleteStore),
