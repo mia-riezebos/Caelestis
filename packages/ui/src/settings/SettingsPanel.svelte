@@ -128,9 +128,10 @@
   </div>
 
   <SectionHeader title="Painting" icon="palette" />
-  <SettingRow label="Middle-click colour order" hint="Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.">
-    {#snippet children()}<select aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>{/snippet}
-  </SettingRow>
+  <div class="colour-order">
+    <label for="colour-navigation-order">Middle-click colour order<small>Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.</small></label>
+    <select id="colour-navigation-order" aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>
+  </div>
 
   <SectionHeader title="Notifications" icon="bell" />
   <p class="subtle">Toast messages inside Wplace only.</p>
@@ -161,6 +162,31 @@
   input, select { min-inline-size: 0; block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; font: inherit; }
   input { flex: 1; padding-inline: 0.6rem; }
   select { max-inline-size: 11rem; }
+  .colour-order { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; padding: 0.5rem var(--caelestis-content-inset, 1rem); }
+  .colour-order label { flex: 1 1 15rem; min-inline-size: 0; }
+  .colour-order small { display: block; color: var(--caelestis-muted-text); font-size: 0.75rem; }
+  /* DaisyUI select geometry, using the same shadow-root theme tokens as our other controls. */
+  .colour-order select {
+    appearance: none;
+    box-sizing: border-box;
+    flex: 1 1 17rem;
+    inline-size: 100%;
+    max-inline-size: min(100%, 20rem);
+    padding-inline: 0.75rem 1.75rem;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: calc(100% - 20px) calc(1px + 50%), calc(100% - 16.1px) calc(1px + 50%);
+    background-repeat: no-repeat;
+    background-size: 4px 4px;
+    touch-action: manipulation;
+    cursor: pointer;
+  }
+  @supports (appearance: base-select) {
+    .colour-order select, .colour-order select::picker(select) { appearance: base-select; }
+  }
+  .colour-order select::picker-icon { display: none; }
+  .colour-order select::picker(select) { color: var(--caelestis-text); border: var(--border, 1px) solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-surface); padding: 0.5rem; margin-block: 0.5rem; box-shadow: 0 8px 24px #0002; }
+  .colour-order option { padding: 0.375rem 0.625rem; border-radius: var(--caelestis-field-radius, 0.5rem); }
+  .colour-order option:is(:hover, :focus-visible) { background: color-mix(in oklab, var(--caelestis-text) 10%, transparent); }
   .message, .subtle { margin: 0.3rem var(--caelestis-content-inset, 1rem); color: var(--caelestis-muted-text); font-size: 0.72rem; }
   .servers { display: flex; flex-direction: column; }
   .server { padding: 0.35rem var(--caelestis-content-inset, 1rem); }

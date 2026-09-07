@@ -13,6 +13,8 @@ Remove desktop alerts and let players choose which in-page notices they receive.
 - [x] Remove desktop delivery and validate existing alarm behavior.
 - [x] Add categorized settings, persistence, filtering, and focused tests.
 - [x] Verify rendered settings and project checks.
+- [x] Apply the requested quiet defaults while preserving saved choices.
+- [x] Fix the clipped colour-order dropdown with DaisyUI geometry and responsive layout.
 
 ## Notes
 - Reuse SettingsPanel's section header, setting rows, and toggles. Keep notification choices together before Contribution.
@@ -25,3 +27,4 @@ Remove desktop alerts and let players choose which in-page notices they receive.
 - Inspected light and dark notification controls at desktop and 320px widths. Toast checks confirm muted action feedback, retained errors/warnings, and independent ambient notices.
 - Raw CDP and arbitrary page scripting were unavailable to the verifier. Temporary fixture buttons and theme URLs enabled the remaining checks through the browser API. The full Wplace integration was not exercised.
 - Browser viewport reset and owned tabs closed. Evidence report: /tmp/caelestis-298-verify.UwylkO/report.md, supplemented by parent browser screenshots and toast checks.
+- Follow-up validation: 105 focused userscript tests, 118 UI tests, dependency builds/checks, lint, and release checks pass. Fresh browser storage shows only update notices enabled. Dropdown mouse/keyboard selection and reload persistence pass; light/dark 320px pickers show both full labels.
