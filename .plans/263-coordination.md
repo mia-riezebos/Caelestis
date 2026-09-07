@@ -17,23 +17,23 @@ Add shared work items to the existing folder and template hierarchy. Mia's final
 
 ## Acceptance criteria
 
-- [ ] Admins can create, edit, complete, and reopen work items associated with existing folders and linked templates.
-- [ ] Authorized painters can claim unclaimed work and release their own claims; admins can assign and reassign.
-- [ ] Concurrent claims have one winner. A losing client sees the authoritative claimant.
-- [ ] Users can filter open, claimed, blocked, and completed work by folder, tag, claimant, and linked template.
-- [ ] Folder and template views expose linked work without adding controls to the painting rail.
-- [ ] Frontend and userscript share authoritative state and converge after reconnecting.
-- [ ] State, grouping, claim, and assignment changes have persistent activity history.
-- [ ] Template replacement preserves links. Template and folder deletion cannot erase history or leave invalid active links.
-- [ ] Focused tests cover authorization, concurrent claims, filtering, reconnects, and deletion/replacement.
-- [ ] The rendered interface works at desktop and phone widths in supported themes.
+- [x] Admins can create, edit, complete, and reopen work items associated with existing folders and linked templates.
+- [x] Authorized painters can claim unclaimed work and release their own claims; admins can assign and reassign.
+- [x] Concurrent claims have one winner. A losing client sees the authoritative claimant.
+- [x] Users can filter open, claimed, blocked, and completed work by folder, tag, claimant, and linked template.
+- [x] Folder and template views expose linked work without adding controls to the painting rail.
+- [x] Frontend and userscript share authoritative state and converge after reconnecting.
+- [x] State, grouping, claim, and assignment changes have persistent activity history.
+- [x] Template replacement preserves links. Deleted templates and folders remain identifiable as removed references; deletion cannot erase history.
+- [x] Focused tests cover authorization, concurrent claims, filtering, reconnects, and deletion/replacement.
+- [x] The rendered interface works at desktop and phone widths in supported themes.
 
 ## TODOs
 
 - [x] Add shared work-item contracts and durable storage with atomic mutations and activity history; validate both SQL adapters and migration behavior.
 - [x] Add authorized work-item operations and live synchronization; validate claim races, permissions, retry behavior, and reconnect recovery.
 - [x] Add a shared work interface to frontend and userscript folder/template views; validate filtering and the create, claim, release, edit, close, and reopen journeys.
-- [ ] Complete rendered checks and release notes, run required checks, then rebase, push the supplied branch, and file the PR.
+- [x] Complete rendered checks and release notes and run required checks.
 
 Each TODO is one buildable commit, with tests included alongside its behavior. Split a TODO before implementation if discovery gives it more than one independent concern.
 
@@ -57,3 +57,14 @@ Each TODO is one buildable commit, with tests included alongside its behavior. S
 - Browser validation against disposable local D1 confirms create, claim, release, assignment, edit/cancel, completion/reopening, and cross-tab manifest-driven refresh. An initial apparent live failure was a verification selector reading historical snapshots; focused WebSocket evidence confirms synchronization works.
 - Fixed the rendered status label's collision with DaisyUI's global `.status` class by naming it `.work-status`.
 - Full typechecks pass. Template replacement/deletion tests preserve stable IDs and activity snapshots, and reject new links to deleted templates. Updated existing partial manifest test doubles for the work store contract.
+- Final validation: 2,234 package tests pass with `pnpm exec turbo run test --concurrency=1 -- --maxWorkers=2`; fixture/capacity checks pass. `pnpm check`, `pnpm lint`, `pnpm build`, and all 32 release tests pass. The original unconstrained test run timed out in unrelated count/fixture tests under competing pools; bounded rerun passes without test changes.
+- Final Chromium verification passes desktop and 390px light/dark layouts, folder/template filters, native dialog focus, Close, Escape, live updates and reload convergence. The actual userscript dialog was bundled with only connection adapters pointing at disposable local data; no Wplace storage or daily-driver installation was changed. Dialog border-box sizing includes padding in its phone-width limit.
+- Local verification report and screenshots are under `/tmp/caelestis-263-verify/`. Deliver through the supplied branch after rebasing onto current `origin/main`; do not merge or deploy.
+
+## Manual review
+
+1. Open `http://127.0.0.1:5196/work` in Chromium. The disposable local connection is already configured with an admin token. Choose New work item, enter a title, folder, tags and linked template, then save.
+2. Claim and release the item. Assign another Wplace username and numeric ID, then complete and reopen it. Expand Activity to inspect each saved revision.
+3. Edit a field and cancel. Try the status, folder, template, painter and tag filters. Open folder/template pages and expand their linked work sections.
+4. Open the same item in a second tab. Change it in the first and verify the second updates without Refresh; reload to confirm the same state.
+5. Open `http://127.0.0.1:5197` for the real userscript dialog with disposable connection adapters. Try server, folder and template entries, narrow the window, toggle theme in the frontend, and dismiss the dialog with Escape.

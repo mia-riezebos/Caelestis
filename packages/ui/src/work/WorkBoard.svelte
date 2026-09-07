@@ -242,7 +242,7 @@
 <section class="board" aria-label="Work items">
   <header>
     <h2>Work</h2>
-    <span class="muted">{visible.length} items</span><button
+    <span class="muted">{visible.length} {visible.length === 1 ? 'item' : 'items'}</span><button
       disabled={loading || busy}
       onclick={() => {
         error = ''

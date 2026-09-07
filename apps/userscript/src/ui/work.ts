@@ -45,7 +45,7 @@ export const openWork = (target: TreeTarget): void => {
   const dialog = document.createElement('dialog')
   dialog.setAttribute('aria-label', `Work · ${target.name}`)
   dialog.style.cssText =
-    'position:fixed;inset:16px;margin:auto;width:min(960px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:16px;border:1px solid var(--caelestis-border);border-radius:12px;background:var(--caelestis-surface);color:var(--caelestis-text);box-shadow:var(--caelestis-shadow);'
+    'box-sizing:border-box;position:fixed;inset:16px;margin:auto;width:min(960px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:16px;border:1px solid var(--caelestis-border);border-radius:12px;background:var(--caelestis-surface);color:var(--caelestis-text);box-shadow:var(--caelestis-shadow);'
   applyWplaceTheme(dialog)
   const header = document.createElement('div')
   header.style.cssText =
