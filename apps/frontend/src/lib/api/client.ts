@@ -8,6 +8,7 @@ import {
   LIVE_PROTOCOL_V2,
   type Manifest,
   type PainterHistoryResponse,
+  type PainterTotalsResponse,
   type ServerInfo,
   type StatusResponse,
   type TileHistoryResponse,
@@ -212,16 +213,33 @@ export const getHistory = (
       (options.maxResolution === undefined ? '' : `&maxResolution=${options.maxResolution}`),
   )
 
-/** Per-painter buckets on the same ladder as `getHistory`, so painter lines share its precision. */
+/** Who painted in a range and how much, leading first: the list to pick painters from. */
+export const getPainterTotals = (
+  templateIds: readonly string[],
+  from: number,
+  to: number,
+  options: { readonly limit?: number } = {},
+): Promise<PainterTotalsResponse> =>
+  json(
+    `/telemetry/painters?templateIds=${templateIds.map(encodeURIComponent).join(',')}` +
+      `&from=${from}&to=${to}` +
+      (options.limit === undefined ? '' : `&limit=${options.limit}`),
+  )
+
+/**
+ * The named painters' buckets on the same ladder as `getHistory`, so painter lines share its
+ * precision. Bounded by the painter list, not by the scope's age.
+ */
 export const getPainterHistory = (
   templateIds: readonly string[],
+  painters: readonly number[],
   from: number,
   to: number,
   options: { readonly maxResolution?: number } = {},
 ): Promise<PainterHistoryResponse> =>
   json(
     `/telemetry/painter-history?templateIds=${templateIds.map(encodeURIComponent).join(',')}` +
-      `&from=${from}&to=${to}` +
+      `&painters=${painters.join(',')}&from=${from}&to=${to}` +
       (options.maxResolution === undefined ? '' : `&maxResolution=${options.maxResolution}`),
   )
 

@@ -1,4 +1,4 @@
-import type { PainterHistoryBucket, PainterHistoryResponse, WplaceUserId } from '@caelestis/shared'
+import type { PainterTotal, WplaceUserId } from '@caelestis/shared'
 
 export const PAINTER_METRICS = [
   { key: 'placed', label: 'placed', noun: 'placed pixels' },
@@ -11,42 +11,11 @@ export type PainterMetric = (typeof PAINTER_METRICS)[number]['key']
 /** How many leading painters a fresh chart draws before anyone touches the picker. */
 export const DEFAULT_VISIBLE_PAINTERS = 5
 
-/** A painter the picker can offer: identity plus what they did over the fetched range. */
-export interface PainterOption {
-  readonly wplaceUserId: WplaceUserId
-  readonly displayName: string
-  readonly placed: number
-  readonly correct: number
-  readonly repairs: number
-}
+/** How many painters the panel asks the server to list; the route clamps to the same. */
+export const MAX_PAINTER_OPTIONS = 500
 
-/**
- * Every painter the served buckets mention, summed over the range and ordered like the
- * leaderboard: correct, then placed, then id. Only reported painters exist here; contribution
- * sharing is decided upstream and nothing is reconstructed for anyone the server left out.
- */
-export const painterOptions = (buckets: readonly PainterHistoryBucket[]): PainterOption[] => {
-  const totals = new Map<
-    WplaceUserId,
-    { displayName: string; placed: number; correct: number; repairs: number }
-  >()
-  for (const bucket of buckets) {
-    const held = totals.get(bucket.wplaceUserId) ?? {
-      displayName: bucket.displayName,
-      placed: 0,
-      correct: 0,
-      repairs: 0,
-    }
-    held.placed += bucket.placed
-    held.correct += bucket.correct
-    held.repairs += bucket.repairs
-    if (bucket.displayName !== '') held.displayName = bucket.displayName
-    totals.set(bucket.wplaceUserId, held)
-  }
-  return [...totals]
-    .map(([wplaceUserId, held]) => ({ wplaceUserId, ...held }))
-    .sort((a, b) => b.correct - a.correct || b.placed - a.placed || a.wplaceUserId - b.wplaceUserId)
-}
+/** A painter the picker can offer: `GET /telemetry/painters` already sums and orders them. */
+export type PainterOption = PainterTotal
 
 /** The leading painters that a chart shows until the picker says otherwise. */
 export const defaultVisiblePainters = (
@@ -112,9 +81,3 @@ export const rankPainters = (options: readonly PainterOption[], query: string): 
     .sort((a, b) => b.score - a.score)
     .map((entry) => entry.painter)
 }
-
-/** Only the buckets the drawn painters need, so a crowded scope costs what it draws. */
-export const bucketsForPainters = (
-  history: PainterHistoryResponse,
-  painters: ReadonlySet<WplaceUserId>,
-): PainterHistoryBucket[] => history.buckets.filter((bucket) => painters.has(bucket.wplaceUserId))

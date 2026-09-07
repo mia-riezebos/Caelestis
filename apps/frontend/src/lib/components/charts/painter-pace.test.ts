@@ -1,78 +1,33 @@
-import { type PainterHistoryBucket, seconds } from '@caelestis/shared'
+import type { PainterTotal } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import {
-  bucketsForPainters,
   defaultVisiblePainters,
   fuzzyScore,
   painterColour,
   painterHue,
   painterLabel,
-  painterOptions,
   rankPainters,
 } from './painter-pace.js'
 
-const bucket = (
-  wplaceUserId: number,
-  bucketStart: number,
-  counts: Partial<Pick<PainterHistoryBucket, 'placed' | 'correct' | 'repairs'>> = {},
-  displayName = `painter ${wplaceUserId}`,
-): PainterHistoryBucket => ({
-  templateId: 'template',
+const painter = (wplaceUserId: number, displayName = `painter ${wplaceUserId}`): PainterTotal => ({
   wplaceUserId,
   displayName,
-  resolution: 60,
-  bucketStart: seconds(bucketStart),
-  placed: counts.placed ?? 0,
-  correct: counts.correct ?? 0,
-  repairs: counts.repairs ?? 0,
-})
-
-describe('painterOptions', () => {
-  it('sums each served painter over the range and orders them like the leaderboard', () => {
-    const options = painterOptions([
-      bucket(3, 0, { placed: 10, correct: 2 }),
-      bucket(2, 0, { placed: 5, correct: 5 }),
-      bucket(1, 0, { placed: 10, correct: 2 }),
-      bucket(4, 0, { placed: 20, correct: 2 }),
-      bucket(2, 60, { placed: 1, correct: 1, repairs: 1 }),
-    ])
-    expect(options.map((painter) => painter.wplaceUserId)).toEqual([2, 4, 1, 3])
-    expect(options[0]).toEqual({
-      wplaceUserId: 2,
-      displayName: 'painter 2',
-      placed: 6,
-      correct: 6,
-      repairs: 1,
-    })
-  })
-
-  it('only lists painters the server served buckets for', () => {
-    expect(painterOptions([])).toEqual([])
-    expect(painterOptions([bucket(7, 0, { placed: 1 })]).map((p) => p.wplaceUserId)).toEqual([7])
-  })
-
-  it('labels a painter by name and falls back to the id', () => {
-    const [named] = painterOptions([bucket(1, 0, {}, 'Ada')])
-    expect(named && painterLabel(named)).toBe('Ada')
-    expect(painterLabel({ wplaceUserId: 1, displayName: '' })).toBe('user 1')
-  })
+  placed: 1,
+  correct: 1,
+  repairs: 0,
 })
 
 describe('selection', () => {
-  const crowd = Array.from({ length: 20 }, (_, index) =>
-    bucket(index + 1, 0, { placed: 100 - index, correct: 100 - index }),
-  )
-
-  it('picks a bounded set of leading painters', () => {
-    const visible = defaultVisiblePainters(painterOptions(crowd))
-    expect([...visible]).toEqual([1, 2, 3, 4, 5])
-    expect(defaultVisiblePainters(painterOptions(crowd), 2)).toEqual(new Set([1, 2]))
+  it('picks a bounded set of leading painters in the order the server listed them', () => {
+    const crowd = Array.from({ length: 20 }, (_, index) => painter(index + 1))
+    expect([...defaultVisiblePainters(crowd)]).toEqual([1, 2, 3, 4, 5])
+    expect(defaultVisiblePainters(crowd, 2)).toEqual(new Set([1, 2]))
+    expect(defaultVisiblePainters([])).toEqual(new Set())
   })
 
-  it('keeps only the drawn painters’ buckets', () => {
-    expect(
-      bucketsForPainters({ buckets: crowd }, new Set([3, 17])).map((b) => b.wplaceUserId),
-    ).toEqual([3, 17])
+  it('labels a painter by name and falls back to the id', () => {
+    expect(painterLabel(painter(1, 'Ada'))).toBe('Ada')
+    expect(painterLabel({ wplaceUserId: 1, displayName: '' })).toBe('user 1')
   })
 })
 
@@ -85,12 +40,8 @@ describe('fuzzy search', () => {
     expect(fuzzyScore('', 'anyone')).toBe(0)
   })
 
-  it('ranks painters by name or id and keeps leaderboard order for an empty query', () => {
-    const options = painterOptions([
-      bucket(900, 0, { placed: 3, correct: 3 }, 'Bo'),
-      bucket(42, 0, { placed: 2, correct: 2 }, 'Ada'),
-      bucket(7, 0, { placed: 1, correct: 1 }, 'Cyd'),
-    ])
+  it('ranks painters by name or id and keeps the server order for an empty query', () => {
+    const options = [painter(900, 'Bo'), painter(42, 'Ada'), painter(7, 'Cyd')]
     expect(rankPainters(options, '').map((p) => p.displayName)).toEqual(['Bo', 'Ada', 'Cyd'])
     expect(rankPainters(options, 'ad').map((p) => p.displayName)).toEqual(['Ada'])
     expect(rankPainters(options, '90').map((p) => p.wplaceUserId)).toEqual([900])

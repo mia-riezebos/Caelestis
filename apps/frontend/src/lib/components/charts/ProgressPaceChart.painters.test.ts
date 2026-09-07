@@ -1,8 +1,14 @@
 // @vitest-environment happy-dom
-import { type HistoryBucket, type PainterHistoryBucket, seconds } from '@caelestis/shared'
+import {
+  type HistoryBucket,
+  type PainterHistoryBucket,
+  type PainterTotal,
+  seconds,
+} from '@caelestis/shared'
 import { flushSync, mount, unmount } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProgressPaceChart from './ProgressPaceChart.svelte'
+import type { PainterHistorySource } from './progress-pace.js'
 
 const HOUR = 3_600
 const TO = 24 * HOUR
@@ -37,11 +43,19 @@ const templateBucket = (bucketStart: number, placed = 5): HistoryBucket => ({
   repairs: 0,
 })
 
+const painter = (wplaceUserId: number, displayName = `Painter ${wplaceUserId}`): PainterTotal => ({
+  wplaceUserId,
+  displayName,
+  placed: 100 - wplaceUserId,
+  correct: 100 - wplaceUserId,
+  repairs: 0,
+})
+
 const painterBucket = (
   wplaceUserId: number,
   bucketStart: number,
   counts: Partial<Pick<PainterHistoryBucket, 'placed' | 'correct' | 'repairs'>> = {},
-  displayName = `painter ${wplaceUserId}`,
+  displayName = `Painter ${wplaceUserId}`,
 ): PainterHistoryBucket => ({
   templateId: 'template',
   wplaceUserId,
@@ -53,7 +67,22 @@ const painterBucket = (
   repairs: counts.repairs ?? 1,
 })
 
-const mountChart = (painters: readonly PainterHistoryBucket[]): void => {
+/** The same retained source for every enabled window, as the panel would fetch it. */
+const sources = (
+  windows: readonly ('1h' | '6h')[],
+  buckets: readonly PainterHistoryBucket[],
+): PainterHistorySource[] =>
+  windows.map((window) => ({
+    window,
+    history: { resolution: 900, coverageStart: seconds(0), buckets },
+  }))
+
+const mountChart = (props: {
+  painters?: readonly PainterTotal[]
+  selectedPainters?: ReadonlySet<number>
+  onTogglePainter?: (wplaceUserId: number) => void
+  painterHistories?: readonly PainterHistorySource[]
+}): void => {
   mounted = mount(ProgressPaceChart, {
     target: document.body,
     props: {
@@ -63,7 +92,7 @@ const mountChart = (painters: readonly PainterHistoryBucket[]): void => {
       to: TO,
       anchorCorrect: 10,
       anchorMismatched: 0,
-      painterHistory: { resolution: 900, coverageStart: seconds(0), buckets: painters },
+      ...props,
     },
   })
   flushSync()
@@ -91,30 +120,34 @@ const search = (): HTMLInputElement => {
 }
 
 describe('painter lines', () => {
-  it('draws the leading painters for every enabled window on the shared axis', () => {
+  it('draws the selected painters for every enabled window on the shared axis', () => {
     stored.set('caelestis:pace-windows', JSON.stringify(['1h', '6h']))
-    const crowd = Array.from({ length: 7 }, (_, index) =>
-      painterBucket(index + 1, 6 * HOUR, { placed: 100 - index, correct: 100 - index }),
-    )
-    mountChart(crowd)
+    const crowd = [1, 2, 3, 4, 5, 6, 7].map((id) => painter(id))
+    mountChart({
+      painters: crowd,
+      selectedPainters: new Set([1, 2, 3]),
+      painterHistories: sources(
+        ['1h', '6h'],
+        [1, 2, 3].map((id) => painterBucket(id, 6 * HOUR)),
+      ),
+    })
 
-    expect(lines().sort()).toEqual([1, 2, 3, 4, 5].flatMap((id) => [`${id}:1h`, `${id}:6h`]).sort())
+    expect(lines().sort()).toEqual([1, 2, 3].flatMap((id) => [`${id}:1h`, `${id}:6h`]).sort())
     const line = document.querySelector('path[data-painter-line="1"][data-pace-window="1h"]')
     expect(line?.getAttribute('stroke')).toMatch(/^oklch\(var\(--painter-l\)/)
     expect(line?.getAttribute('d')).toMatch(/^M/)
-    expect(chart().getAttribute('aria-label')).toContain('5 of 7 painters')
+    expect(chart().getAttribute('aria-label')).toContain('3 of 7 painters')
   })
 
-  it('follows the window toggles and the metric switch', () => {
-    stored.set('caelestis:pace-windows', JSON.stringify(['1h']))
-    mountChart([painterBucket(1, 6 * HOUR, { placed: 8, correct: 2, repairs: 0 })])
+  it('draws a window only from its own retained source and follows the metric switch', () => {
+    stored.set('caelestis:pace-windows', JSON.stringify(['1h', '6h']))
+    mountChart({
+      painters: [painter(1)],
+      selectedPainters: new Set([1]),
+      painterHistories: sources(['1h'], [painterBucket(1, 6 * HOUR, { placed: 8, correct: 2 })]),
+    })
     expect(lines()).toEqual(['1:1h'])
     const placedPath = document.querySelector('path[data-painter-line="1"]')?.getAttribute('d')
-
-    const toggle = document.querySelector<HTMLButtonElement>('button[data-pace-toggle="6h"]')
-    toggle?.click()
-    flushSync()
-    expect(lines().sort()).toEqual(['1:1h', '1:6h'])
 
     document.querySelector<HTMLButtonElement>('button[data-painter-metric="correct"]')?.click()
     flushSync()
@@ -127,7 +160,14 @@ describe('painter lines', () => {
 
   it('announces each painter’s pace on the keyboard walk and lists it in the tooltip', () => {
     stored.set('caelestis:pace-windows', JSON.stringify(['1h']))
-    mountChart([painterBucket(1, 6 * HOUR, { placed: 60, correct: 60, repairs: 0 }, 'Ada')])
+    mountChart({
+      painters: [painter(1, 'Ada')],
+      selectedPainters: new Set([1]),
+      painterHistories: sources(
+        ['1h'],
+        [painterBucket(1, 6 * HOUR, { placed: 60, correct: 60 }, 'Ada')],
+      ),
+    })
     key({ key: 'ArrowLeft' })
     expect(announced()).toContain('Ada 1h placed pixels')
     expect(document.body.textContent).toContain('Ada 1h')
@@ -135,12 +175,21 @@ describe('painter lines', () => {
   })
 
   it('keeps a painter’s colour when the scope reorders them', async () => {
-    mountChart([painterBucket(2, HOUR), painterBucket(3, HOUR, { placed: 9, correct: 9 })])
+    stored.set('caelestis:pace-windows', JSON.stringify(['1h']))
+    mountChart({
+      painters: [painter(3), painter(2)],
+      selectedPainters: new Set([2, 3]),
+      painterHistories: sources(['1h'], [painterBucket(2, HOUR), painterBucket(3, HOUR)]),
+    })
     const stroke = document.querySelector('path[data-painter-line="2"]')?.getAttribute('stroke')
     if (mounted !== null) await unmount(mounted)
     mounted = null
     document.body.replaceChildren()
-    mountChart([painterBucket(2, HOUR, { placed: 50, correct: 50 })])
+    mountChart({
+      painters: [painter(2)],
+      selectedPainters: new Set([2]),
+      painterHistories: sources(['1h'], [painterBucket(2, HOUR)]),
+    })
     expect(document.querySelector('path[data-painter-line="2"]')?.getAttribute('stroke')).toBe(
       stroke,
     )
@@ -148,15 +197,17 @@ describe('painter lines', () => {
 
   it('offers the painters in a searchable picker whose rows toggle', async () => {
     stored.set('caelestis:pace-windows', JSON.stringify(['1h']))
-    const crowd = Array.from({ length: 8 }, (_, index) =>
-      painterBucket(
-        index + 1,
-        6 * HOUR,
-        { placed: 100 - index, correct: 100 - index },
-        `Painter ${index + 1}`,
+    const onTogglePainter = vi.fn()
+    const crowd = [1, 2, 3, 4, 5, 6, 7, 8].map((id) => painter(id))
+    mountChart({
+      painters: [...crowd, painter(42, 'Ada Lovelace')],
+      selectedPainters: new Set([1, 2, 3, 4, 5]),
+      onTogglePainter,
+      painterHistories: sources(
+        ['1h'],
+        [1, 2, 3, 4, 5].map((id) => painterBucket(id, 6 * HOUR)),
       ),
-    )
-    mountChart([...crowd, painterBucket(42, 6 * HOUR, { placed: 1, correct: 1 }, 'Ada Lovelace')])
+    })
     expect(lines()).toHaveLength(5)
 
     const input = search()
@@ -177,23 +228,12 @@ describe('painter lines', () => {
       .querySelector('[data-painter-option="42"]')
       ?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse' }))
     flushSync()
-    await vi.waitFor(() => expect(lines()).toContain('42:1h'))
-    expect(lines()).toHaveLength(6)
+    await vi.waitFor(() => expect(onTogglePainter).toHaveBeenCalledWith(42))
+    expect(onTogglePainter).toHaveBeenCalledTimes(1)
   })
 
-  it('draws nothing painter-specific without painter history', () => {
-    mounted = mount(ProgressPaceChart, {
-      target: document.body,
-      props: {
-        buckets: [templateBucket(0)],
-        resolution: 900,
-        from: 0,
-        to: TO,
-        anchorCorrect: 5,
-        anchorMismatched: 0,
-      },
-    })
-    flushSync()
+  it('draws nothing painter-specific without painters', () => {
+    mountChart({})
     expect(document.querySelector('[data-painter-search]')).toBeNull()
     expect(lines()).toEqual([])
   })

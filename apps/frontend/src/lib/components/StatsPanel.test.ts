@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   getHistory: vi.fn(),
   getLeaderboard: vi.fn(),
   getPainterHistory: vi.fn(),
+  getPainterTotals: vi.fn(),
 }))
 const live = vi.hoisted(() => ({ subscribe: vi.fn() }))
 
@@ -50,6 +51,7 @@ beforeEach(() => {
   api.getContributions.mockReset().mockResolvedValue({ days: [] })
   api.getLeaderboard.mockReset().mockResolvedValue({ entries: [] })
   api.getPainterHistory.mockReset().mockResolvedValue({ buckets: [] })
+  api.getPainterTotals.mockReset().mockResolvedValue({ painters: [] })
   live.subscribe.mockReset().mockReturnValue(() => undefined)
 })
 
@@ -270,22 +272,41 @@ describe('painter pace', () => {
         { templateId: 'live', resolution: 900, bucketStart, placed: 4, correct: 4, repairs: 0 },
       ],
     })
-    api.getPainterHistory.mockResolvedValue({
-      resolution: 900,
-      coverageStart: seconds(0),
-      buckets: [
-        {
+    const painter = (wplaceUserId: number, displayName: string, placed: number) => ({
+      wplaceUserId,
+      displayName,
+      placed,
+      correct: placed,
+      repairs: 0,
+    })
+    // Seven painters: the leading five draw by default, the others wait in the picker.
+    api.getPainterTotals.mockResolvedValue({
+      painters: [
+        painter(5, 'Ada', 70),
+        painter(6, 'Bo', 60),
+        painter(7, 'Cyd', 50),
+        painter(8, 'Dee', 40),
+        painter(9, 'Eli', 30),
+        painter(10, 'Fen', 20),
+        painter(11, 'Gus', 10),
+      ],
+    })
+    api.getPainterHistory.mockImplementation((_ids, painters: readonly number[]) =>
+      Promise.resolve({
+        resolution: 900,
+        coverageStart: seconds(0),
+        buckets: painters.map((wplaceUserId) => ({
           templateId: 'live',
-          wplaceUserId: 5,
-          displayName: 'Ada',
+          wplaceUserId,
+          displayName: `painter ${wplaceUserId}`,
           resolution: 900,
           bucketStart,
           placed: 3,
           correct: 3,
           repairs: 0,
-        },
-      ],
-    })
+        })),
+      }),
+    )
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
@@ -298,23 +319,47 @@ describe('painter pace', () => {
     })
     flushSync()
 
-    // One coarse read for the picker, then one retained tier per enabled window (1h and 6h).
-    await vi.waitFor(() => expect(api.getPainterHistory).toHaveBeenCalledTimes(3))
-    expect(api.getPainterHistory.mock.calls.map((call) => call[3]?.maxResolution).sort()).toEqual(
-      [10_800, 1_800, 21_600].sort(),
+    // One bounded list of painters for the scope, then one retained tier per enabled window (1h
+    // and 6h) for the selected painters only.
+    await vi.waitFor(() => expect(api.getPainterTotals).toHaveBeenCalledTimes(1))
+    expect(api.getPainterTotals.mock.calls[0]?.[3]).toEqual({ limit: 500 })
+    await vi.waitFor(() => expect(api.getPainterHistory).toHaveBeenCalledTimes(2))
+    expect(api.getPainterHistory.mock.calls.map((call) => call[4]?.maxResolution).sort()).toEqual(
+      [10_800, 1_800].sort(),
     )
+    expect(api.getPainterHistory.mock.calls[0]?.[1]).toEqual([5, 6, 7, 8, 9])
     await vi.waitFor(() =>
       expect(
         document.querySelector('path[data-painter-line="5"][data-pace-window="1h"]'),
       ).not.toBeNull(),
     )
     expect(
-      document.querySelector('path[data-painter-line="5"][data-pace-window="6h"]'),
-    ).not.toBeNull()
+      document.querySelectorAll('path[data-painter-line][data-pace-window="6h"]'),
+    ).toHaveLength(5)
+    expect(document.querySelector('path[data-painter-line="10"]')).toBeNull()
     expect(document.querySelector('[data-painter-search]')).not.toBeNull()
     expect(api.getContributions).not.toHaveBeenCalled()
     // The heatmap read stays sixteen weeks: painter pace no longer rides on contribution days.
     expect(live.subscribe.mock.calls[0]?.[1]).toBe(NOW_SECONDS - 86_400 * 7 * 16)
+
+    // Choosing another painter fetches the windows again for the new selection.
+    const input = document.querySelector<HTMLInputElement>('[data-painter-search]')
+    input?.focus()
+    input?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }))
+    if (input !== null) input.value = 'fen'
+    input?.dispatchEvent(new Event('input', { bubbles: true }))
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-painter-option="10"]')).not.toBeNull(),
+    )
+    document
+      .querySelector('[data-painter-option="10"]')
+      ?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse' }))
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.querySelector('path[data-painter-line="10"]')).not.toBeNull(),
+    )
+    expect(api.getPainterHistory.mock.calls.at(-1)?.[1]).toEqual([5, 6, 7, 8, 9, 10])
   })
 
   it('draws the template lines alone when the server has no painter buckets', async () => {
@@ -330,6 +375,7 @@ describe('painter pace', () => {
         },
       ],
     })
+    api.getPainterTotals.mockRejectedValue(new Error('404'))
     api.getPainterHistory.mockRejectedValue(new Error('404'))
     mounted = mount(StatsPanel, {
       target: document.body,

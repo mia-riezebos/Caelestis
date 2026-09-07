@@ -4,7 +4,7 @@
     ContributionDay,
     HistoryBucket,
     LeaderboardEntry,
-    PainterHistoryResponse,
+    PainterTotal,
     Template,
   } from '@caelestis/shared'
   import {
@@ -12,8 +12,13 @@
     getHistory,
     getLeaderboard,
     getPainterHistory,
+    getPainterTotals,
   } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
+  import {
+    defaultVisiblePainters,
+    MAX_PAINTER_OPTIONS,
+  } from '$lib/components/charts/painter-pace'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
     PACE_WINDOWS,
@@ -75,9 +80,25 @@
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   /** The rolling pace windows the chart draws; shared so painter lines are fetched for the same. */
   const storedWindows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h'])
-  /** Every painter's buckets at the coarsest useful tier: the picker's list and the default set. */
-  let painterHistory = $state<PainterHistoryResponse | null>(null)
-  /** Per-painter retained tiers for each enabled rolling window, like `paceHistories`. */
+  /** Who painted in the scope, leading first: the picker's list and the source of the default set. */
+  let painters = $state<readonly PainterTotal[]>([])
+  // The leading painters draw by default. The picker records an override per painter, so the
+  // default set can shift with the data without undoing anyone's choices.
+  let painterOverrides = $state<Record<number, boolean>>({})
+  const defaultPainters = $derived(defaultVisiblePainters(painters))
+  const painterShown = (wplaceUserId: number): boolean =>
+    painterOverrides[wplaceUserId] ?? defaultPainters.has(wplaceUserId)
+  const selectedPainters = $derived(
+    new Set(
+      painters
+        .filter((painter) => painterShown(painter.wplaceUserId))
+        .map((painter) => painter.wplaceUserId),
+    ),
+  )
+  const togglePainter = (wplaceUserId: number): void => {
+    painterOverrides = { ...painterOverrides, [wplaceUserId]: !painterShown(wplaceUserId) }
+  }
+  /** The selected painters' retained tiers for each enabled rolling window, like `paceHistories`. */
   let painterHistories = $state<readonly PainterHistorySource[]>([])
   let failed = $state(false)
   let historyScope: string | undefined
@@ -183,32 +204,55 @@
     }
   })
 
-  // Painter lines read the same ladder as the template lines: one coarse pass for the picker and
-  // the default set, and one retained tier per enabled rolling window. A window nobody enabled is
-  // never fetched, so a crowded server pays for what it draws.
+  // Who painted is one bounded list per scope, summed by the server, refreshed on its own slow
+  // clock. Painter lines then read the same ladder as the template lines: one retained tier per
+  // enabled rolling window, for the selected painters only. A window nobody enabled and a painter
+  // nobody chose are never fetched, so a crowded server pays for what it draws.
+  const PAINTERS_REFRESH_MS = 5 * 60_000
   let painterScope: string | undefined
   $effect(() => {
     if (templateIds.length === 0) return
+    const ids = [...templateIds]
     const generation = { cancelled: false }
-    const scope = `${templateIds.join('\0')}:${from}`
+    const scope = `${ids.join('\0')}:${from}`
     if (painterScope !== scope) {
       painterScope = scope
-      painterHistory = null
+      painters = []
+      painterOverrides = {}
       painterHistories = []
     }
+    const refresh = (): void => {
+      const requestedAt = Math.floor(Date.now() / 1_000) + 1
+      getPainterTotals(ids, from, requestedAt, { limit: MAX_PAINTER_OPTIONS })
+        .then((response) => {
+          if (!generation.cancelled) painters = response.painters
+        })
+        .catch(() => {
+          // A server without painter buckets still draws the template lines.
+        })
+    }
+    refresh()
+    const interval = setInterval(refresh, PAINTERS_REFRESH_MS)
+    return () => {
+      generation.cancelled = true
+      clearInterval(interval)
+    }
+  })
+
+  $effect(() => {
+    if (templateIds.length === 0) return
+    const generation = { cancelled: false }
     const enabled = new Set(storedWindows.value)
-    getPainterHistory(templateIds, from, to, { maxResolution: 21_600 })
-      .then((response) => {
-        if (!generation.cancelled) painterHistory = response
-      })
-      .catch(() => {
-        // A server without painter buckets still draws the template lines.
-      })
+    const chosen = [...selectedPainters]
+    if (chosen.length === 0) {
+      painterHistories = []
+      return
+    }
     Promise.all(
       PACE_WINDOWS.filter((window) => enabled.has(window.key)).map(
         async (window): Promise<PainterHistorySource | null> => {
           try {
-            const history = await getPainterHistory(templateIds, from, to, {
+            const history = await getPainterHistory(templateIds, chosen, from, to, {
               maxResolution: window.seconds / 2,
             })
             return { window: window.key, history }
@@ -281,7 +325,9 @@
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
         live={templates.some((template) => template.finishedAt === null)}
-        {painterHistory}
+        {painters}
+        {selectedPainters}
+        onTogglePainter={togglePainter}
         {painterHistories}
         windows={storedWindows}
       />

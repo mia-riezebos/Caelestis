@@ -5,7 +5,6 @@
     formatPixels,
     type HistoryBucket,
     type PainterHistoryBucket,
-    type PainterHistoryResponse,
   } from '@caelestis/shared'
   import { untrack } from 'svelte'
   import { cubicOut } from 'svelte/easing'
@@ -13,13 +12,11 @@
   import { fade, type TransitionConfig } from 'svelte/transition'
   import { type Persisted, persisted } from '$lib/persisted.svelte'
   import {
-    defaultVisiblePainters,
     PAINTER_METRICS,
     type PainterMetric,
     type PainterOption,
     painterColour,
     painterLabel,
-    painterOptions,
   } from '$lib/components/charts/painter-pace'
   import PainterPicker from '$lib/components/charts/PainterPicker.svelte'
   import {
@@ -50,16 +47,21 @@
     anchorCorrect,
     anchorMismatched,
     live = false,
-    painterHistory = null,
+    painters = [],
+    selectedPainters = new Set<number>(),
+    onTogglePainter = () => {},
     painterHistories = [],
     windows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h']),
   }: {
     buckets: readonly HistoryBucket[]
     /** One server-selected retained source for each rolling window. */
     paceHistories?: readonly PaceHistorySource[]
-    /** Every painter's buckets over the range at a coarse tier: the picker and the default set. */
-    painterHistory?: PainterHistoryResponse | null
-    /** Per-painter retained sources for the enabled rolling windows, like `paceHistories`. */
+    /** Who painted in the range, leading first: the picker's list. */
+    painters?: readonly PainterOption[]
+    /** The painters being drawn; whoever fetches `painterHistories` owns this. */
+    selectedPainters?: ReadonlySet<number>
+    onTogglePainter?: (wplaceUserId: number) => void
+    /** The selected painters' retained sources for the enabled rolling windows. */
     painterHistories?: readonly PainterHistorySource[]
     /** The enabled rolling windows, shared with whoever fetches the painter sources. */
     windows?: Persisted<string[]>
@@ -153,7 +155,8 @@
   // Painter buckets are written per report while template buckets wait for the counter flush, so
   // the plot also opens when only painters have reported yet.
   const hasActivity = $derived(
-    points.some((p) => p.placed > 0) || (painterHistory?.buckets.length ?? 0) > 0,
+    points.some((p) => p.placed > 0) ||
+      painterHistories.some((source) => source.history.buckets.length > 0),
   )
 
   // ── Time window ──────────────────────────────────────────────────────────────────────────────
@@ -261,23 +264,6 @@
   const painterMetricNoun = $derived(
     PAINTER_METRICS.find((candidate) => candidate.key === painterMetric)?.noun ?? painterMetric,
   )
-  const painters = $derived(painterOptions(painterHistory?.buckets ?? []))
-  // The leading painters draw by default. The picker records an override per painter, so the
-  // default set can shift with the data without undoing anyone's choices.
-  const defaultPainters = $derived(defaultVisiblePainters(painters))
-  let painterOverrides = $state<Record<number, boolean>>({})
-  const painterShown = (wplaceUserId: number): boolean =>
-    painterOverrides[wplaceUserId] ?? defaultPainters.has(wplaceUserId)
-  const selectedPainters = $derived(
-    new Set(
-      painters
-        .filter((painter) => painterShown(painter.wplaceUserId))
-        .map((painter) => painter.wplaceUserId),
-    ),
-  )
-  const togglePainter = (wplaceUserId: number): void => {
-    painterOverrides = { ...painterOverrides, [wplaceUserId]: !painterShown(wplaceUserId) }
-  }
   /** The painter under the picker's pointer or keyboard, drawn on top with the others dimmed. */
   let spotlightPainter = $state<number | null>(null)
 
@@ -313,21 +299,19 @@
     readonly fullSeries: PaceRatePoint[]
   }
 
-  // Each enabled window takes the coarse painter history when that tier can express it and the
-  // window's own retained tier otherwise, mirroring how the template lines pick their source.
+  // Each enabled window draws from its own retained painter source, fetched for the selected
+  // painters only, at the tier the template line for that window would use.
   const painterLines = $derived.by<PainterLine[]>(() => {
     const lines: PainterLine[] = []
     PACE_WINDOWS.forEach((pace, index) => {
       if (!enabledWindows.has(pace.key)) return
-      const retained = painterHistories.find((source) => source.window === pace.key)?.history
-      const source =
-        painterHistory?.resolution !== undefined &&
-        windowUsable(pace.seconds, painterHistory.resolution)
-          ? painterHistory
-          : retained?.resolution !== undefined && windowUsable(pace.seconds, retained.resolution)
-            ? retained
-            : null
-      if (source?.resolution === undefined || source.coverageStart === undefined) return
+      const source = painterHistories.find((candidate) => candidate.window === pace.key)?.history
+      if (
+        source?.resolution === undefined ||
+        source.coverageStart === undefined ||
+        !windowUsable(pace.seconds, source.resolution)
+      )
+        return
       for (const painter of painters) {
         if (!selectedPainters.has(painter.wplaceUserId)) continue
         const fullSeries = rollingPaceSeries(
@@ -991,7 +975,7 @@
         <PainterPicker
           options={painters}
           selected={selectedPainters}
-          onToggle={togglePainter}
+          onToggle={onTogglePainter}
           onHover={(wplaceUserId) => {
             spotlightPainter = wplaceUserId
           }}
