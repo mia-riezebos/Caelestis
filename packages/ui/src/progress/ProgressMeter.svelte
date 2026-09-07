@@ -38,7 +38,7 @@
   .completed.alarm { opacity: 0.25; }
   .mismatched { background: var(--caelestis-danger); }
   .unpainted { background: color-mix(in oklch, var(--caelestis-text) 20%, transparent); }
-  .percent { flex: 0 0 auto; font: 700 0.85rem/1 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .percent { flex: 0 0 5ch; min-inline-size: 0; text-align: end; font: 700 0.85rem/1 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
   .percent.small { font-size: 0.625rem; }
   .alarm-text { color: var(--caelestis-danger); }
 </style>
