@@ -7,6 +7,7 @@ import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
 import { PANEL_ID } from './toast.js'
 
 const harness = vi.hoisted(() => ({
+  updatingArtwork: false,
   // Flips `isMoving`, as the real one does the instant it returns — without this every Move test
   // runs against a state production never produces, and the rule that the keyboard belongs to a
   // running placement cannot be observed at all.
@@ -67,6 +68,11 @@ const harness = vi.hoisted(() => ({
   setAppearancePreview: vi.fn(),
   clearAppearancePreview: vi.fn(),
   refreshAllianceManifest: vi.fn(async () => {}),
+}))
+
+vi.mock('../application/update-template-artwork.js', () => ({
+  isUpdatingTemplateArtwork: () => harness.updatingArtwork,
+  requestTemplateArtworkUpdate: vi.fn(),
 }))
 
 beforeAll(() => registerCaelestisUi())
@@ -278,6 +284,7 @@ let render: (rerender: () => void, canvas: HTMLCanvasElement) => void
 const rerender = () => render(rerender, mapCanvas)
 
 beforeEach(async () => {
+  harness.updatingArtwork = false
   document.body.innerHTML = ''
   harness.surfaceAppearance = { ...DEFAULT_APPEARANCE }
   mapCanvas = document.createElement('canvas')
@@ -644,6 +651,25 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
 
     expect((await menuRoot()).textContent).toContain('beta.png')
     expect((await menuRoot()).textContent).not.toContain('alpha.png')
+  })
+
+  it('updates the open artwork action when capture starts and finishes', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const action = async () =>
+      (await menuRoot()).querySelector<HTMLButtonElement>(
+        '[data-caelestis-control="update-artwork"]',
+      )
+    expect((await action())?.disabled).toBe(false)
+    harness.updatingArtwork = true
+    rerender()
+    expect((await action())?.disabled).toBe(true)
+    expect((await action())?.textContent).toContain('Updating')
+    harness.updatingArtwork = false
+    rerender()
+    expect((await action())?.disabled).toBe(false)
   })
 
   it('follows a rename into the menu title and the gear tooltip', async () => {

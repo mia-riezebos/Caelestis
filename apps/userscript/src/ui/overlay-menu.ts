@@ -759,6 +759,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     appearance.otherColour,
     [...(template.owns ?? [])].sort().join('.'),
     confirming.has(id),
+    isUpdatingTemplateArtwork(id),
     isDoomed(id),
     // Drawn — it is Delete's `aria-disabled` — so it is a render input like the rest. A placement
     // beginning or ending while the menu is open otherwise leaves the button announcing the
