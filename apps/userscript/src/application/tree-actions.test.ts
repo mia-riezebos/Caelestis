@@ -75,7 +75,12 @@ import {
   treeActionPresentation,
 } from './tree-actions.js'
 
-const server = { url: 'https://templates.example', isAdmin: true } as ConnectedServer
+const server = {
+  url: 'https://templates.example',
+  isAdmin: true,
+  token: 'admin',
+  status: 'connected',
+} as ConnectedServer
 const target: TreeTarget = {
   server,
   nodeId: 'root',
@@ -164,6 +169,21 @@ it('routes local and server artwork updates to the shared action with surface-qu
     rerender,
   )
   expect(menuText()).not.toContain('Use canvas artwork')
+})
+it.each([
+  { isAdmin: true, token: null },
+  { isAdmin: true, token: 'rejected', tokenUsable: false },
+  { isAdmin: false, token: 'read' },
+  { isAdmin: false, token: 'report' },
+])('hides server artwork actions without a usable admin token: %j', (access) => {
+  openContextMenu(
+    { ...target, server: { ...server, ...access }, templateId: 'template' },
+    new MouseEvent('contextmenu'),
+    vi.fn(),
+  )
+  expect(menuText()).not.toContain('Use canvas artwork')
+  expect(menuText()).not.toContain('Replace artwork')
+  expect(menuText()).toContain('Export .wplace')
 })
 
 it('dispatches a typed menu selection without a DOM-owned action list', () => {

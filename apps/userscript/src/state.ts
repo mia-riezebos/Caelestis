@@ -149,6 +149,10 @@ const retireServerConnection = (server: ConnectedServer): void => {
 export const activeServerToken = (server: ConnectedServer): string | null =>
   server.tokenUsable === false ? null : server.token
 
+/** Whether this connection has a usable token whose admin scope the server has verified. */
+export const hasServerAdminToken = (server: ConnectedServer): boolean =>
+  server.status === 'connected' && server.isAdmin && Boolean(activeServerToken(server))
+
 /** Whether this immutable connection snapshot is still the configured lifetime for its URL. */
 export const isCurrentServerConnection = (server: ConnectedServer): boolean => {
   const current = getState().servers.find((candidate) => candidate.url === server.url)

@@ -91,7 +91,8 @@ vi.mock('../main.js', () => ({
   }),
   screenPointFor: harness.screenPointFor,
 }))
-vi.mock('../state.js', () => ({
+vi.mock('../state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../state.js')>()),
   admittedServerContentsFor: () => ({ nodes: [], templates: harness.serverTemplates }),
   deleteTemplate: harness.deleteServerTemplate,
   getState: () => ({
@@ -670,6 +671,21 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     harness.updatingArtwork = false
     rerender()
     expect((await action())?.disabled).toBe(false)
+  })
+  it('removes the open server artwork action when its admin token is removed', async () => {
+    connectServerTemplate(false)
+    harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
+    rerender()
+    gear('a').click()
+    rerender()
+    expect(
+      (await menuRoot()).querySelector('[data-caelestis-control="update-artwork"]'),
+    ).not.toBeNull()
+    const connected = harness.servers[0]
+    if (connected === undefined) throw new Error('Missing server')
+    connected.token = null
+    rerender()
+    expect((await menuRoot()).querySelector('[data-caelestis-control="update-artwork"]')).toBeNull()
   })
 
   it('follows a rename into the menu title and the gear tooltip', async () => {

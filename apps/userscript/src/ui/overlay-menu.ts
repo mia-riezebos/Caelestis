@@ -30,6 +30,7 @@ import {
   deleteTemplate as deleteTemplateOnServer,
   getState,
   getSurfaceAppearance,
+  hasServerAdminToken,
   listServerContents,
   removeTreeStateKeys,
   uploadTemplateVersion,
@@ -478,7 +479,7 @@ interface ServerActionTarget {
 const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | null => {
   if (!isServerTemplate(template) || template.serverTemplateId === undefined) return null
   const server = getState().servers.find(
-    (candidate) => candidate.url === template.serverUrl && candidate.isAdmin,
+    (candidate) => candidate.url === template.serverUrl && hasServerAdminToken(candidate),
   )
   if (server === undefined) return null
   const surface = template.surface ?? WORLD_TEMPLATE_SURFACE

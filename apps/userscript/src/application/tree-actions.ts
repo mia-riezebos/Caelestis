@@ -27,6 +27,7 @@ import {
   deleteTemplate as deleteTemplateOnServer,
   dismissTemplateAlarm,
   getState,
+  hasServerAdminToken,
   isCurrentServerConnection,
   listServerNodes,
   MAX_LOCAL_FOLDERS,
@@ -1073,7 +1074,7 @@ export const openContextMenu = (
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
-      ? target.server?.isAdmin === false
+      ? target.server === null || !hasServerAdminToken(target.server)
         ? [['download', 'Export .wplace', () => void exportTemplate(target)]]
         : [
             ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
@@ -1111,9 +1112,7 @@ export const openContextMenu = (
                     void setServerTemplateLifecycle(target, { timelapseFrozen: true }, rerender),
                 ],
             ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
-            ...(target.server?.isAdmin === true
-              ? [['reset', 'Use canvas artwork', updateArtwork] as const]
-              : []),
+            ['reset', 'Use canvas artwork', updateArtwork],
             rename,
             remove,
           ]
