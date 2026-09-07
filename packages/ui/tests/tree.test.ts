@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from 'svelte'
+import { flushSync, mount, tick, unmount } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TemplateTree from '../src/tree/TemplateTree.svelte'
 import type { TemplateTreeModel } from '../src/types.js'
@@ -60,6 +60,41 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
+  it('shows grid progress and colours in a separate pane and returns focus on Escape', async () => {
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: { model: { ...model, displayMode: 'grid' }, allowGrid: true },
+    })
+    flushSync()
+    const card = document.querySelector('[data-caelestis-tree-key="local:city"]')
+    const trigger = card?.querySelector<HTMLButtonElement>('[aria-label="View progress"]')
+    if (trigger === null || trigger === undefined) throw new Error('missing progress control')
+    trigger.click()
+    await tick()
+    await tick()
+    const pane = document.querySelector('[aria-label="Progress for City"]')
+    expect(pane?.querySelector('h3')?.textContent).toBe('City')
+    expect(pane?.textContent).toContain('Complete')
+    expect(pane?.textContent).toContain('Mismatched')
+    expect(pane?.textContent).toContain('Black')
+    expect(card?.querySelector('.progress-detail')).toBeNull()
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close progress')
+    const escapeKey = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    })
+    document.activeElement?.dispatchEvent(escapeKey)
+    await tick()
+    await tick()
+    expect(escapeKey.defaultPrevented).toBe(true)
+    expect(document.querySelector('[aria-label="Progress for City"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    void unmount(component)
+  })
+
   it.each(['tree', 'grid'] as const)(
     'preserves row order, focus, and core actions in %s mode',
     (displayMode) => {

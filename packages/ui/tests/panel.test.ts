@@ -232,7 +232,9 @@ describe('panel shell', () => {
       await tick()
       expect(root.querySelector('[data-caelestis-tree-key="art"]')).toBe(row)
       expect(row.getAttribute('aria-current')).toBe('true')
-      expect(row.querySelector('[aria-label="Collapse progress"]')).not.toBeNull()
+      expect(row.querySelector('[aria-label="Collapse progress"]') !== null).toBe(
+        displayMode === 'tree',
+      )
       expect(row.classList.contains('preview-card')).toBe(displayMode === 'grid')
     }
   })

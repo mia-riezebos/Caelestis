@@ -3,6 +3,7 @@
   import Button from '../foundations/Button.svelte'
   import SortMenu from './SortMenu.svelte'
   import TemplatePreview from './TemplatePreview.svelte'
+  import ProgressDetails from './ProgressDetails.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import TemplateLifecycle from '../template-state/TemplateLifecycle.svelte'
@@ -26,6 +27,9 @@
   let dropTarget = $state<{ key: string; position: 'before' | 'inside' | 'after' } | null>(null)
   let treeElement = $state<HTMLElement>()
   let contextMenuElement = $state<HTMLElement>()
+  let progressKey = $state<string | null>(null)
+  let progressPane = $state<HTMLElement>()
+  let browserWidth = $state(0)
   const disclosures = new SvelteMap<string, 'expanded' | 'colours'>()
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   let admittedQuery = ''
@@ -35,6 +39,21 @@
   let menuInvoker: HTMLElement | null = null
   let operationSelection = $state('')
   const grid = $derived(allowGrid && model.displayMode === 'grid')
+  const progressEntry = $derived(model.entries.find((entry): entry is TreeRowModel => entry.type === 'row' && entry.key === progressKey && entry.progress !== undefined))
+  const minimumSplitWidth = 672
+  const narrowDetails = $derived(browserWidth < minimumSplitWidth)
+  $effect(() => { if (!grid || progressEntry === undefined) progressKey = null })
+
+  const showProgress = async (entry: TreeRowModel): Promise<void> => {
+    progressKey = entry.key
+    await tick()
+    progressPane?.querySelector<HTMLButtonElement>('button')?.focus()
+  }
+  const closeProgress = (): void => {
+    const key = progressKey
+    progressKey = null
+    if (key !== null) void focusRowAction(key, 'View progress')
+  }
   const folderPaths = $derived.by(() => {
     const paths = new Map<string, string>()
     for (const entry of model.entries) {
@@ -226,6 +245,9 @@
     } else if (model.operation !== undefined && model.operation.cancellable !== false) {
       event.preventDefault()
       emit({ type: 'tree-operation-cancel', operationId: model.operation.id })
+    } else if (progressKey !== null) {
+      event.preventDefault()
+      closeProgress()
     }
   }
 
@@ -316,13 +338,14 @@
   </div>
 {/if}
 
-<div class="scroller" data-caelestis-scroller>
+<div class="browser" bind:clientWidth={browserWidth}>
+<div class="scroller" data-caelestis-scroller inert={progressEntry !== undefined && narrowDetails}>
   <div bind:this={treeElement} class="tree" class:preview-grid={grid} role="tree" aria-label="Templates" tabindex="-1" ondrop={drop} ondragend={endDrag}>
     {#each model.entries as entry (entry.key)}
       {#if entry.type === 'row'}
         {@const requestedDisclosure = disclosures.get(entry.key)}
         {@const canShowExpandedProgress = entry.progress !== undefined && (!entry.container || entry.expanded)}
-        {@const disclosure = !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
+        {@const disclosure = grid || !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
         {@const tallHeading = entry.progress !== undefined || (entry.actions?.length ?? 0) > 0 || (entry.leadingActions?.length ?? 0) > 0}
         {@const connectorWidth = (entry.branches?.length ?? 0) * branchIndent + (entry.container ? 0 : leafHeadingIndent)}
         {@const progressDetailOffset = entry.container ? leafHeadingIndent : 0}
@@ -411,7 +434,7 @@
                       <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
                     </button>
                   {/each}
-                  <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
+                  <button class="icon-action" type="button" title={grid ? 'View progress' : 'Expand progress'} aria-label={grid ? 'View progress' : 'Expand progress'} onclick={(event) => { event.stopPropagation(); if (grid) { void showProgress(entry); return }; if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
                   </button>
                 </span>
@@ -423,11 +446,7 @@
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
                   </button>
                 {/each}
-                {#if card && entry.progress !== undefined && disclosure === undefined}
-                  <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
-                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
-                  </button>
-                {:else if entry.progress !== undefined && disclosure !== undefined}
+                {#if entry.progress !== undefined && disclosure !== undefined}
                   <button class="icon-action" type="button" title="Collapse progress" aria-label="Collapse progress" onclick={(event) => { event.stopPropagation(); disclosures.delete(entry.key); void focusRowAction(entry.key, 'Expand progress') }}>
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandLess} /></svg>
                   </button>
@@ -444,8 +463,10 @@
               <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
             </label>
           </div>
-          {#if card && entry.progress !== undefined && disclosure === undefined}
-            <div class="card-progress"><ProgressMeter progress={entry.progress} size="sm" /></div>
+          {#if card && entry.progress !== undefined}
+            <button type="button" class="card-progress" aria-label="View progress" title={`View progress for ${entry.name}`} aria-expanded={progressKey === entry.key} onclick={(event) => { event.stopPropagation(); void showProgress(entry) }}>
+              <ProgressMeter progress={entry.progress} size="sm" /><Icon name="caret" size="0.875rem" />
+            </button>
           {/if}
           {#if disclosure !== undefined && entry.progress !== undefined}
             <div class="progress-detail">
@@ -499,6 +520,14 @@
     {/each}
   </div>
 </div>
+{#if grid && progressEntry?.progress !== undefined}
+  <div class="progress-pane" class:overlaid={narrowDetails} bind:this={progressPane}>
+    {#key progressEntry.key}
+      <ProgressDetails name={progressEntry.name} progress={progressEntry.progress} colours={progressEntry.colourProgress} onClose={closeProgress} />
+    {/key}
+  </div>
+{/if}
+</div>
 
 <style>
   :global(*) { box-sizing: border-box; }
@@ -513,7 +542,10 @@
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
   select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   select { padding-inline: 0.75rem 2rem; }
-  .scroller { flex: 1; min-block-size: 0; overflow: auto; container-type: inline-size; }
+  .browser { position: relative; display: flex; flex: 1; min-block-size: 0; min-inline-size: 0; overflow: hidden; }
+  .scroller { flex: 1; min-block-size: 0; min-inline-size: 0; overflow: auto; container-type: inline-size; }
+  .progress-pane { flex: 0 0 20rem; min-block-size: 0; border-inline-start: 1px solid var(--caelestis-border); background: var(--caelestis-surface); }
+  .progress-pane.overlaid { position: absolute; inset: 0; z-index: 3; border-inline-start: 0; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .row { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
   .row-heading { display: flex; flex-wrap: nowrap; align-items: center; gap: 0.25rem; min-inline-size: 0; white-space: nowrap; }
@@ -624,7 +656,10 @@
   .preview-card .rename { inline-size: 100%; }
   .preview-grid .actions { opacity: 1; pointer-events: auto; }
   .preview-card .progress-detail { padding: 0; }
-  .card-progress :global(.meter-wrap) { inline-size: 100%; }
+  .card-progress { display: flex; align-items: center; gap: 0.375rem; inline-size: 100%; min-block-size: 1.5rem; padding: 0; border: 0; border-radius: 0.25rem; background: transparent; color: inherit; cursor: pointer; }
+  .card-progress:hover { background: var(--caelestis-raised-surface); }
+  .card-progress:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
+  .card-progress :global(.meter-wrap) { flex: 1; }
   .preview-grid .folder-heading .row-tail { display: flex; flex: 0 0 auto; inline-size: auto; }
   .preview-grid .folder-heading .row-tail > .progress { display: none; }
   @container (max-width: 24rem) {
