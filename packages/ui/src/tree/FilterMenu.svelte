@@ -35,6 +35,10 @@
   }
   const options = <Category extends TemplateFilterCategory>(category: Category) =>
     Object.keys(TEMPLATE_FILTER_OPTIONS[category]) as (keyof (typeof TEMPLATE_FILTER_OPTIONS)[Category])[]
+  const clear = (): void => {
+    onFilter(EMPTY_TEMPLATE_FILTERS)
+    menu.querySelector<HTMLInputElement>('input')?.focus()
+  }
   const keydown = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
     event.preventDefault()
@@ -50,7 +54,7 @@
   {#if count > 0}<span class="count" aria-hidden="true">{count}</span>{/if}
 </button>
 <div bind:this={menu} id={menuId} class="filter-menu" popover="auto" role="dialog" aria-label="Filter templates" tabindex="-1" style:left={`${left}px`} style:top={`${top}px`} onbeforetoggle={(event) => open = event.newState === 'open'} onkeydown={keydown} onfocusout={(event) => { if (event.relatedTarget instanceof Node && !menu.contains(event.relatedTarget)) close() }}>
-  <div class="heading"><span>Filters</span><button type="button" disabled={count === 0} onclick={() => onFilter(EMPTY_TEMPLATE_FILTERS)}>Clear filters</button></div>
+  <div class="heading"><span>Filters</span><button type="button" disabled={count === 0} onclick={clear}>Clear filters</button></div>
   {#each categories as category}
     {#if category === 'source' || category === 'visibility' || serverFiltersAvailable || filters[category].length > 0}
       <fieldset>

@@ -29,3 +29,7 @@ The nonmodal popover uses the tree's theme tokens, compact checkboxes, and the s
 Visibility means effective visibility, including ancestor switches. Active means not marked finished; timelapse freezing is independent. Local templates have no server lifecycle or alarm state. Server-only categories appear when a server is connected or a saved choice needs clearing.
 
 The matcher selects templates before rendering and retains only their folder paths. Filters force those paths open without changing saved collapse or custom-order preferences. Grid rendering and tags are outside this change, as confirmed by Mia.
+
+Clear filters returns focus to the first choice before its button becomes disabled. Live Chromium verification caught that focus loss during keyboard activation.
+
+Verified the built userscript on Wplace through background Chromium CDP: search/filter composition, count, clearing, reload persistence, Escape, Tab exit, and outside dismissal. Inspected light and dark popovers at 1280×800 and 360×640. The corrected keyboard Clear sequence preserves search and focuses Local.

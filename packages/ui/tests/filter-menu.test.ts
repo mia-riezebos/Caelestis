@@ -82,9 +82,12 @@ describe('template filter menu', () => {
     })
     expect(trigger.getAttribute('aria-label')).toBe('Filter templates: 5 selected')
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
-    document.querySelector<HTMLButtonElement>('[role="dialog"] button')?.click()
+    const clear = document.querySelector<HTMLButtonElement>('[role="dialog"] button')
+    clear?.focus()
+    clear?.click()
     flushSync()
     expect(filters).toEqual(EMPTY_TEMPLATE_FILTERS)
+    expect(document.activeElement).toBe(inputs[0])
     expect(document.querySelector<HTMLInputElement>('input[type="search"]')?.value).toBe('city')
     inputs[0]?.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
