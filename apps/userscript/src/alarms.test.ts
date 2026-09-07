@@ -125,9 +125,7 @@ describe('userscript alarm notifications', () => {
     expect(harness.badge).toHaveBeenLastCalledWith(0)
   })
 
-  it('uses badge-only behavior while painting and desktop notification while hidden', async () => {
-    const desktop = vi.fn()
-    vi.stubGlobal('GM_notification', desktop)
+  it('uses badge-only behavior while painting or hidden', async () => {
     harness.paintOpen = true
     harness.active = [
       { server: { url: 'https://templates.example' }, template: { name: 'Sky' }, alarm: alarm() },
@@ -136,7 +134,6 @@ describe('userscript alarm notifications', () => {
     installAlarmNotifications()
     expect(harness.badge).toHaveBeenLastCalledWith(1)
     expect(harness.toast).not.toHaveBeenCalled()
-    expect(desktop).not.toHaveBeenCalled()
 
     harness.paintOpen = false
     harness.active = [
@@ -148,9 +145,7 @@ describe('userscript alarm notifications', () => {
     ]
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
     harness.alarmListener?.()
-    expect(desktop).toHaveBeenCalledWith({
-      title: 'Caelestis alarm',
-      text: 'Sky is still being griefed · 13 px lost',
-    })
+    expect(harness.badge).toHaveBeenLastCalledWith(1)
+    expect(harness.toast).not.toHaveBeenCalled()
   })
 })
