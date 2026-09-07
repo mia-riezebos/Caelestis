@@ -31,7 +31,7 @@ Add shared work items to the existing folder and template hierarchy. Mia's final
 ## TODOs
 
 - [x] Add shared work-item contracts and durable storage with atomic mutations and activity history; validate both SQL adapters and migration behavior.
-- [ ] Add authorized work-item operations and live synchronization; validate claim races, permissions, retry behavior, and reconnect recovery.
+- [x] Add authorized work-item operations and live synchronization; validate claim races, permissions, retry behavior, and reconnect recovery.
 - [ ] Add a shared work interface to frontend and userscript folder/template views; validate filtering and the create, claim, release, edit, close, and reopen journeys.
 - [ ] Complete rendered checks and release notes, run required checks, then rebase, push the supplied branch, and file the PR.
 
@@ -49,3 +49,6 @@ Each TODO is one buildable commit, with tests included alongside its behavior. S
 - Existing manifest and database schemas have no template tag model. Work-item tags cover the issue's labels; cross-template tagging is not implicitly part of this change.
 - Grouping and claim identity are confirmed. Filed #285 for the future auth stack and added it as a blocking dependency of #264.
 - Storage validation: 10 focused tests pass, including concurrent claims on memory and D1 adapters and migration/schema parity. The D1 test harness serializes transactions to match D1 execution.
+- API validation: backend typecheck and 41 focused route, storage, manifest recovery, and versioning tests pass. Work changes advance the existing live manifest version without invalidating tile coverage.
+- Git reflog shows an external rename from `t3code/f9062f66` to `t3code/harden-access-token-auth`, before the first commit, at the same base SHA. Continue in this supplied worktree on its current branch.
+- Build the actual UI directly. Use existing Chromium.app through CDP with background tabs and a persistent focus-emulation session; never activate Chromium or switch the user's tab.

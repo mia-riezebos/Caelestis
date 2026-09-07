@@ -30,10 +30,11 @@ const assembleManifestWithSql = async (
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
   const surface = options.surface ?? { kind: 'world', allianceId: null }
-  const [nodeRecords, templateRecords, tileRecords] = await Promise.all([
+  const [nodeRecords, templateRecords, tileRecords, work] = await Promise.all([
     sql.listNodes(options.season, surface),
     sql.listManifestTemplates({ season: options.season, surface }, options.includeUnpublished),
     sql.listManifestTiles({ season: options.season, surface }, options.includeUnpublished),
+    sql.work.list(options.season, surface),
   ])
 
   const nodes = nodeRecords
@@ -158,6 +159,9 @@ const assembleManifestWithSql = async (
     nodes,
     templates,
     tiles,
+    ...(work.length === 0
+      ? {}
+      : { workRevision: work.reduce((sum, item) => sum + item.revision, 0) }),
   }
   const version = await sha256Hex(new TextEncoder().encode(JSON.stringify(unsigned)))
   return { ...unsigned, version }
