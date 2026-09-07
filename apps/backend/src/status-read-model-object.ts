@@ -509,8 +509,14 @@ export class StatusReadModelObject extends DurableObject<Env> {
         this.finishTileGenerationCommit(season, tile, commit),
       notifyDashboardChange: (season) => this.notifyDashboardChange(season),
       notifyAlarmChange: async (season) => {
-        await this.bindings.ALARM_WATCHER.getByName('global').schedule()
-        await this.notifyAlarmChange(season)
+        const results = await Promise.allSettled([
+          this.bindings.ALARM_WATCHER.getByName('global').schedule(),
+          this.notifyAlarmChange(season),
+        ])
+        const errors = results.flatMap((result) =>
+          result.status === 'rejected' ? [result.reason] : [],
+        )
+        if (errors.length > 0) throw new AggregateError(errors, 'Alarm notification failed')
       },
     }
     this.runtime = createBackendRuntime(

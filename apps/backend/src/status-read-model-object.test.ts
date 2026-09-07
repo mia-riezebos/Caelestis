@@ -343,9 +343,14 @@ describe('status read-model Durable Object', () => {
     })
   })
 
-  it.each([false, true])(
-    'schedules v2 tile alarm follow-ups with snapshot failure=%s',
-    async (snapshotFails) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'attempts v2 alarm delivery with snapshot failure=%s and scheduler failure=%s',
+    async (snapshotFails, scheduleFails) => {
       database = new SqliteD1Database()
       const sql = new D1SqlStore(database as unknown as D1Database)
       const blobs = new Map<string, Uint8Array>()
@@ -426,14 +431,23 @@ describe('status read-model Durable Object', () => {
       schedule.mockClear()
       send.mockClear()
       const snapshotError = new Error('alarm snapshot failed')
+      const scheduleError = new Error('alarm schedule failed')
       const readAlarms = vi.spyOn(D1SqlStore.prototype, 'readActiveAlarms')
       const logError = vi.spyOn(console, 'error').mockImplementation(() => {})
       if (snapshotFails) readAlarms.mockRejectedValueOnce(snapshotError)
+      if (scheduleFails) schedule.mockRejectedValueOnce(scheduleError)
 
       await upload(1, at + 1)
 
-      if (snapshotFails)
-        expect(logError).toHaveBeenCalledWith(expect.objectContaining({ cause: snapshotError }))
+      const expectedErrors = [
+        ...(scheduleFails ? [scheduleError] : []),
+        ...(snapshotFails ? [expect.objectContaining({ cause: snapshotError })] : []),
+      ]
+      if (expectedErrors.length > 0) {
+        expect(logError).toHaveBeenCalledWith(expect.objectContaining({ errors: expectedErrors }))
+      } else {
+        expect(logError).not.toHaveBeenCalled()
+      }
       readAlarms.mockRestore()
       expect(await sql.readActiveAlarms(0, false)).toEqual([
         expect.objectContaining({ templateId, kind: 'regression', pixelsLost: 1 }),
