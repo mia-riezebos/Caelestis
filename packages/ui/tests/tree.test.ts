@@ -436,7 +436,7 @@ describe('template tree', () => {
     const rowAction = document.querySelector<HTMLElement>('[aria-label="Import template"]')
     const visibility = document.querySelector<HTMLElement>('.visibility > span')
     expect(getComputedStyle(search as Element).blockSize).toBe('2rem')
-    expect(getComputedStyle(toolbar as Element).margin).toBe('12px 16px 0px')
+    expect(getComputedStyle(toolbar as Element).margin).toBe('12px 16px')
     const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
     expect(getComputedStyle(rowAction as Element).blockSize).toBe('2rem')
     expect(getComputedStyle(row as Element).padding).toBe('4px 8px')
