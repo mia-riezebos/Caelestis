@@ -44,7 +44,7 @@ jobs:
         run: |
           pnpm lint
           pnpm check
-          pnpm test
+          pnpm test --concurrency=1
           pnpm build
 
       - name: Apply backend database migrations
