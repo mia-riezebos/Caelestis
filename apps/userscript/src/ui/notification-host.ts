@@ -8,6 +8,7 @@ import type {
   ToastKind,
   ToastModel,
 } from '@caelestis/ui/elements'
+import { getState } from '../state.js'
 import { applyWplaceTheme } from './theme.js'
 
 export const PANEL_ID = 'caelestis-panel'
@@ -159,12 +160,14 @@ const flushAmbientToasts = (): void => {
     pushToast(toast.message, toast.kind, toast.action)
 }
 
+/** Show panel action feedback; errors and warnings bypass the activity preference. */
 export const showToast = (
   message: string,
   kind: ToastKind = 'info',
   action?: ToastActionModel,
 ): void => {
   if (document.getElementById(PANEL_ID) === null) return
+  if (kind === 'info' && !getState().notifyActivity) return
   pushToast(message, kind, action)
 }
 

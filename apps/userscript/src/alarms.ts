@@ -1,4 +1,5 @@
 import type { Alarm } from '@caelestis/shared'
+import { getState } from './state.js'
 import { activeServerAlarms, onServerAlarmChange } from './telemetry.js'
 import { showAmbientToast } from './ui/notification-host.js'
 import { isWorldTemplatePresented, onWorldTemplateTreeVisible, setAlarmBadge } from './ui/panel.js'
@@ -77,9 +78,15 @@ const syncAlarms = (): void => {
   for (const { server, template, alarm } of current) {
     const fingerprint = alarmFingerprint(server.url, alarm)
     if (known.has(fingerprint) || acknowledged.has(fingerprint)) continue
-    const message = notice(template.name, alarm)
     if (isPaintOpen() || document.visibilityState === 'hidden') continue
-    showAmbientToast(message, 'warning')
+    const preferences = getState()
+    if (
+      alarm.kind === 'sustained-griefing'
+        ? !preferences.notifyGriefing
+        : !preferences.notifyRegressions
+    )
+      continue
+    showAmbientToast(notice(template.name, alarm), 'warning')
   }
   known = fingerprints
 }

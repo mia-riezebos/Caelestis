@@ -16,6 +16,7 @@ const harness = vi.hoisted(() => ({
   paintOpen: false,
   badge: vi.fn(),
   toast: vi.fn(),
+  preferences: { notifyRegressions: true, notifyGriefing: true },
 }))
 const stored = new Map<string, string>()
 
@@ -26,6 +27,7 @@ vi.mock('./telemetry.js', () => ({
     return vi.fn()
   },
 }))
+vi.mock('./state.js', () => ({ getState: () => harness.preferences }))
 vi.mock('./ui/panel.js', () => ({
   isWorldTemplateTreeVisible: () => harness.treeVisible,
   isWorldTemplatePresented: (_server: unknown, templateId: string) =>
@@ -62,6 +64,7 @@ beforeEach(() => {
   harness.treeVisible = false
   harness.excludedTemplates.clear()
   harness.paintOpen = false
+  harness.preferences = { notifyRegressions: true, notifyGriefing: true }
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
 })
 
@@ -91,6 +94,36 @@ describe('userscript alarm notifications', () => {
     expect(harness.badge).toHaveBeenLastCalledWith(0)
     expect(JSON.parse(stored.get('caelestis.acknowledged-alarms.v1') ?? '[]')).toHaveLength(2)
   })
+  it.each(['regression', 'sustained-griefing'] as const)(
+    'mutes %s independently without losing the badge or acknowledgement',
+    async (kind) => {
+      harness.preferences = {
+        notifyRegressions: kind !== 'regression',
+        notifyGriefing: kind !== 'sustained-griefing',
+      }
+      harness.active = (['regression', 'sustained-griefing'] as const).map((candidate) => ({
+        server: { url: 'https://templates.example' },
+        template: { name: 'Sky' },
+        alarm: alarm(candidate),
+      }))
+      const { installAlarmNotifications } = await import('./alarms.js')
+      installAlarmNotifications()
+      expect(harness.badge).toHaveBeenLastCalledWith(2)
+      expect(harness.toast).toHaveBeenCalledExactlyOnceWith(
+        kind === 'regression'
+          ? 'Sky is still being griefed · 13 px lost'
+          : 'Sky regressed · 12 px lost',
+        'warning',
+      )
+      harness.preferences = { notifyRegressions: true, notifyGriefing: true }
+      harness.alarmListener?.()
+      expect(harness.toast).toHaveBeenCalledOnce()
+      harness.treeVisible = true
+      harness.treeListener?.()
+      expect(harness.badge).toHaveBeenLastCalledWith(0)
+      expect(JSON.parse(stored.get('caelestis.acknowledged-alarms.v1') ?? '[]')).toHaveLength(2)
+    },
+  )
 
   it('badges and toasts a new visible alarm, then acknowledges it when the panel opens', async () => {
     harness.active = [

@@ -574,6 +574,10 @@ const settingsModel = (): SettingsModel => {
     colourNavigationOrder: state.colourNavigationOrder,
     reportPaints: state.reportPaints,
     shareTiles: state.shareTiles,
+    notifyRegressions: state.notifyRegressions,
+    notifyGriefing: state.notifyGriefing,
+    notifyUpdates: state.notifyUpdates,
+    notifyActivity: state.notifyActivity,
     debugLogging: isDebugEnabled(),
     performanceProfiling: isProfileEnabled(),
     ...(snapshot === null

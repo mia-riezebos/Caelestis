@@ -23,6 +23,27 @@ afterEach(() => {
 })
 
 describe('server state boundaries', () => {
+  it('restores notification defaults and independently persists category preferences', async () => {
+    let stored = '{}'
+    vi.stubGlobal('GM_getValue', () => stored)
+    vi.stubGlobal('GM_setValue', (_key: string, value: string) => {
+      stored = value
+    })
+    const { loadState, setState } = await import('./state.js')
+    const defaults = {
+      notifyRegressions: true,
+      notifyGriefing: true,
+      notifyUpdates: true,
+      notifyActivity: true,
+    }
+    expect(loadState()).toMatchObject(defaults)
+    for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
+      setState({ ...defaults, [key]: false })
+      expect(loadState()).toMatchObject({ ...defaults, [key]: false })
+    }
+    stored = JSON.stringify({ notifyRegressions: 'false', notifyUpdates: null })
+    expect(loadState()).toMatchObject(defaults)
+  })
   it('round-trips local template claims and rejects invalid stored identities', async () => {
     const claim = { templateId: 'local-art', claimant: { wplaceUserId: 42, displayName: 'Mia' } }
     let stored = JSON.stringify({

@@ -132,6 +132,13 @@
     {#snippet children()}<select aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>{/snippet}
   </SettingRow>
 
+  <SectionHeader title="Notifications" icon="bell" />
+  <p class="subtle">Toast messages inside Wplace only.</p>
+  <SettingRow label="Template regressions" hint="When a template loses progress.">{#snippet children()}<Toggle label="Template regressions" checked={model.notifyRegressions} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyRegressions', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Sustained griefing" hint="When damage to a template continues.">{#snippet children()}<Toggle label="Sustained griefing" checked={model.notifyGriefing} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyGriefing', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Userscript updates" hint="When a new Caelestis version is available.">{#snippet children()}<Toggle label="Userscript updates" checked={model.notifyUpdates} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyUpdates', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Action feedback" hint="Progress and success messages. Errors and action warnings always appear.">{#snippet children()}<Toggle label="Action feedback" checked={model.notifyActivity} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyActivity', value })} />{/snippet}</SettingRow>
+
   <SectionHeader title="Contribution" icon="share" />
   <SettingRow label="Report my activity" hint="Shares paint activity only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Report my activity" checked={model.reportPaints} onChange={(value) => emit({ type: 'set-boolean', key: 'reportPaints', value })} />{/snippet}</SettingRow>
   <SettingRow label="Share tiles" hint="Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Share tiles" checked={model.shareTiles} onChange={(value) => emit({ type: 'set-boolean', key: 'shareTiles', value })} />{/snippet}</SettingRow>

@@ -23,9 +23,29 @@ const model: SettingsModel = {
   shareTiles: false,
   debugLogging: false,
   performanceProfiling: false,
+  notifyRegressions: true,
+  notifyGriefing: false,
+  notifyUpdates: true,
+  notifyActivity: false,
 }
 
 describe('settings panel', () => {
+  it.each([
+    ['Template regressions', 'notifyRegressions', true],
+    ['Sustained griefing', 'notifyGriefing', false],
+    ['Userscript updates', 'notifyUpdates', true],
+    ['Action feedback', 'notifyActivity', false],
+  ] as const)('renders and toggles %s independently', (label, key, checked) => {
+    const onIntent = vi.fn()
+    const component = mount(SettingsPanel, { target: document.body, props: { model, onIntent } })
+    flushSync()
+    const toggle = document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)
+    expect(toggle?.checked).toBe(checked)
+    toggle?.click()
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({ type: 'set-boolean', key, value: !checked })
+    void unmount(component)
+  })
+
   it('keeps drafts local and emits typed server and preference intents', () => {
     const onIntent = vi.fn()
     const component = mount(SettingsPanel, { target: document.body, props: { model, onIntent } })

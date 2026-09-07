@@ -128,6 +128,10 @@ export type SettingsBooleanKey =
   | 'shareTiles'
   | 'debugLogging'
   | 'performanceProfiling'
+  | 'notifyRegressions'
+  | 'notifyGriefing'
+  | 'notifyUpdates'
+  | 'notifyActivity'
 
 export type AccessTokenScope = 'read' | 'report' | 'admin'
 
@@ -179,6 +183,10 @@ export interface SettingsModel {
   readonly shareTiles: boolean
   readonly debugLogging: boolean
   readonly performanceProfiling: boolean
+  readonly notifyRegressions: boolean
+  readonly notifyGriefing: boolean
+  readonly notifyUpdates: boolean
+  readonly notifyActivity: boolean
   readonly profile?: {
     readonly note: string
     readonly metrics: readonly ProfileMetricModel[]
