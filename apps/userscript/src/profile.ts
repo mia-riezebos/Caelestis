@@ -562,7 +562,7 @@ export const profileSnapshot = (): ProfileSnapshot => {
       start: enabled ? startContext : null,
       current: enabled ? (contextSource?.() ?? null) : null,
     },
-    run: { ...run },
+    run: enabled ? { ...run } : { label: '', browserZoomPercent: null },
     actions: enabled ? actions.map((action) => ({ ...action })) : [],
     actionsDropped: enabled ? actionsDropped : 0,
     counters: enabled ? Object.fromEntries(counters) : {},

@@ -33,6 +33,15 @@ afterEach(() => {
 })
 
 describe('performance profile', () => {
+  it('omits run annotations from disabled reports', () => {
+    setProfileEnabled(true)
+    configureProfileRun({ label: 'previous run', browserZoomPercent: 25 })
+    setProfileEnabled(false)
+    expect(profileSnapshot().run).toEqual({ label: '', browserZoomPercent: null })
+    configureProfileRun({ label: 'disabled run', browserZoomPercent: 100 })
+    expect(profileSnapshot().run).toEqual({ label: '', browserZoomPercent: null })
+  })
+
   it('counts events only within the enabled window and bounds distinct keys', () => {
     recordProfileCounter('bytes', 99)
     setProfileEnabled(true)
