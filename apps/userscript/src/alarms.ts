@@ -1,11 +1,7 @@
 import type { Alarm } from '@caelestis/shared'
 import { activeServerAlarms, onServerAlarmChange } from './telemetry.js'
 import { showAmbientToast } from './ui/notification-host.js'
-import {
-  isWorldTemplateTreeVisible,
-  onWorldTemplateTreeVisible,
-  setAlarmBadge,
-} from './ui/panel.js'
+import { isWorldTemplatePresented, onWorldTemplateTreeVisible, setAlarmBadge } from './ui/panel.js'
 import { isPaintOpen } from './wplace-paint.js'
 
 const ACKNOWLEDGED_KEY = 'caelestis.acknowledged-alarms.v1'
@@ -65,13 +61,17 @@ const acknowledgeVisible = (): void => {
   const current = activeServerAlarms()
   let changed = false
   for (const { server, alarm } of current) {
+    if (!isWorldTemplatePresented(server, alarm.templateId)) continue
     const fingerprint = alarmFingerprint(server.url, alarm)
     if (acknowledged.has(fingerprint)) continue
     acknowledged.add(fingerprint)
     changed = true
   }
   if (changed) writeAcknowledged(acknowledged)
-  setAlarmBadge(0)
+  setAlarmBadge(
+    current.filter(({ server, alarm }) => !acknowledged.has(alarmFingerprint(server.url, alarm)))
+      .length,
+  )
 }
 
 const syncAlarms = (): void => {
@@ -79,16 +79,11 @@ const syncAlarms = (): void => {
   const fingerprints = new Set(
     current.map(({ server, alarm }) => alarmFingerprint(server.url, alarm)),
   )
-  if (isWorldTemplateTreeVisible()) {
-    acknowledgeVisible()
-  } else {
-    setAlarmBadge([...fingerprints].filter((key) => !acknowledged.has(key)).length)
-  }
+  acknowledgeVisible()
 
   for (const { server, template, alarm } of current) {
     const fingerprint = alarmFingerprint(server.url, alarm)
-    if (known.has(fingerprint) || acknowledged.has(fingerprint) || isWorldTemplateTreeVisible())
-      continue
+    if (known.has(fingerprint) || acknowledged.has(fingerprint)) continue
     const message = notice(template.name, alarm)
     if (isPaintOpen()) continue
     if (document.visibilityState === 'hidden') desktopNotice(message)

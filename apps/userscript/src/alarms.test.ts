@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
   alarmListener: null as (() => void) | null,
   treeListener: null as (() => void) | null,
   treeVisible: false,
+  excludedTemplates: new Set<string>(),
   paintOpen: false,
   badge: vi.fn(),
   toast: vi.fn(),
@@ -27,6 +28,8 @@ vi.mock('./telemetry.js', () => ({
 }))
 vi.mock('./ui/panel.js', () => ({
   isWorldTemplateTreeVisible: () => harness.treeVisible,
+  isWorldTemplatePresented: (_server: unknown, templateId: string) =>
+    harness.treeVisible && !harness.excludedTemplates.has(templateId),
   onWorldTemplateTreeVisible: (listener: () => void) => {
     harness.treeListener = listener
     return vi.fn()
@@ -57,6 +60,7 @@ beforeEach(() => {
   harness.alarmListener = null
   harness.treeListener = null
   harness.treeVisible = false
+  harness.excludedTemplates.clear()
   harness.paintOpen = false
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
 })
@@ -64,6 +68,30 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('userscript alarm notifications', () => {
+  it('keeps excluded alarms unacknowledged until their rows are presented', async () => {
+    harness.treeVisible = true
+    harness.excludedTemplates.add('template-1')
+    harness.active = [
+      { server: { url: 'https://templates.example' }, template: { name: 'Sky' }, alarm: alarm() },
+      {
+        server: { url: 'https://templates.example' },
+        template: { name: 'Sea' },
+        alarm: { ...alarm(), id: 'alarm-2', templateId: 'template-2' },
+      },
+    ]
+    const { installAlarmNotifications } = await import('./alarms.js')
+    installAlarmNotifications()
+
+    expect(harness.badge).toHaveBeenLastCalledWith(1)
+    expect(harness.toast).toHaveBeenCalledWith('Sky regressed · 12 px lost', 'warning')
+    expect(JSON.parse(stored.get('caelestis.acknowledged-alarms.v1') ?? '[]')).toHaveLength(1)
+
+    harness.excludedTemplates.clear()
+    harness.treeListener?.()
+    expect(harness.badge).toHaveBeenLastCalledWith(0)
+    expect(JSON.parse(stored.get('caelestis.acknowledged-alarms.v1') ?? '[]')).toHaveLength(2)
+  })
+
   it('badges and toasts a new visible alarm, then acknowledges it when the panel opens', async () => {
     harness.active = [
       { server: { url: 'https://templates.example' }, template: { name: 'Sky' }, alarm: alarm() },
