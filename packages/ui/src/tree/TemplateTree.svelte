@@ -601,10 +601,11 @@
   .tree.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); align-content: start; align-items: start; gap: 0.5rem; padding: 0.5rem; }
   .preview-grid > :not(.preview-card) { grid-column: 1 / -1; min-inline-size: 0; margin-inline: 0; }
   .preview-grid .folder-heading { border-block-end: 1px solid var(--caelestis-border); border-radius: 0; }
-  .row.preview-card { min-inline-size: 0; margin: 0; padding: 0.5rem; gap: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-surface); }
-  .preview-card.focused-template { border-color: var(--caelestis-primary); }
+  .row.preview-card { --preview-radius: 0.5rem; min-inline-size: 0; margin: 0; padding: 0.5rem; gap: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--preview-radius); background: var(--caelestis-surface); }
+  .preview-card.focused-template { border-color: color-mix(in oklab, var(--caelestis-primary) 65%, var(--caelestis-border)); background: color-mix(in oklab, var(--caelestis-primary) 8%, var(--caelestis-surface)); }
+  .preview-card.focused-template::before { display: none; }
   .preview-card.regression-alarm, .preview-card.grief-alarm { background: color-mix(in oklab, var(--row-alarm-color) 14%, var(--caelestis-surface)); }
-  .artwork { display: block; inline-size: calc(100% + 1rem); margin: -0.5rem -0.5rem 0; padding: 0; border: 0; border-radius: calc(var(--caelestis-card-radius, 0.65rem) - 1px) calc(var(--caelestis-card-radius, 0.65rem) - 1px) 0 0; overflow: hidden; color: inherit; cursor: pointer; }
+  .artwork { display: block; inline-size: 100%; padding: 0; border: 0; border-radius: 0.25rem; overflow: hidden; color: inherit; cursor: pointer; }
   .artwork:disabled { cursor: default; }
   .artwork:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .card-caption { display: flex; justify-content: space-between; gap: 0.5rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }
