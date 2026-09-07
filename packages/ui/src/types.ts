@@ -209,6 +209,8 @@ export type RailControlId =
   | 'colour'
   | 'mismatch'
   | 'overlay-menu'
+  | 'overlay-finished'
+  | 'overlay-frozen'
   | 'overlay-visible'
   | 'overlay-move'
   | 'overlay-delete'
@@ -219,6 +221,8 @@ export interface RailControlModel {
   readonly id: RailControlId
   readonly control?: string
   readonly label: string
+  readonly title?: string
+  readonly busy?: boolean
   readonly pressed?: boolean
   readonly expanded?: boolean
   readonly controls?: string

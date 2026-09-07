@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { profileSnapshot, resetProfile, setProfileEnabled } from '../profile.js'
 import { TemplateGpuStore } from './template-gpu-store.js'
 
 const context = (maximumTextureSize = 4, failTextureAllocation = false) => {
@@ -35,15 +36,22 @@ const template = (indices = new Uint8Array([1, 2, 3, 4, 5, 6])) => ({
   indices,
 })
 
+afterEach(() => {
+  setProfileEnabled(false)
+  vi.restoreAllMocks()
+})
+
 describe('template GPU store', () => {
   it('chunks with halos and advances uploads within the supplied allowance', () => {
+    setProfileEnabled(true)
+    const now = vi.spyOn(performance, 'now').mockReturnValue(100)
     const gl = context()
     const store = new TemplateGpuStore(gl)
     const source = template()
 
     const first = store.advance(source, 5, 1)
     expect(first).toMatchObject({ status: 'pending', uploadedPixels: 5, entry: null })
-
+    now.mockReturnValue(150)
     const second = store.advance(source, 100, 2)
     expect(second.status).toBe('complete')
     expect(second.uploadedPixels).toBe(23)
@@ -52,6 +60,25 @@ describe('template GPU store', () => {
       { x: 2, y: 0, width: 1, height: 2, textureWidth: 3, textureHeight: 4, inset: 1 },
     ])
     expect(store.memoryBytes()).toBe(256 + 16 + 12)
+    expect(profileSnapshot().counters['gpu:index upload bytes']).toBe(28)
+    expect(
+      profileSnapshot().workload.find((row) => row.name === 'GPU observed upload queue age ms')
+        ?.max,
+    ).toBe(50)
+  })
+
+  it('starts queue observations again after a profile reset', () => {
+    setProfileEnabled(true)
+    const now = vi.spyOn(performance, 'now').mockReturnValue(100)
+    const store = new TemplateGpuStore(context())
+    store.advance(template(), 1, 1)
+    now.mockReturnValue(200)
+    resetProfile()
+    store.advance(template(), 1, 2)
+    expect(
+      profileSnapshot().workload.find((row) => row.name === 'GPU observed upload queue age ms')
+        ?.max,
+    ).toBe(0)
   })
 
   it('releases stale textures before uploading a replacement source', () => {

@@ -1,4 +1,5 @@
 import { pageWindow } from './page-world.js'
+import { recordProfileCounter } from './profile.js'
 /**
  * Debug instrumentation for the render path.
  *
@@ -119,6 +120,7 @@ const snapshot = (value: unknown, depth = 0, seen: WeakSet<object> = new WeakSet
 }
 
 export const count = (key: string, by = 1): void => {
+  recordProfileCounter(key, by)
   if (!counters.has(key) && counters.size >= MAX_COUNTERS) {
     // Set directly rather than recursing: at capacity, counting the drop would count its own drop.
     counters.set(DROPPED, (counters.get(DROPPED) ?? 0) + 1)

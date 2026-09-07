@@ -8,6 +8,25 @@ beforeAll(() => registerCaelestisUi())
 beforeEach(() => document.body.replaceChildren())
 
 describe('rail control', () => {
+  it('keeps the active lifecycle state visible while a save is pending', async () => {
+    const control = new CaelestisRailControl()
+    control.model = {
+      id: 'overlay-frozen',
+      label: 'Saving timelapse state…',
+      title: 'Reopen the template before thawing',
+      pressed: true,
+      disabled: true,
+      busy: true,
+    }
+    document.body.append(control)
+    await tick()
+    const button = control.shadowRoot?.querySelector('button')
+    expect(button?.classList.contains('pressed')).toBe(true)
+    expect(button?.getAttribute('aria-busy')).toBe('true')
+    expect(button?.getAttribute('aria-disabled')).toBe('true')
+    expect(button?.title).toBe('Reopen the template before thawing')
+  })
+
   it('renders pressed, expanded, and badge state from one model', async () => {
     const control = new CaelestisRailControl()
     control.model = {
