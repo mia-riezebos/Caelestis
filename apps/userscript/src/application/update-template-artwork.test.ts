@@ -1,10 +1,17 @@
+// @vitest-environment happy-dom
 import { beforeEach, expect, it, vi } from 'vitest'
 import { coalesceServerRead } from '../server-read-coalescer.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
 
 const harness = vi.hoisted(() => ({
   template: undefined as PlacedTemplate | undefined,
-  server: { url: 'https://test.example', isAdmin: true },
+  server: {
+    url: 'https://test.example',
+    isAdmin: true,
+    token: 'admin' as string | null,
+    tokenUsable: true,
+    status: 'connected',
+  },
   manifest: { templates: [{ id: 'remote', version: 'v1' }] as [{ id: string; version: string }] },
   capture: vi.fn(),
   save: vi.fn(),
@@ -12,6 +19,7 @@ const harness = vi.hoisted(() => ({
   refresh: vi.fn(),
   toast: vi.fn(),
   moving: vi.fn(),
+  confirm: vi.fn(),
 }))
 vi.mock('../templates/current-artwork.js', () => ({ captureCurrentArtwork: harness.capture }))
 vi.mock('../templates/local-store.js', () => ({
@@ -22,7 +30,8 @@ vi.mock('../templates/local-store.js', () => ({
   replaceLocalArtwork: harness.save,
 }))
 vi.mock('../templates/move.js', () => ({ movingId: harness.moving }))
-vi.mock('../state.js', () => ({
+vi.mock('../state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../state.js')>()),
   getState: () => ({ servers: [harness.server] }),
   isCurrentServerConnection: () => true,
   serverConnectionIdentity: (server: object) => server,
@@ -35,12 +44,20 @@ vi.mock('../alliance-server-sync.js', () => ({
   refreshAllianceManifest: harness.refresh,
 }))
 vi.mock('../ui/toast.js', () => ({ toast: harness.toast }))
+vi.mock('../ui/confirm.js', () => ({ confirmDestructive: harness.confirm }))
 
-import { isUpdatingTemplateArtwork, updateTemplateArtwork } from './update-template-artwork.js'
+import {
+  isUpdatingTemplateArtwork,
+  requestTemplateArtworkUpdate,
+  updateTemplateArtwork,
+} from './update-template-artwork.js'
 
 beforeEach(() => {
   vi.resetAllMocks()
   harness.server.isAdmin = true
+  harness.server.token = 'admin'
+  harness.server.tokenUsable = true
+  harness.server.status = 'connected'
   harness.manifest.templates[0].version = 'v1'
   harness.template = {
     id: 'test',
@@ -63,6 +80,7 @@ beforeEach(() => {
   }
   harness.capture.mockResolvedValue(new Uint8Array([5]))
   harness.upload.mockResolvedValue({ ok: true, versionId: 'v2' })
+  harness.confirm.mockResolvedValue(true)
 })
 const serverTemplate = (): void => {
   if (harness.template === undefined) throw new Error('Missing test template')
@@ -78,6 +96,61 @@ it('saves local artwork through version persistence', async () => {
   await updateTemplateArtwork('test')
   expect(harness.save).toHaveBeenCalledWith(harness.template, new Uint8Array([5]))
   expect(harness.upload).not.toHaveBeenCalled()
+})
+it.each(['missing', 'rejected', 'read', 'report', 'disconnected'])(
+  'rejects server updates with %s credentials before capture',
+  async (scope) => {
+    serverTemplate()
+    if (scope === 'missing') harness.server.token = null
+    if (scope === 'rejected') harness.server.tokenUsable = false
+    if (scope === 'read' || scope === 'report') harness.server.isAdmin = false
+    if (scope === 'disconnected') harness.server.status = 'unreachable'
+    await expect(updateTemplateArtwork('test')).rejects.toThrow('Admin access')
+    expect(harness.capture).not.toHaveBeenCalled()
+    expect(harness.upload).not.toHaveBeenCalled()
+  },
+)
+it.each([false, true])('waits for confirmation before capture (accepted: %s)', async (accepted) => {
+  let answer!: (value: boolean) => void
+  harness.confirm.mockReturnValue(
+    new Promise<boolean>((resolve) => {
+      answer = resolve
+    }),
+  )
+  const rerender = vi.fn()
+  requestTemplateArtworkUpdate('test', rerender)
+  requestTemplateArtworkUpdate('test', rerender)
+  expect(harness.confirm).toHaveBeenCalledOnce()
+  expect(harness.confirm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      body: expect.stringContaining('Previous versions cannot currently be restored.'),
+    }),
+  )
+  expect(harness.capture).not.toHaveBeenCalled()
+  answer(accepted)
+  await vi.waitFor(() => expect(rerender).toHaveBeenCalled())
+  if (accepted) {
+    expect(harness.save).toHaveBeenCalledOnce()
+  } else {
+    expect(harness.capture).not.toHaveBeenCalled()
+    expect(harness.save).not.toHaveBeenCalled()
+    expect(harness.toast).not.toHaveBeenCalled()
+  }
+})
+it('rejects a target replaced while its confirmation is open', async () => {
+  let answer!: (value: boolean) => void
+  harness.confirm.mockReturnValue(
+    new Promise<boolean>((resolve) => {
+      answer = resolve
+    }),
+  )
+  requestTemplateArtworkUpdate('test', vi.fn())
+  harness.template = undefined
+  answer(true)
+  await vi.waitFor(() =>
+    expect(harness.toast).toHaveBeenCalledWith(expect.stringContaining('changed'), 'error'),
+  )
+  expect(harness.capture).not.toHaveBeenCalled()
 })
 it('accepts imported geographic placement before the user has moved it', async () => {
   if (harness.template === undefined) throw new Error('Missing test template')

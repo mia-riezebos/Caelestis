@@ -4,6 +4,7 @@ import { invalidateServerReads } from '../server-read-coalescer.js'
 import {
   admittedServerContentsFor,
   getState,
+  hasServerAdminToken,
   isCurrentServerConnection,
   listServerContents,
   serverConnectionIdentity,
@@ -18,9 +19,11 @@ import {
   templateById,
 } from '../templates/local-store.js'
 import { movingId } from '../templates/move.js'
+import { confirmDestructive } from '../ui/confirm.js'
 import { toast } from '../ui/toast.js'
 
 const pending = new Set<string>()
+const confirming = new Set<string>()
 
 /** Whether either template menu is already capturing or saving this template. */
 export const isUpdatingTemplateArtwork = (id: string): boolean => pending.has(id)
@@ -43,7 +46,11 @@ export const updateTemplateArtwork = async (id: string): Promise<void> => {
       if (movingId() === id || (template.source === 'image' && !template.everPlaced))
         throw new Error('Finish placing this template before updating it.')
       if (!isServerTemplate(template)) return
-      if (server === undefined || !server.isAdmin || !isCurrentServerConnection(server))
+      if (
+        server === undefined ||
+        !hasServerAdminToken(server) ||
+        !isCurrentServerConnection(server)
+      )
         throw new Error('Admin access to this server is required.')
       const manifest =
         surface.kind === 'world'
@@ -89,14 +96,37 @@ export const updateTemplateArtwork = async (id: string): Promise<void> => {
   }
 }
 
-/** Shared menu entry point with pending, success and recoverable failure feedback. */
+/** Confirm the target change before either menu starts capturing or saving artwork. */
 export const requestTemplateArtworkUpdate = (id: string, rerender: () => void): void => {
-  const update = updateTemplateArtwork(id)
-  rerender()
-  void update
-    .then(
-      () => toast('Saved a new template version from the committed artwork.'),
-      (error: unknown) => toast(error instanceof Error ? error.message : String(error), 'error'),
+  if (confirming.has(id) || pending.has(id)) return
+  const template = templateById(id)
+  if (template === undefined) return
+  let trigger = document.activeElement
+  while (trigger?.shadowRoot?.activeElement) trigger = trigger.shadowRoot.activeElement
+  confirming.add(id)
+  void (async () => {
+    const confirmed = await confirmDestructive({
+      title: `Use canvas artwork for “${template.name}”?`,
+      body: isServerTemplate(template)
+        ? 'Save committed canvas artwork as the new target for everyone using this server template. Previous versions cannot currently be restored.'
+        : 'Save committed canvas artwork as this local template’s new target. Previous versions cannot currently be restored.',
+      note: '',
+      confirmLabel: 'Use canvas artwork',
+      restoreFocusTo: trigger instanceof HTMLElement ? trigger : null,
+    })
+    if (!confirmed) return
+    if (!isCurrentTemplate(template))
+      throw new Error('That template changed while confirmation was open. Try again.')
+    const update = updateTemplateArtwork(id)
+    rerender()
+    await update
+    toast('Saved a new template version from the committed artwork.')
+  })()
+    .catch((error: unknown) =>
+      toast(error instanceof Error ? error.message : String(error), 'error'),
     )
-    .finally(rerender)
+    .finally(() => {
+      confirming.delete(id)
+      rerender()
+    })
 }
