@@ -331,7 +331,7 @@ jobs:
           github.run_attempt > 1) ||
           inputs.retry_frontend_announcement)
         env:
-          DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_FRONTEND_RELEASE_WEBHOOK_URL }}
+          DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
           NOTES: ${{ steps.frontend.outputs.notesPath }}
           TAG: ${{ steps.frontend.outputs.tag }}
           VERSION: ${{ steps.frontend.outputs.version }}

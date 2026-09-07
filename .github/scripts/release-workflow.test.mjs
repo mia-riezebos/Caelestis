@@ -29,9 +29,13 @@ describe('app release workflow', () => {
     assert.equal(workflow.match(/git push origin "refs\/tags\/\$TAG"/g)?.length, 2)
   })
 
-  it('announces frontend and userscript releases through separate webhooks', () => {
-    assert.match(workflow, /secrets\.DISCORD_RELEASE_WEBHOOK_URL/)
-    assert.match(workflow, /secrets\.DISCORD_FRONTEND_RELEASE_WEBHOOK_URL/)
+  it('announces frontend and userscript releases through the shared webhook', () => {
+    assert.equal(
+      workflow.match(
+        /DISCORD_RELEASE_WEBHOOK_URL: \$\{\{ secrets\.DISCORD_RELEASE_WEBHOOK_URL \}\}/g,
+      )?.length,
+      2,
+    )
     assert.doesNotMatch(workflow, /Announce backend release/)
   })
 
