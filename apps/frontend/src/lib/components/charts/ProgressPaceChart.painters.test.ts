@@ -210,10 +210,16 @@ describe('painter lines', () => {
     })
     expect(lines()).toHaveLength(5)
 
+    // The legend holds a button; the search box lives in the popout it opens.
+    const trigger = document.querySelector<HTMLButtonElement>('[data-painter-trigger]')
+    expect(trigger?.textContent).toContain('5 of 9')
+    expect(document.querySelector('[data-painter-search]')).toBeNull()
+    trigger?.click()
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelector('[data-painter-search]')).not.toBeNull())
+    expect(document.querySelectorAll('[data-painter-option]')).toHaveLength(9)
+
     const input = search()
-    expect(input.placeholder).toBe('5 painters')
-    input.focus()
-    input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }))
     input.value = 'ada'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     flushSync()
@@ -223,10 +229,7 @@ describe('painter lines', () => {
     expect(document.querySelector('[data-painter-option="42"]')?.textContent).toContain(
       'Ada Lovelace',
     )
-    // Bits selects on pointerup, so a pointerdown on the trigger can release on an item.
-    document
-      .querySelector('[data-painter-option="42"]')
-      ?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse' }))
+    ;(document.querySelector('[data-painter-option="42"]') as HTMLElement).click()
     flushSync()
     await vi.waitFor(() => expect(onTogglePainter).toHaveBeenCalledWith(42))
     expect(onTogglePainter).toHaveBeenCalledTimes(1)

@@ -337,24 +337,23 @@ describe('painter pace', () => {
       document.querySelectorAll('path[data-painter-line][data-pace-window="6h"]'),
     ).toHaveLength(5)
     expect(document.querySelector('path[data-painter-line="10"]')).toBeNull()
-    expect(document.querySelector('[data-painter-search]')).not.toBeNull()
+    expect(document.querySelector('[data-painter-trigger]')?.textContent).toContain('5 of 7')
     expect(api.getContributions).not.toHaveBeenCalled()
     // The heatmap read stays sixteen weeks: painter pace no longer rides on contribution days.
     expect(live.subscribe.mock.calls[0]?.[1]).toBe(NOW_SECONDS - 86_400 * 7 * 16)
 
-    // Choosing another painter fetches the windows again for the new selection.
+    // Choosing another painter from the popout fetches the windows again for the new selection.
+    document.querySelector<HTMLButtonElement>('[data-painter-trigger]')?.click()
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelector('[data-painter-search]')).not.toBeNull())
     const input = document.querySelector<HTMLInputElement>('[data-painter-search]')
-    input?.focus()
-    input?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }))
     if (input !== null) input.value = 'fen'
     input?.dispatchEvent(new Event('input', { bubbles: true }))
     flushSync()
     await vi.waitFor(() =>
-      expect(document.querySelector('[data-painter-option="10"]')).not.toBeNull(),
+      expect(document.querySelectorAll('[data-painter-option]')).toHaveLength(1),
     )
-    document
-      .querySelector('[data-painter-option="10"]')
-      ?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse' }))
+    ;(document.querySelector('[data-painter-option="10"]') as HTMLElement).click()
     flushSync()
     await vi.waitFor(() =>
       expect(document.querySelector('path[data-painter-line="10"]')).not.toBeNull(),
@@ -389,7 +388,7 @@ describe('painter pace', () => {
     })
     flushSync()
     await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
-    expect(document.querySelector('[data-painter-search]')).toBeNull()
+    expect(document.querySelector('[data-painter-trigger]')).toBeNull()
     expect(document.querySelector('path[data-painter-line]')).toBeNull()
   })
 })
