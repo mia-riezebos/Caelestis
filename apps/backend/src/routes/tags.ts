@@ -17,9 +17,12 @@ export const createTagRoutes = (
   routes.use('/*', requireScopeEffect(runtime, auth, 'admin'))
   routes.get('/', (c) => {
     const templateId = c.req.query('templateId')
+    const folderId = c.req.query('folderId')
+    if (folderId !== undefined && (!UUID_V7.test(folderId) || templateId !== undefined))
+      return c.json({ error: 'Choose one valid template or folder ID.' }, 400)
     if (templateId !== undefined && !UUID_V7.test(templateId))
       return c.json({ error: 'Invalid template ID.' }, 400)
-    return runBackendHttp(c, runtime, readTags(templateId), (result) => c.json(result))
+    return runBackendHttp(c, runtime, readTags(templateId, folderId), (result) => c.json(result))
   })
   routes.post('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
@@ -63,6 +66,18 @@ export const createTagRoutes = (
     )
   })
   for (const attached of [true, false]) {
+    routes.on(attached ? 'PUT' : 'DELETE', '/:id/folders/:folderId', (c) => {
+      const id = c.req.param('id')
+      const folderId = c.req.param('folderId')
+      if (!UUID_V7.test(id) || !UUID_V7.test(folderId))
+        return c.json({ error: 'Invalid tag or folder ID.' }, 400)
+      return runBackendHttp(
+        c,
+        runtime,
+        mutateTag({ type: 'assign-folder', id, folderId, attached }, currentSeason),
+        () => c.body(null, 204),
+      )
+    })
     routes.on(attached ? 'PUT' : 'DELETE', '/:id/templates/:templateId', (c) => {
       const id = c.req.param('id')
       const templateId = c.req.param('templateId')

@@ -354,6 +354,7 @@ const refreshOnce = async (
 }
 
 const sameNode = (left: TreeNode, right: TreeNode): boolean =>
+  JSON.stringify(left.tags ?? []) === JSON.stringify(right.tags ?? []) &&
   left.id === right.id &&
   left.parentId === right.parentId &&
   left.path === right.path &&

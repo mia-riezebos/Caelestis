@@ -9,13 +9,18 @@ import {
 import { publishManifestChange } from '../status-read-model/port.js'
 import { TagConflictError, type TagMutation } from './store.js'
 
-/** Read the reusable catalog and, optionally, one template's current assignments. */
-export const readTags = (templateId?: string) =>
+/** Read the reusable catalog and, optionally, one template or folder's assignments. */
+export const readTags = (templateId?: string, folderId?: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
     return yield* Effect.tryPromise({
       try: async () => {
         const tags = await sql.listTags()
+        if (folderId !== undefined) {
+          if ((await sql.readNode(folderId)) === null)
+            throw new ResourceNotFoundError({ message: 'Folder no longer exists.' })
+          return { tags, selected: await sql.listNodeTagIds(folderId) }
+        }
         if (templateId === undefined) return { tags, selected: [] as string[] }
         const template = await sql.readTemplate(templateId)
         if (template === null)
@@ -47,7 +52,7 @@ export const mutateTag = (mutation: TagMutation, currentSeason: number) =>
     })
     if (!changed)
       return yield* Effect.fail(
-        new ResourceNotFoundError({ message: 'Tag or template no longer exists.' }),
+        new ResourceNotFoundError({ message: 'Tag, template, or folder no longer exists.' }),
       )
     yield* Effect.promise(() =>
       Promise.all(

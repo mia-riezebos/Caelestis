@@ -65,7 +65,7 @@ import {
 } from '../templates/mismatch.js'
 import { nodeChainVisible, nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
-import { localTemplateTags } from '../templates/tags.js'
+import { localFolderTags, localTemplateTags } from '../templates/tags.js'
 import { templateDisplayMode } from './display-mode.js'
 import {
   emptyProgress,
@@ -779,6 +779,7 @@ const buildTree = <Result>(
             item: {
               key: nodeKey,
               name: node.name,
+              tagNames: node.tags?.map((tag) => tag.name) ?? [],
               kind: 'folder',
               childrenOf: node.id,
               descendantAlarmKind: nodeAlarms.get(node.id),
@@ -797,6 +798,11 @@ const buildTree = <Result>(
               ...(canCreate
                 ? {
                     actions: [
+                      {
+                        icon: 'tag' as const,
+                        label: 'Edit tags',
+                        run: () => openTagManager(nodeTarget, rerender),
+                      },
                       {
                         icon: 'createFolder' as const,
                         label: 'New folder',
@@ -996,6 +1002,7 @@ const buildTree = <Result>(
           item: {
             key: `lf:${folder.id}`,
             name: folder.name,
+            tagNames: localFolderTags(folder.id).map((tag) => tag.name),
             kind: 'folder',
             childrenOf: folder.id,
             ...(folder.createdAt === undefined ? {} : { createdAt: folder.createdAt }),
@@ -1006,6 +1013,11 @@ const buildTree = <Result>(
             onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
             onRename: (value) => void renameTarget(folderTarget, value, rerender, surface),
             actions: [
+              {
+                icon: 'tag',
+                label: 'Edit tags',
+                run: () => openTagManager(folderTarget, rerender),
+              },
               {
                 icon: 'createFolder',
                 label: 'New folder',

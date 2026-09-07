@@ -127,6 +127,13 @@
       "when": 1788895758125,
       "tag": "0017_template_tags",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1788895849752,
+      "tag": "0018_folder_tags",
+      "breakpoints": true
     }
   ]
 }

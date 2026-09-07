@@ -256,7 +256,7 @@ export type ShortcutHelpIntent = { readonly type: 'close' }
 
 export interface TagManagerModel {
   readonly owner: string
-  readonly templateName?: string
+  readonly targetName?: string
   readonly tags: readonly import('@caelestis/shared').TemplateTag[]
   readonly selected: readonly string[]
   readonly loading: boolean

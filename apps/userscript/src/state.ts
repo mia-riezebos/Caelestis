@@ -1785,6 +1785,12 @@ export const patchTemplate = async (
 }
 
 export type ServerTagMutation =
+  | {
+      readonly type: 'assign-folder'
+      readonly id: string
+      readonly folderId: string
+      readonly attached: boolean
+    }
   | { readonly type: 'create'; readonly name: string }
   | { readonly type: 'rename'; readonly id: string; readonly name: string }
   | { readonly type: 'delete'; readonly id: string }
@@ -1799,6 +1805,7 @@ export type ServerTagMutation =
 export const listServerTags = async (
   server: ConnectedServer,
   templateId?: string,
+  folderId?: string,
 ): Promise<
   | {
       readonly ok: true
@@ -1808,7 +1815,12 @@ export const listServerTags = async (
   | { readonly ok: false; readonly message: string }
 > => {
   try {
-    const query = templateId === undefined ? '' : `?templateId=${encodeURIComponent(templateId)}`
+    const query =
+      folderId !== undefined
+        ? `?folderId=${encodeURIComponent(folderId)}`
+        : templateId === undefined
+          ? ''
+          : `?templateId=${encodeURIComponent(templateId)}`
     const { response, body } = await requestServerTree(
       serverEndpoint(server.url, `/admin/tags${query}`),
       { headers: adminHeaders(server) },
@@ -1839,13 +1851,13 @@ export const mutateServerTag = async (
     const suffix =
       mutation.type === 'create'
         ? ''
-        : `/${encodeURIComponent(mutation.id)}${mutation.type === 'assign' ? `/templates/${encodeURIComponent(mutation.templateId)}` : ''}`
+        : `/${encodeURIComponent(mutation.id)}${mutation.type === 'assign' ? `/templates/${encodeURIComponent(mutation.templateId)}` : mutation.type === 'assign-folder' ? `/folders/${encodeURIComponent(mutation.folderId)}` : ''}`
     const method =
       mutation.type === 'create'
         ? 'POST'
         : mutation.type === 'rename'
           ? 'PATCH'
-          : mutation.type === 'assign' && mutation.attached
+          : (mutation.type === 'assign' || mutation.type === 'assign-folder') && mutation.attached
             ? 'PUT'
             : 'DELETE'
     const { response, body } = await requestServerMutation(

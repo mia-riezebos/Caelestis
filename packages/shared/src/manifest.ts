@@ -48,6 +48,7 @@ export interface ServerInfo {
  * any depth is one prefix query. Templates may also sit directly under the server root.
  */
 export interface Node {
+  readonly tags?: readonly TemplateTag[]
   readonly id: string
   readonly parentId: string | null
   /** e.g. `/canada/toronto/skyline` */

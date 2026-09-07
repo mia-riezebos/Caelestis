@@ -32,7 +32,7 @@
 <dialog bind:this={dialog} aria-labelledby="tag-title" aria-describedby="tag-owner" oncancel={(event) => { event.preventDefault(); emit({ type: 'close' }) }} onclick={(event) => { if (event.target === dialog) emit({ type: 'close' }) }}>
   <div class="content">
     <header>
-      <div><h2 id="tag-title">{model.templateName === undefined ? 'Manage tags' : `Tags for ${model.templateName}`}</h2><p id="tag-owner">{model.owner}</p></div>
+      <div><h2 id="tag-title">{model.targetName === undefined ? 'Manage tags' : `Tags for ${model.targetName}`}</h2><p id="tag-owner">{model.owner}</p></div>
       <Button label="Close tags" size="small" kind="ghost" iconOnly onclick={() => emit({ type: 'close' })}>×</Button>
     </header>
     <div class="body" aria-busy={disabled}>
@@ -50,10 +50,10 @@
                 <Button label="Cancel rename" size="small" kind="ghost" disabled={disabled} onclick={() => { editing = null; validation = '' }} />
               </form>
             {:else if deleting === tag.id}
-              <div class="delete"><p>Remove “{tag.name}” from every template?</p><div class="row"><Button label="Delete tag" size="small" kind="danger" disabled={disabled} onclick={() => emit({ type: 'delete', id: tag.id })} /><Button label="Cancel" size="small" kind="ghost" disabled={disabled} onclick={() => deleting = null} /></div></div>
+              <div class="delete"><p>Remove “{tag.name}” from every template and folder?</p><div class="row"><Button label="Delete tag" size="small" kind="danger" disabled={disabled} onclick={() => emit({ type: 'delete', id: tag.id })} /><Button label="Cancel" size="small" kind="ghost" disabled={disabled} onclick={() => deleting = null} /></div></div>
             {:else}
               <div class="row">
-                {#if model.templateName !== undefined}<label><input type="checkbox" checked={model.selected.includes(tag.id)} disabled={disabled} onchange={(event) => emit({ type: 'assign', id: tag.id, attached: event.currentTarget.checked })} /><span>{tag.name}</span></label>{:else}<span class="name">{tag.name}</span>{/if}
+                {#if model.targetName !== undefined}<label><input type="checkbox" checked={model.selected.includes(tag.id)} disabled={disabled} onchange={(event) => emit({ type: 'assign', id: tag.id, attached: event.currentTarget.checked })} /><span>{tag.name}</span></label>{:else}<span class="name">{tag.name}</span>{/if}
                 <Button label={`Rename ${tag.name}`} title="Rename tag" size="small" kind="ghost" iconOnly disabled={disabled} onclick={() => { editing = tag.id; rename = tag.name; validation = '' }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5-12 12H4v-5L16 3Zm-1 1 5 5" /></svg></Button>
                 <Button label={`Delete ${tag.name}`} title="Delete tag" size="small" kind="danger-ghost" iconOnly disabled={disabled} onclick={() => { deleting = tag.id; validation = '' }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7" /></svg></Button>
               </div>

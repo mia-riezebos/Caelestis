@@ -6,6 +6,12 @@ export type TagMutation =
   | { readonly type: 'rename'; readonly id: string; readonly name: string }
   | { readonly type: 'delete'; readonly id: string }
   | {
+      readonly type: 'assign-folder'
+      readonly id: string
+      readonly folderId: string
+      readonly attached: boolean
+    }
+  | {
       readonly type: 'assign'
       readonly id: string
       readonly templateId: string
@@ -19,6 +25,12 @@ export interface TagStore {
   listTags(): Promise<readonly TemplateTag[]>
   /** Read only one template's assignments, bounded by the reusable tag catalog. */
   listTemplateTagIds(templateId: string): Promise<readonly string[]>
+  /** Read one folder's assignments through its ID index. */
+  listNodeTagIds(nodeId: string): Promise<readonly string[]>
+  /** Folder labels in one manifest scope, including empty folders. */
+  listManifestNodeTags(
+    scope: TemplateManifestScope,
+  ): Promise<readonly { readonly nodeId: string; readonly tag: TemplateTag }[]>
   /** Read labels and assignments together, respecting manifest publication and canvas scope. */
   listManifestTags(
     scope: TemplateManifestScope,

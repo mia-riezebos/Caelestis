@@ -6,17 +6,26 @@ import {
   tagNameKey,
   uuidV7,
 } from '@caelestis/shared'
+import { leaseLocalFolder } from '../local-folders.js'
+import { getState, MAX_LOCAL_FOLDERS } from '../state.js'
 import { openTemplateDatabase } from './persist.js'
 import { LOCAL_TAG_STORE } from './tag-schema.js'
 
 export interface LocalTag extends TemplateTag {
   readonly templateIds: readonly string[]
+  readonly folderIds?: readonly string[]
 }
 
 export type LocalTagMutation =
   | { readonly type: 'create'; readonly name: string }
   | { readonly type: 'rename'; readonly id: string; readonly name: string }
   | { readonly type: 'delete'; readonly id: string }
+  | {
+      readonly type: 'assign-folder'
+      readonly id: string
+      readonly folderId: string
+      readonly attached: boolean
+    }
   | {
       readonly type: 'assign'
       readonly id: string
@@ -31,6 +40,10 @@ let hydration: Promise<readonly LocalTag[]> | undefined
 export const localTemplateTags = (templateId: string): readonly TemplateTag[] =>
   snapshot.filter((tag) => tag.templateIds.includes(templateId))
 
+/** Current labels assigned directly to a local folder. */
+export const localFolderTags = (folderId: string): readonly TemplateTag[] =>
+  snapshot.filter((tag) => tag.folderIds?.includes(folderId))
+
 const parseStoredTags = (value: unknown): readonly LocalTag[] => {
   if (
     !Array.isArray(value) ||
@@ -39,12 +52,21 @@ const parseStoredTags = (value: unknown): readonly LocalTag[] => {
       (tag) =>
         !Array.isArray(tag.templateIds) ||
         tag.templateIds.length > 64 ||
-        tag.templateIds.some((id: unknown) => typeof id !== 'string'),
+        tag.templateIds.some((id: unknown) => typeof id !== 'string') ||
+        (tag.folderIds !== undefined &&
+          (!Array.isArray(tag.folderIds) ||
+            tag.folderIds.length > MAX_LOCAL_FOLDERS ||
+            tag.folderIds.some((id: unknown) => typeof id !== 'string'))),
     )
   ) {
     throw new Error('Stored tags could not be read.')
   }
-  return value as readonly LocalTag[]
+  const folders = new Set(getState().localFolders.map((folder) => folder.id))
+  return (value as readonly LocalTag[]).map((tag) =>
+    tag.folderIds === undefined
+      ? tag
+      : { ...tag, folderIds: tag.folderIds.filter((id) => folders.has(id)) },
+  )
 }
 
 /** Load authoritative local tags, including assignments from other tabs. */
@@ -79,7 +101,10 @@ export const mutateLocalTag = async (mutation: LocalTagMutation): Promise<readon
   const name = 'name' in mutation ? tagName(mutation.name) : undefined
   if (name === null) throw new Error('Use 1–64 characters without control characters.')
   const database = await openTemplateDatabase()
+  const releaseFolder =
+    mutation.type === 'assign-folder' ? leaseLocalFolder(mutation.folderId) : undefined
   try {
+    if (releaseFolder === null) throw new Error('Folder no longer exists.')
     const tags = await new Promise<readonly LocalTag[]>((resolve, reject) => {
       const transaction = database.transaction([LOCAL_TAG_STORE, 'local-templates'], 'readwrite')
       const store = transaction.objectStore(LOCAL_TAG_STORE)
@@ -126,6 +151,13 @@ export const mutateLocalTag = async (mutation: LocalTagMutation): Promise<readon
             save({ ...existing, name: name ?? existing.name })
             return
           }
+          if (mutation.type === 'assign-folder') {
+            const folderIds = new Set(existing.folderIds ?? [])
+            if (mutation.attached) folderIds.add(mutation.folderId)
+            else folderIds.delete(mutation.folderId)
+            save({ ...existing, folderIds: [...folderIds] })
+            return
+          }
           const template = transaction.objectStore('local-templates').get(mutation.templateId)
           template.onsuccess = () => {
             if (template.result === undefined) {
@@ -148,6 +180,7 @@ export const mutateLocalTag = async (mutation: LocalTagMutation): Promise<readon
     snapshot = tags
     return tags
   } finally {
+    releaseFolder?.()
     database.close()
   }
 }

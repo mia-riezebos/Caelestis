@@ -27,12 +27,20 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
       ? target.key.slice('local:'.length)
       : target.templateId
   const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  const folderId =
+    server === null
+      ? target.key.startsWith('lf:')
+        ? target.key.slice(3)
+        : undefined
+      : target.templateId === undefined
+        ? (target.nodeId ?? undefined)
+        : undefined
   let refreshPending = false
   let reloadPending = false
   let closed = false
   let model: TagManagerModel = {
     owner: server === null ? 'Local · This browser' : `${server.info?.name ?? server.url} · Server`,
-    ...(templateId === undefined ? {} : { templateName: target.name }),
+    ...(templateId === undefined && folderId === undefined ? {} : { targetName: target.name }),
     tags: [],
     selected: [],
     loading: true,
@@ -55,14 +63,18 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
       update({
         tags,
         selected: tags
-          .filter((tag) => templateId !== undefined && tag.templateIds.includes(templateId))
+          .filter((tag) =>
+            folderId !== undefined
+              ? tag.folderIds?.includes(folderId)
+              : templateId !== undefined && tag.templateIds.includes(templateId),
+          )
           .map((tag) => tag.id),
         ready: true,
       })
       rerender()
       return
     }
-    const result = await listServerTags(server, templateId)
+    const result = await listServerTags(server, templateId, folderId)
     checkConnection()
     if (!result.ok) throw new Error(result.message)
     update({ tags: result.tags, selected: result.selected, ready: true })
@@ -125,10 +137,14 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
     let committed = false
     try {
       checkConnection()
-      if (intent.type === 'assign' && templateId === undefined)
-        throw new Error('Select a template to assign tags.')
+      if (intent.type === 'assign' && templateId === undefined && folderId === undefined)
+        throw new Error('Select a template or folder to assign tags.')
       const mutation =
-        intent.type === 'assign' ? { ...intent, templateId: templateId ?? '' } : intent
+        intent.type !== 'assign'
+          ? intent
+          : folderId !== undefined
+            ? { ...intent, type: 'assign-folder' as const, folderId }
+            : { ...intent, templateId: templateId ?? '' }
       if (server === null) await mutateLocalTag(mutation)
       else {
         const result = await mutateServerTag(server, mutation)

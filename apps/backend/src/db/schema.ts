@@ -91,6 +91,23 @@ export const templateTags = sqliteTable(
   ],
 )
 
+/** Folder assignments share the template tag catalog and cascade only their links. */
+export const nodeTags = sqliteTable(
+  'node_tags',
+  {
+    tagId: text('tag_id')
+      .notNull()
+      .references(() => tags.id, { onDelete: 'cascade' }),
+    nodeId: text('node_id')
+      .notNull()
+      .references(() => nodes.id, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tagId, table.nodeId] }),
+    index('node_tags_node_idx').on(table.nodeId),
+  ],
+)
+
 /** D1-owned rebuild metadata keeps season revisions monotonic if a projection object is lost. */
 export const statusReadModelRevisions = sqliteTable(
   'status_read_model_revisions',

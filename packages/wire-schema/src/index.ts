@@ -247,7 +247,12 @@ const NodePath = Schema.String.pipe(
   ),
 )
 
+const TemplateTags = boundedArray(Schema.Struct({ id: Identifier, name: Name }), 256).pipe(
+  Schema.check(booleanFilter((tags) => parseTemplateTags(tags) !== null, 'valid unique tags')),
+)
+
 export const Node = Schema.Struct({
+  tags: Schema.optionalKey(TemplateTags),
   id: Identifier,
   parentId: Schema.NullOr(Identifier),
   path: NodePath,
@@ -260,10 +265,6 @@ export const Chunk = Schema.Struct({
   tile: TileKey,
   hash: Hash,
 })
-
-const TemplateTags = boundedArray(Schema.Struct({ id: Identifier, name: Name }), 256).pipe(
-  Schema.check(booleanFilter((tags) => parseTemplateTags(tags) !== null, 'valid unique tags')),
-)
 
 export const Template = Schema.Struct({
   tags: Schema.optionalKey(TemplateTags),

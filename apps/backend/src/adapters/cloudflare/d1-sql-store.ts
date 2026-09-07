@@ -334,10 +334,28 @@ export class D1SqlStore implements SqlStore {
     return result.results.map(({ templateId, id, name }) => ({ templateId, tag: { id, name } }))
   }
 
+  async listNodeTagIds(nodeId: string): Promise<readonly string[]> {
+    const result = await this.client
+      .prepare('SELECT tag_id AS id FROM node_tags WHERE node_id = ? ORDER BY tag_id')
+      .bind(nodeId)
+      .all<{ id: string }>()
+    return result.results.map(({ id }) => id)
+  }
+
+  async listManifestNodeTags(scope: TemplateManifestScope) {
+    const result = await this.client
+      .prepare(`SELECT nt.node_id AS nodeId, tags.id, tags.name
+      FROM node_tags nt JOIN tags ON tags.id = nt.tag_id JOIN nodes n ON n.id = nt.node_id
+      WHERE n.season = ? AND n.surface_kind = ? AND n.alliance_id IS ? ORDER BY tags.id`)
+      .bind(scope.season, scope.surface.kind, scope.surface.allianceId)
+      .all<{ nodeId: string; id: string; name: string }>()
+    return result.results.map(({ nodeId, id, name }) => ({ nodeId, tag: { id, name } }))
+  }
+
   async listTagScopes(): Promise<readonly TemplateManifestScope[]> {
     const result = await this.client
       .prepare(
-        'SELECT DISTINCT season, surface_kind AS kind, alliance_id AS allianceId FROM templates',
+        'SELECT season, surface_kind AS kind, alliance_id AS allianceId FROM templates UNION SELECT season, surface_kind AS kind, alliance_id AS allianceId FROM nodes',
       )
       .all<{ season: number; kind: TemplateSurface['kind']; allianceId: number | null }>()
     return result.results.map((row) => ({
@@ -350,6 +368,28 @@ export class D1SqlStore implements SqlStore {
     const prepare = (query: string, ...values: (string | number | null)[]) =>
       this.client.prepare(query).bind(...values)
     try {
+      if (mutation.type === 'assign-folder') {
+        const guard =
+          'EXISTS (SELECT 1 FROM tags WHERE id = ?) AND EXISTS (SELECT 1 FROM nodes WHERE id = ?)'
+        const write = mutation.attached
+          ? prepare(
+              `INSERT INTO node_tags (tag_id, node_id) SELECT ?, ? WHERE ${guard} ON CONFLICT DO NOTHING`,
+              mutation.id,
+              mutation.folderId,
+              mutation.id,
+              mutation.folderId,
+            )
+          : prepare(
+              'DELETE FROM node_tags WHERE tag_id = ? AND node_id = ?',
+              mutation.id,
+              mutation.folderId,
+            )
+        const result = await this.client.batch([
+          write,
+          prepare(`SELECT 1 AS present WHERE ${guard}`, mutation.id, mutation.folderId),
+        ])
+        return result[1]?.results.length === 1
+      }
       if (mutation.type === 'create') {
         const result = await prepare(
           'INSERT INTO tags (id, name, name_key) SELECT ?, ?, ? WHERE (SELECT count(*) FROM tags) < 256',

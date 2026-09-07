@@ -46,7 +46,7 @@ export const nextLocalFolderId = (): string => folderId()
 
 const leases = new Map<string, number>()
 
-/** Keep a folder alive while an asynchronous template assignment commits to it. */
+/** Keep a folder alive while an asynchronous template or tag assignment commits. */
 export const leaseLocalFolder = (id: string): (() => void) | null => {
   if (!getState().localFolders.some((folder) => folder.id === id)) return null
   leases.set(id, (leases.get(id) ?? 0) + 1)

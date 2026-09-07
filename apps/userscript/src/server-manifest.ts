@@ -2,6 +2,7 @@ import {
   parseTemplateTags,
   sameTemplateSurface,
   type TemplateSurface,
+  type TemplateTag,
   TILE_SIZE,
   templateSurface,
   templateSurfaceBounds,
@@ -24,6 +25,7 @@ export interface ServerInfo {
 }
 
 export interface TreeNode {
+  readonly tags?: readonly TemplateTag[]
   readonly id: string
   readonly parentId: string | null
   readonly path: string
@@ -121,11 +123,14 @@ export const parseTreeNode = (raw: unknown): TreeNode | null => {
   )
     return null
   if (!plausibleMillis(raw.createdAt)) return null
+  const tags = raw.tags === undefined ? undefined : parseTemplateTags(raw.tags)
+  if (tags === null) return null
   return {
     id: raw.id,
     parentId: raw.parentId,
     path: raw.path,
     name: raw.name,
+    ...(tags === undefined ? {} : { tags }),
     ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
     createdAt: raw.createdAt,
   }
