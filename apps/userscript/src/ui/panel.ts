@@ -103,6 +103,7 @@ import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templat
 import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
+import { setTemplateDisplayMode } from './display-mode.js'
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { refreshOverlayMenu } from './overlay-menu.js'
@@ -121,7 +122,7 @@ import {
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
-import { PANEL_ID } from './toast.js'
+import { PANEL_ID, toast } from './toast.js'
 import {
   isTreeDragActive,
   type TemplateTreeAdapter,
@@ -151,9 +152,8 @@ import { findWplaceRail } from './wplace-rail.js'
  *    empty. So we append to a Svelte-rendered list, which means it can be re-rendered out from under
  *    us; see the observer below.
  *
- * The panel is deliberately **not a modal**. No backdrop, no focus trap, nothing to dismiss. Most of
- * what it controls is on the map behind it, so covering or freezing the map would hide the very
- * thing you opened it to change.
+ * The sidebar keeps the map interactive. Its popout opens the same menu in a modal for wider
+ * template browsing, with grid mode available there. Canvas actions return to the sidebar.
  */
 
 /**
@@ -1034,6 +1034,10 @@ const buildSveltePanel = (): CaelestisPanel => {
           rerenderTree()
         } else if (intent.intent.type === 'sort') {
           setState({ sort: intent.intent.sort })
+          rerenderTree()
+        } else if (intent.intent.type === 'display-mode') {
+          if (!setTemplateDisplayMode(intent.intent.mode))
+            toast('Could not save the template view.')
           rerenderTree()
         } else {
           activeTreeAdapter?.handle(intent.intent)

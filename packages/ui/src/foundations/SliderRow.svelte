@@ -73,6 +73,7 @@
       aria-label={label}
       aria-disabled={locked || disabled}
       data-caelestis-control={control}
+      style:--fill={`${max === min ? 0 : ((local - min) / (max - min)) * 100}%`}
       bind:value={local}
       oninput={input}
       onchange={() => { if (!keyHeld) commit() }}
@@ -108,14 +109,15 @@
   .control { display: flex; min-inline-size: 0; align-items: center; gap: 0.75rem; }
   .compact .control { gap: 0.5rem; }
   input { appearance: none; flex: 1; min-inline-size: 0; inline-size: clamp(3rem, 20rem, 100%); block-size: 1rem; overflow: hidden; border: 0; border-radius: calc(var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)) + 0.25rem); background: transparent; color: var(--caelestis-primary, var(--color-primary, oklch(0.58 0.17 252))); cursor: pointer; vertical-align: middle; }
-  input::-webkit-slider-runnable-track { inline-size: 100%; block-size: 0.5rem; border-radius: var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)); background: color-mix(in oklab, currentColor 10%, transparent); }
-  input::-webkit-slider-thumb { appearance: none; position: relative; inset-block-start: 50%; inline-size: 1rem; block-size: 1rem; border: 0.25rem solid currentColor; border-radius: calc(var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)) + 0.25rem); background: var(--caelestis-surface, var(--color-base-100, white)); box-shadow: -20rem 0 0 19.75rem currentColor; transform: translateY(-50%); }
+  input::-webkit-slider-runnable-track { inline-size: 100%; block-size: 0.5rem; border-radius: var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)); background: linear-gradient(to right, currentColor var(--fill), color-mix(in oklab, currentColor 10%, transparent) var(--fill)); }
+  input::-webkit-slider-thumb { appearance: none; position: relative; inset-block-start: 50%; inline-size: 1rem; block-size: 1rem; border: 0.25rem solid currentColor; border-radius: calc(var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)) + 0.25rem); background: var(--caelestis-surface, var(--color-base-100, white)); transform: translateY(-50%); }
   input::-moz-range-track { inline-size: 100%; block-size: 0.5rem; border-radius: var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)); background: color-mix(in oklab, currentColor 10%, transparent); }
   input::-moz-range-progress { block-size: 0.5rem; background: currentColor; }
   input::-moz-range-thumb { inline-size: 0.5rem; block-size: 0.5rem; border: 0.25rem solid currentColor; border-radius: calc(var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)) + 0.25rem); background: var(--caelestis-surface, var(--color-base-100, white)); }
   .readout { flex: 0 0 2.75rem; color: var(--caelestis-muted-text, color-mix(in oklch, currentColor 60%, transparent)); text-align: end; font-size: 0.72rem; font-variant-numeric: tabular-nums; }
   .compact .readout { flex-basis: 2.5rem; }
   button { display: grid; flex: 0 0 1.5rem; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; }
+  button[hidden] { visibility: hidden; }
   button:hover { background: color-mix(in oklab, currentColor 10%, transparent); }
   button svg { inline-size: 0.75rem; block-size: 0.75rem; fill: currentColor; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--caelestis-focus, currentColor); outline-offset: 2px; }

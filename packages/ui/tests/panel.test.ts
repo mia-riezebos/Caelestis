@@ -79,6 +79,195 @@ const tree: TemplateTreeModel = {
 }
 
 describe('panel shell', () => {
+  it.each([
+    ['Move to folder', 'move', false],
+    ['Replace artwork', 'uploadFile', false],
+    ['Go to', 'search', true],
+  ] as const)('uses the declared popout behavior for %s', async (label, icon, returnToCanvas) => {
+    const panel = new CaelestisPanel()
+    panel.model = model({ tree })
+    document.body.append(panel)
+    await tick()
+    const root = panel.shadowRoot
+    root?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.click()
+    await tick()
+    panel.model = model({
+      tree: {
+        ...tree,
+        contextMenu: {
+          id: 'operation',
+          rowKey: 'local',
+          x: 0,
+          y: 0,
+          items: [{ id: 'run', label, icon, ...(returnToCanvas ? { returnToCanvas } : {}) }],
+        },
+      },
+    })
+    await tick()
+    root?.querySelector<HTMLButtonElement>('.context-menu [role="menuitem"]')?.click()
+    await tick()
+    expect(Boolean(root?.querySelector('dialog')?.open)).toBe(!returnToCanvas)
+  })
+
+  it('limits grid browsing to the modal and restores the sidebar on dismissal', async () => {
+    const panel = new CaelestisPanel()
+    panel.model = model({ tree: { ...tree, displayMode: 'grid' } })
+    document.body.append(panel)
+    await tick()
+    const root = panel.shadowRoot
+    if (root === null) throw new Error('missing panel root')
+    const click = (label: string) =>
+      root.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)?.click()
+    expect(root.querySelector('.preview-grid')).toBeNull()
+    expect(root.querySelector('[aria-label="Template display"]')).toBeNull()
+    expect(root.querySelector('[aria-label="Pop out menu"]')?.getAttribute('aria-haspopup')).toBe(
+      'dialog',
+    )
+    for (const dismiss of ['cancel', 'Return to sidebar', 'Close']) {
+      click('Pop out menu')
+      await tick()
+      const dialog = root.querySelector('dialog')
+      expect(dialog?.open).toBe(true)
+      expect(dialog?.querySelector('.preview-grid')).not.toBeNull()
+      expect(dialog?.querySelector('[aria-label="Template display"]')).not.toBeNull()
+      expect(dialog?.querySelector('[role="separator"]')).toBeNull()
+      if (dismiss === 'cancel') dialog?.dispatchEvent(new Event('cancel', { cancelable: true }))
+      else click(dismiss)
+      await tick()
+      await tick()
+      expect(root.querySelector('dialog')).toBeNull()
+      expect(root.querySelector('.preview-grid')).toBeNull()
+      expect(root.activeElement?.getAttribute('aria-label')).toBe('Pop out menu')
+    }
+  })
+
+  it('moves keyboard focus into card actions and returns it when dismissed', async () => {
+    const panel = new CaelestisPanel()
+    const row = {
+      type: 'row',
+      key: 'art',
+      name: 'Artwork',
+      icon: 'image',
+      depth: 0,
+      parentKey: null,
+      container: false,
+      expanded: false,
+      visible: true,
+      setSize: 1,
+      positionInSet: 1,
+      contextMenu: true,
+    } as const
+    const initial = {
+      ...tree,
+      entries: [row, { ...row, key: 'other', name: 'Other artwork' }],
+      displayMode: 'grid',
+    } as const
+    panel.model = model({ tree: initial })
+    document.body.append(panel)
+    await tick()
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.click()
+    await tick()
+    const root = panel.shadowRoot
+    const trigger = root?.querySelector<HTMLButtonElement>('[aria-label="Actions for Artwork"]')
+    if (root === null || root === undefined || trigger === null || trigger === undefined)
+      throw new Error('missing menu trigger')
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    trigger.focus()
+    panel.model = model({
+      tree: {
+        ...initial,
+        contextMenu: {
+          id: 'actions',
+          rowKey: 'art',
+          x: 0,
+          y: 0,
+          items: [
+            { id: 'rename', label: 'Rename', icon: 'rename' },
+            { id: 'move', label: 'Move', icon: 'move' },
+          ],
+        },
+      },
+    })
+    await tick()
+    await tick()
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(
+      root.querySelector('[aria-label="Actions for Other artwork"]')?.getAttribute('aria-expanded'),
+    ).toBe('false')
+    expect(root.activeElement?.textContent).toContain('Rename')
+    root.activeElement?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    )
+    expect(root.activeElement?.textContent).toContain('Move')
+    const escapeKey = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    })
+    root.activeElement?.dispatchEvent(escapeKey)
+    expect(escapeKey.defaultPrevented).toBe(true)
+    expect(root.querySelector('dialog')?.open).toBe(true)
+    panel.model = model({ tree: initial })
+    await tick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    expect(root.activeElement).toBe(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  })
+  it('switches display modes without replacing rows or losing focus and progress disclosure', async () => {
+    const panel = new CaelestisPanel()
+    const entries: TemplateTreeModel['entries'] = [
+      {
+        type: 'row',
+        key: 'art',
+        name: 'Artwork',
+        icon: 'image',
+        depth: 0,
+        parentKey: null,
+        container: false,
+        expanded: false,
+        visible: true,
+        setSize: 1,
+        positionInSet: 1,
+        progress: { completed: 1, mismatched: 1, unpainted: 2, known: 4, total: 4 },
+      },
+    ]
+    const initial = { ...tree, entries, focusedKey: 'art' }
+    panel.model = model({ tree: initial })
+    document.body.append(panel)
+    await tick()
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.click()
+    await tick()
+    const root = panel.shadowRoot
+    const row = root?.querySelector<HTMLElement>('[data-caelestis-tree-key="art"]')
+    if (root === null || root === undefined || row === null || row === undefined)
+      throw new Error('missing row')
+    root.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')?.click()
+    await tick()
+    const emitted = vi.fn()
+    panel.addEventListener('caelestis-panel-intent', emitted)
+    for (const displayMode of ['grid', 'tree'] as const) {
+      root
+        .querySelector<HTMLButtonElement>(
+          `[aria-label="${displayMode === 'grid' ? 'Preview grid view' : 'Tree view'}"]`,
+        )
+        ?.click()
+      expect(emitted).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          detail: { type: 'tree', intent: { type: 'display-mode', mode: displayMode } },
+        }),
+      )
+      panel.model = model({ tree: { ...initial, displayMode } })
+      await tick()
+      expect(root.querySelector('[data-caelestis-tree-key="art"]')).toBe(row)
+      expect(row.getAttribute('aria-current')).toBe('true')
+      expect(row.querySelector('[aria-label="Collapse progress"]') !== null).toBe(
+        displayMode === 'tree',
+      )
+      expect(row.classList.contains('preview-card')).toBe(displayMode === 'grid')
+    }
+  })
   it('renders the active view around slotted host content', async () => {
     const panel = new CaelestisPanel()
     panel.model = model({ view: 'settings' })
@@ -175,6 +364,7 @@ describe('panel shell', () => {
         ...tree,
         contextMenu: {
           id: 'menu-1',
+          rowKey: 'local',
           x: 20,
           y: 30,
           items: [{ id: 'delete', label: 'Delete', icon: 'trash' }],

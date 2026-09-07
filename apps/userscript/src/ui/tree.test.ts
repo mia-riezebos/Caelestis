@@ -25,6 +25,7 @@ import {
   probeServer,
   setState,
 } from '../state.js'
+import { setTemplateDisplayMode } from './display-mode.js'
 import { templateTreeAdapter, templateTreeKeyFor } from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
@@ -121,6 +122,9 @@ describe('tree model adapter', () => {
           expanded: false,
           positionInSet: 1,
           setSize: 1,
+          actions: expect.arrayContaining([
+            expect.objectContaining({ label: 'Import template', returnToCanvas: true }),
+          ]),
         }),
         expect.objectContaining({ type: 'action', key: 'add-server' }),
       ]),
@@ -138,6 +142,54 @@ describe('tree model adapter', () => {
 })
 
 describe('tree identity and ordering', () => {
+  it('uses the same grouped, searched, and sorted catalog in both display modes', () => {
+    const saved = new Map<string, string>()
+    vi.stubGlobal('GM_getValue', (key: string) => saved.get(key))
+    vi.stubGlobal('GM_setValue', (key: string, value: string) => saved.set(key, value))
+    const connected = server(SERVER_ID, 0)
+    setState({ servers: [connected] })
+    const folder = { id: NODE_ID, parentId: null, path: '/art', name: 'Art', createdAt: 1 }
+    const template = {
+      id: TEMPLATE_A,
+      nodeId: NODE_ID,
+      name: 'City',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 10, minY: 20, maxX: 40, maxY: 70 },
+      chunks: [],
+    }
+    acceptServerSnapshot(connected, {
+      nodes: [folder],
+      templates: [template, { ...template, id: 'root-art', nodeId: null, name: 'Root artwork' }],
+    })
+    for (const query of ['', 'city', 'missing']) {
+      for (const field of ['custom', 'name', 'size', 'progress', 'recent', 'mismatched'] as const) {
+        setState({ sort: { field, direction: 'asc' } })
+        setTemplateDisplayMode('tree')
+        const tree = templateTreeAdapter(callbacks, vi.fn(), query).model
+        setTemplateDisplayMode('grid')
+        const grid = templateTreeAdapter(callbacks, vi.fn(), query).model
+        expect(grid).toEqual({ ...tree, displayMode: 'grid' })
+      }
+    }
+    const entries = templateTreeAdapter(callbacks, vi.fn()).model.entries
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        key: serverTemplateTreeKey(connected, TEMPLATE_A),
+        parentKey: nodeTreeKey(connected, NODE_ID),
+        preview: { width: 30, height: 50, ownership: 'Server · Example', indices: undefined },
+      }),
+    )
+    setState({ collapsed: [nodeTreeKey(connected, NODE_ID)] })
+    const collapsed = templateTreeAdapter(callbacks, vi.fn()).model.entries
+    expect(
+      collapsed.some((entry) => entry.key === serverTemplateTreeKey(connected, TEMPLATE_A)),
+    ).toBe(false)
+    setTemplateDisplayMode('tree')
+    expect(templateTreeAdapter(callbacks, vi.fn()).model.entries).toEqual(collapsed)
+    setState({ sort: { field: 'custom', direction: 'asc' } })
+  })
   it('replaces tree rows when a manifest arrives outside an explicit refresh', () => {
     const connected = server(SERVER_ID, 0)
     setState({ servers: [connected] })

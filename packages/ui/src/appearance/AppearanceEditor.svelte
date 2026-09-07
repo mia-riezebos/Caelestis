@@ -195,6 +195,7 @@
 <style>
   .editor { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 400 0.875rem/1.3 ui-sans-serif, system-ui, sans-serif; }
   .editor.compact { padding: 0; font-size: 0.75rem; }
+  .editor:not(.compact) > section { max-inline-size: 48rem; margin-inline: auto; }
   .defaults { display: flex; align-items: center; gap: 0.5rem; color: var(--caelestis-muted-text); font-size: 0.75rem; font-weight: 400; white-space: nowrap; }
   .defaults input { --toggle-size: 1rem; --toggle-padding: calc(var(--toggle-size) * 0.125); appearance: none; display: inline-grid; flex-shrink: 0; grid-template-columns: 0fr 1fr 1fr; place-content: center; inline-size: calc((var(--toggle-size) * 2) - (var(--border, 1px) + var(--toggle-padding)) * 2); block-size: var(--toggle-size); margin: 0; padding: var(--toggle-padding); border: var(--border, 1px) solid currentColor; border-radius: calc(var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)) + var(--toggle-padding) + var(--border, 1px)); color: color-mix(in oklab, var(--caelestis-text) 50%, transparent); cursor: pointer; }
   .defaults input::before { content: ''; position: relative; grid-column: 2; grid-row: 1; inline-size: 100%; block-size: 100%; aspect-ratio: 1; border-radius: var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)); background: currentColor; }
@@ -202,6 +203,9 @@
   fieldset { min-inline-size: 0; margin: 0; padding: 0; border: 0; }
   fieldset:disabled { opacity: 0.7; pointer-events: none; }
   .sliders, .marker-settings { padding-inline: var(--caelestis-content-inset, 1rem); }
+  .sliders { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); column-gap: 0.75rem; }
+  .sliders :global(label) { grid-column: 1 / -1; grid-template-columns: subgrid; }
+  .compact .sliders { column-gap: 0.5rem; }
   .compact .sliders, .compact .marker-settings { padding-inline: 0.25rem; }
   .disabled { opacity: 0.45; }
   .presets, .same-colour, .colour-toolbar { display: flex; align-items: center; gap: 0.25rem; }

@@ -2,6 +2,8 @@
   import { formatCount, formatPixels } from '@caelestis/shared'
   import Button from '../foundations/Button.svelte'
   import SortMenu from './SortMenu.svelte'
+  import TemplatePreview from './TemplatePreview.svelte'
+  import ProgressDetails from './ProgressDetails.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import TemplateLifecycle from '../template-state/TemplateLifecycle.svelte'
@@ -17,13 +19,17 @@
     TreeRowModel,
   } from '../types.js'
 
-  let { model, onIntent }: { model: TemplateTreeModel; onIntent?: (intent: TemplateTreeIntent) => void } = $props()
+  let { model, allowGrid = false, onIntent }: { model: TemplateTreeModel; allowGrid?: boolean; onIntent?: (intent: TemplateTreeIntent) => void } = $props()
   let query = $state('')
   let activeKey = $state<string | null>(null)
   let renameDraft = $state('')
   let draggingKey = $state<string | null>(null)
   let dropTarget = $state<{ key: string; position: 'before' | 'inside' | 'after' } | null>(null)
   let treeElement = $state<HTMLElement>()
+  let contextMenuElement = $state<HTMLElement>()
+  let progressKey = $state<string | null>(null)
+  let progressPane = $state<HTMLElement>()
+  let browserWidth = $state(0)
   const disclosures = new SvelteMap<string, 'expanded' | 'colours'>()
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   let admittedQuery = ''
@@ -32,6 +38,31 @@
   let admittedMenuId: string | undefined
   let menuInvoker: HTMLElement | null = null
   let operationSelection = $state('')
+  const grid = $derived(allowGrid && model.displayMode === 'grid')
+  const progressEntry = $derived(model.entries.find((entry): entry is TreeRowModel => entry.type === 'row' && entry.key === progressKey && entry.progress !== undefined))
+  const minimumSplitWidth = 672
+  const narrowDetails = $derived(browserWidth < minimumSplitWidth)
+  $effect(() => { if (!grid || progressEntry === undefined) progressKey = null })
+
+  const showProgress = async (entry: TreeRowModel): Promise<void> => {
+    progressKey = entry.key
+    await tick()
+    progressPane?.querySelector<HTMLButtonElement>('button')?.focus()
+  }
+  const closeProgress = (): void => {
+    const entry = progressEntry
+    progressKey = null
+    if (entry !== undefined) void focusRowAction(entry.key, `View progress for ${entry.name}`)
+  }
+  const folderPaths = $derived.by(() => {
+    const paths = new Map<string, string>()
+    for (const entry of model.entries) {
+      if (entry.type !== 'row' || !entry.container) continue
+      const parent = entry.parentKey === null ? undefined : paths.get(entry.parentKey)
+      paths.set(entry.key, entry.parentKey === null ? '' : parent ? `${parent} / ${entry.name}` : entry.name)
+    }
+    return paths
+  })
 
   const activeTreeElement = (): HTMLElement | null => {
     const root = treeElement?.getRootNode()
@@ -57,6 +88,9 @@
     admittedMenuId = next
     if (next !== undefined) {
       menuInvoker = activeTreeElement()
+      void tick().then(() => {
+        if (model.contextMenu?.id === next) contextMenuElement?.querySelector<HTMLButtonElement>('button')?.focus()
+      })
     } else if (previous !== undefined) {
       const target = menuInvoker
       menuInvoker = null
@@ -150,8 +184,8 @@
       return
     }
     let next: TreeRowModel | undefined
-    if (event.key === 'ArrowDown') next = rows[index + 1]
-    else if (event.key === 'ArrowUp') next = rows[index - 1]
+    if (event.key === 'ArrowDown' || (grid && !row.container && event.key === 'ArrowRight')) next = rows[index + 1]
+    else if (event.key === 'ArrowUp' || (grid && !row.container && event.key === 'ArrowLeft')) next = rows[index - 1]
     else if (event.key === 'Home') next = rows[0]
     else if (event.key === 'End') next = rows.at(-1)
     else if (event.key === 'ArrowRight' && row.container && !row.expanded) {
@@ -205,8 +239,29 @@
 
   const dismissTransient = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
-    if (model.contextMenu !== undefined) emit({ type: 'dismiss-context-menu', menuId: model.contextMenu.id })
-    else if (model.operation !== undefined && model.operation.cancellable !== false) emit({ type: 'tree-operation-cancel', operationId: model.operation.id })
+    if (model.contextMenu !== undefined) {
+      event.preventDefault()
+      emit({ type: 'dismiss-context-menu', menuId: model.contextMenu.id })
+    } else if (model.operation !== undefined && model.operation.cancellable !== false) {
+      event.preventDefault()
+      emit({ type: 'tree-operation-cancel', operationId: model.operation.id })
+    } else if (progressKey !== null) {
+      event.preventDefault()
+      closeProgress()
+    }
+  }
+
+  const navigateContextMenu = (event: KeyboardEvent): void => {
+    const buttons = Array.from(contextMenuElement?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+    const current = buttons.indexOf(event.target as HTMLButtonElement)
+    let index: number
+    if (event.key === 'ArrowDown') index = (current + 1) % buttons.length
+    else if (event.key === 'ArrowUp') index = (current - 1 + buttons.length) % buttons.length
+    else if (event.key === 'Home') index = 0
+    else if (event.key === 'End') index = buttons.length - 1
+    else return
+    event.preventDefault()
+    buttons[index]?.focus()
   }
 
   const commitRename = (row: TreeRowModel): void => {
@@ -231,6 +286,16 @@
     <input type="search" placeholder="Search templates" aria-label="Search templates" value={query} oninput={search} />
   </label>
   <SortMenu sort={model.sort} onSort={(sort) => emit({ type: 'sort', sort })} />
+  {#if allowGrid}
+  <div class="view-switcher" role="group" aria-label="Template display">
+    <button type="button" aria-label="Tree view" title="Tree view" aria-pressed={!grid} onclick={() => emit({ type: 'display-mode', mode: 'tree' })}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h6v4H3zm8 0h10v4H11zM5 9h2v4h3v2H5zm7 2h9v4h-9zM5 17h2v2h3v2H5zm7 0h9v4h-9z" /></svg>
+    </button>
+    <button type="button" aria-label="Preview grid view" title="Preview grid view" aria-pressed={grid} onclick={() => emit({ type: 'display-mode', mode: 'grid' })}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z" /></svg>
+    </button>
+  </div>
+  {/if}
 </div>
 
 {#if model.operation !== undefined}
@@ -255,9 +320,12 @@
 
 {#if model.contextMenu !== undefined}
   <div
+    bind:this={contextMenuElement}
     data-caelestis-context-menu
     class="context-menu"
     role="menu"
+    tabindex="-1"
+    onkeydown={navigateContextMenu}
     style:left={`max(0.5rem, min(${model.contextMenu.x}px, calc(100vw - 11.5rem)))`}
     style:top={`max(0.5rem, min(${model.contextMenu.y}px, calc(100vh - 18rem)))`}
   >
@@ -270,18 +338,23 @@
   </div>
 {/if}
 
-<div class="scroller" data-caelestis-scroller>
-  <div bind:this={treeElement} class="tree" role="tree" tabindex="-1" ondrop={drop} ondragend={endDrag}>
+<div class="browser" bind:clientWidth={browserWidth}>
+<div class="scroller" data-caelestis-scroller inert={progressEntry !== undefined && narrowDetails}>
+  <div bind:this={treeElement} class="tree" class:preview-grid={grid} role="tree" aria-label="Templates" tabindex="-1" ondrop={drop} ondragend={endDrag}>
     {#each model.entries as entry (entry.key)}
       {#if entry.type === 'row'}
         {@const requestedDisclosure = disclosures.get(entry.key)}
         {@const canShowExpandedProgress = entry.progress !== undefined && (!entry.container || entry.expanded)}
-        {@const disclosure = !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
+        {@const disclosure = grid || !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
         {@const tallHeading = entry.progress !== undefined || (entry.actions?.length ?? 0) > 0 || (entry.leadingActions?.length ?? 0) > 0}
         {@const connectorWidth = (entry.branches?.length ?? 0) * branchIndent + (entry.container ? 0 : leafHeadingIndent)}
         {@const progressDetailOffset = entry.container ? leafHeadingIndent : 0}
         {@const alarmKind = entry.descendantAlarmKind ?? entry.lifecycle?.alarmKind ?? (entry.lifecycle?.griefed ? 'sustained-griefing' : undefined)}
+        {@const card = grid && !entry.container}
+        {@const folderPath = entry.parentKey === null ? undefined : folderPaths.get(entry.parentKey)}
         <div
+          class:preview-card={card}
+          class:folder-heading={grid && entry.container}
           class:tall-heading={tallHeading}
           class:muted={entry.muted}
           class:focused-template={model.focusedKey === entry.key}
@@ -302,7 +375,7 @@
           tabindex={activeKey === null ? (entry.positionInSet === 1 && entry.depth === 0 ? 0 : -1) : activeKey === entry.key ? 0 : -1}
           data-caelestis-tree-key={entry.key}
           draggable={entry.draggable === true}
-          style:padding-inline-start={connectorWidth === 0 ? '0.5rem' : `calc(0.5rem + ${connectorWidth}px)`}
+          style:padding-inline-start={card || connectorWidth === 0 ? '0.5rem' : `calc(0.5rem + ${grid ? Math.min(entry.depth, 3) * branchIndent : connectorWidth}px)`}
           style:--progress-detail-offset={`${progressDetailOffset}px`}
           onclick={(event) => clickRow(event, entry)}
           onkeydown={(event) => keydown(event, entry)}
@@ -310,7 +383,18 @@
           ondragstart={(event) => startDrag(event, entry)}
           ondragover={(event) => dragOver(event, entry)}
         >
-          {#if connectorWidth > 0}
+          {#if card && entry.preview !== undefined}
+            {@const navigation = entry.leadingActions?.find((item) => item.icon === 'search')}
+            <button class="artwork" type="button" aria-label={`Go to ${entry.name}`} disabled={navigation === undefined} onclick={(event) => { if (navigation !== undefined) action(entry, navigation, event) }}>
+              <TemplatePreview preview={entry.preview} name={entry.name} />
+            </button>
+            <div class="card-caption">
+              <span title={`${entry.preview.ownership}${folderPath ? ` / ${folderPath}` : ''}`}>{entry.preview.ownership}</span>
+              <span>{entry.preview.width}×{entry.preview.height}</span>
+            </div>
+            {#if folderPath}<div class="folder-path" title={folderPath}>{folderPath}</div>{/if}
+          {/if}
+          {#if connectorWidth > 0 && !grid}
             {@const current = (entry.branches?.length ?? 1) - 1}
             <span class="connector" style:inline-size={`${connectorWidth}px`} aria-hidden="true">
               {#each entry.branches?.slice(0, -1) ?? [] as continued, index}
@@ -334,12 +418,12 @@
               </button>
             {/each}
             {#if model.renamingKey === entry.key}
-              <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') emit({ type: 'cancel-rename', key: entry.key }) }} />
+              <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') { event.preventDefault(); emit({ type: 'cancel-rename', key: entry.key }) } }} />
             {:else}
               <span class="name" title={entry.name}>{entry.name}</span>
             {/if}
-            {#if entry.meta !== undefined}<span class="meta">{entry.meta}</span>{/if}
-            {#if entry.progress !== undefined && disclosure === undefined}
+            {#if entry.meta !== undefined && !card}<span class="meta">{entry.meta}</span>{/if}
+            {#if entry.progress !== undefined && disclosure === undefined && !card}
               <span class="row-tail">
                 <span class="progress" aria-label={`${percent(entry.progress)}% complete`}>
                   <ProgressMeter progress={entry.progress} size="sm" />
@@ -350,12 +434,12 @@
                       <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
                     </button>
                   {/each}
-                  <button class="icon-action" type="button" title="Expand progress" aria-label="Expand progress" onclick={(event) => { event.stopPropagation(); if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
+                  <button class="icon-action" type="button" title={grid ? `View progress for ${entry.name}` : 'Expand progress'} aria-label={grid ? `View progress for ${entry.name}` : 'Expand progress'} aria-expanded={grid ? progressKey === entry.key : undefined} onclick={(event) => { event.stopPropagation(); if (grid) { void showProgress(entry); return }; if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
                     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
                   </button>
                 </span>
               </span>
-            {:else if (entry.actions?.length ?? 0) > 0 || (entry.progress !== undefined && disclosure !== undefined)}
+            {:else if (entry.actions?.length ?? 0) > 0 || (entry.progress !== undefined && disclosure !== undefined) || card}
               <span class="actions">
                 {#each entry.actions ?? [] as item (item.id)}
                   <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
@@ -369,11 +453,21 @@
                 {/if}
               </span>
             {/if}
+            {#if grid && entry.contextMenu}
+              <button class="icon-action" type="button" title={`Actions for ${entry.name}`} aria-label={`Actions for ${entry.name}`} aria-haspopup="menu" aria-expanded={model.contextMenu?.rowKey === entry.key} onclick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); emit({ type: 'context-menu', key: entry.key, x: box.left, y: box.bottom }) }}>
+                <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.kebab} /></svg>
+              </button>
+            {/if}
             <label class="visibility" title={entry.visible ? `Hide ${entry.name}` : `Show ${entry.name}`}>
               <input type="checkbox" checked={entry.visible} aria-label={`Show ${entry.name}`} onclick={(event) => event.stopPropagation()} onchange={(event) => emit({ type: 'toggle-visible', key: entry.key, visible: event.currentTarget.checked })} />
               <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
             </label>
           </div>
+          {#if card && entry.progress !== undefined}
+            <button type="button" class="card-progress" aria-label={`View progress for ${entry.name}`} title={`View progress for ${entry.name}`} aria-expanded={progressKey === entry.key} onclick={(event) => { event.stopPropagation(); void showProgress(entry) }}>
+              <ProgressMeter progress={entry.progress} size="sm" /><Icon name="caret" size="0.875rem" />
+            </button>
+          {/if}
           {#if disclosure !== undefined && entry.progress !== undefined}
             <div class="progress-detail">
               <div class="progress-disclosure">
@@ -426,16 +520,30 @@
     {/each}
   </div>
 </div>
+{#if grid && progressEntry?.progress !== undefined}
+  <div class="progress-pane" class:overlaid={narrowDetails} bind:this={progressPane}>
+    <ProgressDetails name={progressEntry.name} progress={progressEntry.progress} colours={progressEntry.colourProgress} onClose={closeProgress} />
+  </div>
+{/if}
+</div>
 
 <style>
   :global(*) { box-sizing: border-box; }
-  .toolbar { position: relative; z-index: 2; display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; margin: 0.75rem var(--caelestis-content-inset, 1rem) 0; }
+  .toolbar { position: relative; z-index: 2; display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; margin: 0.75rem var(--caelestis-content-inset, 1rem); }
+  .view-switcher { display: flex; flex: 0 0 auto; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); overflow: hidden; }
+  .view-switcher button { display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; border: 0; background: var(--caelestis-surface); color: var(--caelestis-muted-text); cursor: pointer; }
+  .view-switcher button[aria-pressed='true'] { background: var(--caelestis-raised-surface); color: var(--caelestis-primary); box-shadow: inset 0 -2px var(--caelestis-primary); }
+  .view-switcher button:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
+  .view-switcher svg { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .search { display: flex; flex: 1; align-items: center; gap: 0.5rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.75rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   .search svg { inline-size: 1rem; block-size: 1rem; opacity: 0.55; fill: currentColor; }
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
   select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   select { padding-inline: 0.75rem 2rem; }
-  .scroller { flex: 1; min-block-size: 0; overflow: auto; }
+  .browser { position: relative; display: flex; flex: 1; min-block-size: 0; min-inline-size: 0; overflow: hidden; }
+  .scroller { flex: 1; min-block-size: 0; min-inline-size: 0; overflow: auto; container-type: inline-size; }
+  .progress-pane { flex: 0 0 20rem; min-block-size: 0; border-inline-start: 1px solid var(--caelestis-border); background: var(--caelestis-surface); }
+  .progress-pane.overlaid { position: absolute; inset: 0; z-index: 3; border-inline-start: 0; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .row { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
   .row-heading { display: flex; flex-wrap: nowrap; align-items: center; gap: 0.25rem; min-inline-size: 0; white-space: nowrap; }
@@ -527,4 +635,33 @@
     .row:hover .row-tail > .progress, .row:focus-within .row-tail > .progress { opacity: 0; pointer-events: none; }
   }
   @media (hover: none) { .row-tail > .progress { visibility: hidden; } }
+  .tree.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); align-content: start; align-items: start; gap: 0.5rem; padding: 0.5rem; }
+  .preview-grid > :not(.preview-card) { grid-column: 1 / -1; min-inline-size: 0; margin-inline: 0; }
+  .preview-grid .folder-heading { border-block-end: 1px solid var(--caelestis-border); border-radius: 0; }
+  .row.preview-card { --preview-radius: 0.5rem; min-inline-size: 0; margin: 0; padding: 0.5rem; gap: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--preview-radius); background: var(--caelestis-surface); }
+  .preview-card.focused-template { border-color: color-mix(in oklab, var(--caelestis-primary) 65%, var(--caelestis-border)); background: color-mix(in oklab, var(--caelestis-primary) 8%, var(--caelestis-surface)); }
+  .preview-card.focused-template::before { display: none; }
+  .preview-card.regression-alarm, .preview-card.grief-alarm { background: color-mix(in oklab, var(--row-alarm-color) 14%, var(--caelestis-surface)); }
+  .artwork { display: block; inline-size: 100%; padding: 0; border: 0; border-radius: 0.25rem; overflow: hidden; color: inherit; cursor: pointer; }
+  .artwork:disabled { cursor: default; }
+  .artwork:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
+  .card-caption { display: flex; justify-content: space-between; gap: 0.5rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .card-caption span:first-child { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-caption span:last-child { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .folder-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .preview-card .row-heading { flex-wrap: wrap; row-gap: 0.25rem; }
+  .preview-card .name, .preview-card .rename { order: -1; flex: 1 0 100%; min-inline-size: 0; font-weight: 600; }
+  .preview-card .rename { inline-size: 100%; }
+  .preview-grid .actions { opacity: 1; pointer-events: auto; }
+  .preview-card .progress-detail { padding: 0; }
+  .card-progress { display: flex; align-items: center; gap: 0.375rem; inline-size: 100%; min-block-size: 1.5rem; padding: 0; border: 0; border-radius: 0.25rem; background: transparent; color: inherit; cursor: pointer; }
+  .card-progress:hover { background: var(--caelestis-raised-surface); }
+  .card-progress:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
+  .card-progress :global(.meter-wrap) { flex: 1; }
+  .preview-grid .folder-heading .row-tail { display: flex; flex: 0 0 auto; inline-size: auto; }
+  .preview-grid .folder-heading .row-tail > .progress { display: none; }
+  @container (max-width: 24rem) {
+    .preview-grid .folder-heading .row-heading { flex-wrap: wrap; }
+    .preview-grid .folder-heading .name { flex: 1 0 calc(100% - 4rem); min-inline-size: 0; }
+  }
 </style>

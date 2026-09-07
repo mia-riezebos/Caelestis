@@ -2,6 +2,7 @@ import {
   type AlarmKind,
   sameTemplateSurface,
   type TemplateSurface,
+  WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
   WPLACE_PALETTE,
 } from '@caelestis/shared'
@@ -57,6 +58,7 @@ import {
 } from '../templates/mismatch.js'
 import { nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { templateDisplayMode } from './display-mode.js'
 import {
   emptyProgress,
   freshestColourProgress,
@@ -326,6 +328,7 @@ const renderLevel = (
         )
       },
       ...(item.meta === undefined ? {} : { meta: item.meta }),
+      ...(item.preview === undefined ? {} : { preview: item.preview }),
       descendantAlarmKind: item.descendantAlarmKind,
       ...(item.lifecycle === undefined ? {} : { lifecycle: item.lifecycle }),
       ...(item.progress === undefined ? {} : { progress: item.progress }),
@@ -660,6 +663,7 @@ const buildTree = <Result>(
             {
               icon: 'uploadFile',
               label: 'Import template',
+              returnToCanvas: true,
               run: () => callbacks.onImportTemplate(target),
             },
           ]
@@ -765,6 +769,7 @@ const buildTree = <Result>(
                       {
                         icon: 'uploadFile' as const,
                         label: 'Import template',
+                        returnToCanvas: true,
                         run: () => callbacks.onImportTemplate(nodeTarget),
                       },
                     ],
@@ -798,6 +803,15 @@ const buildTree = <Result>(
               name: template.name,
               kind: 'image',
               childrenOf: null,
+              preview: {
+                width:
+                  template.bbox.maxX > template.bbox.minX
+                    ? template.bbox.maxX - template.bbox.minX
+                    : WORLD_PIXELS - template.bbox.minX + template.bbox.maxX,
+                height: template.bbox.maxY - template.bbox.minY,
+                indices: drawn?.serverVersion === template.version ? drawn.indices : undefined,
+                ownership: `Server · ${server.info?.name ?? server.url}`,
+              },
               createdAt: template.updatedAt,
               updatedAt: template.updatedAt,
               totalPixels: template.totalPixels,
@@ -829,6 +843,7 @@ const buildTree = <Result>(
                 {
                   icon: 'search' as const,
                   label: 'Go to',
+                  returnToCanvas: true,
                   run: () => goToServerTemplate(template.bbox, surface),
                 },
               ],
@@ -928,6 +943,7 @@ const buildTree = <Result>(
               {
                 icon: 'uploadFile',
                 label: 'Import template',
+                returnToCanvas: true,
                 run: () => callbacks.onImportTemplate(folderTarget),
               },
             ],
@@ -950,6 +966,12 @@ const buildTree = <Result>(
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
+            preview: {
+              width: template.width,
+              height: template.height,
+              indices: template.indices,
+              ownership: 'Local',
+            },
             updatedAt: template.updatedAt,
             totalPixels: template.opaque,
             mismatched: drawnProgress(template).mismatched,
@@ -967,6 +989,7 @@ const buildTree = <Result>(
               {
                 icon: 'search' as const,
                 label: 'Go to',
+                returnToCanvas: true,
                 run: () => goToLocalTemplate(template.id),
               },
             ],
@@ -1092,7 +1115,12 @@ export const templateTreeAdapter = (
     source.map((action, index) => {
       const id = `${group}-${index}`
       actions.set(`${key}:${id}`, action.run)
-      return { id, label: action.label, icon: actionIcon(action.icon) }
+      return {
+        id,
+        label: action.label,
+        icon: actionIcon(action.icon),
+        ...(action.returnToCanvas === undefined ? {} : { returnToCanvas: action.returnToCanvas }),
+      }
     })
 
   const output: TreeOutput<void> = {
@@ -1116,6 +1144,7 @@ export const templateTreeAdapter = (
         ...(options.forceExpanded === true ? { forceExpanded: true } : {}),
         ...(options.muted === true ? { muted: true } : {}),
         ...(options.meta === undefined ? {} : { meta: options.meta }),
+        ...(options.preview === undefined ? {} : { preview: options.preview }),
         descendantAlarmKind: options.descendantAlarmKind,
         ...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
         ...(progress === undefined ? {} : { progress }),
@@ -1162,6 +1191,7 @@ export const templateTreeAdapter = (
         id: 'run',
         label,
         icon: key === 'add-server' ? 'extension' : 'uploadFile',
+        returnToCanvas: key === 'local-import',
       } as const
       actions.set(`${key}:run`, run)
       entries.push({
@@ -1200,6 +1230,7 @@ export const templateTreeAdapter = (
   const model: TemplateTreeModel = {
     query,
     sort: getState().sort,
+    displayMode: templateDisplayMode(),
     entries,
     ...(renamingKey === null ? {} : { renamingKey }),
   }

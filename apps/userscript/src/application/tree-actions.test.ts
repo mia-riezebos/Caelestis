@@ -196,6 +196,9 @@ it('dispatches a typed menu selection without a DOM-owned action list', () => {
   const menu = treeActionPresentation().contextMenu
   const rename = menu?.items.find(({ label }) => label === 'Rename')
   if (menu === undefined || rename === undefined) throw new Error('missing rename menu item')
+  expect(menu.rowKey).toBe('lf:folder')
+  expect(menu.items.find(({ label }) => label === 'Import template')?.returnToCanvas).toBe(true)
+  expect(rename.returnToCanvas).toBeUndefined()
 
   expect(
     handleTreeActionPresentationIntent({

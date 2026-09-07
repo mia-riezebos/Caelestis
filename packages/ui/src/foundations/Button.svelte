@@ -7,6 +7,7 @@
     kind?: 'default' | 'primary' | 'danger' | 'danger-ghost' | 'ghost'
     size?: 'compact' | 'small' | 'normal'
     pressed?: boolean
+    popup?: 'dialog' | 'menu' | undefined
     disabled?: boolean
     ariaDisabled?: boolean
     iconOnly?: boolean
@@ -21,6 +22,7 @@
     kind = 'default',
     size = 'normal',
     pressed,
+    popup,
     disabled = false,
     ariaDisabled = false,
     iconOnly = false,
@@ -44,6 +46,7 @@
   aria-disabled={ariaDisabled}
   aria-label={iconOnly ? label : undefined}
   aria-pressed={pressed}
+  aria-haspopup={popup}
   data-caelestis-control={control}
   onclick={(event) => { if (!disabled && !ariaDisabled) onclick?.(event) }}
 >
