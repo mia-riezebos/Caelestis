@@ -54,6 +54,29 @@ const setup = async (override: Partial<WorkClient> = {}) => {
 }
 
 describe('work interactions', () => {
+  it('distinguishes removed folders in current details and the edit option', async () => {
+    const nodeId = '01900000-0000-7000-8000-000000000099'
+    const { root } = await setup({
+      list: async () => ({
+        items: [{ ...item, nodeId }],
+        canPlan: true,
+        canClaim: true,
+      }),
+    })
+    root.shadowRoot?.querySelector<HTMLButtonElement>('.item')?.click()
+    await settle()
+    expect(root.shadowRoot?.querySelector('article')?.textContent).toContain(
+      'Removed folder (00000099)',
+    )
+    button(root, 'Edit')?.click()
+    await settle()
+    expect(
+      [...(root.shadowRoot?.querySelectorAll('option') ?? [])].find(
+        (option) => option.textContent === 'Removed folder (00000099)',
+      ),
+    ).toBeDefined()
+  })
+
   it('preserves a draft and its revision through live updates, and cancels without writing', async () => {
     const { root, model, client } = await setup()
     root.shadowRoot?.querySelector<HTMLButtonElement>('.item')?.click()

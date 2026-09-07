@@ -97,7 +97,7 @@
   const nameForFolder = (id: string | null) =>
     id === null
       ? 'Server root'
-      : (model.nodes.find((node) => node.id === id)?.name ?? 'Removed folder')
+      : (model.nodes.find((node) => node.id === id)?.name ?? `Removed folder (${id.slice(-8)})`)
 
   const refresh = async (): Promise<void> => {
     const run = ++generation
@@ -377,7 +377,7 @@
           >Folder<select bind:value={draft.nodeId}
             ><option value={null}>Server root</option
             >{#if draft.nodeId !== null && !model.nodes.some((node) => node.id === draft?.nodeId)}<option
-                value={draft.nodeId}>Removed folder</option
+                value={draft.nodeId}>{nameForFolder(draft.nodeId)}</option
               >{/if}{#each model.nodes as node (node.id)}<option value={node.id}
                 >{node.name}</option
               >{/each}</select
