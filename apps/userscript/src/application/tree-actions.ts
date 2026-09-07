@@ -1136,6 +1136,7 @@ export const openContextMenu = (
   const id = `tree-menu-${++presentationId}`
   contextMenu = {
     id,
+    rowKey: target.key,
     x: event.clientX,
     y: event.clientY,
     items: entries.map(([glyph, label], index) => ({

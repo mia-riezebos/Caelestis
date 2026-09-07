@@ -428,7 +428,7 @@
               </span>
             {/if}
             {#if grid && entry.contextMenu}
-              <button class="icon-action" type="button" title={`Actions for ${entry.name}`} aria-label={`Actions for ${entry.name}`} onclick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); emit({ type: 'context-menu', key: entry.key, x: box.left, y: box.bottom }) }}>
+              <button class="icon-action" type="button" title={`Actions for ${entry.name}`} aria-label={`Actions for ${entry.name}`} aria-haspopup="menu" aria-expanded={model.contextMenu?.rowKey === entry.key} onclick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); emit({ type: 'context-menu', key: entry.key, x: box.left, y: box.bottom }) }}>
                 <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.kebab} /></svg>
               </button>
             {/if}

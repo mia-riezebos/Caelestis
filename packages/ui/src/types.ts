@@ -379,6 +379,8 @@ export interface TreeContextMenuItemModel {
 
 export interface TreeContextMenuModel {
   readonly id: string
+  /** The row whose actions this menu presents. */
+  readonly rowKey: string
   readonly x: number
   readonly y: number
   readonly items: readonly TreeContextMenuItemModel[]

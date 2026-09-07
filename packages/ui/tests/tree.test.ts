@@ -778,6 +778,7 @@ describe('template tree', () => {
           ...model,
           contextMenu: {
             id: 'menu-1',
+            rowKey: 'local:city',
             x: 20,
             y: 30,
             items: [{ id: 'delete', label: 'Delete', icon: 'trash', danger: true }],

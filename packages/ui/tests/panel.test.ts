@@ -95,7 +95,11 @@ describe('panel shell', () => {
       positionInSet: 1,
       contextMenu: true,
     } as const
-    const initial = { ...tree, entries: [row], displayMode: 'grid' } as const
+    const initial = {
+      ...tree,
+      entries: [row, { ...row, key: 'other', name: 'Other artwork' }],
+      displayMode: 'grid',
+    } as const
     panel.model = model({ tree: initial })
     document.body.append(panel)
     await tick()
@@ -103,12 +107,15 @@ describe('panel shell', () => {
     const trigger = root?.querySelector<HTMLButtonElement>('[aria-label="Actions for Artwork"]')
     if (root === null || root === undefined || trigger === null || trigger === undefined)
       throw new Error('missing menu trigger')
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
     trigger.focus()
     panel.model = model({
       tree: {
         ...initial,
         contextMenu: {
           id: 'actions',
+          rowKey: 'art',
           x: 0,
           y: 0,
           items: [
@@ -120,6 +127,10 @@ describe('panel shell', () => {
     })
     await tick()
     await tick()
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(
+      root.querySelector('[aria-label="Actions for Other artwork"]')?.getAttribute('aria-expanded'),
+    ).toBe('false')
     expect(root.activeElement?.textContent).toContain('Rename')
     root.activeElement?.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
@@ -129,6 +140,7 @@ describe('panel shell', () => {
     await tick()
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     expect(root.activeElement).toBe(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
   })
   it('switches display modes without replacing rows or losing focus and progress disclosure', async () => {
     const panel = new CaelestisPanel()
@@ -275,6 +287,7 @@ describe('panel shell', () => {
         ...tree,
         contextMenu: {
           id: 'menu-1',
+          rowKey: 'local',
           x: 20,
           y: 30,
           items: [{ id: 'delete', label: 'Delete', icon: 'trash' }],
