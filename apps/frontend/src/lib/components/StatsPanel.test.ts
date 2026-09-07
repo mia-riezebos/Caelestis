@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   getContributions: vi.fn(),
   getHistory: vi.fn(),
   getLeaderboard: vi.fn(),
+  getPainterHistory: vi.fn(),
 }))
 const live = vi.hoisted(() => ({ subscribe: vi.fn() }))
 
@@ -48,6 +49,7 @@ beforeEach(() => {
   api.getHistory.mockReset().mockResolvedValue({ buckets: [] })
   api.getContributions.mockReset().mockResolvedValue({ days: [] })
   api.getLeaderboard.mockReset().mockResolvedValue({ entries: [] })
+  api.getPainterHistory.mockReset().mockResolvedValue({ buckets: [] })
   live.subscribe.mockReset().mockReturnValue(() => undefined)
 })
 
@@ -261,69 +263,87 @@ describe('live counts', () => {
 })
 
 describe('painter pace', () => {
-  it('reads painter-days from the scope’s first day and draws the served painters', async () => {
-    // A scope created two hundred days ago: the server keeps its painter-days for its lifetime.
-    const now = 200 * DAY_SECONDS
-    vi.spyOn(Date, 'now').mockReturnValue(now * 1_000)
+  it('reads painter buckets for the enabled windows and draws them on the progress chart', async () => {
+    const bucketStart = seconds(NOW_SECONDS - 1_800)
+    api.getHistory.mockResolvedValue({
+      buckets: [
+        { templateId: 'live', resolution: 900, bucketStart, placed: 4, correct: 4, repairs: 0 },
+      ],
+    })
+    api.getPainterHistory.mockResolvedValue({
+      resolution: 900,
+      coverageStart: seconds(0),
+      buckets: [
+        {
+          templateId: 'live',
+          wplaceUserId: 5,
+          displayName: 'Ada',
+          resolution: 900,
+          bucketStart,
+          placed: 3,
+          correct: 3,
+          repairs: 0,
+        },
+      ],
+    })
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
         season: 0,
         liveDashboard: true,
-        templates: [template('old', 1_000, null)],
+        templates: [template('live', 0, null)],
         subscribeDashboard: live.subscribe,
-        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+        progress: { completed: 4, mismatched: 0, unpainted: 1, known: 5, total: 5 },
       },
     })
     flushSync()
-    expect(document.querySelector('[data-painter-pace] svg')).toBeNull()
-    const listener = live.subscribe.mock.calls[0]?.[2]
-    const contributionsFrom = live.subscribe.mock.calls[0]?.[1]
-    listener?.({
-      contributions: {
-        days: [
-          {
-            wplaceUserId: 5,
-            displayName: 'Ada',
-            templateId: 'old',
-            day: seconds(now - DAY_SECONDS),
-            placed: 3,
-            correct: 3,
-            repairs: 0,
-          },
-        ],
-      },
-      leaderboard: { entries: [] },
-    })
+
+    // One coarse read for the picker, then one retained tier per enabled window (1h and 6h).
+    await vi.waitFor(() => expect(api.getPainterHistory).toHaveBeenCalledTimes(3))
+    expect(api.getPainterHistory.mock.calls.map((call) => call[3]?.maxResolution).sort()).toEqual(
+      [10_800, 1_800, 21_600].sort(),
+    )
     await vi.waitFor(() =>
       expect(
-        document.querySelector('[data-painter-pace] path[data-painter-line="5"]'),
+        document.querySelector('path[data-painter-line="5"][data-pace-window="1h"]'),
       ).not.toBeNull(),
     )
-    expect(document.querySelectorAll('[data-painter-pace] [data-painter-toggle]')).toHaveLength(1)
-    // The request starts on the scope's creation day, so nothing before it is unavailable.
-    expect(contributionsFrom).toBe(0)
-    expect(document.querySelector('[data-painter-pace] [data-unavailable-before]')).toBeNull()
-    expect(document.querySelector('[data-painter-pace] [data-history-unavailable]')).toBeNull()
+    expect(
+      document.querySelector('path[data-painter-line="5"][data-pace-window="6h"]'),
+    ).not.toBeNull()
+    expect(document.querySelector('[data-painter-search]')).not.toBeNull()
+    expect(api.getContributions).not.toHaveBeenCalled()
+    // The heatmap read stays sixteen weeks: painter pace no longer rides on contribution days.
+    expect(live.subscribe.mock.calls[0]?.[1]).toBe(NOW_SECONDS - 86_400 * 7 * 16)
   })
 
-  it('says so when the first contribution read fails', async () => {
-    vi.useFakeTimers()
-    api.getContributions.mockRejectedValue(new Error('offline'))
+  it('draws the template lines alone when the server has no painter buckets', async () => {
+    api.getHistory.mockResolvedValue({
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: 900,
+          bucketStart: seconds(NOW_SECONDS - 900),
+          placed: 1,
+          correct: 1,
+          repairs: 0,
+        },
+      ],
+    })
+    api.getPainterHistory.mockRejectedValue(new Error('404'))
     mounted = mount(StatsPanel, {
       target: document.body,
       props: {
         season: 0,
-        liveDashboard: false,
+        liveDashboard: true,
         templates: [template('live', 0, null)],
         subscribeDashboard: live.subscribe,
-        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+        progress: { completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
       },
     })
     flushSync()
-    await vi.advanceTimersByTimeAsync(0)
-    expect(document.querySelector('[data-painter-pace]')?.textContent).toContain(
-      'Could not load painter contributions',
-    )
+    await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
+    expect(document.querySelector('[data-painter-search]')).toBeNull()
+    expect(document.querySelector('path[data-painter-line]')).toBeNull()
   })
 })
