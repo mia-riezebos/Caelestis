@@ -1,12 +1,10 @@
 # @caelestis/userscript
 
-## 0.8.0
-
-### Minor Changes
-
-- 0efce29: Sort templates by recent updates, name, progress, size, or mismatches from one compact menu.
+## 0.7.2
 
 ### Patch Changes
+
+- 0efce29: Sort templates by recent updates, name, progress, size, or mismatches from one compact menu.
 
 - d6d84e6: Keep resolved mismatch markers hidden after accepted paint until newer tile data arrives.
 - d6d84e6: Reconcile accepted paint with fresh server masks without extra tile reads or stale submission replays.
