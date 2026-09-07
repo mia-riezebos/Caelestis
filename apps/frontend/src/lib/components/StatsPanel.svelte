@@ -8,6 +8,7 @@
   } from '@caelestis/shared'
   import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
+  import PainterPaceChart from '$lib/components/charts/PainterPaceChart.svelte'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
     PACE_WINDOWS,
@@ -64,6 +65,9 @@
   let history = $state<HistoryBucket[] | null>(null)
   let paceHistories = $state<readonly PaceHistorySource[]>([])
   let contributions = $state<readonly ContributionDay[] | null>(null)
+  /** The start of the range the served contribution days cover; earlier days were never asked for. */
+  let contributionsFrom = $state(0)
+  let contributionsFailed = $state(false)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   let failed = $state(false)
   let historyScope: string | undefined
@@ -127,11 +131,13 @@
     if (templateIds.length === 0) return
     const ids = [...templateIds]
     contributions = null
+    contributionsFailed = false
     leaderboard = null
-    const contributionsFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
+    const liveFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
     if (liveDashboard)
-      return subscribeDashboard(ids, contributionsFrom, (snapshot) => {
+      return subscribeDashboard(ids, liveFrom, (snapshot) => {
         contributions = snapshot.contributions.days
+        contributionsFrom = liveFrom
         leaderboard = snapshot.leaderboard.entries
       })
 
@@ -141,10 +147,20 @@
       if (refreshPending) return
       refreshPending = true
       const requestedAt = Math.floor(Date.now() / 1_000)
+      const requestedFrom = requestedAt - 86_400 * 7 * 16
       void Promise.all([
-        getContributions(ids, requestedAt - 86_400 * 7 * 16, requestedAt).then((response) => {
-          if (!generation.cancelled) contributions = response.days
-        }),
+        getContributions(ids, requestedFrom, requestedAt)
+          .then((response) => {
+            if (generation.cancelled) return
+            contributions = response.days
+            contributionsFrom = requestedFrom
+            contributionsFailed = false
+          })
+          .catch((error: unknown) => {
+            // A failed refresh keeps the last good chart; a failed first load says so.
+            if (!generation.cancelled && contributions === null) contributionsFailed = true
+            throw error
+          }),
         getLeaderboard(season, { templateIds: ids }).then((response) => {
           if (!generation.cancelled) leaderboard = response.entries
         }),
@@ -221,6 +237,28 @@
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
         live={templates.some((template) => template.finishedAt === null)}
+      />
+    {/if}
+  </section>
+
+  <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4" data-painter-pace>
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+      <h2 class="font-semibold">Painter pace</h2>
+      <span class="text-xs text-base-content/60">daily pixels per painter, from shared reports</span>
+    </div>
+    {#if contributionsFailed}
+      <div class="flex h-[240px] items-center justify-center text-sm text-base-content/50">
+        Could not load painter contributions.
+      </div>
+    {:else if contributions === null}
+      <Skeleton class="h-[240px] w-full" />
+    {:else}
+      <PainterPaceChart
+        days={contributions}
+        {from}
+        {to}
+        coverageFrom={contributionsFrom}
+        live={hasLiveTemplate}
       />
     {/if}
   </section>

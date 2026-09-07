@@ -259,3 +259,72 @@ describe('live counts', () => {
     expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('painter pace', () => {
+  it('draws the served painters and marks history before the fetched coverage unavailable', async () => {
+    // Sixteen weeks of coverage end today; a scope created on day zero predates them.
+    const now = 200 * DAY_SECONDS
+    vi.spyOn(Date, 'now').mockReturnValue(now * 1_000)
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: true,
+        templates: [template('old', 1_000, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+      },
+    })
+    flushSync()
+    expect(document.querySelector('[data-painter-pace] svg')).toBeNull()
+    const listener = live.subscribe.mock.calls[0]?.[2]
+    const contributionsFrom = live.subscribe.mock.calls[0]?.[1]
+    listener?.({
+      contributions: {
+        days: [
+          {
+            wplaceUserId: 5,
+            displayName: 'Ada',
+            templateId: 'old',
+            day: seconds(now - DAY_SECONDS),
+            placed: 3,
+            correct: 3,
+            repairs: 0,
+          },
+        ],
+      },
+      leaderboard: { entries: [] },
+    })
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('[data-painter-pace] path[data-painter-line="5"]'),
+      ).not.toBeNull(),
+    )
+    expect(document.querySelectorAll('[data-painter-pace] [data-painter-toggle]')).toHaveLength(1)
+    expect(
+      document
+        .querySelector('[data-painter-pace] [data-unavailable-before]')
+        ?.getAttribute('data-unavailable-before'),
+    ).toBe(String(Math.floor(contributionsFrom / DAY_SECONDS) * DAY_SECONDS))
+  })
+
+  it('says so when the first contribution read fails', async () => {
+    vi.useFakeTimers()
+    api.getContributions.mockRejectedValue(new Error('offline'))
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(document.querySelector('[data-painter-pace]')?.textContent).toContain(
+      'Could not load painter contributions',
+    )
+  })
+})
