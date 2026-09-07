@@ -11,6 +11,7 @@ export interface RowAction {
   readonly icon: TreeIcon
   readonly label: string
   readonly run: () => void
+  readonly returnToCanvas?: boolean
 }
 
 export interface TreeRowOptions {
@@ -26,9 +27,7 @@ export interface TreeRowOptions {
   readonly progress?: TemplateProgress | undefined
   readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[] | undefined) | undefined
-  readonly leadingActions?:
-    | ReadonlyArray<{ icon: TreeIcon; label: string; run: () => void }>
-    | undefined
+  readonly leadingActions?: readonly RowAction[] | undefined
   readonly container: boolean
   readonly parentKey?: string | null | undefined
   readonly canReparent?: boolean | undefined

@@ -1061,7 +1061,7 @@ export const openContextMenu = (
             () => void setServerFolderPublished(target, false, rerender),
           ]
         : ['eye', 'Publish folder', () => void setServerFolderPublished(target, true, rerender)]
-  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void]> =
+  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> =
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
@@ -1109,13 +1109,18 @@ export const openContextMenu = (
       : templateId === null
         ? [
             ['createFolder', 'New folder', () => void createFolder(target, rerender, surface)],
-            ['uploadFile', 'Import template', () => void importTemplate(target, rerender, surface)],
+            [
+              'uploadFile',
+              'Import template',
+              () => void importTemplate(target, rerender, surface),
+              true,
+            ],
             ...(folderPublication === null ? [] : [folderPublication]),
             rename,
             remove,
           ]
         : [
-            ['search', 'Go to', () => goToLocalTemplate(templateId)],
+            ['search', 'Go to', () => goToLocalTemplate(templateId), true],
             ['download', 'Export .wplace', () => void exportTemplate(target)],
             [
               'move',
@@ -1127,6 +1132,7 @@ export const openContextMenu = (
                 if (!beginMove(templateId, rerender))
                   toast('Finish the placement already in progress, then move this one.', 'warning')
               },
+              true,
             ],
             ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
             rename,
@@ -1139,10 +1145,11 @@ export const openContextMenu = (
     rowKey: target.key,
     x: event.clientX,
     y: event.clientY,
-    items: entries.map(([glyph, label], index) => ({
+    items: entries.map(([glyph, label, , returnToCanvas], index) => ({
       id: `${id}-${index}`,
       label,
       icon: glyph,
+      ...(returnToCanvas === true ? { returnToCanvas } : {}),
       ...(label === 'Delete' ? { danger: true } : {}),
     })),
   }

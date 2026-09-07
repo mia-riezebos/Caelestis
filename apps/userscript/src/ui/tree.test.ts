@@ -122,6 +122,9 @@ describe('tree model adapter', () => {
           expanded: false,
           positionInSet: 1,
           setSize: 1,
+          actions: expect.arrayContaining([
+            expect.objectContaining({ label: 'Import template', returnToCanvas: true }),
+          ]),
         }),
         expect.objectContaining({ type: 'action', key: 'add-server' }),
       ]),

@@ -79,6 +79,36 @@ const tree: TemplateTreeModel = {
 }
 
 describe('panel shell', () => {
+  it.each([
+    ['Move to folder', 'move', false],
+    ['Replace artwork', 'uploadFile', false],
+    ['Go to', 'search', true],
+  ] as const)('uses the declared popout behavior for %s', async (label, icon, returnToCanvas) => {
+    const panel = new CaelestisPanel()
+    panel.model = model({ tree })
+    document.body.append(panel)
+    await tick()
+    const root = panel.shadowRoot
+    root?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.click()
+    await tick()
+    panel.model = model({
+      tree: {
+        ...tree,
+        contextMenu: {
+          id: 'operation',
+          rowKey: 'local',
+          x: 0,
+          y: 0,
+          items: [{ id: 'run', label, icon, ...(returnToCanvas ? { returnToCanvas } : {}) }],
+        },
+      },
+    })
+    await tick()
+    root?.querySelector<HTMLButtonElement>('.context-menu [role="menuitem"]')?.click()
+    await tick()
+    expect(Boolean(root?.querySelector('dialog')?.open)).toBe(!returnToCanvas)
+  })
+
   it('limits grid browsing to the modal and restores the sidebar on dismissal', async () => {
     const panel = new CaelestisPanel()
     panel.model = model({ tree: { ...tree, displayMode: 'grid' } })

@@ -5,6 +5,7 @@ import {
   type TemplateProgress,
 } from '../templates/mismatch.js'
 import { sumColourProgress, sumProgress } from './progress.js'
+import type { RowAction } from './tree-state.js'
 
 /** One row, as the domain supplying it sees it. Placement and recursion belong to the renderer. */
 export interface TreeItem {
@@ -38,10 +39,8 @@ export interface TreeItem {
   readonly visible: boolean
   readonly setVisible: (on: boolean) => boolean | Promise<boolean>
   readonly canReparent: boolean
-  readonly actions?: ReadonlyArray<{ icon: TreeIcon; label: string; run: () => void }> | undefined
-  readonly leadingActions?:
-    | ReadonlyArray<{ icon: TreeIcon; label: string; run: () => void }>
-    | undefined
+  readonly actions?: readonly RowAction[] | undefined
+  readonly leadingActions?: readonly RowAction[] | undefined
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly onDropAt?:

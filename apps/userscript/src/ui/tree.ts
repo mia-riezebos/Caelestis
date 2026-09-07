@@ -663,6 +663,7 @@ const buildTree = <Result>(
             {
               icon: 'uploadFile',
               label: 'Import template',
+              returnToCanvas: true,
               run: () => callbacks.onImportTemplate(target),
             },
           ]
@@ -768,6 +769,7 @@ const buildTree = <Result>(
                       {
                         icon: 'uploadFile' as const,
                         label: 'Import template',
+                        returnToCanvas: true,
                         run: () => callbacks.onImportTemplate(nodeTarget),
                       },
                     ],
@@ -841,6 +843,7 @@ const buildTree = <Result>(
                 {
                   icon: 'search' as const,
                   label: 'Go to',
+                  returnToCanvas: true,
                   run: () => goToServerTemplate(template.bbox, surface),
                 },
               ],
@@ -940,6 +943,7 @@ const buildTree = <Result>(
               {
                 icon: 'uploadFile',
                 label: 'Import template',
+                returnToCanvas: true,
                 run: () => callbacks.onImportTemplate(folderTarget),
               },
             ],
@@ -985,6 +989,7 @@ const buildTree = <Result>(
               {
                 icon: 'search' as const,
                 label: 'Go to',
+                returnToCanvas: true,
                 run: () => goToLocalTemplate(template.id),
               },
             ],
@@ -1110,7 +1115,12 @@ export const templateTreeAdapter = (
     source.map((action, index) => {
       const id = `${group}-${index}`
       actions.set(`${key}:${id}`, action.run)
-      return { id, label: action.label, icon: actionIcon(action.icon) }
+      return {
+        id,
+        label: action.label,
+        icon: actionIcon(action.icon),
+        ...(action.returnToCanvas === undefined ? {} : { returnToCanvas: action.returnToCanvas }),
+      }
     })
 
   const output: TreeOutput<void> = {
@@ -1181,6 +1191,7 @@ export const templateTreeAdapter = (
         id: 'run',
         label,
         icon: key === 'add-server' ? 'extension' : 'uploadFile',
+        returnToCanvas: key === 'local-import',
       } as const
       actions.set(`${key}:run`, run)
       entries.push({

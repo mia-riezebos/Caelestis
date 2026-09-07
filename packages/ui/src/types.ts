@@ -291,6 +291,8 @@ export interface TreeActionModel {
   readonly id: string
   readonly label: string
   readonly icon: TreeIcon
+  /** Return from the popout before opening the canvas or native file picker. */
+  readonly returnToCanvas?: boolean
 }
 
 export interface TreeRowModel {
@@ -375,6 +377,7 @@ export interface TreeContextMenuItemModel {
   readonly label: string
   readonly icon: TreeIcon
   readonly danger?: boolean
+  readonly returnToCanvas?: boolean
 }
 
 export interface TreeContextMenuModel {

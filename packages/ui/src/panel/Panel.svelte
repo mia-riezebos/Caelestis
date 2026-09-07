@@ -37,7 +37,7 @@
         ? [...(entry.leadingActions ?? []), ...(entry.actions ?? [])].find((action) => action.id === intent.actionId)
         : entry?.type === 'action' ? entry.action
         : undefined
-    if (poppedOut && (action?.icon === 'search' || action?.icon === 'move' || action?.icon === 'uploadFile')) void dock()
+    if (poppedOut && action?.returnToCanvas === true) void dock()
     emit({ type: 'tree', intent })
   }
 
