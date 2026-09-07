@@ -6,8 +6,11 @@
   import { fade, type TransitionConfig } from 'svelte/transition'
   import {
     DAY_SECONDS,
+    dailyPoints,
     dayStart,
+    dayTimes,
     defaultVisiblePainters,
+    nextDayStart,
     PAINTER_METRICS,
     type PainterMetric,
     type PainterSeries,
@@ -48,12 +51,16 @@
   } = $props()
 
   // ── Series ───────────────────────────────────────────────────────────────────────────────────
-  // History before the fetched coverage is unavailable, not zero: the axis starts where the data
-  // does and the caption says so, rather than drawing a flat line through days nobody asked for.
-  const start = $derived(Math.max(dayStart(from), dayStart(coverageFrom)))
-  const unavailableBefore = $derived(dayStart(from) < start ? start : null)
-  const series = $derived(painterSeries(days, start, to))
-  const dayTimes = $derived(series[0]?.days.map((day) => day.day) ?? [])
+  // History before the fetched coverage is unavailable, not zero: the axis starts on the first
+  // day the request covered in full (the server serves days at or after `coverageFrom`, so a day
+  // that started earlier was never asked for), and the caption says so, rather than drawing a
+  // flat line through days nobody fetched. A fetched range that misses the scope entirely is a
+  // different state from a scope nobody painted.
+  const start = $derived(Math.max(dayStart(from), nextDayStart(coverageFrom)))
+  const covered = $derived(start < to)
+  const unavailableBefore = $derived(covered && dayStart(from) < start ? start : null)
+  const series = $derived(covered ? painterSeries(days, start, to) : [])
+  const allDayTimes = $derived(covered ? dayTimes(start, to) : [])
 
   const storedMetric = persisted<PainterMetric>('caelestis:painter-metric', 'placed')
   const metric = $derived<PainterMetric>(
@@ -134,9 +141,9 @@
     v: a.v + (b.v - a.v) * fraction,
   })
 
-  /** A painter's daily rate for the chosen metric, over the whole fetched range. */
+  /** A drawn painter's daily rate for the chosen metric, zero-filled over the fetched range. */
   const fullSeries = (painter: PainterSeries): RatePoint[] =>
-    painter.days.map((day) => ({ t: day.day, v: day[metric] }))
+    dailyPoints(painter, start, to).map((day) => ({ t: day.day, v: day[metric] }))
 
   /** The points inside a range, holding today's level out to the right edge. */
   const windowSeries = (points: readonly RatePoint[], range: TimeWindow): RatePoint[] => {
@@ -246,7 +253,7 @@
   // The crosshair snaps to UTC day starts inside the window. Arrow keys walk the days, up and
   // down walk the drawn painters, and the live region reads out what the walk landed on.
   const hoverSnapTimes = $derived(
-    dayTimes.filter((t) => t >= shownView.from - 1 && t <= shownView.to),
+    allDayTimes.filter((t) => t >= shownView.from && t <= shownView.to),
   )
   let hoverTime = $state<number | null>(null)
   let focusPainter = $state<number | null>(null)
@@ -254,8 +261,9 @@
 
   const isToday = (t: number): boolean => live && view.to === to && t === dayStart(to - 1)
 
+  /** A served day's value, or zero for a fetched day the painter has no row on. */
   const valueAt = (painter: PainterSeries, t: number): number | null =>
-    painter.days.find((day) => day.day === t)?.[metric] ?? null
+    t < start || t >= to ? null : (painter.byDay.get(t)?.[metric] ?? 0)
 
   /** Drawn painters at a day, highest value first, so the tooltip reads like a leaderboard. */
   const hoverRows = $derived.by(() => {
@@ -464,7 +472,16 @@
     {/if}
   </div>
 
-  {#if series.length === 0}
+  {#if !covered}
+    <div
+      data-history-unavailable
+      class="flex h-[240px] items-center justify-center rounded-lg border border-dashed border-base-300 px-4 text-center text-sm text-base-content/50"
+    >
+      Painter history for this scope was not fetched: it ended before {formatDay(
+        nextDayStart(coverageFrom),
+      )}, where the fetched range starts.
+    </div>
+  {:else if series.length === 0}
     <div
       class="flex h-[240px] items-center justify-center rounded-lg border border-dashed border-base-300 px-4 text-center text-sm text-base-content/50"
     >
@@ -679,8 +696,8 @@
 
   {#if unavailableBefore !== null}
     <p class="text-xs text-base-content/50" data-unavailable-before={unavailableBefore}>
-      Painter history before {formatDay(unavailableBefore)} is no longer available, so the chart
-      starts there.
+      Painter history before {formatDay(unavailableBefore)} was not fetched, so the chart starts
+      there.
     </p>
   {/if}
 </div>

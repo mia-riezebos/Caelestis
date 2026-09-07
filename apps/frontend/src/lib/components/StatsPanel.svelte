@@ -133,11 +133,13 @@
     contributions = null
     contributionsFailed = false
     leaderboard = null
-    const liveFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
+    // The server keeps painter-days for a scope's whole lifetime, so read from its first day: the
+    // heatmap only looks at its last sixteen weeks, and the painter chart draws everything.
+    const requestFrom = from
     if (liveDashboard)
-      return subscribeDashboard(ids, liveFrom, (snapshot) => {
+      return subscribeDashboard(ids, requestFrom, (snapshot) => {
         contributions = snapshot.contributions.days
-        contributionsFrom = liveFrom
+        contributionsFrom = requestFrom
         leaderboard = snapshot.leaderboard.entries
       })
 
@@ -147,13 +149,12 @@
       if (refreshPending) return
       refreshPending = true
       const requestedAt = Math.floor(Date.now() / 1_000)
-      const requestedFrom = requestedAt - 86_400 * 7 * 16
       void Promise.all([
-        getContributions(ids, requestedFrom, requestedAt)
+        getContributions(ids, requestFrom, requestedAt)
           .then((response) => {
             if (generation.cancelled) return
             contributions = response.days
-            contributionsFrom = requestedFrom
+            contributionsFrom = requestFrom
             contributionsFailed = false
           })
           .catch((error: unknown) => {
