@@ -63,6 +63,34 @@ export const serverSettings = sqliteTable(
   (table) => [check('server_settings_single_row_check', sql`${table.id} = 1`)],
 )
 
+/** Server-owned reusable labels. Names are normalized before crossing the storage boundary. */
+export const tags = sqliteTable(
+  'tags',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    nameKey: text('name_key').notNull(),
+  },
+  (table) => [uniqueIndex('tags_name_key_unique').on(table.nameKey)],
+)
+
+/** Deleting a label or template removes only its assignments. */
+export const templateTags = sqliteTable(
+  'template_tags',
+  {
+    tagId: text('tag_id')
+      .notNull()
+      .references(() => tags.id, { onDelete: 'cascade' }),
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tagId, table.templateId] }),
+    index('template_tags_template_idx').on(table.templateId),
+  ],
+)
+
 /** D1-owned rebuild metadata keeps season revisions monotonic if a projection object is lost. */
 export const statusReadModelRevisions = sqliteTable(
   'status_read_model_revisions',

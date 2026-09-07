@@ -35,6 +35,7 @@ export {
   type TemplateChunk,
 } from './slice.js'
 export * from './slug.js'
+export * from './tags.js'
 export * from './telemetry.js'
 export * from './template-filters.js'
 export * from './template-sort.js'

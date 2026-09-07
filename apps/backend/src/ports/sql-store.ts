@@ -18,6 +18,7 @@ import {
   WORLD_TILES,
 } from '@caelestis/shared'
 import { SCOPES, type Scope } from '../auth/tokens.js'
+import type { TagStore } from '../tags/store.js'
 import type { CounterDelta } from './counter-store.js'
 
 /**
@@ -926,7 +927,7 @@ export interface ServerSettings {
   readonly description: string | null
 }
 
-export interface SqlStore {
+export interface SqlStore extends TagStore {
   readonly work: import('../work/store.js').WorkStore
   /** The operator's overrides. Nulls throughout when nobody has set anything. */
   readServerSettings(): Promise<ServerSettings>

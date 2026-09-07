@@ -4,6 +4,7 @@ import {
   MAX_LIVE_TEMPLATE_IDS,
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
+  parseTemplateTags,
   TILE_SIZE,
   TRANSPARENT_INDEX,
   templateSurface,
@@ -260,7 +261,12 @@ export const Chunk = Schema.Struct({
   hash: Hash,
 })
 
+const TemplateTags = boundedArray(Schema.Struct({ id: Identifier, name: Name }), 256).pipe(
+  Schema.check(booleanFilter((tags) => parseTemplateTags(tags) !== null, 'valid unique tags')),
+)
+
 export const Template = Schema.Struct({
+  tags: Schema.optionalKey(TemplateTags),
   id: Identifier,
   nodeId: Schema.NullOr(Identifier),
   name: Name,
@@ -296,6 +302,7 @@ const SurfaceChunk = Schema.Struct({
 })
 
 const SurfaceTemplate = Schema.Struct({
+  tags: Schema.optionalKey(TemplateTags),
   id: Identifier,
   nodeId: Schema.NullOr(Identifier),
   name: Name,
@@ -312,6 +319,7 @@ const SurfaceTemplate = Schema.Struct({
 })
 
 const ManifestStruct = Schema.Struct({
+  tags: Schema.optionalKey(TemplateTags),
   version: VersionToken,
   season: Season,
   workRevision: Schema.optionalKey(

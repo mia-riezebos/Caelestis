@@ -5,6 +5,7 @@ import { cors } from 'hono/cors'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
+import { createTagRoutes } from './routes/tags.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
@@ -123,6 +124,7 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
   v1Routes.route('/work', createWorkRoutes(runtime, auth))
   v1Routes.route('/admin/nodes', createNodeRoutes(runtime, auth))
   v1Routes.route('/admin/templates', createTemplateRoutes(runtime, auth))
+  v1Routes.route('/admin/tags', createTagRoutes(runtime, auth, currentSeason))
   v1Routes.route('/chunks', createChunkRoutes(runtime, auth))
   v1Routes.route('/tiles', createTileRoutes(runtime, auth))
   v1Routes.route(
