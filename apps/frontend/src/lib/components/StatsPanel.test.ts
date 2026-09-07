@@ -38,6 +38,8 @@ let mounted: ReturnType<typeof mount> | null = null
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW_SECONDS * 1_000)
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(640)
+  // Exercise history timers without advancing chart animation frames alongside them.
+  vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
   vi.stubGlobal('localStorage', {
     getItem: () => null,
     setItem: vi.fn(),
