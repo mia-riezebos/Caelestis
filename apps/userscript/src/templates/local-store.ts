@@ -1812,6 +1812,48 @@ export const setTemplatesFolder = async (
   }
 }
 
+/** Archive the previous local image and publish its replacement only after the transaction commits. */
+export const replaceLocalArtwork = async (
+  expected: PlacedTemplate,
+  indices: Uint8Array,
+): Promise<void> => {
+  await writeInOrder(expected.id, async () => {
+    const checkCurrent = (): void => {
+      if (
+        !isCurrentTemplate(expected) ||
+        deleting.has(expected.id) ||
+        previewOrigins.has(expected.id)
+      ) {
+        throw new Error('That template changed during the update. Try again.')
+      }
+      if (isServerTemplate(expected) || isPendingImage(expected)) {
+        throw new Error('Finish placing this local template before updating it.')
+      }
+    }
+    checkCurrent()
+    const next = {
+      ...expected,
+      indices,
+      opaque: indices.reduce((count, index) => count + Number(index !== TRANSPARENT_INDEX), 0),
+      moved: 0,
+      updatedAt: Date.now(),
+    }
+    const tiles = await paintedTileKeys(next)
+    checkCurrent()
+    const { tiles: _tiles, ...stored } = next
+    const result = await saveTemplate(stored, expected.revision, true)
+    if (result.status !== 'saved') {
+      throw new Error(
+        result.status === 'conflict'
+          ? 'Another tab changed this template. Reload before trying again.'
+          : 'Could not save the new version in this browser. Check available storage and try again.',
+      )
+    }
+    templates.set(expected.id, { ...next, tiles, revision: result.revision })
+    notify()
+  })
+}
+
 export const renameLocalTemplate = async (id: string, name: string): Promise<boolean> => {
   const trimmed = name.trim()
   if (trimmed === '' || trimmed.length > MAX_TEMPLATE_NAME_LENGTH) return false

@@ -31,7 +31,8 @@ import {
 const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
-const VERSION = 4
+const VERSION = 5
+const VERSIONS_STORE = 'local-template-versions'
 const MAX_PERSISTED_TEMPLATES = 64
 const MAX_PERSISTED_INDEX_PIXELS = 64 * 1024 * 1024
 let blockedOpenRequest: IDBOpenDBRequest | null = null
@@ -86,6 +87,9 @@ const open = (): Promise<IDBDatabase> => {
     request.onupgradeneeded = (event) => {
       const db = request.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
+      if (!db.objectStoreNames.contains(VERSIONS_STORE)) {
+        db.createObjectStore(VERSIONS_STORE, { keyPath: ['id', 'revision'] })
+      }
       if (!db.objectStoreNames.contains('server-cache')) {
         db.createObjectStore('server-cache', { keyPath: 'url' })
       }
@@ -125,12 +129,16 @@ const writeVersioned = async (
   operation: (templates: IDBObjectStore, nextRevision: number, current: unknown) => void,
   incrementRevision = true,
   creationPixels: number | null = null,
+  archiveCurrent = false,
 ): Promise<SaveResult> => {
   try {
     const db = await open()
     try {
       return await new Promise<SaveResult>((resolve, reject) => {
-        const transaction = db.transaction(STORE, 'readwrite')
+        const transaction = db.transaction(
+          archiveCurrent ? [STORE, VERSIONS_STORE] : STORE,
+          'readwrite',
+        )
         const templates = transaction.objectStore(STORE)
         const request = templates.get(id)
         let result: SaveResult = { status: 'conflict' }
@@ -148,6 +156,11 @@ const writeVersioned = async (
             ? (expectedRevision ?? 0) + 1
             : (expectedRevision ?? 0)
           const commit = (): void => {
+            if (archiveCurrent) {
+              transaction
+                .objectStore(VERSIONS_STORE)
+                .add({ ...current, id, revision: expectedRevision })
+            }
             operation(templates, nextRevision, current)
             result = { status: 'saved', revision: nextRevision }
           }
@@ -210,9 +223,11 @@ export type SaveResult =
   | { readonly status: 'limit' }
   | { readonly status: 'unavailable' }
 
+/** Save metadata, or atomically archive the current image and install new artwork. */
 export const saveTemplate = async (
   template: StoredTemplate,
   expectedRevision: number | null,
+  archiveCurrent = false,
 ): Promise<SaveResult> => {
   const { indices, ...metadata } = template
   return await writeVersioned(
@@ -229,6 +244,7 @@ export const saveTemplate = async (
           ? current.indices
           : undefined
       const reusable =
+        !archiveCurrent &&
         hasCurrentPalette(current) &&
         (isUint8Array(currentIndices) || isStoredBlob(currentIndices)) &&
         candidateIndexPixels(current) === indices.length
@@ -252,6 +268,7 @@ export const saveTemplate = async (
     },
     true,
     expectedRevision === null ? indices.length : null,
+    archiveCurrent,
   )
 }
 
