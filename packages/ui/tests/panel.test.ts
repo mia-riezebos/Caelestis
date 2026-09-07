@@ -79,6 +79,106 @@ const tree: TemplateTreeModel = {
 }
 
 describe('panel shell', () => {
+  it('moves keyboard focus into card actions and returns it when dismissed', async () => {
+    const panel = new CaelestisPanel()
+    const row = {
+      type: 'row',
+      key: 'art',
+      name: 'Artwork',
+      icon: 'image',
+      depth: 0,
+      parentKey: null,
+      container: false,
+      expanded: false,
+      visible: true,
+      setSize: 1,
+      positionInSet: 1,
+      contextMenu: true,
+    } as const
+    const initial = { ...tree, entries: [row], displayMode: 'grid' } as const
+    panel.model = model({ tree: initial })
+    document.body.append(panel)
+    await tick()
+    const root = panel.shadowRoot
+    const trigger = root?.querySelector<HTMLButtonElement>('[aria-label="Actions for Artwork"]')
+    if (root === null || root === undefined || trigger === null || trigger === undefined)
+      throw new Error('missing menu trigger')
+    trigger.focus()
+    panel.model = model({
+      tree: {
+        ...initial,
+        contextMenu: {
+          id: 'actions',
+          x: 0,
+          y: 0,
+          items: [
+            { id: 'rename', label: 'Rename', icon: 'rename' },
+            { id: 'move', label: 'Move', icon: 'move' },
+          ],
+        },
+      },
+    })
+    await tick()
+    await tick()
+    expect(root.activeElement?.textContent).toContain('Rename')
+    root.activeElement?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    )
+    expect(root.activeElement?.textContent).toContain('Move')
+    panel.model = model({ tree: initial })
+    await tick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    expect(root.activeElement).toBe(trigger)
+  })
+  it('switches display modes without replacing rows or losing focus and progress disclosure', async () => {
+    const panel = new CaelestisPanel()
+    const entries: TemplateTreeModel['entries'] = [
+      {
+        type: 'row',
+        key: 'art',
+        name: 'Artwork',
+        icon: 'image',
+        depth: 0,
+        parentKey: null,
+        container: false,
+        expanded: false,
+        visible: true,
+        setSize: 1,
+        positionInSet: 1,
+        progress: { completed: 1, mismatched: 1, unpainted: 2, known: 4, total: 4 },
+      },
+    ]
+    const initial = { ...tree, entries, focusedKey: 'art' }
+    panel.model = model({ tree: initial })
+    document.body.append(panel)
+    await tick()
+    const root = panel.shadowRoot
+    const row = root?.querySelector<HTMLElement>('[data-caelestis-tree-key="art"]')
+    if (root === null || root === undefined || row === null || row === undefined)
+      throw new Error('missing row')
+    root.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')?.click()
+    await tick()
+    const emitted = vi.fn()
+    panel.addEventListener('caelestis-panel-intent', emitted)
+    for (const displayMode of ['grid', 'tree'] as const) {
+      root
+        .querySelector<HTMLButtonElement>(
+          `[aria-label="${displayMode === 'grid' ? 'Preview grid view' : 'Tree view'}"]`,
+        )
+        ?.click()
+      expect(emitted).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          detail: { type: 'tree', intent: { type: 'display-mode', mode: displayMode } },
+        }),
+      )
+      panel.model = model({ tree: { ...initial, displayMode } })
+      await tick()
+      expect(root.querySelector('[data-caelestis-tree-key="art"]')).toBe(row)
+      expect(row.getAttribute('aria-current')).toBe('true')
+      expect(row.querySelector('[aria-label="Collapse progress"]')).not.toBeNull()
+      expect(row.classList.contains('preview-card')).toBe(displayMode === 'grid')
+    }
+  })
   it('renders the active view around slotted host content', async () => {
     const panel = new CaelestisPanel()
     panel.model = model({ view: 'settings' })

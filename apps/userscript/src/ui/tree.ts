@@ -58,6 +58,7 @@ import {
 } from '../templates/mismatch.js'
 import { nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { templateDisplayMode } from './display-mode.js'
 import {
   emptyProgress,
   freshestColourProgress,
@@ -1218,7 +1219,7 @@ export const templateTreeAdapter = (
   const model: TemplateTreeModel = {
     query,
     sort: getState().sort,
-    displayMode: getState().templateDisplayMode,
+    displayMode: templateDisplayMode(),
     entries,
     ...(renamingKey === null ? {} : { renamingKey }),
   }

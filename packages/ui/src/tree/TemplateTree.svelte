@@ -25,6 +25,7 @@
   let draggingKey = $state<string | null>(null)
   let dropTarget = $state<{ key: string; position: 'before' | 'inside' | 'after' } | null>(null)
   let treeElement = $state<HTMLElement>()
+  let contextMenuElement = $state<HTMLElement>()
   const disclosures = new SvelteMap<string, 'expanded' | 'colours'>()
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   let admittedQuery = ''
@@ -39,7 +40,7 @@
     for (const entry of model.entries) {
       if (entry.type !== 'row' || !entry.container) continue
       const parent = entry.parentKey === null ? undefined : paths.get(entry.parentKey)
-      paths.set(entry.key, parent === undefined ? entry.name : `${parent} / ${entry.name}`)
+      paths.set(entry.key, entry.parentKey === null ? '' : parent ? `${parent} / ${entry.name}` : entry.name)
     }
     return paths
   })
@@ -68,6 +69,9 @@
     admittedMenuId = next
     if (next !== undefined) {
       menuInvoker = activeTreeElement()
+      void tick().then(() => {
+        if (model.contextMenu?.id === next) contextMenuElement?.querySelector<HTMLButtonElement>('button')?.focus()
+      })
     } else if (previous !== undefined) {
       const target = menuInvoker
       menuInvoker = null
@@ -220,6 +224,19 @@
     else if (model.operation !== undefined && model.operation.cancellable !== false) emit({ type: 'tree-operation-cancel', operationId: model.operation.id })
   }
 
+  const navigateContextMenu = (event: KeyboardEvent): void => {
+    const buttons = Array.from(contextMenuElement?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+    const current = buttons.indexOf(event.target as HTMLButtonElement)
+    let index: number
+    if (event.key === 'ArrowDown') index = (current + 1) % buttons.length
+    else if (event.key === 'ArrowUp') index = (current - 1 + buttons.length) % buttons.length
+    else if (event.key === 'Home') index = 0
+    else if (event.key === 'End') index = buttons.length - 1
+    else return
+    event.preventDefault()
+    buttons[index]?.focus()
+  }
+
   const commitRename = (row: TreeRowModel): void => {
     const name = renameDraft.trim()
     if (name !== '' && name !== row.name) emit({ type: 'rename', key: row.key, name })
@@ -274,9 +291,12 @@
 
 {#if model.contextMenu !== undefined}
   <div
+    bind:this={contextMenuElement}
     data-caelestis-context-menu
     class="context-menu"
     role="menu"
+    tabindex="-1"
+    onkeydown={navigateContextMenu}
     style:left={`max(0.5rem, min(${model.contextMenu.x}px, calc(100vw - 11.5rem)))`}
     style:top={`max(0.5rem, min(${model.contextMenu.y}px, calc(100vh - 18rem)))`}
   >
@@ -339,10 +359,10 @@
               <TemplatePreview preview={entry.preview} name={entry.name} />
             </button>
             <div class="card-caption">
-              <span title={`${entry.preview.ownership}${folderPath === undefined ? '' : ` / ${folderPath}`}`}>{entry.preview.ownership}</span>
+              <span title={`${entry.preview.ownership}${folderPath ? ` / ${folderPath}` : ''}`}>{entry.preview.ownership}</span>
               <span>{entry.preview.width}×{entry.preview.height}</span>
             </div>
-            {#if folderPath !== undefined}<div class="folder-path" title={folderPath}>{folderPath}</div>{/if}
+            {#if folderPath}<div class="folder-path" title={folderPath}>{folderPath}</div>{/if}
           {/if}
           {#if connectorWidth > 0 && !grid}
             {@const current = (entry.branches?.length ?? 1) - 1}
@@ -486,7 +506,7 @@
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
   select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   select { padding-inline: 0.75rem 2rem; }
-  .scroller { flex: 1; min-block-size: 0; overflow: auto; }
+  .scroller { flex: 1; min-block-size: 0; overflow: auto; container-type: inline-size; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .row { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
   .row-heading { display: flex; flex-wrap: nowrap; align-items: center; gap: 0.25rem; min-inline-size: 0; white-space: nowrap; }
@@ -599,4 +619,8 @@
   .card-progress :global(.meter-wrap) { inline-size: 100%; }
   .preview-grid .folder-heading .row-tail { display: flex; flex: 0 0 auto; inline-size: auto; }
   .preview-grid .folder-heading .row-tail > .progress { display: none; }
+  @container (max-width: 24rem) {
+    .preview-grid .folder-heading .row-heading { flex-wrap: wrap; }
+    .preview-grid .folder-heading .name { flex: 1 0 calc(100% - 4rem); min-inline-size: 0; }
+  }
 </style>

@@ -103,6 +103,7 @@ import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templat
 import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
+import { setTemplateDisplayMode } from './display-mode.js'
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { refreshOverlayMenu } from './overlay-menu.js'
@@ -121,7 +122,7 @@ import {
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
-import { PANEL_ID } from './toast.js'
+import { PANEL_ID, toast } from './toast.js'
 import {
   isTreeDragActive,
   type TemplateTreeAdapter,
@@ -1032,7 +1033,8 @@ const buildSveltePanel = (): CaelestisPanel => {
           setState({ sort: intent.intent.sort })
           rerenderTree()
         } else if (intent.intent.type === 'display-mode') {
-          setState({ templateDisplayMode: intent.intent.mode })
+          if (!setTemplateDisplayMode(intent.intent.mode))
+            toast('Could not save the template view.')
           rerenderTree()
         } else {
           activeTreeAdapter?.handle(intent.intent)

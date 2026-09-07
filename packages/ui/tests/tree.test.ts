@@ -165,7 +165,7 @@ describe('template tree', () => {
     flushSync()
     const card = document.querySelector('[data-caelestis-tree-key="city"]')
     if (card === null) throw new Error('missing preview card')
-    expect(card.textContent).toContain('Local / Landscapes')
+    expect(card.textContent).toContain('Landscapes')
     expect(card.textContent).toContain('100×200')
     expect(card.textContent).toContain('Preview unavailable')
     expect(card.querySelector('canvas')?.getAttribute('aria-label')).toBe('City template art')
