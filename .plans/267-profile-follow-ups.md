@@ -10,13 +10,13 @@ Finish the post-#268 audit by making performance reports reproducible, validatin
 - [x] Capture, occupancy, notifications, and GPU uploads have attributable counters; sampling and unsupported signals are explicit.
 - [ ] Matched Box Art/all-template runs cover browser zoom 100% and 25%, profiler on/off, and native draft actions.
 - [ ] Live HQ/picture/banner validation covers draft correctness and recovery; submission races use existing deterministic fixtures.
-- [ ] A report records evidence, limitations, and dispositions for each optional experiment.
+- [x] A report records evidence, limitations, and dispositions for each optional experiment.
 
 ## TODOs
 
 - [x] Add reproducible profile context, bounded action markers, and explicit signal support with focused tests.
 - [x] Add capture, occupancy, notification, and GPU upload attribution with focused tests.
-- [~] Record world/alliance validation and experiment dispositions, then run final checks.
+- [x] Record world/alliance validation and experiment dispositions, then run final checks.
 
 ## Notes
 
@@ -28,3 +28,8 @@ Finish the post-#268 audit by making performance reports reproducible, validatin
 - TODO 1 validated with 12 profile tests, userscript typecheck/build, and focused Biome checks. Reset now excludes the preceding frame interval. Browser zoom stays unknown until explicitly supplied; DPR and pinch scale remain separate.
 - TODO 2 validated with 53 focused tests and all 1,154 userscript tests (102 files), typecheck/build, and focused Biome checks. GPU results and observed queue age are fenced across profile resets.
 - Independent CLI verification could not connect to CDP because its sandbox returned EPERM. Parent verified PID 64777 is Chromium, owns port 9222, and opened a new task tab through CDP. The existing user tab is unchanged.
+- Mia deferred live performance acceptance because 8–10 simultaneous tasks share this machine and Chromium. Timing samples from this session are not accepted performance evidence.
+- World matrix and live alliance acceptance remain open under #267. `docs/performance-profiling.md` records the manual checklist and evidence requirements for conditional experiments.
+- Browser cleanup discarded temporary native drafts, restored the owned tab to 100% zoom, and stopped CDP focus emulation. No public paint was submitted; tab settings writes were isolated.
+- Final validation passed all 1,154 userscript tests, typecheck, production build, repository lint, and 32 release tests. Rebase onto origin/main completed without conflicts.
+- After rebase, 53 focused tests passed with one worker. A redundant parallel suite hit timeouts and was stopped; the affected persistence/palette suites passed 38 tests with one worker and a 30-second timeout.
