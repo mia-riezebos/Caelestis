@@ -60,7 +60,7 @@ import { confirmDestructive } from '../ui/confirm.js'
 import { toast } from '../ui/toast.js'
 import type { TreeTarget } from '../ui/tree.js'
 import { startRenaming } from '../ui/tree-state.js'
-import { claimTemplate, openWork } from '../ui/work.js'
+import { canClaimTemplate, claimTemplate, hasOwnTemplateClaim } from '../ui/work.js'
 import {
   claimFolderPublication,
   setFolderTemplatesPublished,
@@ -1152,18 +1152,21 @@ export const openContextMenu = (
             rename,
             remove,
           ]
-  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> =
-    target.server === null
-      ? existingEntries
-      : [
-          ...(target.templateId === undefined
-            ? []
-            : [['check', 'Claim', () => void claimTemplate(target, rerender)] as const]),
-          ...(target.templateId === undefined
-            ? [['check', 'Work items', () => openWork(target)] as const]
-            : []),
-          ...(target.server.isAdmin || target.templateId !== undefined ? existingEntries : []),
+  const claimed = hasOwnTemplateClaim(target)
+  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> = [
+    ...((target.templateId !== undefined || templateId !== null) && canClaimTemplate(target)
+      ? [
+          [
+            'check',
+            claimed ? 'Release claim' : 'Claim',
+            () => void claimTemplate(target, rerender, claimed),
+          ] as const,
         ]
+      : []),
+    ...(target.server === null || target.server.isAdmin || target.templateId !== undefined
+      ? existingEntries
+      : []),
+  ]
   closeContextMenu(false)
   const id = `tree-menu-${++presentationId}`
   contextMenu = {

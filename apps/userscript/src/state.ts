@@ -1,7 +1,9 @@
 import {
   defaultTemplateSort,
   isTemplateSortField,
+  isWorkIdentity,
   PALETTE_SIZE,
+  type PainterIdentity,
   type ReconciliationReason,
   type SyncTransport,
   type TemplateSurface,
@@ -208,6 +210,10 @@ export interface State {
   /** Target mismatch or selected-colour markers submitted across one viewport. */
   readonly markerBudget: number
   readonly localFolders: readonly LocalFolder[]
+  readonly localClaims: readonly {
+    readonly templateId: string
+    readonly claimant: PainterIdentity
+  }[]
   readonly hiddenScopes: readonly string[]
   readonly serverTemplatePreferences: readonly ServerTemplatePreference[]
   readonly allianceSurfaceAppearances: readonly AllianceSurfaceAppearance[]
@@ -227,6 +233,7 @@ const DEFAULT_STATE: State = {
   colourNavigationOrder: 'unpainted-first',
   markerBudget: DEFAULT_MARKER_BUDGET,
   localFolders: [],
+  localClaims: [],
   hiddenScopes: [],
   serverTemplatePreferences: [],
   allianceSurfaceAppearances: [],
@@ -536,6 +543,18 @@ export const loadState = (): State => {
           : 'unpainted-first',
       markerBudget: normaliseMarkerBudget(stored.markerBudget),
       localFolders,
+      localClaims: Array.isArray(stored.localClaims)
+        ? stored.localClaims
+            .filter(
+              (claim): claim is State['localClaims'][number] =>
+                typeof claim === 'object' &&
+                claim !== null &&
+                typeof claim.templateId === 'string' &&
+                claim.templateId.length <= 128 &&
+                isWorkIdentity(claim.claimant),
+            )
+            .slice(0, 1000)
+        : [],
       hiddenScopes,
       serverTemplatePreferences,
       allianceSurfaceAppearances,

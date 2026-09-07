@@ -17,6 +17,8 @@ Add shared work items to the existing folder and template hierarchy. Mia's final
 
 ## Acceptance criteria
 
+The following original task-tracker criteria are superseded for the userscript by the template-claim flow below.
+
 - [x] Admins can create, edit, complete, and reopen work items associated with existing folders and linked templates.
 - [x] Authorized painters can claim unclaimed work and release their own claims; admins can assign and reassign.
 - [x] Concurrent claims have one winner. A losing client sees the authoritative claimant.
@@ -63,6 +65,18 @@ Each TODO is one buildable commit, with tests included alongside its behavior. S
 - Rebased onto `acc5831b` from current main. Regenerated coordination as migration 0016 after main's painter-bucket migration 0015, preserving both schemas and the tree menu's new canvas-focus behavior. Full typechecks and focused schema, work, tree-action and persistence tests pass.
 
 ## Manual review
+
+Current userscript flow supersedes the earlier WorkBoard steps:
+
+1. Claim a server template and a local template through their context menus. Open In progress and confirm both appear as normal rows in one flat list.
+2. Use each row's Go to action and expand progress and colour progress. Collapse the main folder or search for another template; the claimed row stays in the drawer.
+3. Open the participant marker. Have another painter claim the same template; both identities appear. Release your claim and confirm the other remains.
+4. As an admin, enable the themed Show other claims switch. Assign a Wplace username and numeric ID from the participant list. As a member, confirm those admin controls are absent.
+5. Reload to check local persistence. A failed list or account read offers Retry; read-only credentials never issue a claim mutation.
+
+The template-claim flow replaces the userscript task modal and server groups. Backend 564 tests and userscript 1276 tests pass. Workspace checks and focused lint pass. Background Chromium verification passes on real components with disposable host data; the marker placement received a final narrow-layout check. Current-head PR review remains.
+
+### Earlier frontend and task-tracker checks
 
 1. Open `http://127.0.0.1:5196/work` in Chromium. The disposable local connection is already configured with an admin token. Choose New work item, enter a title, folder, tags and linked template, then save.
 2. Claim and release the item. Assign another Wplace username and numeric ID, then complete and reopen it. Expand Activity to inspect each saved revision.

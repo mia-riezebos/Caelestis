@@ -23,6 +23,24 @@ afterEach(() => {
 })
 
 describe('server state boundaries', () => {
+  it('round-trips local template claims and rejects invalid stored identities', async () => {
+    const claim = { templateId: 'local-art', claimant: { wplaceUserId: 42, displayName: 'Mia' } }
+    let stored = JSON.stringify({
+      localClaims: [
+        claim,
+        null,
+        { ...claim, claimant: { wplaceUserId: -1, displayName: 'Invalid' } },
+      ],
+    })
+    vi.stubGlobal('GM_getValue', () => stored)
+    vi.stubGlobal('GM_setValue', (_key: string, value: string) => {
+      stored = value
+    })
+    const { loadState, commitState } = await import('./state.js')
+    expect(loadState().localClaims).toEqual([claim])
+    expect(commitState({ localClaims: [] })).toBe(true)
+    expect(loadState().localClaims).toEqual([])
+  })
   it('persists creation times for empty Local folders and restores Recent ordering', async () => {
     let stored = '{}'
     vi.stubGlobal('GM_getValue', () => stored)

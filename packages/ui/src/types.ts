@@ -94,26 +94,20 @@ export interface PanelModel {
   readonly minWidth: number
   readonly maxWidth: number
   readonly tree?: TemplateTreeModel
-  readonly work?: readonly {
-    readonly key: string
-    readonly name: string
+  readonly work?: {
+    readonly tree: TemplateTreeModel
     readonly error: string
     readonly canShowOthers: boolean
-    readonly items: readonly {
-      readonly id: string
-      readonly title: string
-      readonly status: 'open' | 'blocked' | 'completed'
-      readonly claimant: string
-    }[]
-  }[]
+  }
   readonly showOtherClaims?: boolean
   readonly appearance?: AppearanceEditorModel
   readonly settings?: SettingsModel
 }
 
 export type PanelIntent =
+  | { readonly type: 'work-retry' }
   | { readonly type: 'work-visibility'; readonly showOtherClaims: boolean }
-  | { readonly type: 'work'; readonly key: string; readonly itemId?: string }
+  | { readonly type: 'work-tree'; readonly intent: TemplateTreeIntent }
   | { readonly type: 'navigate'; readonly view: PanelView }
   | { readonly type: 'close' }
   | { readonly type: 'resize-preview'; readonly width: number }
@@ -315,6 +309,7 @@ export interface TreeActionModel {
 }
 
 export interface TreeRowModel {
+  readonly claims?: TemplateClaimsModel
   readonly type: 'row'
   readonly key: string
   readonly name: string
@@ -354,6 +349,13 @@ export interface TreeRowModel {
   readonly canReparent?: boolean
   readonly setSize: number
   readonly positionInSet: number
+}
+
+export interface TemplateClaimsModel {
+  readonly people: readonly import('@caelestis/shared').PainterIdentity[]
+  readonly mine: boolean
+  readonly canAssign: boolean
+  readonly canClaim: boolean
 }
 
 export interface TreeNoticeModel {
@@ -424,6 +426,12 @@ export interface TreeOperationModel {
 }
 
 export type TemplateTreeIntent =
+  | {
+      readonly type: 'template-claim'
+      readonly key: string
+      readonly release: boolean
+      readonly person?: import('@caelestis/shared').PainterIdentity
+    }
   | { readonly type: 'display-mode'; readonly mode: 'tree' | 'grid' }
   | { readonly type: 'search'; readonly query: string }
   | { readonly type: 'sort'; readonly sort: TreeSortModel }

@@ -1,18 +1,23 @@
 <script lang="ts">
-  import Icon from '../foundations/Icon.svelte'
-  import type { PanelModel } from '../types.js'
+  import Toggle from '../foundations/Toggle.svelte'
+  import Button from '../foundations/Button.svelte'
+  import SettingRow from '../foundations/SettingRow.svelte'
+  import TemplateTree from '../tree/TemplateTree.svelte'
+  import type { PanelModel, TemplateTreeIntent } from '../types.js'
   let {
-    groups,
-    onopen,
+    model,
+    onIntent,
+    onretry,
     showOtherClaims = false,
     onshowothers,
   }: {
-    groups: NonNullable<PanelModel['work']>
-    onopen: (key: string, itemId?: string) => void
+    model: NonNullable<PanelModel['work']>
+    onIntent: (intent: TemplateTreeIntent) => void
+    onretry: () => void
     showOtherClaims?: boolean
     onshowothers: (show: boolean) => void
   } = $props()
-  const count = $derived(groups.reduce((total, group) => total + group.items.length, 0))
+  const count = $derived(model.tree.entries.length)
   const drawerId = $props.id()
   let open = $state(false)
 </script>
@@ -21,43 +26,22 @@
   <div class="t-acc-panel" id={drawerId} inert={!open} aria-hidden={!open}>
     <div class="t-acc-panel-inner">
       <div class="list">
-        {#if groups.some((group) => group.canShowOthers)}
-          <label class="visibility">
-            <input
-              type="checkbox"
+        {#if model.canShowOthers}
+          <SettingRow label="Show other claims" compact>
+            <Toggle
+              label="Show other claims"
+              compact
               checked={showOtherClaims}
-              onchange={(event) => onshowothers(event.currentTarget.checked)}
+              onChange={onshowothers}
             />
-            Show other claims
-          </label>
+          </SettingRow>
         {/if}
-        {#each groups as group (group.key)}
-          <div class="group">
-            <button
-              class="browse"
-              onclick={() => onopen(group.key)}
-              aria-label={`Browse work on ${group.name}`}
-            >
-              <span>{group.name}</span><Icon name="popout" />
-            </button>
-            {#if group.error}
-              <p role="status">{group.error}</p>
-            {:else if group.items.length === 0}
-              <p>No templates claimed. Right-click a template and choose Claim.</p>
-            {:else}
-              {#each group.items as item (item.id)}
-                <button class="item" onclick={() => onopen(group.key, item.id)}>
-                  <span class="title">{item.title}</span>
-                  <span class="meta"
-                    >{item.claimant}{item.status === 'blocked' ? ' · Blocked' : ''}</span
-                  >
-                </button>
-              {/each}
-            {/if}
-          </div>
+        {#if model.error}<p role="status">{model.error}</p><Button label="Retry" kind="ghost" size="small" onclick={onretry} />{/if}
+        {#if count === 0}
+          <p>Right-click a template and choose Claim to keep it here.</p>
         {:else}
-          <p>Claim a server template to keep it here.</p>
-        {/each}
+          <TemplateTree model={model.tree} toolbar={false} {onIntent} />
+        {/if}
       </div>
     </div>
   </div>
@@ -114,19 +98,7 @@
   .list {
     max-block-size: min(220px, 40dvh);
     overflow-y: auto;
-    padding: 0 6px 6px;
-  }
-  .visibility {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 6px;
-    cursor: pointer;
-    font-size: 12px;
-  }
-  .visibility input {
-    margin: 0;
-    accent-color: var(--caelestis-primary);
+    padding: 0 0 6px;
   }
   button {
     width: 100%;
@@ -146,21 +118,6 @@
     outline: 2px solid var(--caelestis-focus, currentColor);
     outline-offset: -2px;
   }
-  .browse {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    color: var(--caelestis-muted-text);
-    font-size: 12px;
-  }
-  .item {
-    display: grid;
-    gap: 3px;
-  }
-  .title {
-    overflow-wrap: anywhere;
-  }
-  .meta,
   p {
     font-size: 12px;
     color: var(--caelestis-muted-text);

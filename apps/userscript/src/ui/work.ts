@@ -1,32 +1,31 @@
 import {
   createWorkClient,
   isWorkIdentity,
+  type PainterIdentity,
+  sameTemplateSurface,
   type TemplateSurface,
   WORLD_TEMPLATE_SURFACE,
   type WorkCollection,
+  workClaimants,
 } from '@caelestis/shared'
-import type { PanelModel } from '@caelestis/ui/elements'
-import { CaelestisWork, registerCaelestisUi } from '@caelestis/ui/elements'
-import { allianceManifestFor, onAllianceManifestChange } from '../alliance-server-sync.js'
-import { rowsForSurface } from '../application/tree-server-state.js'
+import type { TemplateClaimsModel, TemplateTreeModel } from '@caelestis/ui/elements'
+import { allianceManifestFor } from '../alliance-server-sync.js'
+import { rowsForSurface, serverTemplateTreeKey } from '../application/tree-server-state.js'
 import { requestServerTree } from '../server-transport.js'
 import {
   activeServerToken,
   admittedServerContentsFor,
   type ConnectedServer,
+  commitState,
   getState,
   isCurrentServerConnection,
-  onServerContents,
-  sameServerConnection,
   serverConnectionSignal,
   serverEndpoint,
 } from '../state.js'
+import { isServerTemplate, localTemplates } from '../templates/local-store.js'
 import { accountIdentity, loadAccount } from '../wplace-account.js'
-import { applyWplaceTheme } from './theme.js'
 import { toast } from './toast.js'
 import type { TreeTarget } from './tree.js'
-
-let closeWork: (() => void) | null = null
 
 const workClient = (
   server: ConnectedServer,
@@ -55,23 +54,38 @@ interface WorkPreview {
   revision: string
   collection: WorkCollection
   error: string
+  request: number
 }
 const previews = new Map<string, WorkPreview>()
+let identityChecked = false
+let identityRequest: Promise<void> | null = null
 const previewKey = (server: ConnectedServer, surface: TemplateSurface): string =>
   `${server.url}:${server.season}:${surface.kind}:${surface.allianceId}`
 
-/** List the current painter's active claims, refreshed by work revisions rather than painting updates. */
-export const workSectionModel = (
-  surface: TemplateSurface,
-  changed: () => void,
-  showOtherClaims = false,
-): NonNullable<PanelModel['work']> =>
-  getState().servers.flatMap((server) => {
+/** Aggregate template participants across admitted servers and local storage. Live revisions refresh remote claims. */
+export const workSectionModel = (surface: TemplateSurface, changed: () => void) => {
+  const templates = new Map<string, TemplateClaimsModel>()
+  const errors: string[] = []
+  const identity = accountIdentity()
+  const painterId = identity?.wplaceUserId
+  // The shared account cache bounds requests independently of server work revisions.
+  if (identityRequest === null) {
+    identityRequest = loadAccount().then(() => {
+      identityRequest = null
+      const needsRender = (!identityChecked && identity === null) || accountIdentity() !== identity
+      identityChecked = true
+      if (needsRender) changed()
+    })
+  }
+  if (identityChecked && identity === null)
+    errors.push('Wplace identity unavailable. Sign in, then retry.')
+  let canShowOthers = false
+  for (const server of getState().servers) {
     const contents =
       surface.kind === 'world'
         ? admittedServerContentsFor(server)
         : allianceManifestFor(server, surface)
-    if (server.season === null || contents === null) return []
+    if (server.season === null || contents === null) continue
     const key = previewKey(server, surface)
     const signal = serverConnectionSignal(server)
     const revision = String(contents.workRevision ?? 'unversioned')
@@ -82,6 +96,7 @@ export const workSectionModel = (
         revision: '',
         collection: { items: [], canPlan: false, canClaim: false },
         error: '',
+        request: 0,
       }
       previews.set(key, preview)
       signal.addEventListener(
@@ -95,179 +110,267 @@ export const workSectionModel = (
     if (preview.revision !== revision) {
       preview.revision = revision
       const held = preview
-      void Promise.all([
-        workClient(server, server.season, surface, signal).list(),
-        loadAccount(),
-      ]).then(
-        ([collection]) => {
-          if (signal.aborted || held.revision !== revision) return
-          held.collection = collection
-          held.error = ''
-          changed()
-        },
-        (error: unknown) => {
-          if (signal.aborted || held.revision !== revision) return
-          held.error = error instanceof Error ? error.message : String(error)
-          changed()
-        },
-      )
+      const request = ++held.request
+      void workClient(server, server.season, surface, signal)
+        .list()
+        .then(
+          (collection) => {
+            if (signal.aborted || held.request !== request) return
+            held.collection = collection
+            held.error = ''
+            changed()
+          },
+          (error: unknown) => {
+            if (signal.aborted || held.request !== request) return
+            held.error = error instanceof Error ? error.message : String(error)
+            changed()
+          },
+        )
     }
-    const canShowOthers = preview.collection.canPlan
-    const painterId = accountIdentity()?.wplaceUserId
+    canShowOthers ||= preview.collection.canPlan
+    if (preview.error) errors.push(`${server.info?.name ?? server.url}: ${preview.error}`)
+    for (const template of rowsForSurface(server, surface)?.templates ?? []) {
+      const people = new Map<number, PainterIdentity>()
+      for (const item of preview.collection.items) {
+        if (!item.templateIds.includes(template.id)) continue
+        for (const person of workClaimants(item)) people.set(person.wplaceUserId, person)
+      }
+      templates.set(serverTemplateTreeKey(server, template.id), {
+        people: [...people.values()],
+        mine: painterId !== undefined && people.has(painterId),
+        canAssign: preview.collection.canPlan && template.published,
+        canClaim: preview.collection.canClaim && template.published,
+      })
+    }
+  }
+  for (const template of localTemplates()) {
+    if (
+      isServerTemplate(template) ||
+      !sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface)
+    )
+      continue
+    const people = getState()
+      .localClaims.filter((claim) => claim.templateId === template.id)
+      .map((claim) => claim.claimant)
+    templates.set(`local:${template.id}`, {
+      people,
+      mine: people.some((person) => person.wplaceUserId === painterId),
+      canAssign: false,
+      canClaim: true,
+    })
+  }
+  return { templates, canShowOthers, error: errors.join('\n') }
+}
+
+/** Attach the same claim marker to ordinary rows and the flat In progress projection. */
+export const withTemplateClaims = (
+  tree: TemplateTreeModel,
+  claims: ReturnType<typeof workSectionModel>,
+  showOtherClaims?: boolean,
+): TemplateTreeModel => {
+  const entries = tree.entries.flatMap((entry) => {
+    const participants = claims.templates.get(entry.key)
+    if (
+      showOtherClaims !== undefined &&
+      (entry.type !== 'row' ||
+        participants === undefined ||
+        (!participants.mine &&
+          !(showOtherClaims && participants.canAssign && participants.people.length > 0)))
+    )
+      return []
+    if (entry.type !== 'row' || participants === undefined) return [entry]
     return [
       {
-        key: server.url,
-        name: server.info?.name ?? server.url,
-        error: preview.error,
-        canShowOthers,
-        items: preview.collection.items
-          .filter(
-            (item) =>
-              item.status !== 'completed' &&
-              item.claimant !== null &&
-              (item.claimant.wplaceUserId === painterId || (showOtherClaims && canShowOthers)),
-          )
-          .map((item) => ({
-            id: item.id,
-            title: item.title,
-            status: item.status,
-            claimant:
-              item.claimant === null
-                ? 'Unclaimed'
-                : `${item.claimant.displayName} #${item.claimant.wplaceUserId}`,
-          })),
+        ...entry,
+        claims: participants,
+        ...(showOtherClaims === undefined
+          ? {}
+          : { depth: 0, branches: [], parentKey: null, draggable: false }),
       },
     ]
   })
-
-/** Open a work row from the panel's server-scoped list. */
-export const openPanelWork = (url: string, surface: TemplateSurface, itemId?: string): void => {
-  const server = getState().servers.find((candidate) => candidate.url === url)
-  if (server === undefined) return
-  openWork(
-    { key: url, name: server.info?.name ?? server.url, server, nodeId: null, surface },
-    itemId,
-  )
+  return {
+    ...tree,
+    entries:
+      showOtherClaims === undefined
+        ? entries
+        : entries.map((entry, index) =>
+            entry.type === 'row'
+              ? { ...entry, positionInSet: index + 1, setSize: entries.length }
+              : entry,
+          ),
+  }
 }
 
-/** Claim a published template directly, creating its shared work record atomically when needed. */
-export const claimTemplate = async (target: TreeTarget, changed: () => void): Promise<void> => {
-  const server = target.server
-  if (
-    server === null ||
-    server.season === null ||
-    target.templateId === undefined ||
-    !isCurrentServerConnection(server)
-  )
-    return
+/** Apply a personal claim or an admin assignment, preserving every other painter's claim. */
+export const claimTemplate = async (
+  target: TreeTarget,
+  changed: () => void,
+  release = false,
+  person?: PainterIdentity,
+): Promise<void> => {
+  await loadAccount()
   const actor = accountIdentity()
   if (!isWorkIdentity(actor)) {
     toast('Sign in to Wplace before claiming a template.', 'warning')
     return
   }
   const surface = target.surface ?? WORLD_TEMPLATE_SURFACE
+  const server = target.server
+  if (server === null) {
+    if (!target.key.startsWith('local:') || person !== undefined) return
+    const templateId = target.key.slice('local:'.length)
+    const known = new Set(
+      localTemplates()
+        .filter((template) => !isServerTemplate(template))
+        .map((template) => template.id),
+    )
+    if (!known.has(templateId)) return
+    const remaining = getState().localClaims.filter(
+      (claim) =>
+        known.has(claim.templateId) &&
+        !(claim.templateId === templateId && claim.claimant.wplaceUserId === actor.wplaceUserId),
+    )
+    if (
+      !commitState({
+        localClaims: release ? remaining : [...remaining, { templateId, claimant: actor }],
+      })
+    ) {
+      toast('Could not save the local claim.', 'error')
+      return
+    }
+    changed()
+    return
+  }
+  if (
+    server.season === null ||
+    target.templateId === undefined ||
+    !isCurrentServerConnection(server)
+  )
+    return
   const signal = serverConnectionSignal(server)
   const client = workClient(server, server.season, surface, signal)
   try {
-    const collection = await client.list()
-    if (signal.aborted) return
-    const item = collection.items.find((candidate) => candidate.id === target.templateId)
-    await client.mutate(target.templateId, {
-      action: 'claim-template',
-      actor,
-      expectedRevision: item?.revision ?? 0,
-    })
+    // A simultaneous claim changes the revision, not the ability to join the template.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const collection = await client.list()
+      if (signal.aborted) return
+      if (!collection.canClaim || (person !== undefined && !collection.canPlan)) {
+        toast(
+          person === undefined
+            ? 'A report or admin token is required to claim templates on this server.'
+            : 'An admin token is required to assign claims.',
+          'warning',
+        )
+        return
+      }
+      const item = collection.items.find((candidate) => candidate.id === target.templateId)
+      try {
+        await client.mutate(target.templateId, {
+          action:
+            person === undefined
+              ? release
+                ? 'release-template'
+                : 'claim-template'
+              : release
+                ? 'unassign-template'
+                : 'assign-template',
+          actor,
+          expectedRevision: item?.revision ?? 0,
+          ...(person === undefined ? {} : { claimant: person }),
+        })
+        break
+      } catch (error) {
+        if (!(error instanceof Error && 'status' in error && error.status === 409) || attempt === 2)
+          throw error
+      }
+    }
     if (signal.aborted) return
     const preview = previews.get(previewKey(server, surface))
-    if (preview !== undefined) preview.revision = ''
+    if (preview !== undefined) {
+      preview.revision = ''
+      preview.request++
+    }
     changed()
-    toast(`Claimed “${target.name}”.`)
   } catch (error) {
     if (!signal.aborted) toast(error instanceof Error ? error.message : String(error), 'error')
   }
 }
 
-/** Open scoped coordination from the tree while keeping the painting rail unchanged. */
-export const openWork = (target: TreeTarget, itemId?: string): void => {
-  const server = target.server
-  if (server === null || server.season === null || !isCurrentServerConnection(server)) return
-  closeWork?.()
-  registerCaelestisUi()
-  const surface = target.surface ?? WORLD_TEMPLATE_SURFACE
-  const controller = new AbortController()
-  const connectionSignal = serverConnectionSignal(server)
-  const client = workClient(
-    server,
-    server.season,
-    surface,
-    AbortSignal.any([controller.signal, connectionSignal]),
+/** Resolve row identity without depending on its folder being expanded. */
+export const changeTemplateClaim = (
+  key: string,
+  surface: TemplateSurface,
+  changed: () => void,
+  release: boolean,
+  person?: PainterIdentity,
+): void => {
+  if (key.startsWith('local:')) {
+    void claimTemplate(
+      { key, surface, server: null, nodeId: null, name: '' },
+      changed,
+      release,
+      person,
+    )
+    return
+  }
+  for (const server of getState().servers) {
+    const template = rowsForSurface(server, surface)?.templates.find(
+      (candidate) => serverTemplateTreeKey(server, candidate.id) === key,
+    )
+    if (template === undefined) continue
+    void claimTemplate(
+      {
+        key,
+        surface,
+        server,
+        nodeId: template.nodeId,
+        name: template.name,
+        templateId: template.id,
+      },
+      changed,
+      release,
+      person,
+    )
+    return
+  }
+}
+
+/** Use the last admitted claims to label the template's context action. */
+export const hasOwnTemplateClaim = (target: TreeTarget): boolean => {
+  const painterId = accountIdentity()?.wplaceUserId
+  if (target.server === null)
+    return getState().localClaims.some(
+      (claim) =>
+        `local:${claim.templateId}` === target.key && claim.claimant.wplaceUserId === painterId,
+    )
+  return (
+    previews
+      .get(previewKey(target.server, target.surface ?? WORLD_TEMPLATE_SURFACE))
+      ?.collection.items.some(
+        (item) =>
+          item.templateIds.includes(target.templateId ?? '') &&
+          workClaimants(item).some((person) => person.wplaceUserId === painterId),
+      ) ?? false
   )
-  const dialog = document.createElement('dialog')
-  dialog.setAttribute('aria-label', `Work · ${target.name}`)
-  dialog.style.cssText =
-    'box-sizing:border-box;position:fixed;inset:16px;margin:auto;width:min(960px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:16px;border:1px solid var(--caelestis-border);border-radius:12px;background:var(--caelestis-surface);color:var(--caelestis-text);box-shadow:var(--caelestis-shadow);'
-  applyWplaceTheme(dialog)
-  const header = document.createElement('div')
-  header.style.cssText =
-    'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;font:600 14px system-ui;'
-  const title = document.createElement('span')
-  title.textContent = target.name
-  const close = document.createElement('button')
-  close.type = 'button'
-  close.textContent = 'Close'
-  close.setAttribute('aria-label', 'Close work')
-  close.style.cssText =
-    'padding:6px 10px;border:1px solid var(--caelestis-border);border-radius:6px;background:var(--caelestis-surface);color:inherit;cursor:pointer;font:inherit;'
-  close.onclick = () => dialog.close()
-  header.append(title, close)
-  const board = new CaelestisWork()
-  const initial = rowsForSurface(server, surface)
-  const setModel = (revision: string, rows = rowsForSurface(server, surface)): void => {
-    board.model = {
-      client,
-      revision,
-      identity: accountIdentity(),
-      ...(itemId === undefined ? {} : { itemId }),
-      nodes: rows?.nodes ?? [],
-      templates: rows?.templates ?? [],
-      ...(target.templateId === undefined ? {} : { templateId: target.templateId }),
-      ...(target.templateId !== undefined || target.nodeId === null
-        ? {}
-        : { nodeId: target.nodeId }),
+}
+
+/** Hide claims on connections whose authoritative capability is read-only. */
+export const canClaimTemplate = (target: TreeTarget): boolean =>
+  target.server === null ||
+  (previews.get(previewKey(target.server, target.surface ?? WORLD_TEMPLATE_SURFACE))?.collection
+    .canClaim ??
+    true)
+
+/** Explicitly retry failed claim loads and the current Wplace identity without polling. */
+export const retryTemplateClaims = (surface: TemplateSurface, changed: () => void): void => {
+  for (const server of getState().servers) {
+    const preview = previews.get(previewKey(server, surface))
+    if (preview?.error) {
+      preview.revision = ''
+      preview.request++
     }
   }
-  setModel('initial', initial)
-  const stopWorld = onServerContents((owner, contents) => {
-    if (surface.kind === 'world' && sameServerConnection(owner, server))
-      setModel(contents.revision ?? '', contents)
-  })
-  const stopAlliance = onAllianceManifestChange(() => {
-    if (surface.kind !== 'world') {
-      const manifest = allianceManifestFor(server, surface)
-      if (manifest !== null) setModel(manifest.version, manifest)
-    }
-  })
-  const cleanup = (): void => {
-    stopWorld()
-    stopAlliance()
-    connectionSignal.removeEventListener('abort', disconnect)
-    controller.abort()
-    dialog.remove()
-    if (closeWork === disconnect) closeWork = null
-  }
-  const disconnect = (): void => {
-    dialog.close()
-    cleanup()
-  }
-  closeWork = disconnect
-  connectionSignal.addEventListener('abort', disconnect, { once: true })
-  dialog.addEventListener('close', cleanup, { once: true })
-  dialog.append(header, board)
-  ;(document.fullscreenElement ?? document.body).append(dialog)
-  dialog.showModal()
-  const current =
-    surface.kind === 'world'
-      ? admittedServerContentsFor(server)
-      : allianceManifestFor(server, surface)
-  if (current !== null) setModel('opened', current)
+  void loadAccount(0).then(changed)
+  changed()
 }

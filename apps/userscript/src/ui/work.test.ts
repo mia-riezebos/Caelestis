@@ -1,18 +1,34 @@
 // @vitest-environment happy-dom
-import { uuidV7, WORLD_TEMPLATE_SURFACE, type WorkItem } from '@caelestis/shared'
+import {
+  type PainterIdentity,
+  uuidV7,
+  WORLD_TEMPLATE_SURFACE,
+  type WorkItem,
+} from '@caelestis/shared'
+import type { TemplateTreeModel, TreeRowModel } from '@caelestis/ui/elements'
 import { afterEach, expect, it, vi } from 'vitest'
-import type { ConnectedServer, ServerContents } from '../state.js'
+import type { ConnectedServer, ServerContents, State } from '../state.js'
 
 const state = vi.hoisted(() => ({
   servers: [] as ConnectedServer[],
   contents: null as ServerContents | null,
+  localClaims: [] as State['localClaims'],
+  locals: [] as { id: string }[],
+  save: true,
+  templates: [] as { id: string; published: boolean }[],
   controller: new AbortController(),
   request: vi.fn(),
-  identity: { wplaceUserId: 42, displayName: 'Mia' },
+  identity: { wplaceUserId: 42, displayName: 'Mia' } as PainterIdentity | null,
+  loadAccount: vi.fn(async () => {}),
   toast: vi.fn(),
 }))
 vi.mock('../state.js', () => ({
-  getState: () => ({ servers: state.servers }),
+  getState: () => state,
+  commitState: (patch: Partial<State>) => {
+    if (!state.save) return false
+    Object.assign(state, patch)
+    return true
+  },
   admittedServerContentsFor: () => state.contents,
   serverConnectionSignal: () => state.controller.signal,
   activeServerToken: () => 'report',
@@ -20,17 +36,31 @@ vi.mock('../state.js', () => ({
   serverEndpoint: (url: string, path: string) => `${url}/v1${path}`,
 }))
 vi.mock('../alliance-server-sync.js', () => ({ allianceManifestFor: () => null }))
-vi.mock('../application/tree-server-state.js', () => ({}))
+vi.mock('../application/tree-server-state.js', () => ({
+  rowsForSurface: () => ({ templates: state.templates }),
+  serverTemplateTreeKey: (server: ConnectedServer, id: string) => `${server.url}:${id}`,
+}))
+vi.mock('../templates/local-store.js', () => ({
+  localTemplates: () => state.locals,
+  isServerTemplate: () => false,
+}))
 vi.mock('../server-transport.js', () => ({ requestServerTree: state.request }))
 vi.mock('../wplace-account.js', () => ({
   accountIdentity: () => state.identity,
-  loadAccount: async () => {},
+  loadAccount: state.loadAccount,
 }))
 vi.mock('./toast.js', () => ({ toast: state.toast }))
 
-import { claimTemplate, workSectionModel } from './work.js'
+import {
+  canClaimTemplate,
+  claimTemplate,
+  retryTemplateClaims,
+  withTemplateClaims,
+  workSectionModel,
+} from './work.js'
 
 const setup = () => {
+  state.identity = { wplaceUserId: 42, displayName: 'Mia' }
   const server: ConnectedServer = {
     url: 'https://work.example',
     info: { id: uuidV7(), name: 'Work server', auth: 'access_token' },
@@ -42,15 +72,19 @@ const setup = () => {
   state.servers = [server]
   state.controller = new AbortController()
   state.contents = { nodes: [], templates: [], revision: 'manifest-1', workRevision: 1 }
+  state.localClaims = []
+  state.locals = []
+  state.save = true
+  const id = uuidV7()
   const item: WorkItem = {
-    id: uuidV7(),
+    id,
     title: 'Box art',
     description: '',
     status: 'open',
     priority: 'normal',
     tags: [],
     nodeId: null,
-    templateIds: [],
+    templateIds: [id],
     blockerIds: [],
     season: 0,
     surface: WORLD_TEMPLATE_SURFACE,
@@ -59,15 +93,16 @@ const setup = () => {
     createdAt: 1,
     updatedAt: 1,
   }
-  return { server, item }
+  state.templates = [{ id, published: true }]
+  return { server, item, key: `${server.url}:${id}` }
 }
 afterEach(() => {
   state.controller.abort()
   vi.clearAllMocks()
 })
 
-it('refreshes work on work revisions, ignores painting revisions, and discards disconnected responses', async () => {
-  const { item } = setup()
+it('refreshes on work revisions, ignores painting updates, and discards disconnected responses', async () => {
+  const { item, key } = setup()
   const changed = vi.fn()
   state.request.mockResolvedValue({
     response: { status: 200 },
@@ -75,8 +110,16 @@ it('refreshes work on work revisions, ignores painting revisions, and discards d
   })
   workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
   await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1))
-  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed)?.[0]?.items[0]?.claimant).toBe('Mia #42')
-  state.contents = { nodes: [], templates: [], revision: 'paint-update', workRevision: 1 }
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.people).toEqual([
+    state.identity,
+  ])
+  state.contents = {
+    ...state.contents,
+    nodes: [],
+    templates: [],
+    revision: 'paint-update',
+    workRevision: 1,
+  }
   workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
   expect(state.request).toHaveBeenCalledTimes(1)
   let finish: (value: unknown) => void = () => {}
@@ -93,10 +136,10 @@ it('refreshes work on work revisions, ignores painting revisions, and discards d
   finish({ response: { status: 200 }, body: { items: [item], canClaim: true, canPlan: false } })
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(changed).toHaveBeenCalledTimes(1)
-  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed)).toEqual([])
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.size).toBe(0)
 })
 
-it('claims directly with the Wplace identity and current revision, without a planning form', async () => {
+it('retries a simultaneous claim using the new revision and the same Wplace identity', async () => {
   const { server, item } = setup()
   const changed = vi.fn()
   state.request
@@ -104,53 +147,173 @@ it('claims directly with the Wplace identity and current revision, without a pla
       response: { status: 200 },
       body: { items: [], canClaim: true, canPlan: false },
     })
+    .mockResolvedValueOnce({ response: { status: 409 }, body: { error: 'Work changed' } })
+    .mockResolvedValueOnce({
+      response: { status: 200 },
+      body: { items: [item], canClaim: true, canPlan: false },
+    })
     .mockResolvedValueOnce({ response: { status: 200 }, body: item })
   await claimTemplate(
     { server, key: item.id, name: item.title, nodeId: null, templateId: item.id },
     changed,
   )
-  const call = state.request.mock.calls[1]
-  expect(call).toBeDefined()
-  if (call === undefined) throw new Error('Claim request missing')
-  const [url, init] = call
-  expect(url).toContain(`/work/${item.id}?`)
-  expect(JSON.parse(init.body)).toEqual({
+  expect(JSON.parse(state.request.mock.calls[3]?.[1].body)).toEqual({
     action: 'claim-template',
     actor: state.identity,
-    expectedRevision: 0,
+    expectedRevision: 1,
   })
   expect(changed).toHaveBeenCalledOnce()
-  expect(state.toast).toHaveBeenCalledWith('Claimed “Box art”.')
+  expect(state.toast).not.toHaveBeenCalled()
 })
 
+const row = (key: string): TreeRowModel => ({
+  type: 'row',
+  key,
+  name: key,
+  icon: 'image',
+  depth: 2,
+  branches: [true, false],
+  parentKey: 'folder',
+  container: false,
+  expanded: false,
+  visible: true,
+  positionInSet: 1,
+  setSize: 1,
+  leadingActions: [{ id: 'go', label: 'Go to', icon: 'search' }],
+  progress: { completed: 10, total: 20, known: 20, mismatched: 0, unpainted: 10 },
+})
 it.each([false, true])(
-  'keeps the drawer available and limits other claims to admins (admin=%s)',
+  'aggregates local and server rows, preserves row controls, and gates other claims (admin=%s)',
   async (canPlan) => {
-    const { item } = setup()
+    const { item, key, server } = setup()
     const otherId = uuidV7()
-    state.contents = { nodes: [], templates: [], revision: 'legacy-manifest' }
+    state.templates.push({ id: otherId, published: true })
+    state.servers.push({ ...server, url: 'https://second.example' })
+    state.locals = [{ id: 'local-art' }]
+    state.localClaims = [
+      { templateId: 'local-art', claimant: { wplaceUserId: 42, displayName: 'Mia' } },
+    ]
+    const other = { wplaceUserId: 84, displayName: 'Other painter' }
     state.request.mockResolvedValue({
       response: { status: 200 },
       body: {
         items: [
-          item,
-          { ...item, id: otherId, claimant: { wplaceUserId: 84, displayName: 'Other painter' } },
-          { ...item, id: uuidV7(), claimant: null },
-          { ...item, id: uuidV7(), status: 'completed' },
+          { ...item, claimants: [state.identity, other] },
+          { ...item, id: otherId, templateIds: [otherId], claimant: other },
         ],
         canClaim: true,
         canPlan,
       },
     })
     const changed = vi.fn()
-    expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed)).toHaveLength(1)
-    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
-    const groups = workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
-    expect(groups[0]?.items.map((row) => row.id)).toEqual([item.id])
-    expect(groups[0]?.canShowOthers).toBe(canPlan)
-    expect(
-      workSectionModel(WORLD_TEMPLATE_SURFACE, changed, true)[0]?.items.map((row) => row.id),
-    ).toEqual(canPlan ? [item.id, otherId] : [item.id])
-    expect(state.request).toHaveBeenCalledOnce()
+    workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2))
+    const claims = workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+    const original = row(key)
+    const tree: TemplateTreeModel = {
+      query: '',
+      sort: { field: 'custom', direction: 'asc' },
+      entries: [
+        original,
+        row(`${server.url}:${otherId}`),
+        row(`https://second.example:${item.id}`),
+        row(`https://second.example:${otherId}`),
+        row('local:local-art'),
+      ],
+    }
+    const personal = withTemplateClaims(tree, claims, false)
+    expect(personal.entries.map((entry) => entry.key)).toEqual([
+      key,
+      `https://second.example:${item.id}`,
+      'local:local-art',
+    ])
+    expect(personal.entries[0]).toMatchObject({
+      progress: original.progress,
+      leadingActions: original.leadingActions,
+      depth: 0,
+      parentKey: null,
+      claims: { people: [state.identity, other] },
+    })
+    expect(withTemplateClaims(tree, claims, true).entries).toHaveLength(canPlan ? 5 : 3)
+    expect(claims.canShowOthers).toBe(canPlan)
   },
 )
+
+it('persists personal local claims and preserves other painters when releasing', async () => {
+  setup()
+  state.locals = [{ id: 'local-art' }]
+  const other = { wplaceUserId: 84, displayName: 'Other painter' }
+  state.localClaims = [{ templateId: 'local-art', claimant: other }]
+  const target = { server: null, key: 'local:local-art', name: 'Local art', nodeId: null }
+  const changed = vi.fn()
+  await claimTemplate(target, changed)
+  await claimTemplate(target, changed)
+  expect(state.localClaims).toHaveLength(2)
+  await claimTemplate(target, changed, true)
+  expect(state.localClaims).toEqual([{ templateId: 'local-art', claimant: other }])
+  state.save = false
+  await claimTemplate(target, changed)
+  expect(state.localClaims).toHaveLength(1)
+  expect(state.toast).toHaveBeenCalledWith('Could not save the local claim.', 'error')
+})
+
+it('does not send a claim mutation when the server reports read-only capability', async () => {
+  const { server, item } = setup()
+  state.request.mockResolvedValue({
+    response: { status: 200 },
+    body: { items: [], canClaim: false, canPlan: false },
+  })
+  const target = { server, key: item.id, name: item.title, nodeId: null, templateId: item.id }
+  await claimTemplate(target, vi.fn())
+  expect(state.request).toHaveBeenCalledOnce()
+  expect(state.toast).toHaveBeenCalledWith(
+    expect.stringContaining('report or admin token'),
+    'warning',
+  )
+  const changed = vi.fn()
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
+  expect(canClaimTemplate(target)).toBe(false)
+})
+
+it('retries a failed list at the same revision only after an explicit retry', async () => {
+  const { item, key } = setup()
+  state.request.mockRejectedValueOnce(new Error('Temporarily offline'))
+  const changed = vi.fn()
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).error).toContain('Temporarily offline')
+  expect(state.request).toHaveBeenCalledOnce()
+  state.request.mockResolvedValue({
+    response: { status: 200 },
+    body: { items: [item], canClaim: true, canPlan: false },
+  })
+  retryTemplateClaims(WORLD_TEMPLATE_SURFACE, changed)
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() =>
+    expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.mine).toBe(true),
+  )
+  expect(state.request).toHaveBeenCalledTimes(2)
+})
+
+it('recovers a missing account independently of the work revision', async () => {
+  const { item, key } = setup()
+  const identity = state.identity
+  state.identity = null
+  state.request.mockResolvedValue({
+    response: { status: 200 },
+    body: { items: [item], canClaim: true, canPlan: false },
+  })
+  const changed = vi.fn()
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() => expect(changed).toHaveBeenCalled())
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.mine).toBe(false)
+  state.loadAccount.mockImplementationOnce(async () => {
+    state.identity = identity
+  })
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() =>
+    expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.mine).toBe(true),
+  )
+  expect(state.request).toHaveBeenCalledOnce()
+})

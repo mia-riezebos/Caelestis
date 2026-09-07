@@ -29,17 +29,18 @@
     dockedPanel?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.focus()
   }
 
-  const treeIntent = (intent: TemplateTreeIntent): void => {
+  const treeIntent = (intent: TemplateTreeIntent, work = false): void => {
+    const tree = work ? model.work?.tree : model.tree
     // Map navigation, file pickers, and placement return to the interactive canvas.
-    const entry = intent.type === 'action' ? model.tree?.entries.find((entry) => entry.key === intent.key) : undefined
+    const entry = intent.type === 'action' ? tree?.entries.find((entry) => entry.key === intent.key) : undefined
     const action = intent.type === 'context-menu-action'
-      ? model.tree?.contextMenu?.items.find((item) => item.id === intent.actionId)
+      ? tree?.contextMenu?.items.find((item) => item.id === intent.actionId)
       : intent.type === 'action' && entry?.type === 'row'
         ? [...(entry.leadingActions ?? []), ...(entry.actions ?? [])].find((action) => action.id === intent.actionId)
         : entry?.type === 'action' ? entry.action
         : undefined
     if (poppedOut && action?.returnToCanvas === true) void dock()
-    emit({ type: 'tree', intent })
+    emit({ type: work ? 'work-tree' : 'tree', intent })
   }
 
   $effect(() => { width = model.width })
@@ -137,7 +138,7 @@
     {#if model.view === 'tree' && model.tree !== undefined}
       <TemplateTree model={model.tree} allowGrid={poppedOut} onIntent={treeIntent} />
       {#if model.work !== undefined}
-        <WorkSummary groups={model.work} showOtherClaims={model.showOtherClaims ?? false} onshowothers={(showOtherClaims) => emit({ type: 'work-visibility', showOtherClaims })} onopen={(key, itemId) => emit({ type: 'work', key, ...(itemId === undefined ? {} : { itemId }) })} />
+        <WorkSummary model={model.work} showOtherClaims={model.showOtherClaims ?? false} onshowothers={(showOtherClaims) => emit({ type: 'work-visibility', showOtherClaims })} onIntent={(intent) => treeIntent(intent, true)} onretry={() => emit({ type: 'work-retry' })} />
       {/if}
     {:else if model.view === 'appearance' && model.appearance !== undefined}
       <AppearanceEditor model={model.appearance} onIntent={(intent) => emit({ type: 'appearance', intent })} />

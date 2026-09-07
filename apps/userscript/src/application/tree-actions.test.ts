@@ -42,7 +42,7 @@ const transferState = vi.hoisted(() => ({
 vi.mock('../main.js', () => ({ viewportCentre: vi.fn(() => null) }))
 vi.mock('../state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../state.js')>()),
-  getState: copyState.getState,
+  getState: () => ({ localClaims: [], ...copyState.getState() }),
   listServerNodes: copyState.listServerNodes,
   dismissTemplateAlarm: alarmState.dismiss,
 }))

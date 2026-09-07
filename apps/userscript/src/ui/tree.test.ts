@@ -183,6 +183,26 @@ describe('tree identity and ordering', () => {
     )
     setState({ collapsed: [nodeTreeKey(connected, NODE_ID)] })
     const collapsed = templateTreeAdapter(callbacks, vi.fn()).model.entries
+    const complete = templateTreeAdapter(
+      callbacks,
+      vi.fn(),
+      '',
+      undefined,
+      true,
+      new Set([serverTemplateTreeKey(connected, TEMPLATE_A)]),
+    )
+    expect(complete.model.entries).toContainEqual(
+      expect.objectContaining({
+        key: serverTemplateTreeKey(connected, TEMPLATE_A),
+        leadingActions: expect.arrayContaining([expect.objectContaining({ icon: 'search' })]),
+      }),
+    )
+    expect(getState().collapsed).toEqual([nodeTreeKey(connected, NODE_ID)])
+    expect(
+      complete.model.entries.some(
+        (entry) => entry.key === serverTemplateTreeKey(connected, 'root-art'),
+      ),
+    ).toBe(false)
     expect(
       collapsed.some((entry) => entry.key === serverTemplateTreeKey(connected, TEMPLATE_A)),
     ).toBe(false)

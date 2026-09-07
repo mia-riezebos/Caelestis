@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
 
   interface Props {
+    type?: 'button' | 'submit'
     label: string
     title?: string
     kind?: 'default' | 'primary' | 'danger' | 'danger-ghost' | 'ghost'
@@ -17,6 +18,7 @@
   }
 
   let {
+    type = 'button',
     label,
     title,
     kind = 'default',
@@ -33,7 +35,7 @@
 </script>
 
 <button
-  type="button"
+  {type}
   class:icon-only={iconOnly}
   class:compact={size === 'compact'}
   class:small={size === 'small'}
