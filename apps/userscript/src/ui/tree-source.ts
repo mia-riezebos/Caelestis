@@ -18,6 +18,7 @@ import type { RowAction } from './tree-state.js'
 export interface TreeItem {
   readonly key: string
   readonly name: string
+  readonly tagNames?: readonly string[]
   readonly kind: Extract<TreeIcon, 'folder' | 'image' | 'server'>
   /** Its id as a container, so the renderer can ask for its children. Null for a leaf. */
   readonly childrenOf: string | null
@@ -259,7 +260,8 @@ export const treeMatcher = (
     if (cached !== undefined) return cached
     if (
       (!filtering || item.childrenOf === null) &&
-      item.name.toLocaleLowerCase().includes(needle)
+      (item.name.toLocaleLowerCase().includes(needle) ||
+        item.tagNames?.some((name) => name.toLocaleLowerCase().includes(needle)))
     ) {
       const result =
         !filtering ||

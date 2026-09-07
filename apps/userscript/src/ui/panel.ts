@@ -101,6 +101,7 @@ import { pixelAccounting } from '../templates/mismatch.js'
 import { focusedTemplate } from '../templates/nearest.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
+import { ensureLocalTags } from '../templates/tags.js'
 import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
@@ -1434,6 +1435,9 @@ export const syncColourModeState = (): void => {
  * a button they threw away.
  */
 export const installPanel = (): void => {
+  void ensureLocalTags()
+    .then(refreshView)
+    .catch((error) => toast(`Could not load local tags: ${String(error)}`, 'error'))
   loadState()
   panelSessions.select('world')
   panelHost = document.body

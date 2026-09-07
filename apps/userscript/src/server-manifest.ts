@@ -1,4 +1,5 @@
 import {
+  parseTemplateTags,
   sameTemplateSurface,
   type TemplateSurface,
   TILE_SIZE,
@@ -374,11 +375,19 @@ export const parseServerManifest = (
   if (server === null || server.id !== expected.id) return null
   const nodes = parseTreeNodes(value.nodes)
   if (nodes === null || !manifestContentsValid(value, nodes, surface)) return null
+  if (value.tags !== undefined && parseTemplateTags(value.tags) === null) return null
+  if (
+    (value.templates as readonly Record<string, unknown>[]).some(
+      (template) => template.tags !== undefined && parseTemplateTags(template.tags) === null,
+    )
+  )
+    return null
   const templates = (value.templates as readonly Record<string, unknown>[]).map(
     (template): ServerTemplate => ({
       id: String(template.id),
       nodeId: template.nodeId === null ? null : String(template.nodeId),
       name: String(template.name),
+      ...(template.tags === undefined ? {} : { tags: parseTemplateTags(template.tags) ?? [] }),
       version: String(template.version),
       totalPixels: Number(template.totalPixels),
       published: template.published === true,

@@ -1,4 +1,10 @@
-import { type TemplateSurface, templateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import {
+  parseTemplateTags,
+  type TemplateSurface,
+  type TemplateTag,
+  templateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { warn } from './debug.js'
 import {
   MAX_MANIFEST_CHUNKS,
@@ -40,6 +46,7 @@ export interface CachedServer {
 }
 
 export interface ServerTemplate {
+  readonly tags?: readonly TemplateTag[]
   readonly id: string
   readonly nodeId: string | null
   readonly name: string
@@ -80,6 +87,7 @@ const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefi
       typeof candidate.id !== 'string' ||
       (candidate.nodeId !== null && typeof candidate.nodeId !== 'string') ||
       typeof candidate.name !== 'string' ||
+      (candidate.tags !== undefined && parseTemplateTags(candidate.tags) === null) ||
       typeof candidate.version !== 'string' ||
       (candidate.totalPixels !== undefined &&
         (!Number.isSafeInteger(candidate.totalPixels) || Number(candidate.totalPixels) <= 0)) ||

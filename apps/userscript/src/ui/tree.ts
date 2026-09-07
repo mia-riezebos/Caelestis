@@ -65,6 +65,7 @@ import {
 } from '../templates/mismatch.js'
 import { nodeChainVisible, nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { localTemplateTags } from '../templates/tags.js'
 import { templateDisplayMode } from './display-mode.js'
 import {
   emptyProgress,
@@ -171,6 +172,12 @@ export interface TreeCallbacks {
 }
 
 const reportTreeError = (message: string): void => toast(message, 'error')
+
+const openTagManager = (target: TreeTarget, rerender: () => void): void => {
+  void import('./tags.js')
+    .then((editor) => editor.openTagManager(target, rerender))
+    .catch((error) => reportTreeError(`Could not open tags: ${String(error)}`))
+}
 
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
@@ -685,6 +692,7 @@ const buildTree = <Result>(
         : undefined,
       actions: canCreate
         ? [
+            { icon: 'tag', label: 'Manage tags', run: () => openTagManager(target, rerender) },
             {
               icon: 'createFolder',
               label: 'New folder',
@@ -832,6 +840,16 @@ const buildTree = <Result>(
             item: {
               key: templateKey,
               name: template.name,
+              tagNames: template.tags?.map((tag) => tag.name) ?? [],
+              actions: canCreate
+                ? [
+                    {
+                      icon: 'tag',
+                      label: 'Edit tags',
+                      run: () => openTagManager(templateTarget, rerender),
+                    },
+                  ]
+                : undefined,
               kind: 'image',
               childrenOf: null,
               preview: {
@@ -1016,6 +1034,7 @@ const buildTree = <Result>(
           item: {
             key: `local:${template.id}`,
             name: template.name,
+            tagNames: localTemplateTags(template.id).map((tag) => tag.name),
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
@@ -1048,6 +1067,11 @@ const buildTree = <Result>(
               },
             ],
             actions: [
+              {
+                icon: 'tag',
+                label: 'Edit tags',
+                run: () => openTagManager(templateTarget, rerender),
+              },
               {
                 icon: 'uploadFile' as const,
                 label: 'Copy to a server',

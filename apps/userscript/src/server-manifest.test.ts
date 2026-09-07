@@ -44,6 +44,16 @@ const manifest = {
 }
 
 describe('server manifest template lifecycle', () => {
+  it('preserves authoritative tags and rejects duplicate or malformed assignments', () => {
+    const tag = { id: NODE_ID, name: 'Repair' }
+    const tagged = { ...manifest, templates: [{ ...manifest.templates[0], tags: [tag] }] }
+    expect(parseServerManifest(tagged, server)?.templates[0]?.tags).toEqual([tag])
+    for (const tags of [[tag, tag], [{ ...tag, name: ' ' }], [{ ...tag, id: 'invalid' }]]) {
+      expect(
+        parseServerManifest({ ...tagged, templates: [{ ...tagged.templates[0], tags }] }, server),
+      ).toBeNull()
+    }
+  })
   it('accepts only the explicit live-sync capability versions', () => {
     expect(parseServerInfo({ ...server, liveSync: 1, liveTileOffers: 1 })).toEqual({
       ...server,

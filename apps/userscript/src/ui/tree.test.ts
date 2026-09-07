@@ -166,7 +166,15 @@ describe('tree model adapter', () => {
     expect(getState().collapsed).not.toContain('local')
     expect(rerender).toHaveBeenCalled()
 
-    adapter.handle({ type: 'action', key: 'local', actionId: 'row-1' })
+    const local = adapter.model.entries.find(
+      (entry) => entry.type === 'row' && entry.key === 'local',
+    )
+    const importAction =
+      local?.type === 'row'
+        ? local.actions?.find((action) => action.label === 'Import template')
+        : undefined
+    expect(importAction).toBeDefined()
+    adapter.handle({ type: 'action', key: 'local', actionId: importAction?.id ?? '' })
     expect(onImportTemplate).toHaveBeenCalledWith(
       expect.objectContaining({ key: 'local', server: null }),
     )

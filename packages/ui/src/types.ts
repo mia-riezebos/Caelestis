@@ -254,10 +254,31 @@ export interface ShortcutHelpModel {
 
 export type ShortcutHelpIntent = { readonly type: 'close' }
 
+export interface TagManagerModel {
+  readonly owner: string
+  readonly templateName?: string
+  readonly tags: readonly import('@caelestis/shared').TemplateTag[]
+  readonly selected: readonly string[]
+  readonly loading: boolean
+  readonly ready: boolean
+  readonly busy: boolean
+  readonly error?: string | undefined
+  readonly revision: number
+}
+
+export type TagManagerIntent =
+  | { readonly type: 'close' }
+  | { readonly type: 'retry' }
+  | { readonly type: 'create'; readonly name: string }
+  | { readonly type: 'rename'; readonly id: string; readonly name: string }
+  | { readonly type: 'delete'; readonly id: string }
+  | { readonly type: 'assign'; readonly id: string; readonly attached: boolean }
+
 export type RailControlIntent = { readonly type: 'activate'; readonly id: RailControlId }
 
 export type TreeIcon = Extract<
   IconName,
+  | 'tag'
   | 'folder'
   | 'image'
   | 'server'

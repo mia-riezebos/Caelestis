@@ -17,7 +17,7 @@ Keep template ownership, pixels, placement, and folder paths intact.
 ## TODOs
 - [x] Add server tag persistence, authorized API, and manifest synchronization with focused tests.
 - [x] Add transactional local tag persistence and migration tests.
-- [ ] Add the shared tag editor, ownership labels, and hierarchical tag search with focused tests.
+- [x] Add the shared tag editor, ownership labels, and hierarchical tag search with focused tests.
 - [ ] Verify rendered workflows and repository checks, add release notes, and file the PR.
 
 ## Notes
@@ -31,3 +31,6 @@ Keep template ownership, pixels, placement, and folder paths intact.
 - Use the existing debug Chromium.app through CDP for browser verification. Mia explicitly excludes Helium.
 - Local persistence, migration, and server-cache tests pass (30 tests); userscript typecheck passes.
 - Build directly in the real codebase. Browser tabs must open in the background without activating Chromium; retain CDP focus emulation for background rendering.
+- Shared editor tests pass (4); tree and manifest tests pass (24). UI check reports zero errors or warnings.
+- Full parallel tests encountered three backend timeout failures and cancelled the userscript suite. Rerun with bounded concurrency; do not change unrelated test timeouts.
+- Browser verification runs separately from /tmp/caelestis-257-verify.4kvZd5 against production components and isolated storage.
