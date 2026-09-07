@@ -21,12 +21,14 @@ import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
 import {
+  activeServerToken,
   admittedServerContentsFor,
   type ConnectedServer,
   deleteTemplate as deleteTemplateOnServer,
   getState,
   getSurfaceAppearance,
   listServerContents,
+  patchTemplate,
   removeTreeStateKeys,
   uploadTemplateVersion,
 } from '../state.js'
@@ -264,6 +266,7 @@ interface Intent<T> {
  * of the second discarding the first.
  */
 const visibleIntents = new Map<string, Intent<boolean>>()
+const pendingLifecycle = new Map<string, 'finished' | 'frozen'>()
 let sequence = 0
 
 /**
@@ -494,6 +497,12 @@ const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | n
       }
 }
 
+/** Lifecycle mutations require both confirmed admin scope and a usable credential. */
+const serverLifecycleTargetFor = (template: PlacedTemplate): ServerActionTarget | null => {
+  const target = serverActionTargetFor(template)
+  return target !== null && activeServerToken(target.server) !== null ? target : null
+}
+
 /** Lifecycle state is visible to read-scoped users too; only the mutation target is admin-gated. */
 const serverLifecycleFor = (
   template: PlacedTemplate,
@@ -523,10 +532,13 @@ const serverDraftIsEditable = (id: string): boolean => {
   return target !== null && !target.published
 }
 
-const refreshServerTemplateSurface = (server: ConnectedServer, template: PlacedTemplate): void => {
+const refreshServerTemplateSurface = async (
+  server: ConnectedServer,
+  template: PlacedTemplate,
+): Promise<void> => {
   const surface = template.surface ?? WORLD_TEMPLATE_SURFACE
-  if (surface.kind === 'world') void listServerContents(server)
-  else void refreshAllianceManifest(server, surface)
+  if (surface.kind === 'world') await listServerContents(server)
+  else await refreshAllianceManifest(server, surface)
 }
 
 /** The template's name as it is *now* — a name captured at build time goes stale on a rename. */
@@ -615,6 +627,7 @@ const forget = (id: string): void => {
   overlayAppearanceState.forget(id)
   clearAppearancePreview(id)
   visibleIntents.delete(id)
+  pendingLifecycle.delete(id)
   queues.delete(id)
   overlayFailures.forget(id)
   confirming.delete(id)
@@ -628,6 +641,7 @@ const remembered = (): Set<string> =>
     ...placementRails.keys(),
     ...overlayAppearanceState.ids(),
     ...visibleIntents.keys(),
+    ...pendingLifecycle.keys(),
     ...queues.keys(),
     ...overlayFailures.ids(),
     ...confirming,
@@ -710,6 +724,63 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
   )
 }
 
+// The first refresh can join a manifest read that started before the mutation.
+const LIFECYCLE_REFRESH_ATTEMPTS = 2
+
+const commitLifecycle = (
+  id: string,
+  field: 'finished' | 'frozen',
+  value: boolean,
+  rerender: () => void,
+): void => {
+  if (isDoomed(id) || pendingLifecycle.has(id)) return
+  const template = templateFor(id)
+  const target = template === undefined ? null : serverLifecycleTargetFor(template)
+  const lifecycle = template === undefined ? null : serverLifecycleFor(template)
+  if (template === undefined || target === null || lifecycle === null) {
+    recordFailure(id, field, () => 'Admin access to this template is no longer available.')
+    rerender()
+    return
+  }
+  if (field === 'frozen' && !value && lifecycle.finished && lifecycle.frozen) {
+    recordFailure(id, field, () => 'Reopen the template before thawing.')
+    rerender()
+    return
+  }
+  pendingLifecycle.set(id, field)
+  const confirmed = (): boolean => {
+    const current = templateFor(id)
+    return current !== undefined && serverLifecycleFor(current)?.[field] === value
+  }
+  let message = 'Could not update this template. Try again.'
+  settle(
+    id,
+    [field],
+    async () => {
+      const result = await patchTemplate(
+        target.server,
+        target.templateId,
+        field === 'finished' ? { finished: value } : { timelapseFrozen: value },
+      )
+      message = result.ok
+        ? 'Change saved, but its current state could not be confirmed. Refresh the server before trying again.'
+        : result.message
+      for (let attempt = 0; attempt < LIFECYCLE_REFRESH_ATTEMPTS; attempt++) {
+        const server = getState().servers.find((current) => current.url === target.server.url)
+        if (server === undefined) return false
+        await refreshServerTemplateSurface(server, template)
+        if (!result.ok || confirmed()) return result.ok
+      }
+      return false
+    },
+    () => message,
+    () => pendingLifecycle.delete(id),
+    rerender,
+    confirmed,
+    false,
+  )
+}
+
 /**
  * What the menu draws, as one comparable string.
  *
@@ -732,6 +803,8 @@ const menuSignature = (template: PlacedTemplate): string => {
     visibleFor(id),
     lifecycle?.finished ?? false,
     lifecycle?.frozen ?? false,
+    serverLifecycleTargetFor(template) !== null,
+    pendingLifecycle.get(id),
     appearance.radius,
     appearance.translateX,
     appearance.translateY,
@@ -1045,7 +1118,7 @@ const moveServerDraft = async (id: string, originX: number, originY: number): Pr
   clearFailure(id, 'move')
   // The manifest coordinator updates both the tree and the rendered server copy. The placement
   // engine accepts its local preview immediately; this read supplies the new immutable version.
-  refreshServerTemplateSurface(currentTarget.server, current)
+  void refreshServerTemplateSurface(currentTarget.server, current)
   return true
 }
 
@@ -1237,7 +1310,7 @@ const confirmDelete = (id: string, rerender: () => void): void => {
             return false
           }
           await forgetServerTemplate(id)
-          if (current !== undefined) refreshServerTemplateSurface(serverTarget.server, current)
+          if (current !== undefined) void refreshServerTemplateSurface(serverTarget.server, current)
           return true
         })
   void removal.then(
@@ -1279,11 +1352,55 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
   const visible = visibleFor(id)
   const serverTarget = serverActionTargetFor(template)
   const serverProtected = serverTarget?.published === true
+  const lifecycle = serverLifecycleFor(template)
+  const pending = pendingLifecycle.get(id)
   const actionSpecs: ReadonlyArray<{
     readonly model: RailControlModel
     readonly control: string
     readonly activate: () => void
   }> = [
+    ...(serverLifecycleTargetFor(template) === null || lifecycle === null
+      ? []
+      : [
+          {
+            model: {
+              id: 'overlay-finished' as const,
+              control: 'finished',
+              label:
+                pending === 'finished'
+                  ? 'Saving completion…'
+                  : lifecycle.finished
+                    ? 'Reopen template'
+                    : 'Mark as complete',
+              pressed: lifecycle.finished,
+              disabled: isDoomed(id) || pending !== undefined,
+              busy: pending === 'finished',
+            },
+            control: 'finished',
+            activate: () => commitLifecycle(id, 'finished', !lifecycle.finished, rerender),
+          },
+          {
+            model: {
+              id: 'overlay-frozen' as const,
+              control: 'frozen',
+              label:
+                pending === 'frozen'
+                  ? 'Saving timelapse state…'
+                  : lifecycle.frozen
+                    ? 'Thaw timelapse'
+                    : 'Freeze timelapse',
+              ...(lifecycle.finished && lifecycle.frozen
+                ? { title: 'Reopen the template before thawing' }
+                : {}),
+              pressed: lifecycle.frozen,
+              disabled:
+                isDoomed(id) || pending !== undefined || (lifecycle.finished && lifecycle.frozen),
+              busy: pending === 'frozen',
+            },
+            control: 'frozen',
+            activate: () => commitLifecycle(id, 'frozen', !lifecycle.frozen, rerender),
+          },
+        ]),
     {
       model: {
         id: 'overlay-visible',
@@ -1990,7 +2107,9 @@ const renderControls = (
       openFor === template.id
         ? isServerTemplate(template) && serverActionTargetFor(template) === null
           ? 1
-          : 3
+          : serverLifecycleTargetFor(template) !== null && serverLifecycleFor(template) !== null
+            ? 5
+            : 3
         : 0
     const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
     if (viewport.bottom - viewport.top < railHeight) {

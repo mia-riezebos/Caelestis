@@ -3,6 +3,8 @@ export type OverlayFailureKey =
   | 'visible'
   | 'move'
   | 'server-move'
+  | 'finished'
+  | 'frozen'
   | 'move-ready'
   | 'move-stopped'
   | `appearance:${string}`
