@@ -54,6 +54,7 @@ vi.mock('./toast.js', () => ({ toast: state.toast }))
 import {
   canClaimTemplate,
   claimTemplate,
+  hasOwnTemplateClaim,
   retryTemplateClaims,
   withTemplateClaims,
   workSectionModel,
@@ -274,6 +275,30 @@ it('does not send a claim mutation when the server reports read-only capability'
   workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
   await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
   expect(canClaimTemplate(target)).toBe(false)
+})
+
+it('does not turn a claimed linked task into a template claim', async () => {
+  const { server, item, key } = setup()
+  const task = { ...item, id: uuidV7() }
+  state.request.mockResolvedValue({
+    response: { status: 200 },
+    body: { items: [task], canClaim: true, canPlan: false },
+  })
+  const changed = vi.fn()
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
+  const claims = workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  expect(claims.templates.get(key)).toMatchObject({ mine: false, people: [] })
+  expect(
+    hasOwnTemplateClaim({ server, key, name: item.title, nodeId: null, templateId: item.id }),
+  ).toBe(false)
+  expect(
+    withTemplateClaims(
+      { query: '', sort: { field: 'custom', direction: 'asc' }, entries: [row(key)] },
+      claims,
+      false,
+    ).entries,
+  ).toEqual([])
 })
 
 it('retries a failed list at the same revision only after an explicit retry', async () => {

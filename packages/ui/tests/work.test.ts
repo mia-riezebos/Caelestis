@@ -54,6 +54,29 @@ const setup = async (override: Partial<WorkClient> = {}) => {
 }
 
 describe('work interactions', () => {
+  it('keeps dedicated template claims out of the single-owner task board', async () => {
+    const actor = { displayName: 'Mia', wplaceUserId: 1 }
+    const claim = {
+      ...item,
+      id: '01900000-0000-7000-8000-000000000003',
+      title: 'Dedicated claim',
+      claimant: actor,
+      claimants: [actor, { displayName: 'Dawn', wplaceUserId: 2 }],
+    }
+    const { root, model, client } = await setup({
+      list: async () => ({
+        items: [item, { ...claim, templateIds: [claim.id] }],
+        canPlan: true,
+        canClaim: true,
+      }),
+    })
+    expect(root.shadowRoot?.querySelectorAll('.item')).toHaveLength(1)
+    expect(root.shadowRoot?.textContent).not.toContain(claim.title)
+    root.model = { ...model, client: { ...client }, itemId: claim.id }
+    await settle()
+    expect(root.shadowRoot?.querySelector('article')).toBeNull()
+    expect(button(root, 'Release claim')).toBeUndefined()
+  })
   it('distinguishes removed folders in current details and the edit option', async () => {
     const nodeId = '01900000-0000-7000-8000-000000000099'
     const { root } = await setup({

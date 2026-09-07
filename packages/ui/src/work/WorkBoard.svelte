@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     filterWork,
+    isTemplateClaim,
     isWorkFields,
     isWorkIdentity,
     uuidV7,
@@ -108,7 +109,7 @@
     try {
       const result = await client.list()
       if (run !== generation) return
-      collection = result
+      collection = { ...result, items: result.items.filter((item) => !isTemplateClaim(item)) }
     } catch (cause) {
       if (run === generation) error = cause instanceof Error ? cause.message : String(cause)
     } finally {

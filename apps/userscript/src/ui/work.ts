@@ -1,5 +1,6 @@
 import {
   createWorkClient,
+  isTemplateClaim,
   isWorkIdentity,
   type PainterIdentity,
   sameTemplateSurface,
@@ -132,7 +133,7 @@ export const workSectionModel = (surface: TemplateSurface, changed: () => void) 
     for (const template of rowsForSurface(server, surface)?.templates ?? []) {
       const people = new Map<number, PainterIdentity>()
       for (const item of preview.collection.items) {
-        if (!item.templateIds.includes(template.id)) continue
+        if (!isTemplateClaim(item) || item.id !== template.id) continue
         for (const person of workClaimants(item)) people.set(person.wplaceUserId, person)
       }
       templates.set(serverTemplateTreeKey(server, template.id), {
@@ -349,7 +350,8 @@ export const hasOwnTemplateClaim = (target: TreeTarget): boolean => {
       .get(previewKey(target.server, target.surface ?? WORLD_TEMPLATE_SURFACE))
       ?.collection.items.some(
         (item) =>
-          item.templateIds.includes(target.templateId ?? '') &&
+          isTemplateClaim(item) &&
+          item.id === target.templateId &&
           workClaimants(item).some((person) => person.wplaceUserId === painterId),
       ) ?? false
   )

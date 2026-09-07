@@ -60,6 +60,10 @@ export const workClaimants = (item: WorkItem): readonly PainterIdentity[] =>
     ? []
     : (item.claimants ?? (item.claimant === null ? [] : [item.claimant]))
 
+/** Dedicated template claims use the template's stable ID; linked tasks have their own IDs. */
+export const isTemplateClaim = (item: WorkItem): boolean =>
+  item.templateIds.length === 1 && item.templateIds[0] === item.id
+
 export interface WorkFilter {
   readonly state?: 'all' | 'open' | 'claimed' | 'blocked' | 'completed'
   readonly nodeIds?: ReadonlySet<string>
