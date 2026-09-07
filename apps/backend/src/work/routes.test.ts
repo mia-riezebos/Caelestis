@@ -10,6 +10,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
+import type { TemplateVersionRecord } from '../ports/index.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
 import { DirectStatusReadModel } from '../status-read-model/port.js'
 
@@ -168,6 +169,62 @@ describe('shared work routes', () => {
     }
     expect((await h.sql.work.read(item.id))?.status).toBe('open')
     expect((await h.sql.work.history(item.id, 2))[0]?.item.nodeId).toBe(node.id)
+  })
+
+  it('retains stable template references across replacement and deletion', async () => {
+    const h = await setup()
+    const templateId = uuidV7()
+    const version: TemplateVersionRecord = {
+      templateId,
+      versionId: uuidV7(),
+      season: 0,
+      surface: WORLD_TEMPLATE_SURFACE,
+      nodeId: null,
+      name: 'Border',
+      createdWithToken: 'a'.repeat(64),
+      createdByUserId: null,
+      createdAt: millis(1000),
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      totalPixels: 1,
+      chunks: [{ tileX: 0, tileY: 0, hash: 'b'.repeat(64) }],
+    }
+    await h.sql.insertTemplateVersion(version)
+    await h.sql.setTemplatePublishedAt(templateId, millis(1000), millis(1000))
+    const item = await h.create({ templateIds: [templateId] })
+    const replacement = { ...version, versionId: uuidV7(), createdAt: millis(2000) }
+    await h.sql.insertTemplateVersion(replacement, { requireExisting: true })
+    expect((await h.sql.work.read(item.id))?.templateIds).toEqual([templateId])
+    const current = await h.sql.readTemplate(templateId)
+    expect(current).not.toBeNull()
+    if (current === null || current.currentVersionId === null)
+      throw new Error('Template replacement disappeared')
+    expect(
+      await h.sql.deleteTemplate(templateId, {
+        versionId: current.currentVersionId,
+        updatedAt: current.updatedAt,
+      }),
+    ).toBe(true)
+    expect(
+      (
+        await h.mutate(item.id, {
+          action: 'edit',
+          actor,
+          expectedRevision: 1,
+          fields: { ...fields, templateIds: [templateId], status: 'completed' },
+        })
+      ).status,
+    ).toBe(200)
+    expect((await h.sql.work.history(item.id, 2))[0]?.item.templateIds).toEqual([templateId])
+    expect(
+      (
+        await h.mutate(uuidV7(), {
+          action: 'create',
+          actor,
+          expectedRevision: 0,
+          fields: { ...fields, templateIds: [templateId] },
+        })
+      ).status,
+    ).toBe(400)
   })
 
   it('rejects invalid links, cross-scope work, malformed identities and self blockers', async () => {

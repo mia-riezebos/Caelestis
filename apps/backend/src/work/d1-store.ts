@@ -18,14 +18,24 @@ export class D1WorkStore implements WorkStore {
     return row === null ? null : (JSON.parse(row.data) as WorkItem)
   }
 
-  async list(season: number, surface: TemplateSurface): Promise<readonly WorkItem[]> {
+  async list(season: number, surface: TemplateSurface, after = ''): Promise<readonly WorkItem[]> {
     const rows = await this.database
       .prepare(
-        'SELECT data FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id IS ? ORDER BY id',
+        'SELECT data FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id IS ? AND id > ? ORDER BY id LIMIT ?',
       )
-      .bind(season, surface.kind, surface.allianceId)
+      .bind(season, surface.kind, surface.allianceId, after, MAX_WORK_ITEMS)
       .all<{ data: string }>()
     return rows.results.map((row) => JSON.parse(row.data) as WorkItem)
+  }
+
+  async revision(season: number, surface: TemplateSurface): Promise<number> {
+    const row = await this.database
+      .prepare(
+        'SELECT COALESCE(SUM(revision), 0) AS revision FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id IS ?',
+      )
+      .bind(season, surface.kind, surface.allianceId)
+      .first<{ revision: number }>()
+    return row?.revision ?? 0
   }
 
   async history(id: string, before: number): Promise<readonly WorkActivity[]> {
@@ -49,7 +59,7 @@ export class D1WorkStore implements WorkStore {
       expectedRevision === 0
         ? this.database
             .prepare(`INSERT INTO work_items (id, season, surface_kind, alliance_id, revision, mutation_id, data)
-          SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id IS ?) < ?
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO NOTHING`)
             .bind(
               item.id,
@@ -59,10 +69,6 @@ export class D1WorkStore implements WorkStore {
               item.revision,
               activity.id,
               data,
-              item.season,
-              item.surface.kind,
-              item.surface.allianceId,
-              MAX_WORK_ITEMS,
             )
         : this.database
             .prepare(

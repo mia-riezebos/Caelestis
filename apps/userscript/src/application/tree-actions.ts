@@ -60,6 +60,7 @@ import { confirmDestructive } from '../ui/confirm.js'
 import { toast } from '../ui/toast.js'
 import type { TreeTarget } from '../ui/tree.js'
 import { startRenaming } from '../ui/tree-state.js'
+import { openWork } from '../ui/work.js'
 import {
   claimFolderPublication,
   setFolderTemplatesPublished,
@@ -1070,7 +1071,7 @@ export const openContextMenu = (
             () => void setServerFolderPublished(target, false, rerender),
           ]
         : ['eye', 'Publish folder', () => void setServerFolderPublished(target, true, rerender)]
-  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> =
+  const existingEntries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> =
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
@@ -1149,6 +1150,13 @@ export const openContextMenu = (
             rename,
             remove,
           ]
+  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> =
+    target.server === null
+      ? existingEntries
+      : [
+          ['check', 'Work items', () => openWork(target)],
+          ...(target.server.isAdmin || target.templateId !== undefined ? existingEntries : []),
+        ]
   closeContextMenu(false)
   const id = `tree-menu-${++presentationId}`
   contextMenu = {

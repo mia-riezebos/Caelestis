@@ -3,6 +3,7 @@ import type { TemplateSurface } from './template-surface.js'
 
 export const WORK_STATUSES = ['open', 'blocked', 'completed'] as const
 export const WORK_PRIORITIES = ['low', 'normal', 'high'] as const
+/** Bound each response page, without capping a server's retained work or history. */
 export const MAX_WORK_ITEMS = 500
 
 /** Coordination uses self-reported Wplace identities until personal authentication exists. */

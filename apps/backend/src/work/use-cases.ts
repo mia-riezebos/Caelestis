@@ -23,11 +23,11 @@ const storage = <A>(run: () => Promise<A>) =>
   })
 const invalid = (message: string) => Effect.fail(new RequestValidationError({ message }))
 
-/** Read all work in one drawing scope. The bounded collection also supplies client-side filters. */
-export const listWork = (season: number, surface: TemplateSurface) =>
+/** Read a bounded page of work in one drawing scope, ordered by stable ID. */
+export const listWork = (season: number, surface: TemplateSurface, after = '') =>
   Effect.gen(function* () {
     const sql = yield* SqlStoreService
-    return yield* storage(() => sql.work.list(season, surface))
+    return yield* storage(() => sql.work.list(season, surface, after))
   })
 
 /** Read activity newest first, with revision-based pagination. */

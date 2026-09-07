@@ -1,4 +1,10 @@
-import { isWorkFields, isWorkIdentity, templateSurface, type WorkMutation } from '@caelestis/shared'
+import {
+  isWorkFields,
+  isWorkIdentity,
+  MAX_WORK_ITEMS,
+  templateSurface,
+  type WorkMutation,
+} from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
@@ -42,8 +48,15 @@ export const createWorkRoutes = (runtime: BackendRuntime, auth: AuthOptions) => 
     )
     if (season === null || surface === null) return c.json({ error: 'Invalid drawing scope' }, 400)
     const scope = c.get('caller').scope
-    return runBackendHttp(c, runtime, listWork(season, surface), (items) =>
-      c.json({ items, canPlan: scope === 'admin', canClaim: scope !== 'read' }),
+    const after = c.req.query('after') ?? ''
+    if (after !== '' && !uuid.test(after)) return c.json({ error: 'Invalid work cursor' }, 400)
+    return runBackendHttp(c, runtime, listWork(season, surface, after), (items) =>
+      c.json({
+        items,
+        canPlan: scope === 'admin',
+        canClaim: scope !== 'read',
+        nextCursor: items.length === MAX_WORK_ITEMS ? items.at(-1)?.id : null,
+      }),
     )
   })
   routes.get('/:id/history', (c) => {

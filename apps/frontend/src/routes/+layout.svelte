@@ -56,6 +56,7 @@ const toggleTheme = (): void => {
       </a>
 
       <div class="flex-1"></div>
+      <a href="/work" class="btn btn-sm btn-ghost">Work</a>
 
       <a
         href={REPO_URL}

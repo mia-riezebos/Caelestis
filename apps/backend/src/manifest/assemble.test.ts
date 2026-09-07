@@ -95,6 +95,7 @@ describe('assembleManifest', () => {
     )
     await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000c1', createdAt, createdAt)
     const torn = {
+      work: sql.work,
       listNodes: sql.listNodes.bind(sql),
       listManifestTemplates: sql.listManifestTemplates.bind(sql),
       listManifestTiles: async () => [],
@@ -118,6 +119,7 @@ describe('assembleManifest', () => {
     )
     await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000d1', createdAt, createdAt)
     const torn = {
+      work: sql.work,
       listNodes: async () => [],
       listManifestTemplates: sql.listManifestTemplates.bind(sql),
       listManifestTiles: sql.listManifestTiles.bind(sql),
@@ -139,6 +141,7 @@ describe('assembleManifest', () => {
       path: `/g${index}`,
     }))
     const flooded = {
+      work: sql.work,
       listNodes: async () => overCap,
       listManifestTemplates: async () => [],
       listManifestTiles: async () => [],

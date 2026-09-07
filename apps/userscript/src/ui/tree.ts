@@ -649,7 +649,10 @@ const buildTree = <Result>(
         }
         rerender()
       },
-      onContextMenu: canRearrange ? (event) => callbacks.onContextMenu(target, event) : undefined,
+      onContextMenu:
+        canRearrange || server !== undefined
+          ? (event) => callbacks.onContextMenu(target, event)
+          : undefined,
       onRename: canRearrange
         ? (value) => void renameTarget(target, value, rerender, surface)
         : undefined,
@@ -746,12 +749,7 @@ const buildTree = <Result>(
               setVisible: (on) => setScopeVisible(nodeScopeKey(server.url, node.id), on),
               canReparent: canRearrange,
               ...(canRearrange ? { onDropAt: intoServer } : {}),
-              ...(canRearrange
-                ? {
-                    onContextMenu: (event: MouseEvent) =>
-                      callbacks.onContextMenu(nodeTarget, event),
-                  }
-                : {}),
+              onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(nodeTarget, event),
               ...(canCreate
                 ? {
                     onRename: (value: string) =>

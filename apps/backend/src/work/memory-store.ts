@@ -15,12 +15,22 @@ export class MemoryWorkStore implements WorkStore {
     return structuredClone(this.items.get(id) ?? null)
   }
 
-  async list(season: number, surface: TemplateSurface): Promise<readonly WorkItem[]> {
+  async list(season: number, surface: TemplateSurface, after = ''): Promise<readonly WorkItem[]> {
     return structuredClone(
       [...this.items.values()]
-        .filter((item) => item.season === season && sameTemplateSurface(item.surface, surface))
-        .sort((a, b) => a.id.localeCompare(b.id)),
+        .filter(
+          (item) =>
+            item.id > after && item.season === season && sameTemplateSurface(item.surface, surface),
+        )
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, MAX_WORK_ITEMS),
     )
+  }
+
+  async revision(season: number, surface: TemplateSurface): Promise<number> {
+    return [...this.items.values()]
+      .filter((item) => item.season === season && sameTemplateSurface(item.surface, surface))
+      .reduce((sum, item) => sum + item.revision, 0)
   }
 
   async history(id: string, before: number): Promise<readonly WorkActivity[]> {
@@ -40,13 +50,6 @@ export class MemoryWorkStore implements WorkStore {
   ): Promise<boolean> {
     const held = this.items.get(item.id)
     if ((held?.revision ?? 0) !== expectedRevision) return false
-    if (
-      held === undefined &&
-      [...this.items.values()].filter(
-        (other) => other.season === item.season && sameTemplateSurface(other.surface, item.surface),
-      ).length >= MAX_WORK_ITEMS
-    )
-      return false
     this.items.set(item.id, structuredClone(item))
     this.events.set(item.id, [...(this.events.get(item.id) ?? []), structuredClone(activity)])
     return true

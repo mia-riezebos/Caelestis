@@ -1,4 +1,10 @@
-import { uuidV7, WORLD_TEMPLATE_SURFACE, type WorkActivity, type WorkItem } from '@caelestis/shared'
+import {
+  MAX_WORK_ITEMS,
+  uuidV7,
+  WORLD_TEMPLATE_SURFACE,
+  type WorkActivity,
+  type WorkItem,
+} from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { SqliteD1Database } from '../adapters/cloudflare/sqlite-d1.test-helper.js'
 import { D1WorkStore } from './d1-store.js'
@@ -45,6 +51,25 @@ const event = (item: WorkItem): WorkActivity => ({
 })
 
 describe.each(['memory', 'd1'] as const)('%s coordination storage', (adapter) => {
+  it('pages retained work without limiting future creation', async () => {
+    const database = adapter === 'd1' ? new SqliteD1Database() : null
+    const store =
+      database === null ? new MemoryWorkStore() : new D1WorkStore(database as unknown as D1Database)
+    try {
+      for (let index = 0; index <= MAX_WORK_ITEMS; index++) {
+        const next = item()
+        expect(await store.save(next, 0, event(next), 'a'.repeat(64))).toBe(true)
+      }
+      const first = await store.list(0, WORLD_TEMPLATE_SURFACE)
+      const second = await store.list(0, WORLD_TEMPLATE_SURFACE, first.at(-1)?.id)
+      expect(first).toHaveLength(MAX_WORK_ITEMS)
+      expect(second).toHaveLength(1)
+      expect(first.some((entry) => entry.id === second[0]?.id)).toBe(false)
+      expect(await store.revision(0, WORLD_TEMPLATE_SURFACE)).toBe(MAX_WORK_ITEMS + 1)
+    } finally {
+      database?.close()
+    }
+  })
   it('commits one competing claim with exactly one activity entry', async () => {
     const database = adapter === 'd1' ? serialDatabase() : null
     const store =

@@ -32,7 +32,7 @@ Add shared work items to the existing folder and template hierarchy. Mia's final
 
 - [x] Add shared work-item contracts and durable storage with atomic mutations and activity history; validate both SQL adapters and migration behavior.
 - [x] Add authorized work-item operations and live synchronization; validate claim races, permissions, retry behavior, and reconnect recovery.
-- [ ] Add a shared work interface to frontend and userscript folder/template views; validate filtering and the create, claim, release, edit, close, and reopen journeys.
+- [x] Add a shared work interface to frontend and userscript folder/template views; validate filtering and the create, claim, release, edit, close, and reopen journeys.
 - [ ] Complete rendered checks and release notes, run required checks, then rebase, push the supplied branch, and file the PR.
 
 Each TODO is one buildable commit, with tests included alongside its behavior. Split a TODO before implementation if discovery gives it more than one independent concern.
@@ -52,3 +52,8 @@ Each TODO is one buildable commit, with tests included alongside its behavior. S
 - API validation: backend typecheck and 41 focused route, storage, manifest recovery, and versioning tests pass. Work changes advance the existing live manifest version without invalidating tile coverage.
 - Git reflog shows an external rename from `t3code/f9062f66` to `t3code/harden-access-token-auth`, before the first commit, at the same base SHA. Continue in this supplied worktree on its current branch.
 - Build the actual UI directly. Use existing Chromium.app through CDP with background tabs and a persistent focus-emulation session; never activate Chromium or switch the user's tab.
+- Shared WorkBoard now powers the frontend Work destination, collapsed folder/template sections, and the userscript's native dialog from tree menus. Drafts survive live updates; claim conflicts refresh the authoritative owner; Activity includes full revision snapshots.
+- Work lists paginate in 500-item responses without imposing a lifetime creation limit. Manifest assembly reads only the aggregate work revision. Storage and client tests cover pagination and invalid cursors.
+- Browser validation against disposable local D1 confirms create, claim, release, assignment, edit/cancel, completion/reopening, and cross-tab manifest-driven refresh. An initial apparent live failure was a verification selector reading historical snapshots; focused WebSocket evidence confirms synchronization works.
+- Fixed the rendered status label's collision with DaisyUI's global `.status` class by naming it `.work-status`.
+- Full typechecks pass. Template replacement/deletion tests preserve stable IDs and activity snapshots, and reject new links to deleted templates. Updated existing partial manifest test doubles for the work store contract.

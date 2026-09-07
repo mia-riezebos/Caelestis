@@ -75,3 +75,5 @@ export type {
   TreeRowModel,
   TreeSortModel,
 } from './types.js'
+export type { WorkModel } from './work/model.js'
+export { default as WorkBoard } from './work/WorkBoard.svelte'
