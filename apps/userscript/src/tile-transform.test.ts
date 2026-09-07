@@ -348,56 +348,59 @@ describe('transparent browser hooks', () => {
     expect(normalizeMissingTileResponse(failed, realm)).toBe(failed)
   })
 
-  it('waits for an in-flight tile chase instead of treating it as unavailable', async () => {
-    let fetchCount = 0
-    let resolveChase: ((response: Response) => void) | undefined
-    class FakeCanvas {
-      getContext(): null {
-        return null
+  it.each(['joining', 'disabled', 'uninterested'])(
+    'loads a requested tile while capture is %s',
+    async (mode) => {
+      let fetchCount = 0
+      let resolveChase: ((response: Response) => void) | undefined
+      class FakeCanvas {
+        getContext(): null {
+          return null
+        }
       }
-    }
-    class FakeImageBitmap {
-      width = 1
-      height = 1
-      close = vi.fn()
-    }
-    const realm = {
-      ...globalThis,
-      Object,
-      Request,
-      URL,
-      Response,
-      fetch: vi.fn(() => {
-        fetchCount++
-        if (fetchCount === 1) return Promise.resolve(new Response(new Uint8Array([1])))
-        return new Promise<Response>((resolve) => {
-          resolveChase = resolve
-        })
-      }),
-      Blob,
-      createImageBitmap: vi.fn(async () => new FakeImageBitmap()),
-      HTMLCanvasElement: FakeCanvas,
-      ArrayBuffer,
-    } as unknown as Window & typeof globalThis
-    const wanted = { x: 817, y: 613 }
+      class FakeImageBitmap {
+        width = 1
+        height = 1
+        close = vi.fn()
+      }
+      const realm = {
+        ...globalThis,
+        Object,
+        Request,
+        URL,
+        Response,
+        fetch: vi.fn(() => {
+          fetchCount++
+          if (fetchCount === 1) return Promise.resolve(new Response(new Uint8Array([1])))
+          return new Promise<Response>((resolve) => {
+            resolveChase = resolve
+          })
+        }),
+        Blob,
+        createImageBitmap: vi.fn(async () => new FakeImageBitmap()),
+        HTMLCanvasElement: FakeCanvas,
+        ArrayBuffer,
+      } as unknown as Window & typeof globalThis
+      const wanted = { x: 817 + ['joining', 'disabled', 'uninterested'].indexOf(mode), y: 613 }
 
-    install(realm, () => null)
-    await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
-    captureTilePixels(true)
-    try {
-      expect(ensureTilePixels(wanted)).toBe(true)
-      const joined = loadTilePixels(wanted, 500)
+      install(realm, () => null)
+      await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+      captureTilePixels(mode !== 'disabled', mode === 'uninterested' ? () => false : null)
+      try {
+        if (mode === 'joining') expect(ensureTilePixels(wanted)).toBe(true)
+        const joined = loadTilePixels(wanted, 500)
 
-      await Promise.resolve()
-      if (resolveChase === undefined) throw new Error('the chase did not reach fetch')
-      resolveChase(new Response(new Uint8Array([1])))
+        await Promise.resolve()
+        if (resolveChase === undefined) throw new Error('the chase did not reach fetch')
+        resolveChase(new Response(new Uint8Array([1])))
 
-      const pixels = await joined
-      expect(pixels?.[0]).toBe(UNPAINTED)
-    } finally {
-      captureTilePixels(false)
-    }
-  })
+        const pixels = await joined
+        expect(pixels?.[0]).toBe(UNPAINTED)
+      } finally {
+        captureTilePixels(false)
+      }
+    },
+  )
 
   it('deactivates a provisional WebGL context after retargeting to the map', async () => {
     const fakeGl = () => ({

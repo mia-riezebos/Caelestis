@@ -52,6 +52,35 @@ const model: OverlayControlsModel = {
 }
 
 describe('overlay controls', () => {
+  it('exposes the artwork action only when editable and disables it while pending', () => {
+    const onIntent = vi.fn()
+    const component = mount(OverlayControls, {
+      target: document.body,
+      props: { model: { ...model, updateArtwork: { pending: false, disabled: false } }, onIntent },
+    })
+    flushSync()
+    const button = document.querySelector<HTMLButtonElement>(
+      '[data-caelestis-control="update-artwork"]',
+    )
+    expect(button?.textContent).toContain('Use canvas artwork')
+    button?.click()
+    expect(onIntent).toHaveBeenCalledWith({ type: 'update-artwork' })
+    void unmount(component)
+    const pending = mount(OverlayControls, {
+      target: document.body,
+      props: { model: { ...model, updateArtwork: { pending: true, disabled: false } }, onIntent },
+    })
+    flushSync()
+    expect(
+      document.querySelector<HTMLButtonElement>('[data-caelestis-control="update-artwork"]')
+        ?.disabled,
+    ).toBe(true)
+    void unmount(pending)
+    const readonly = mount(OverlayControls, { target: document.body, props: { model } })
+    flushSync()
+    expect(document.querySelector('[data-caelestis-control="update-artwork"]')).toBeNull()
+    void unmount(readonly)
+  })
   it('uses Wplace compact-menu insets', () => {
     const component = mount(OverlayControls, { target: document.body, props: { model } })
     flushSync()

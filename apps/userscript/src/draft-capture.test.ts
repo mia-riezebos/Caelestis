@@ -9,7 +9,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './templates/local-store.js'
 import { type ScanJob, type ScanOutcome, scanTile } from './templates/mismatch-scan.js'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(async () => {
+  const profile = await import('./profile.js')
+  profile.setProfileEnabled(false)
+  vi.unstubAllGlobals()
+})
 
 /** Drive the installed page hooks through native canvas writes, uploads, and raster draws. */
 const setup = async () => {
@@ -166,9 +170,13 @@ it('does not reread an unchanged draft uploaded on every frame', async () => {
   source.context.putImageData(pixel(1), 2, 3)
   draw()
   expect(reads).toHaveBeenCalledTimes(1)
+  const profile = await import('./profile.js')
+  profile.setProfileEnabled(true)
   reads.mockClear()
   for (let i = 0; i < 10; i++) draw()
   expect(reads).not.toHaveBeenCalled()
+  expect(profile.profileSnapshot().counters['pixels:tile-sized canvas uploads']).toBe(10)
+  expect(profile.profileSnapshot().counters['pixels:draft readback bytes'] ?? 0).toBe(0)
   source.context.putImageData(pixel(2), 2, 3)
   draw()
   expect(reads).not.toHaveBeenCalled()
@@ -212,6 +220,8 @@ it('recovers copied canvas writes and a replacement source on the same texture',
 
 it('retries a failed capture rather than stamping it clean', async () => {
   const { draw, reads } = await setup()
+  const profile = await import('./profile.js')
+  profile.setProfileEnabled(true)
   reads.mockImplementationOnce(() => {
     throw new Error('temporary readback failure')
   })
@@ -219,6 +229,11 @@ it('retries a failed capture rather than stamping it clean', async () => {
   draw()
   draw()
   expect(reads).toHaveBeenCalledTimes(2)
+  expect(profile.profileSnapshot().counters).toMatchObject({
+    'pixels:draft readback failures': 1,
+    'pixels:draft capture retries': 1,
+    'pixels:draft readback bytes': 4_000_000,
+  })
 })
 
 it('patches only the dirty portion of putImageData', async () => {

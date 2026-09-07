@@ -611,7 +611,11 @@ const settingsModel = (): SettingsModel => {
               {
                 id: 'long-tasks',
                 label: 'Page long tasks',
-                value: `${snapshot.longTasks.count} · ${formatMilliseconds(snapshot.longTasks.totalMs)}`,
+                value: !snapshot.longTasks.supported
+                  ? 'Unsupported'
+                  : !snapshot.longTasks.observing
+                    ? 'Observer unavailable'
+                    : `${snapshot.longTasks.count} · ${formatMilliseconds(snapshot.longTasks.totalMs)}`,
               },
             ],
             ...(profileStatus === undefined ? {} : { status: profileStatus }),

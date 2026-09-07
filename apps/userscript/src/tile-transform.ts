@@ -1164,10 +1164,11 @@ let chasing = 0
  * refetch, which lands about ten seconds later and captures the tile anyway.
  */
 const CHASE_LIMIT = 4
+const requestedTilePixels = new Map<string, number>()
 
 export const ensureTilePixels = (tile: TileCoord): boolean => {
-  if (!capturePixels || tileUrlShape === null) return false
   const key = tileKey(tile)
+  if ((!capturePixels && !requestedTilePixels.has(key)) || tileUrlShape === null) return false
   if (pixelsOfTile.has(key)) return true
   if (chased.has(key) || chasing >= CHASE_LIMIT) return false
   chased.add(key)
@@ -1215,25 +1216,41 @@ export const loadTilePixels = async (
   const existing = tilePixels(tile)
   if (existing !== null) return existing
   const key = tileKey(tile)
-  let chase = activeChases.get(key)
-  if (chase === undefined) {
-    if (!ensureTilePixels(tile)) return null
-    chase = activeChases.get(key)
-  }
-  if (chase === undefined) return tilePixels(tile)
-
+  requestedTilePixels.set(key, (requestedTilePixels.get(key) ?? 0) + 1)
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {
+    let chase = activeChases.get(key)
+    if (chase === undefined) {
+      if (!ensureTilePixels(tile)) return null
+      chase = activeChases.get(key)
+    }
+    if (chase === undefined) return tilePixels(tile)
     await Promise.race([
       chase,
       new Promise<void>((resolve) => {
         timeout = setTimeout(resolve, Math.max(0, timeoutMs))
       }),
     ])
+    return tilePixels(tile)
   } finally {
     if (timeout !== undefined) clearTimeout(timeout)
+    const requests = (requestedTilePixels.get(key) ?? 1) - 1
+    if (requests === 0) requestedTilePixels.delete(key)
+    else requestedTilePixels.set(key, requests)
   }
-  return tilePixels(tile)
+}
+
+/** Capture the base tile plus fully accepted paint awaiting a newer tile, excluding native drafts. */
+export const loadCommittedTilePixels = async (tile: TileCoord): Promise<Uint8Array | null> => {
+  const base = await loadTilePixels(tile)
+  if (base === null) return null
+  const held = acceptedPixels.get(tileKey(tile))
+  if (held === undefined || held.pending === 0) return base
+  const committed = base.slice()
+  for (const [offset, pixel] of held.pixels) {
+    if (pixel.pending) committed[offset] = pixel.colour
+  }
+  return committed
 }
 
 /**
@@ -1381,6 +1398,8 @@ const notifyPixelBatch = (
 ): void => {
   comparisonDrafts.delete(tileKey(tile))
   if (triples.length === 0) return
+  count(`pixels:${source} notification batches`)
+  count(`pixels:${source} notified pixels`, triples.length / 3)
   for (const listener of pixelBatchListeners) {
     try {
       listener(tile, triples, source)
@@ -1803,6 +1822,7 @@ const capture = (
     const retained = from === 'tile' ? acceptedPixels.get(key) : undefined
     if (
       (retained?.pending ?? 0) === 0 &&
+      !(from === 'tile' && requestedTilePixels.has(key)) &&
       (!capturePixels || (captureInterest !== null && !captureInterest(tile)))
     )
       return false
@@ -1832,6 +1852,7 @@ const capture = (
         context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
         context.drawImage(bitmap, 0, 0)
         const image = context.getImageData(dirty.x, dirty.y, dirty.width, dirty.height)
+        count('pixels:draft readback bytes', image.data.byteLength)
         count('pixels:draft readback pixels', dirty.width * dirty.height)
         applyWrite(tile, readWrite(image, dirty.x, dirty.y))
         count('pixels:draft region read')
@@ -1851,6 +1872,11 @@ const capture = (
         context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
         context.drawImage(bitmap, 0, 0)
         const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
+        count(
+          from === 'preview' ? 'pixels:draft readback bytes' : 'pixels:tile readback bytes',
+          data.byteLength,
+        )
+        count(from === 'preview' ? 'pixels:draft full reads' : 'pixels:tile full reads')
         count(
           from === 'preview' ? 'pixels:draft readback pixels' : 'pixels:tile readback pixels',
           TILE_SIZE * TILE_SIZE,
@@ -1917,6 +1943,7 @@ const capture = (
       count('pixels:re-read as a diff')
       return true
     } catch (error) {
+      count(from === 'preview' ? 'pixels:draft readback failures' : 'pixels:tile readback failures')
       warn('bitmap', 'could not read tile pixels', String(error))
       return false
     }
@@ -2640,6 +2667,7 @@ export const install = (
           source.width === TILE_SIZE &&
           source.height === TILE_SIZE
         ) {
+          count('pixels:tile-sized canvas uploads')
           if (canvasOfTexture.get(texture) !== source) markCanvasDirty(source)
           canvasOfTexture.set(texture, source)
           tileOfTexture.delete(texture)
@@ -2899,6 +2927,7 @@ export const install = (
         },
       }.clear
 
+      const failedDraftCaptures = new WeakSet<object>()
       const refreshDraft = (texture: WebGLTexture): void => {
         if (!capturePixels) return
         const source = canvasOfTexture.get(texture)
@@ -2916,7 +2945,20 @@ export const install = (
         if (captureInterest !== null && !captureInterest(tile)) return
         const stale = capturedAt.get(source) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
-        if (!capture(tile, source, 'preview', stale ? null : dirtyCanvases.get(source))) return
+        const dirty = stale ? null : dirtyCanvases.get(source)
+        count(
+          stale
+            ? 'pixels:draft baseline captures'
+            : dirty
+              ? 'pixels:draft dirty-region captures'
+              : 'pixels:draft dirty-full captures',
+        )
+        if (failedDraftCaptures.has(source)) count('pixels:draft capture retries')
+        if (!capture(tile, source, 'preview', dirty)) {
+          failedDraftCaptures.add(source)
+          return
+        }
+        failedDraftCaptures.delete(source)
         dirtyCanvases.delete(source)
         capturedAt.set(source, captureGeneration)
         queuedWrites.delete(source)

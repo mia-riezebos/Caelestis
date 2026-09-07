@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { coalesceServerRead } from './server-read-coalescer.js'
+import { coalesceServerRead, invalidateServerReads } from './server-read-coalescer.js'
 
 it('coalesces only the same connection, season, scope, and resource key', async () => {
   const connection = {}
@@ -25,4 +25,35 @@ it('coalesces only the same connection, season, scope, and resource key', async 
   await expect(first).resolves.toBe('shared')
   await expect(second).resolves.toBe('shared')
   await expect(otherScope).resolves.toBe('new')
+})
+
+it('keeps the post-mutation read shared when an older request completes', async () => {
+  const owner = {}
+  let releaseOld!: (value: string) => void
+  let releaseNew!: (value: string) => void
+  const old = coalesceServerRead(
+    owner,
+    'manifest',
+    () =>
+      new Promise<string>((resolve) => {
+        releaseOld = resolve
+      }),
+  )
+  invalidateServerReads(owner)
+  const fresh = coalesceServerRead(
+    owner,
+    'manifest',
+    () =>
+      new Promise<string>((resolve) => {
+        releaseNew = resolve
+      }),
+  )
+  releaseOld('old')
+  await old
+  const unexpectedRead = vi.fn(async () => 'unexpected')
+  const joined = coalesceServerRead(owner, 'manifest', unexpectedRead)
+  releaseNew('fresh')
+  await expect(fresh).resolves.toBe('fresh')
+  await expect(joined).resolves.toBe('fresh')
+  expect(unexpectedRead).not.toHaveBeenCalled()
 })

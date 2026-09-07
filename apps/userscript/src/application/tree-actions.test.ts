@@ -26,6 +26,8 @@ const alarmState = vi.hoisted(() => ({
   dismiss: vi.fn(async () => ({ ok: true as const })),
   refresh: vi.fn(),
 }))
+const artworkUpdate = vi.hoisted(() => vi.fn())
+vi.mock('./update-template-artwork.js', () => ({ requestTemplateArtworkUpdate: artworkUpdate }))
 vi.mock('../telemetry.js', () => ({ serverAlarmFor: () => alarmState.current }))
 vi.mock('../server-sync-coordinator.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../server-sync-coordinator.js')>()),
@@ -73,7 +75,12 @@ import {
   treeActionPresentation,
 } from './tree-actions.js'
 
-const server = { url: 'https://templates.example', isAdmin: true } as ConnectedServer
+const server = {
+  url: 'https://templates.example',
+  isAdmin: true,
+  token: 'admin',
+  status: 'connected',
+} as ConnectedServer
 const target: TreeTarget = {
   server,
   nodeId: 'root',
@@ -128,6 +135,55 @@ it('lets admins dismiss the exact grief episode from a template menu', async () 
     vi.fn(),
   )
   expect(menuText()).not.toContain('Dismiss grief alert')
+})
+
+it('routes local and server artwork updates to the shared action with surface-qualified ids', () => {
+  const rerender = vi.fn()
+  const surface = { kind: 'alliance-headquarters', allianceId: 12 } as const
+  for (const current of [
+    { server: null, nodeId: null, key: 'local:art', name: 'Art' },
+    { ...target, surface, templateId: 'template', key: 'st:template' },
+  ]) {
+    openContextMenu(current, new MouseEvent('contextmenu'), rerender, surface)
+    const menu = treeActionPresentation().contextMenu
+    const action = menu?.items.find((item) => item.label === 'Use canvas artwork')
+    if (menu === undefined || action === undefined) throw new Error('Missing artwork action')
+    handleTreeActionPresentationIntent({
+      type: 'context-menu-action',
+      menuId: menu.id,
+      actionId: action.id,
+    })
+    expect(artworkUpdate).toHaveBeenLastCalledWith(
+      current.server === null ? 'art' : serverTemplateKey(current.server.url, 'template', surface),
+      rerender,
+    )
+  }
+  openContextMenu(
+    {
+      ...target,
+      server: { ...server, isAdmin: false },
+      templateId: 'template',
+      key: 'st:template',
+    },
+    new MouseEvent('contextmenu'),
+    rerender,
+  )
+  expect(menuText()).not.toContain('Use canvas artwork')
+})
+it.each([
+  { isAdmin: true, token: null },
+  { isAdmin: true, token: 'rejected', tokenUsable: false },
+  { isAdmin: false, token: 'read' },
+  { isAdmin: false, token: 'report' },
+])('hides server artwork actions without a usable admin token: %j', (access) => {
+  openContextMenu(
+    { ...target, server: { ...server, ...access }, templateId: 'template' },
+    new MouseEvent('contextmenu'),
+    vi.fn(),
+  )
+  expect(menuText()).not.toContain('Use canvas artwork')
+  expect(menuText()).not.toContain('Replace artwork')
+  expect(menuText()).toContain('Export .wplace')
 })
 
 it('dispatches a typed menu selection without a DOM-owned action list', () => {

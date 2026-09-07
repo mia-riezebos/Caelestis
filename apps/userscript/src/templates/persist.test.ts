@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const stored = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: 'loaded',
@@ -18,12 +18,70 @@ const stored = (overrides: Record<string, unknown> = {}): Record<string, unknown
   ...overrides,
 })
 
+beforeEach(() => {
+  vi.stubGlobal('IDBKeyRange', { bound: (lower: unknown, upper: unknown) => ({ lower, upper }) })
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.resetModules()
 })
 
 describe('local template persistence', () => {
+  it.each(['saved', 'conflict', 'unavailable', 'bytes', 'count'] as const)(
+    'archives artwork in the same transaction as replacement (%s)',
+    async (outcome) => {
+      const previous = stored({ revision: outcome === 'conflict' ? 2 : 1 })
+      const request = { result: previous } as IDBRequest<unknown>
+      const currentStore = { get: vi.fn(() => request), put: vi.fn() }
+      const cursor = { result: null } as IDBRequest<IDBCursorWithValue | null>
+      const history = { add: vi.fn(), openCursor: vi.fn(() => cursor) }
+      const transaction = {
+        objectStore: vi.fn((name: string) =>
+          name === 'local-template-versions' ? history : currentStore,
+        ),
+      } as unknown as IDBTransaction
+      const db = { transaction: vi.fn(() => transaction), close: vi.fn() }
+      const opening = { result: db } as unknown as IDBOpenDBRequest
+      vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+      const { saveTemplate } = await import('./persist.js')
+      const saving = saveTemplate(
+        stored({ indices: new Uint8Array([5]), revision: 1 }) as never,
+        1,
+        true,
+      )
+      opening.onsuccess?.(new Event('success'))
+      await Promise.resolve()
+      request.onsuccess?.(new Event('success'))
+      const limited = outcome === 'bytes' || outcome === 'count'
+      if (limited) {
+        const indices = { size: outcome === 'bytes' ? 64 * 1024 * 1024 : 1, arrayBuffer: vi.fn() }
+        Object.assign(cursor, { result: { value: stored({ indices }), continue: vi.fn() } })
+      }
+      for (let index = 0; index < (outcome === 'count' ? 256 : 1); index++)
+        cursor.onsuccess?.(new Event('success'))
+      if (outcome === 'unavailable') transaction.onabort?.(new Event('abort'))
+      else transaction.oncomplete?.(new Event('complete'))
+      await expect(saving).resolves.toEqual(
+        outcome === 'saved'
+          ? { status: 'saved', revision: 2 }
+          : { status: limited ? 'limit' : outcome },
+      )
+      expect(db.transaction).toHaveBeenCalledWith(
+        ['local-templates', 'local-template-versions'],
+        'readwrite',
+      )
+      if (outcome === 'conflict' || limited) {
+        expect(history.add).not.toHaveBeenCalled()
+        expect(currentStore.put).not.toHaveBeenCalled()
+      } else {
+        expect(history.add).toHaveBeenCalledWith(previous)
+        const saved = currentStore.put.mock.calls[0]?.[0] as { indices: Blob }
+        expect(new Uint8Array(await saved.indices.arrayBuffer())).toEqual(new Uint8Array([5]))
+      }
+    },
+  )
+
   it('opens a v3 database past an unreadable migration record and preserves later records', async () => {
     const records: unknown[] = [
       { id: 'unreadable', indices: 'not binary' },
@@ -117,7 +175,7 @@ describe('local template persistence', () => {
     } as IDBOpenDBRequest
     vi.stubGlobal('indexedDB', {
       open: vi.fn((_name: string, version: number) => {
-        expect(version).toBe(4)
+        expect(version).toBe(5)
         queueMicrotask(() => {
           opening.onupgradeneeded?.({ oldVersion: 3 } as IDBVersionChangeEvent)
           queueMicrotask(driveUpgrade)
@@ -523,6 +581,10 @@ describe('local template persistence', () => {
     deleteTransaction.oncomplete?.(new Event('complete'))
     await expect(deleting).resolves.toEqual({ status: 'saved', revision: 0 })
     expect(deleteStore.delete).toHaveBeenCalledWith('gone')
+    expect(deleteStore.delete).toHaveBeenCalledWith({
+      lower: ['gone', 0],
+      upper: ['gone', Number.MAX_SAFE_INTEGER],
+    })
 
     const loading = loadTemplates(64, 1)
     loadOpening.onsuccess?.(new Event('success'))

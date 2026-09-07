@@ -7,6 +7,11 @@
  */
 const reads = new WeakMap<object, Map<string, Promise<unknown>>>()
 
+/** Start subsequent reads after a mutation without joining requests issued before it completed. */
+export const invalidateServerReads = (owner: object): void => {
+  reads.delete(owner)
+}
+
 export const coalesceServerRead = <T>(
   owner: object,
   /** Season, surface/scope, and resource belong in this bounded non-secret key. */

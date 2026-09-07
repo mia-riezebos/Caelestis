@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  configureProfileRun,
   measureProfile,
   measureProfileDetail,
   profileGpu,
   profileSnapshot,
+  recordProfileAction,
+  recordProfileCounter,
   recordProfileDuration,
   recordProfileWorkload,
+  registerProfileContextSource,
   registerProfileMemorySource,
   resetProfile,
   setProfileEnabled,
 } from './profile.js'
+import type { ProfileContext } from './profile-context.js'
 
 beforeEach(() => {
   vi.stubGlobal('localStorage', {
@@ -28,6 +33,118 @@ afterEach(() => {
 })
 
 describe('performance profile', () => {
+  it('omits run annotations from disabled reports', () => {
+    setProfileEnabled(true)
+    configureProfileRun({ label: 'previous run', browserZoomPercent: 25 })
+    setProfileEnabled(false)
+    expect(profileSnapshot().run).toEqual({ label: '', browserZoomPercent: null })
+    configureProfileRun({ label: 'disabled run', browserZoomPercent: 100 })
+    expect(profileSnapshot().run).toEqual({ label: '', browserZoomPercent: null })
+  })
+
+  it('counts events only within the enabled window and bounds distinct keys', () => {
+    recordProfileCounter('bytes', 99)
+    setProfileEnabled(true)
+    recordProfileCounter('bytes', 4)
+    recordProfileCounter('bytes', 8)
+    expect(profileSnapshot().counters).toEqual({ bytes: 12 })
+    resetProfile()
+    expect(profileSnapshot().counters).toEqual({})
+    for (let i = 0; i < 257; i++) recordProfileCounter(`event ${i}`)
+    expect(Object.keys(profileSnapshot().counters)).toHaveLength(256)
+    expect(profileSnapshot().counterKeysDropped).toBe(1)
+  })
+
+  it('captures start and current context without reading app state while disabled', () => {
+    const context: ProfileContext = {
+      build: { version: 'test', revision: 'abc', dirty: false, development: true },
+      environment: {
+        userAgent: 'test',
+        platform: 'test',
+        hardwareConcurrency: 8,
+        deviceMemoryGiB: null,
+        devicePixelRatio: 2,
+        viewport: { width: 1280, height: 720 },
+        screen: { width: 2560, height: 1440 },
+        visualViewportScale: 1,
+        visibility: 'visible',
+      },
+      camera: { longitude: 0, latitude: 0, zoom: 11 },
+      surface: 'world',
+      templates: { loaded: 10, enabled: 8, drawing: 7 },
+      paint: { open: false, selectedColour: null },
+    }
+    const read = vi.fn(() => context)
+    const unregister = registerProfileContextSource(read)
+    profileSnapshot()
+    expect(read).not.toHaveBeenCalled()
+    setProfileEnabled(true)
+    const changed = { ...context, paint: { open: true, selectedColour: 3 } }
+    read.mockReturnValue(changed)
+    expect(profileSnapshot().context).toEqual({ start: context, current: changed })
+    resetProfile()
+    expect(profileSnapshot().context.start).toEqual(changed)
+    unregister()
+  })
+
+  it('bounds action history, preserves timestamps, and clears run annotations on reset', () => {
+    recordProfileAction('disabled')
+    setProfileEnabled(true)
+    const now = vi.spyOn(performance, 'now')
+    now.mockReturnValue(100)
+    resetProfile()
+    configureProfileRun({ label: 'Box Art idle', browserZoomPercent: 25 })
+    now.mockReturnValue(150)
+    for (let i = 0; i < 201; i++) recordProfileAction(`action ${i}`)
+    const snapshot = profileSnapshot()
+    expect(snapshot.actions).toHaveLength(200)
+    expect(snapshot.actions[0]).toEqual({ name: 'action 1', atMs: 50, trusted: null })
+    expect(snapshot.actionsDropped).toBe(1)
+    expect(snapshot.run.browserZoomPercent).toBe(25)
+    expect(() => configureProfileRun({ label: '', browserZoomPercent: Number.NaN })).toThrow(
+      TypeError,
+    )
+    resetProfile()
+    expect(profileSnapshot().actions).toEqual([])
+    expect(profileSnapshot().run).toEqual({ label: '', browserZoomPercent: null })
+  })
+
+  it('distinguishes unsupported long tasks from a failing observer', () => {
+    vi.stubGlobal('PerformanceObserver', undefined)
+    setProfileEnabled(true)
+    expect(profileSnapshot().longTasks).toMatchObject({ supported: false, observing: false })
+    setProfileEnabled(false)
+    vi.stubGlobal(
+      'PerformanceObserver',
+      class {
+        static supportedEntryTypes = ['longtask']
+        observe() {
+          throw new Error('unavailable')
+        }
+      },
+    )
+    setProfileEnabled(true)
+    expect(profileSnapshot().longTasks).toMatchObject({ supported: true, observing: false })
+  })
+
+  it('does not include the frame interval preceding a reset', () => {
+    let frame: FrameRequestCallback = () => undefined
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frame = callback
+      return 1
+    })
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    setProfileEnabled(true)
+    frame(100)
+    frame(116)
+    expect(profileSnapshot().frames.count).toBe(1)
+    resetProfile()
+    frame(500)
+    expect(profileSnapshot().frames.count).toBe(0)
+    frame(516)
+    expect(profileSnapshot().frames.averageMs).toBe(16)
+  })
+
   it('does no timing work while disabled', () => {
     const now = vi.spyOn(performance, 'now')
 
@@ -136,6 +253,10 @@ describe('performance profile', () => {
     // stay below the p95 cutoff; evicting the newer 1 ms query crosses that cutoff.
     for (let i = 0; i < 511; i++) recordProfileDuration('markers', i < 25 ? 50 : 1, 'gpu')
     expect(profileSnapshot().gpu.p95Ms).toBe(1)
+    resetProfile()
+    await Promise.resolve()
+    profileGpu(gl, 'overlay', () => undefined)
+    expect(profileSnapshot().gpu.count).toBe(0)
     setProfileEnabled(false)
     profileGpu(gl, 'overlay', () => undefined)
   })

@@ -10,6 +10,8 @@
     colour: 'palette',
     mismatch: 'bug',
     'overlay-menu': 'kebab',
+    'overlay-finished': 'check',
+    'overlay-frozen': 'snowflake',
     'overlay-visible': 'image',
     'overlay-move': 'move',
     'overlay-delete': 'trash',
@@ -22,8 +24,9 @@
   type="button"
   class:pressed={model.pressed}
   class:danger={model.danger}
-  title={model.label}
+  title={model.title ?? model.label}
   aria-label={model.label}
+  aria-busy={model.busy}
   aria-pressed={model.pressed}
   aria-expanded={model.expanded}
   aria-controls={model.controls}

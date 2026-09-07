@@ -93,12 +93,12 @@
   button.danger-ghost { color: var(--caelestis-danger, var(--color-error, currentColor)); }
   button[aria-pressed='true'] { --button-colour: color-mix(in oklab, var(--caelestis-raised-surface, var(--color-base-200)) 95%, #000); box-shadow: none; }
   @media (hover: hover) {
-    button:hover:not(:disabled, [aria-disabled='true']) { --button-colour: color-mix(in oklab, var(--button-colour), #000 7%); }
+    button:hover:not(:disabled, [aria-disabled='true']) { background: color-mix(in oklab, var(--button-colour), #000 7%); }
     button:is(.ghost, .danger-ghost):hover:not(:disabled, [aria-disabled='true']) { background: color-mix(in oklab, currentColor 10%, transparent); }
   }
   button:active:not(:disabled, [aria-disabled='true']) { translate: 0 0.5px; box-shadow: none; }
   button:is(:disabled, [aria-disabled='true']) { pointer-events: none; cursor: not-allowed; opacity: 0.3; }
-  button:focus-visible { outline: 2px solid var(--button-colour, var(--caelestis-focus, currentColor)); outline-offset: 2px; }
+  button:focus-visible { outline: 2px solid var(--caelestis-focus, currentColor); outline-offset: 2px; }
 
   @media (prefers-reduced-motion: no-preference) {
     button { transition: color 200ms, background-color 200ms, border-color 200ms, box-shadow 200ms, transform 200ms; }

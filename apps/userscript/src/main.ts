@@ -37,13 +37,17 @@ import {
   refreshPaintPaletteFocus,
 } from './paint-palette.js'
 import {
+  configureProfileRun,
   installProfile,
   measureProfile,
   profileReport,
   profileSnapshot,
+  recordProfileAction,
+  registerProfileContextSource,
   registerProfileMemorySource,
   resetProfile,
 } from './profile.js'
+import { readProfileContext } from './profile-context.js'
 import { serverMismatchMemoryBytes } from './server-mismatch.js'
 import { installServerSyncCoordinator } from './server-sync-coordinator.js'
 import { getState, loadState, onStateChange } from './state.js'
@@ -249,6 +253,7 @@ const step = (what: string, run: () => void): void => {
 
 const main = (): void => {
   step('shared UI', registerCaelestisUi)
+  registerProfileContextSource(readProfileContext)
   step('performance profile', installProfile)
   registerProfileMemorySource('Template pixels', templateIndexMemoryBytes)
   registerProfileMemorySource('Captured tile pixels', capturedPixelMemoryBytes)
@@ -302,6 +307,10 @@ const main = (): void => {
       },
       /** Copyable JSON for comparing a Caelestis run with a clean Wplace run. */
       profileReport: () => profileReport(),
+      /** Name the scenario and supply actual browser zoom after resetting a profile. */
+      profileConfigure: configureProfileRun,
+      /** Add a timestamped scenario marker to the current profile. */
+      profileMark: recordProfileAction,
       /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
       quads: () =>
         lastFrame === null
@@ -346,6 +355,7 @@ const main = (): void => {
     // changes the selected swatch without moving the map, so repainting only the retained
     // screen-space frame leaves that marker stale until some unrelated map animation happens.
     onPaintSelectionChange(() => {
+      recordProfileAction(isPaintOpen() ? 'paint selection changed' : 'paint drawer closed')
       if (!isPaintOpen()) clearDraftPixels()
       redraw()
     })

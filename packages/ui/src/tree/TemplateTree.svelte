@@ -630,7 +630,7 @@
   .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; border-radius: var(--context-item-radius); text-align: start; }
   .context-menu button:hover, .context-menu button:focus-visible { background: var(--caelestis-raised-surface); }
   .context-menu button.danger { color: var(--caelestis-danger); }
-  .context-menu svg { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
+  .context-menu svg { flex: 0 0 1rem; inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   @media (hover: hover) {
     .actions { opacity: 0; pointer-events: none; }
     .row:hover .actions, .row:focus-within .actions { opacity: 1; pointer-events: auto; }
