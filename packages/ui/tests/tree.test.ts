@@ -60,6 +60,122 @@ const model: TemplateTreeModel = {
 }
 
 describe('template tree', () => {
+  it.each(['tree', 'grid'] as const)(
+    'preserves row order, focus, and core actions in %s mode',
+    (displayMode) => {
+      const onIntent = vi.fn()
+      const entries = model.entries.map((entry) =>
+        entry.type === 'row' && !entry.container
+          ? {
+              ...entry,
+              contextMenu: true,
+              leadingActions: [{ id: 'go', label: 'Go to', icon: 'search' as const }],
+              actions: [{ id: 'copy', label: 'Copy to a server', icon: 'uploadFile' as const }],
+            }
+          : entry,
+      )
+      const component = mount(TemplateTree, {
+        target: document.body,
+        props: { model: { ...model, entries, displayMode, focusedKey: 'local:city' }, onIntent },
+      })
+      flushSync()
+      expect(
+        [...document.querySelectorAll<HTMLElement>('[data-caelestis-tree-key]')].map(
+          (row) => row.dataset.caelestisTreeKey,
+        ),
+      ).toEqual(['local', 'local:city'])
+      expect(
+        document.querySelector('[aria-current="true"]')?.getAttribute('data-caelestis-tree-key'),
+      ).toBe('local:city')
+      const click = (label: string) =>
+        document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.click()
+      click('Go to')
+      click('Copy to a server')
+      expect(onIntent).toHaveBeenCalledWith({ type: 'action', key: 'local:city', actionId: 'go' })
+      expect(onIntent).toHaveBeenCalledWith({ type: 'action', key: 'local:city', actionId: 'copy' })
+      document.querySelector<HTMLInputElement>('input[aria-label="Show City"]')?.click()
+      expect(onIntent).toHaveBeenCalledWith({
+        type: 'toggle-visible',
+        key: 'local:city',
+        visible: false,
+      })
+      if (displayMode === 'grid') {
+        click('Actions for City')
+        expect(onIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'context-menu', key: 'local:city' }),
+        )
+      }
+      const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local:city"]')
+      if (row === null) throw new Error('missing city row')
+      row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+      expect(document.activeElement?.getAttribute('data-caelestis-tree-key')).toBe('local')
+      onIntent.mockClear()
+      click(displayMode === 'tree' ? 'Preview grid view' : 'Tree view')
+      expect(onIntent.mock.calls).toEqual([
+        [{ type: 'display-mode', mode: displayMode === 'tree' ? 'grid' : 'tree' }],
+      ])
+      void unmount(component)
+    },
+  )
+
+  it('keeps preview metadata and nested folder paths visible', () => {
+    const [root, leaf] = model.entries
+    if (root === undefined || leaf === undefined) throw new Error('missing fixture rows')
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          displayMode: 'grid',
+          entries: [
+            root,
+            {
+              ...root,
+              type: 'row',
+              key: 'folder',
+              name: 'Landscapes',
+              icon: 'folder',
+              depth: 1,
+              parentKey: 'local',
+              container: true,
+              expanded: true,
+              visible: true,
+              setSize: 1,
+              positionInSet: 1,
+            },
+            {
+              ...leaf,
+              type: 'row',
+              key: 'city',
+              name: 'City',
+              icon: 'image',
+              depth: 2,
+              parentKey: 'folder',
+              container: false,
+              expanded: false,
+              visible: true,
+              setSize: 1,
+              positionInSet: 1,
+              preview: { width: 100, height: 200, ownership: 'Local' },
+            },
+          ],
+        },
+      },
+    })
+    flushSync()
+    const card = document.querySelector('[data-caelestis-tree-key="city"]')
+    if (card === null) throw new Error('missing preview card')
+    expect(card.textContent).toContain('Local / Landscapes')
+    expect(card.textContent).toContain('100×200')
+    expect(card.textContent).toContain('Preview unavailable')
+    expect(card.querySelector('canvas')?.getAttribute('aria-label')).toBe('City template art')
+    expect(
+      document
+        .querySelector('button[aria-label="Preview grid view"]')
+        ?.getAttribute('aria-pressed'),
+    ).toBe('true')
+    void unmount(component)
+  })
   it('allows keyboard server reordering during automatic sorting and skips fixed Local', () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, {

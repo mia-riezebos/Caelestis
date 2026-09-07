@@ -13,7 +13,7 @@ Reuse its ordered entries, folder expansion, progress, and action intents.
 
 ## TODOs
 - [x] Carry preview data and persisted display mode through the existing adapter; test restoration.
-- [ ] Render responsive artwork cards and switcher using shared row interactions; test action parity.
+- [x] Render responsive artwork cards and switcher using shared row interactions; test action parity.
 - [ ] Verify grouping and rendering in both themes and panel widths; add release note and complete checks.
 
 ## Notes
@@ -22,3 +22,4 @@ Reuse its ordered entries, folder expansion, progress, and action intents.
 - Current filters are name search, surface scope, and publication visibility. Use the existing builder unchanged.
 - Previews use the same indexed source artwork as overlays. Missing server pixels show an explicit unavailable state until sync supplies them.
 - TODO 1 validation: shared/UI builds and all 80 state tests pass.
+- TODO 2 validation: UI check has no warnings/errors; 93 UI tests pass; UI build passes. Preview sampling is bounded to 256 pixels per edge and tests preserve transparency.
