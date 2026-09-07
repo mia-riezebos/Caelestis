@@ -208,6 +208,25 @@ it('ignores other pointers while one owns the gesture', () => {
   expect(harness.select.mock.calls).toEqual([[12], [7]])
 })
 
+it('suppresses the claimed middle release while another mouse button remains held', () => {
+  pointer('pointerdown')
+  pointer('pointermove', 0, { button: 0, buttons: 5 })
+  pointer('pointermove', 0, { button: 1, buttons: 1 })
+  expect(capture).toBeNull()
+  for (const type of ['mouseup', 'auxclick']) {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      button: 1,
+      buttons: 1,
+    })
+    map.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+  }
+  pointer('pointermove', 1, { buttons: 1 })
+  expect(harness.select.mock.calls).toEqual([[12]])
+})
+
 it.each(['closed drawer', 'placement', 'gap', 'unsupported', 'outside', 'swatch', 'prevented'])(
   'leaves a failed initial pick untouched: %s',
   (reason) => {

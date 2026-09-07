@@ -64,6 +64,7 @@ import { isPaintOpen, selectPaintColour } from './wplace-paint.js'
  * outside it, which is the distinction being drawn.
  */
 const MAP_SURFACE = '.maplibregl-canvas-container, canvas.maplibregl-canvas'
+const MIDDLE_BUTTON_MASK = 4
 
 /** The palette index our overlay claims at a logical canvas pixel, or null if it claims none. */
 const overlayIndexAt = (surface: TemplateSurface, x: number, y: number): number | null => {
@@ -341,8 +342,9 @@ export const installColourPicker = (): void => {
       if (pick === null || pick.pointerId !== event.pointerId) return
       event.preventDefault()
       event.stopImmediatePropagation()
-      if ((event.buttons & 4) === 0 || !isPaintOpen() || isMoving()) {
-        endMiddlePick()
+      if ((event.buttons & MIDDLE_BUTTON_MASK) === 0 || !isPaintOpen() || isMoving()) {
+        // A middle release within a button chord arrives as pointermove rather than pointerup.
+        endMiddlePick(event.button === 1 && (event.buttons & MIDDLE_BUTTON_MASK) === 0)
         return
       }
       // Capture retargets events to the initial element. Hit-test the actual cursor so controls
