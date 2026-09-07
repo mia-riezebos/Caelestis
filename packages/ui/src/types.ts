@@ -209,6 +209,8 @@ export type RailControlId =
   | 'colour'
   | 'mismatch'
   | 'overlay-menu'
+  | 'overlay-finished'
+  | 'overlay-frozen'
   | 'overlay-visible'
   | 'overlay-move'
   | 'overlay-delete'
@@ -219,6 +221,8 @@ export interface RailControlModel {
   readonly id: RailControlId
   readonly control?: string
   readonly label: string
+  readonly title?: string
+  readonly busy?: boolean
   readonly pressed?: boolean
   readonly expanded?: boolean
   readonly controls?: string
@@ -559,8 +563,6 @@ export interface OverlayControlsModel {
     readonly finished: boolean
     readonly frozen: boolean
     readonly griefed: boolean
-    readonly editable?: boolean
-    readonly pending?: 'finished' | 'frozen'
   }
   readonly failures: readonly OverlayFailureModel[]
   readonly confirmingDelete: boolean
@@ -572,6 +574,4 @@ export type OverlayControlsIntent =
   | { readonly type: 'close' }
   | { readonly type: 'cancel-delete' }
   | { readonly type: 'confirm-delete' }
-  | { readonly type: 'set-finished'; readonly value: boolean }
-  | { readonly type: 'set-frozen'; readonly value: boolean }
   | { readonly type: 'appearance'; readonly intent: AppearanceEditorIntent }

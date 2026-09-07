@@ -938,7 +938,6 @@ const overlayAppearanceModel = (template: PlacedTemplate): AppearanceEditorModel
 
 const overlayModel = (template: PlacedTemplate): OverlayControlsModel => {
   const lifecycle = serverLifecycleFor(template)
-  const pending = pendingLifecycle.get(template.id)
   return {
     name: template.name,
     ...(lifecycle === null
@@ -948,8 +947,6 @@ const overlayModel = (template: PlacedTemplate): OverlayControlsModel => {
             finished: lifecycle.finished,
             frozen: lifecycle.frozen,
             griefed: false,
-            editable: serverActionTargetFor(template) !== null,
-            ...(pending === undefined ? {} : { pending }),
           },
         }),
     failures: overlayFailures.render(template.id, template.name).map((failure) => ({
@@ -1347,11 +1344,55 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
   const visible = visibleFor(id)
   const serverTarget = serverActionTargetFor(template)
   const serverProtected = serverTarget?.published === true
+  const lifecycle = serverLifecycleFor(template)
+  const pending = pendingLifecycle.get(id)
   const actionSpecs: ReadonlyArray<{
     readonly model: RailControlModel
     readonly control: string
     readonly activate: () => void
   }> = [
+    ...(serverTarget === null || lifecycle === null
+      ? []
+      : [
+          {
+            model: {
+              id: 'overlay-finished' as const,
+              control: 'finished',
+              label:
+                pending === 'finished'
+                  ? 'Saving completion…'
+                  : lifecycle.finished
+                    ? 'Reopen template'
+                    : 'Mark as complete',
+              pressed: lifecycle.finished,
+              disabled: isDoomed(id) || pending !== undefined,
+              busy: pending === 'finished',
+            },
+            control: 'finished',
+            activate: () => commitLifecycle(id, 'finished', !lifecycle.finished, rerender),
+          },
+          {
+            model: {
+              id: 'overlay-frozen' as const,
+              control: 'frozen',
+              label:
+                pending === 'frozen'
+                  ? 'Saving timelapse state…'
+                  : lifecycle.frozen
+                    ? 'Thaw timelapse'
+                    : 'Freeze timelapse',
+              ...(lifecycle.finished && lifecycle.frozen
+                ? { title: 'Reopen the template before thawing' }
+                : {}),
+              pressed: lifecycle.frozen,
+              disabled:
+                isDoomed(id) || pending !== undefined || (lifecycle.finished && lifecycle.frozen),
+              busy: pending === 'frozen',
+            },
+            control: 'frozen',
+            activate: () => commitLifecycle(id, 'frozen', !lifecycle.frozen, rerender),
+          },
+        ]),
     {
       model: {
         id: 'overlay-visible',
@@ -1440,12 +1481,6 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
       }
       case 'appearance':
         handleOverlayAppearance(id, intent.intent, rerender)
-        break
-      case 'set-finished':
-        commitLifecycle(id, 'finished', intent.value, rerender)
-        break
-      case 'set-frozen':
-        commitLifecycle(id, 'frozen', intent.value, rerender)
         break
     }
   })
@@ -2064,7 +2099,9 @@ const renderControls = (
       openFor === template.id
         ? isServerTemplate(template) && serverActionTargetFor(template) === null
           ? 1
-          : 3
+          : serverActionTargetFor(template) !== null && serverLifecycleFor(template) !== null
+            ? 5
+            : 3
         : 0
     const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
     if (viewport.bottom - viewport.top < railHeight) {

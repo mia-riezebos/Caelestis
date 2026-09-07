@@ -27,26 +27,6 @@
     <div class="lifecycle"><TemplateState compact {...model.lifecycle} /></div>
   {/if}
 
-  {#if model.lifecycle?.editable}
-    <div class="lifecycle-actions" role="group" aria-label="Template lifecycle" aria-busy={model.lifecycle.pending !== undefined}>
-      <Button
-        label={model.lifecycle.finished ? 'Reopen template' : 'Mark as complete'}
-        size="compact"
-        control="finished"
-        ariaDisabled={model.deleting || model.lifecycle.pending !== undefined}
-        onclick={() => emit({ type: 'set-finished', value: !model.lifecycle?.finished })}
-      >{model.lifecycle.pending === 'finished' ? 'Saving…' : model.lifecycle.finished ? 'Reopen template' : 'Mark as complete'}</Button>
-      <Button
-        label={model.lifecycle.frozen ? 'Thaw timelapse' : 'Freeze timelapse'}
-        size="compact"
-        control="frozen"
-        ariaDisabled={model.deleting || model.lifecycle.pending !== undefined || (model.lifecycle.finished && model.lifecycle.frozen)}
-        title={model.lifecycle.finished && model.lifecycle.frozen ? 'Reopen the template before thawing' : ''}
-        onclick={() => emit({ type: 'set-frozen', value: !model.lifecycle?.frozen })}
-      >{model.lifecycle.pending === 'frozen' ? 'Saving…' : model.lifecycle.frozen ? 'Thaw timelapse' : 'Freeze timelapse'}</Button>
-    </div>
-  {/if}
-
   {#if model.confirmingDelete || model.deleting}
     <div class="confirm" data-caelestis-confirm role="alertdialog" aria-label={question} tabindex="-1">
       <span>{question}</span>
@@ -69,7 +49,6 @@
   header { display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; }
   header strong { min-inline-size: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
   .lifecycle { padding: 0.4rem 0 0.2rem; }
-  .lifecycle-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; padding-block: 0.4rem; }
   .failure, .confirm { margin: 0.35rem 0 0; border-radius: var(--caelestis-card-radius, 0.65rem); }
   .failure { padding: 0.45rem 0.55rem; background: color-mix(in oklch, var(--caelestis-danger) 14%, var(--caelestis-raised-surface)); color: var(--caelestis-danger); }
   .confirm { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.55rem 0.65rem; background: color-mix(in oklch, var(--caelestis-warning) 16%, var(--caelestis-raised-surface)); }

@@ -341,6 +341,30 @@ describe('template-local lifecycle actions', () => {
     rerender()
   }
 
+  it.each([
+    [false, false],
+    [false, true],
+    [true, true],
+  ])('shows lifecycle state in the rail for finished=%s, frozen=%s', async (finished, frozen) => {
+    connectServerTemplate(true)
+    Object.assign(harness.serverTemplates[0] ?? {}, { finished, timelapseFrozen: frozen })
+    openServerMenu()
+    const complete = await byKey('finished')
+    const freeze = await byKey('frozen')
+    expect(complete.getAttribute('aria-pressed')).toBe(String(finished))
+    expect(freeze.getAttribute('aria-pressed')).toBe(String(frozen))
+    expect(complete.classList.contains('pressed')).toBe(finished)
+    expect(freeze.classList.contains('pressed')).toBe(frozen)
+    expect(freeze.getAttribute('aria-disabled')).toBe(String(finished && frozen))
+    if (finished && frozen) expect(freeze.title).toBe('Reopen the template before thawing')
+    expect(
+      [...document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')].map(
+        (action) => action.dataset.caelestisControl,
+      ),
+    ).toEqual(['finished', 'frozen', 'hide', 'move', 'delete'])
+    expect((await menuRoot()).querySelector('[data-caelestis-control="finished"]')).toBeNull()
+  })
+
   it('keeps both actions pending until the authoritative manifest reflects completion', async () => {
     connectServerTemplate(true)
     let resolvePatch: ((result: { ok: true }) => void) | undefined
@@ -359,15 +383,15 @@ describe('template-local lifecycle actions', () => {
     expect(harness.patchTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a', {
       finished: true,
     })
-    expect((await byKey('finished')).textContent).toBe('Saving…')
+    expect((await byKey('finished')).getAttribute('aria-label')).toBe('Saving completion…')
     expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('true')
     ;(await byKey('frozen')).click()
     expect(harness.patchTemplate).toHaveBeenCalledTimes(1)
     resolvePatch?.({ ok: true })
     await settle()
     expect(harness.listServerContents).toHaveBeenCalledWith(harness.servers[0])
-    expect((await byKey('finished')).textContent).toBe('Reopen template')
-    expect((await byKey('frozen')).textContent).toBe('Thaw timelapse')
+    expect((await byKey('finished')).getAttribute('aria-label')).toBe('Reopen template')
+    expect((await byKey('frozen')).getAttribute('aria-label')).toBe('Thaw timelapse')
     expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('true')
     expect((await menuRoot()).querySelector('[aria-label="Finished"]')).not.toBeNull()
   })
@@ -391,7 +415,7 @@ describe('template-local lifecycle actions', () => {
     expect(harness.patchTemplate).toHaveBeenLastCalledWith(harness.servers[0], 'remote-a', {
       timelapseFrozen: false,
     })
-    expect((await byKey('frozen')).textContent).toBe('Freeze timelapse')
+    expect((await byKey('frozen')).getAttribute('aria-label')).toBe('Freeze timelapse')
   })
 
   it('reports an unconfirmed save when manifest refreshes leave stale lifecycle state', async () => {
@@ -403,12 +427,12 @@ describe('template-local lifecycle actions', () => {
       'Change saved, but its current state could not be confirmed.',
     )
     expect((await byKey('finished')).getAttribute('aria-disabled')).toBe('false')
-    expect((await byKey('finished')).textContent).toBe('Mark as complete')
+    expect((await byKey('finished')).getAttribute('aria-label')).toBe('Mark as complete')
 
     Object.assign(harness.serverTemplates[0] ?? {}, { finished: true, timelapseFrozen: true })
     rerender()
     expect((await menuRoot()).querySelector('[data-caelestis-error]')).toBeNull()
-    expect((await byKey('finished')).textContent).toBe('Reopen template')
+    expect((await byKey('finished')).getAttribute('aria-label')).toBe('Reopen template')
   })
 
   it('retries a stale manifest with current credentials while keeping the action pending', async () => {
@@ -438,10 +462,10 @@ describe('template-local lifecycle actions', () => {
     expect(harness.listServerContents).toHaveBeenCalledTimes(2)
     expect(harness.listServerContents).toHaveBeenNthCalledWith(1, harness.servers[0])
     expect(harness.listServerContents).toHaveBeenNthCalledWith(2, harness.servers[0])
-    expect((await byKey('finished')).textContent).toBe('Saving…')
+    expect((await byKey('finished')).getAttribute('aria-label')).toBe('Saving completion…')
     confirmRefresh?.()
     await settle()
-    expect((await byKey('finished')).textContent).toBe('Reopen template')
+    expect((await byKey('finished')).getAttribute('aria-label')).toBe('Reopen template')
     expect((await menuRoot()).querySelector('[data-caelestis-error]')).toBeNull()
   })
 
@@ -457,7 +481,7 @@ describe('template-local lifecycle actions', () => {
     expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toBe(
       'Server refused the freeze.',
     )
-    expect((await byKey('frozen')).textContent).toBe('Freeze timelapse')
+    expect((await byKey('frozen')).getAttribute('aria-label')).toBe('Freeze timelapse')
     expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('false')
     harness.listServerContents.mockImplementationOnce(async () => {
       Object.assign(harness.serverTemplates[0] ?? {}, { timelapseFrozen: true })
@@ -492,7 +516,9 @@ describe('template-local lifecycle actions', () => {
     server.isAdmin = false
     action.click()
     expect(harness.patchTemplate).not.toHaveBeenCalled()
-    expect((await menuRoot()).querySelector('[data-caelestis-control="finished"]')).toBeNull()
+    expect(
+      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="finished"]'),
+    ).toBeNull()
     expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toContain(
       'Admin access',
     )
@@ -503,12 +529,16 @@ describe('template-local lifecycle actions', () => {
     rerender()
     gear('a').click()
     rerender()
-    expect((await menuRoot()).querySelector('[aria-label="Template lifecycle"]')).toBeNull()
+    expect(
+      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="finished"]'),
+    ).toBeNull()
     ;(await byKey('close')).click()
     connectServerTemplate(true, false)
     Object.assign(harness.serverTemplates[0] ?? {}, { finished: true, timelapseFrozen: true })
     openServerMenu()
-    expect((await menuRoot()).querySelector('[data-caelestis-control="finished"]')).toBeNull()
+    expect(
+      document.querySelector('[data-caelestis-rail-action][data-caelestis-control="finished"]'),
+    ).toBeNull()
     expect((await menuRoot()).querySelector('[aria-label="Finished"]')).not.toBeNull()
   })
 
@@ -1696,22 +1726,28 @@ describe('placement and geometry', () => {
     )
   })
 
-  it('keeps the expanded action rail inside the viewport', async () => {
-    const restore = window.innerHeight
-    Object.defineProperty(window, 'innerHeight', { value: 300, configurable: true })
-    onTestFinished(() => {
-      Object.defineProperty(window, 'innerHeight', { value: restore, configurable: true })
-    })
-    harness.localTemplates.mockReturnValue([template({ originY: 290 })])
-    rerender()
-    gear('a').click()
-    rerender()
+  it.each([false, true])(
+    'keeps the expanded action rail inside the viewport (server=%s)',
+    async (server) => {
+      const restore = window.innerHeight
+      Object.defineProperty(window, 'innerHeight', { value: 360, configurable: true })
+      onTestFinished(() => {
+        Object.defineProperty(window, 'innerHeight', { value: restore, configurable: true })
+      })
+      if (server) connectServerTemplate(true)
+      harness.localTemplates.mockReturnValue([
+        template({ originY: 350, ...(server ? { serverUrl: 'https://example.test' } : {}) }),
+      ])
+      rerender()
+      gear('a').click()
+      rerender()
 
-    const actions = [...document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')]
-    const last = actions.at(-1)
-    if (last === undefined) throw new Error('no rail action')
-    expect(floatingPosition(last).y + RAIL_BUTTON).toBeLessThanOrEqual(window.innerHeight - 8)
-  })
+      const actions = [...document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')]
+      const last = actions.at(-1)
+      if (last === undefined) throw new Error('no rail action')
+      expect(floatingPosition(last).y + RAIL_BUTTON).toBeLessThanOrEqual(window.innerHeight - 8)
+    },
+  )
 
   it.each([
     ['no room below', 768, 668, 300],
@@ -2194,7 +2230,7 @@ describe('the menu is ours and has a keyboard exit', () => {
     dialog.append(stage)
     document.body.append(dialog)
     stage.getBoundingClientRect = () =>
-      ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
+      ({ left: 0, top: 0, right: 250, bottom: 400, width: 250, height: 400 }) as DOMRect
     frame.getBoundingClientRect = () =>
       ({ left: 0, top: 0, right: 250, bottom: 250, width: 250, height: 250 }) as DOMRect
     const overlayMenu = await import('./overlay-menu.js')
