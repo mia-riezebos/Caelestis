@@ -147,10 +147,10 @@ const writeVersioned = async (
     const db = await open()
     try {
       return await new Promise<SaveResult>((resolve, reject) => {
-        const transaction = db.transaction(
-          history === undefined ? [STORE, LOCAL_TAG_STORE] : [STORE, VERSIONS_STORE, LOCAL_TAG_STORE],
-          'readwrite',
-        )
+        const stores = [STORE]
+        if (history !== undefined) stores.push(VERSIONS_STORE)
+        if (history === 'delete') stores.push(LOCAL_TAG_STORE)
+        const transaction = db.transaction(stores, 'readwrite')
         const templates = transaction.objectStore(STORE)
         const request = templates.get(id)
         let result: SaveResult = { status: 'conflict' }

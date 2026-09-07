@@ -1,23 +1,35 @@
-import { IDBFactory } from 'fake-indexeddb'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-beforeEach(() => vi.stubGlobal('indexedDB', new IDBFactory()))
+beforeEach(() => {
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+})
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.resetModules()
 })
 
-const seedLegacy = async () => {
+const seedLegacy = async (version = 4) => {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open('caelestis', 4)
+    const request = indexedDB.open('caelestis', version)
     request.onupgradeneeded = () => {
       request.result.createObjectStore('local-templates', { keyPath: 'id' })
       request.result.createObjectStore('server-cache', { keyPath: 'url' })
+      if (version === 5)
+        request.result.createObjectStore('local-template-versions', { keyPath: ['id', 'revision'] })
     }
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
   })
-  const transaction = database.transaction('local-templates', 'readwrite')
+  const transaction = database.transaction(
+    version === 5 ? ['local-templates', 'local-template-versions'] : ['local-templates'],
+    'readwrite',
+  )
+  if (version === 5)
+    transaction
+      .objectStore('local-template-versions')
+      .put({ id: 'first', revision: 0, marker: 'archive' })
   for (const id of ['first', 'second'])
     transaction.objectStore('local-templates').put({
       id,
@@ -72,10 +84,15 @@ describe('local tags in IndexedDB', () => {
     await tags.mutateLocalTag({ type: 'delete', id })
     expect(await tags.readLocalTags()).toEqual([])
   })
-  it.each(['local', 'cache'])(
-    'upgrades through the %s entry point without losing templates or tags',
-    async (entry) => {
-      await seedLegacy()
+  it.each([
+    ['local', 4],
+    ['cache', 4],
+    ['local', 5],
+    ['cache', 5],
+  ] as const)(
+    'upgrades through the %s entry point from v%s without losing templates, history, or tags',
+    async (entry, version) => {
+      await seedLegacy(version)
       if (entry === 'cache') await (await import('../server-cache.js')).loadServerCache([])
       let tags = await import('./tags.js')
       expect(await tags.readLocalTags()).toEqual([])
@@ -91,6 +108,21 @@ describe('local tags in IndexedDB', () => {
       ])
       const { loadTemplates } = await import('./persist.js')
       expect(await loadTemplates()).toHaveLength(2)
+      if (version === 5) {
+        const { openTemplateDatabase } = await import('./persist.js')
+        const database = await openTemplateDatabase()
+        expect(database.version).toBe(6)
+        const history = await new Promise<unknown>((resolve, reject) => {
+          const request = database
+            .transaction('local-template-versions')
+            .objectStore('local-template-versions')
+            .get(['first', 0])
+          request.onsuccess = () => resolve(request.result)
+          request.onerror = () => reject(request.error)
+        })
+        database.close()
+        expect(history).toEqual({ id: 'first', revision: 0, marker: 'archive' })
+      }
       await tags.mutateLocalTag({ type: 'delete', id })
       expect(await tags.readLocalTags()).toEqual([])
       expect(await loadTemplates()).toHaveLength(2)
