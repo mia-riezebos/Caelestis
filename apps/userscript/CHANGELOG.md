@@ -1,5 +1,46 @@
 # @caelestis/userscript
 
+## 0.7.2
+
+### Patch Changes
+
+- 0efce29: Sort templates by recent updates, name, progress, size, or mismatches from one compact menu.
+
+- d6d84e6: Keep resolved mismatch markers hidden after accepted paint until newer tile data arrives.
+- d6d84e6: Reconcile accepted paint with fresh server masks without extra tile reads or stale submission replays.
+- f4cd562: Align the sort menu's outer corners with its inset options.
+- cfbecfd: Show observed regression alarms on templates and their parent folders instead of treating every mismatch as grief.
+- 33f7d3e: Keep delayed live reports from overriding newer authoritative regression checks.
+- b141bfd: Replace finished and frozen badges with compact labels and give grief alarms a distinct warning treatment.
+- bf08766: Compact large counts in palette badges and progress displays while keeping exact values available in tooltips and accessible labels.
+- d80f148: Reduce template context menu corners to match their inset actions.
+- 50c0c32: Preserve live regression warnings when a scan still holds older pixel counts.
+- 2d76670: Sort alliance templates by current artboard mismatches and keep folders with missing measurements last.
+- 43f3ebd: Let admins dismiss a grief alert for everyone while allowing later pixel losses to raise a new alert.
+- 967509e: Show draft mismatch markers from the first rendered frame after opening Paint.
+- 38bca16: Count finished templates as 100% complete in progress sorting, including their contribution to folders.
+- b3f0938: Prevent partial background scans from restoring stale mismatch markers after cancelling Space-painted strokes.
+- f97b554: Highlight griefed template rows with a red border and background.
+- df8866c: Raise regression alerts as soon as reported tiles lose correct pixels, without waiting for a scheduled scan.
+- b8c38b0: Keep template rows on one line and show grief alarms as a warning emoji with details on hover.
+- e9ea8d7: Keep unrelated tiles cached when finishing, reopening, freezing, or thawing a template.
+- 987ff11: Keep draft palette updates fast by aggregating colours once and reusing counts when picking a different colour.
+- 4a8bf1c: Move ongoing telemetry reports and live state delivery to authenticated WebSockets.
+- 2d76670: Remember Local folder creation times so empty folders sort correctly under Recent.
+- fdd0809: Distinguish orange regression warnings from red grief warnings on templates and their parent folders.
+- 7f5252d: Prevent overlapping tile reports and stale scans from reviving cleared regression alerts.
+- 97b1655: Reverse sorting by selecting the active option again, with an arrow showing its direction.
+- 2bbeb0a: Keep mismatch markers visible while their server mask reloads.
+- deb1a62: Clear cancelled draft markers when Wplace removes or replaces a draft canvas, including rapid Paint reopen cycles.
+- 477175b: Close the sort menu when its trigger is clicked again.
+- 5b56886: Keep mismatch markers visible while background scans refresh cancelled drafts.
+- adb96ae: Keep Local first and server order manual while sorting folders and templates together within each parent.
+- 463d1bc: Show one emoji over the template icon: a checkmark when finished, or an ice cube when only the timelapse is frozen.
+- 32fbce3: Limit compact counts to three significant digits so large palette badges fit narrow displays.
+- a765381: Restore committed mismatch markers and progress when cancelling a draft during native canvas clears.
+- 5bc93a3: Restore paint commit, cancel, undo, and redo shortcuts across Wplace drawer layout changes.
+- ebb0c92: Show ancestor warnings for unpublished templates visible to admins.
+
 ## 0.7.1
 
 ### Patch Changes

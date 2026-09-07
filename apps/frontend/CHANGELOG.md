@@ -1,5 +1,11 @@
 # @caelestis/frontend
 
+## 0.3.0
+
+### Minor Changes
+
+- d277ef2: Stream contribution and leaderboard updates through authenticated WebSockets without polling.
+
 ## 0.2.0
 
 ### Minor Changes
