@@ -21,11 +21,6 @@
   } from '../types.js'
 
   let { model, allowGrid = false, toolbar = true, onIntent }: { model: TemplateTreeModel; allowGrid?: boolean; toolbar?: boolean; onIntent?: (intent: TemplateTreeIntent) => void } = $props()
-  let claimsKey = $state<string | null>(null)
-  $effect(() => {
-    const row = model.entries.find((entry) => entry.key === claimsKey)
-    if (row?.type !== 'row' || row.claims === undefined || (row.claims.people.length === 0 && !row.claims.canAssign)) claimsKey = null
-  })
   let query = $state('')
   let activeKey = $state<string | null>(null)
   let renameDraft = $state('')
@@ -416,10 +411,9 @@
             {#if entry.container}<span class:open={entry.expanded} class="caret" aria-hidden="true">›</span>{/if}
             <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
               {#if entry.claims !== undefined && (entry.claims.people.length > 0 || entry.claims.canAssign)}
-                <button class="claim-marker" class:mine={entry.claims.mine} type="button" aria-label={`Claims for ${entry.name}`} title={entry.claims.people.length > 0 ? entry.claims.people.map((person) => `${person.displayName} #${person.wplaceUserId}`).join(', ') : 'Assign someone'} aria-expanded={claimsKey === entry.key} onclick={(event) => { event.stopPropagation(); claimsKey = claimsKey === entry.key ? null : entry.key }}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="9" cy="7" r="3" /><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 4v3" /></svg>
-                  {#if entry.claims.people.length > 0}<span>{entry.claims.people.length}</span>{/if}
-                </button>
+                <TemplateClaims name={entry.name} model={entry.claims} onChange={(release, person) => emit({ type: 'template-claim', key: entry.key, release, ...(person === undefined ? {} : { person }) })}>
+                  <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+                </TemplateClaims>
               {:else}
               <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
               {/if}
@@ -478,9 +472,6 @@
               <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
             </label>
           </div>
-          {#if claimsKey === entry.key && entry.claims !== undefined}
-            <TemplateClaims model={entry.claims} onChange={(release, person) => emit({ type: 'template-claim', key: entry.key, release, ...(person === undefined ? {} : { person }) })} />
-          {/if}
           {#if card && entry.progress !== undefined}
             <button type="button" class="card-progress" aria-label={`View progress for ${entry.name}`} title={`View progress for ${entry.name}`} aria-expanded={progressKey === entry.key} onclick={(event) => { event.stopPropagation(); void showProgress(entry) }}>
               <ProgressMeter progress={entry.progress} size="sm" /><Icon name="caret" size="0.875rem" />
@@ -546,11 +537,6 @@
 </div>
 
 <style>
-  .claim-marker { display: inline-flex; align-items: center; justify-content: center; gap: .125rem; flex: 0 0 auto; min-block-size: 1.75rem; padding: .125rem .25rem; border: 0; border-radius: var(--caelestis-field-radius, .25rem); color: var(--caelestis-muted-text); background: transparent; font: inherit; font-size: .65rem; cursor: pointer; }
-  .claim-marker svg { inline-size: 1rem; block-size: 1rem; }
-  .claim-marker.mine { color: var(--caelestis-primary); }
-  .claim-marker:hover, .claim-marker[aria-expanded='true'] { background: color-mix(in oklab, currentColor 10%, transparent); }
-  .claim-marker:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 1px; }
   :global(*) { box-sizing: border-box; }
   .toolbar { position: relative; z-index: 2; display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; margin: 0.75rem var(--caelestis-content-inset, 1rem); }
   .view-switcher { display: flex; flex: 0 0 auto; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); overflow: hidden; }
@@ -608,7 +594,7 @@
   .visibility :global(svg) { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
   .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
-  .progress-detail { display: flex; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .progress-detail { display: flex; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 0 0.35rem; padding-inline-start: var(--progress-detail-offset); color: var(--caelestis-muted-text); font-size: 0.68rem; }
   .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
   .progress-summary { container-type: inline-size; display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
   .progress-summary :global(.meter-wrap) { inline-size: 100%; }

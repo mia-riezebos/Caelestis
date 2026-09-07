@@ -1,18 +1,51 @@
 <script lang="ts">
   import type { PainterIdentity } from '@caelestis/shared'
+  import type { Snippet } from 'svelte'
   import Button from '../foundations/Button.svelte'
   import type { TemplateClaimsModel } from '../types.js'
 
   let {
     model,
+    name,
+    children,
     onChange,
   }: {
     model: TemplateClaimsModel
+    name: string
+    children: Snippet
     onChange: (release: boolean, person?: PainterIdentity) => void
   } = $props()
   let assigning = $state(false)
   let username = $state('')
   let userId = $state('')
+  let trigger: HTMLButtonElement
+  let popup: HTMLDivElement
+  let open = $state(false)
+  let left = $state(0)
+  let top = $state(0)
+  const popupId = $props.id()
+  const position = (): void => {
+    const rect = trigger.getBoundingClientRect()
+    left = Math.max(8, Math.min(rect.left, window.innerWidth - popup.offsetWidth - 8))
+    top = Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - popup.offsetHeight - 8))
+  }
+  const close = (restoreFocus = false): void => {
+    popup.hidePopover()
+    if (restoreFocus) trigger.focus()
+  }
+  $effect(() => {
+    if (!open) return
+    const observer = new ResizeObserver(position)
+    observer.observe(popup)
+    const scroll = (event: Event): void => {
+      if (!event.composedPath().includes(popup)) close()
+    }
+    window.addEventListener('scroll', scroll, true)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('scroll', scroll, true)
+    }
+  })
   const assign = (): void => {
     const id = Number(userId)
     if (!username.trim() || !/^\d+$/.test(userId) || !Number.isSafeInteger(id)) return
@@ -23,7 +56,27 @@
   }
 </script>
 
-<section class="claims" aria-label="Template claims">
+<svelte:window onresize={() => { if (open) close() }} />
+
+<button bind:this={trigger} class="claim-marker" type="button" popovertarget={popupId}
+  aria-label={`Claims for ${name}`} aria-haspopup="dialog" aria-expanded={open}
+  title={model.people.length > 0 ? model.people.map((person) => `${person.displayName} #${person.wplaceUserId}`).join(', ') : 'Assign someone'}
+  onclick={(event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (open) { close(true); return }
+    popup.showPopover()
+    position()
+    popup.focus()
+  }}>
+  {@render children()}
+  {#if model.people.length > 0}<span class="claim-dot" class:mine={model.mine} aria-hidden="true"></span>{/if}
+</button>
+<div bind:this={popup} id={popupId} class="claims" popover="auto" role="dialog" tabindex="-1" aria-label={`Claims for ${name}`}
+  style:left={`${left}px`} style:top={`${top}px`}
+  onbeforetoggle={(event) => { open = event.newState === 'open'; if (!open) assigning = false }}
+  onclick={(event) => event.stopPropagation()}
+  onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); close(true) } }}>
   {#each model.people as person (person.wplaceUserId)}
     <div class="person">
       <span>{person.displayName} <small>#{person.wplaceUserId}</small></span>
@@ -45,7 +98,7 @@
     {#if model.canClaim}
       <Button
         label={model.mine ? 'Release claim' : 'Claim'}
-        size="small"
+        size="compact"
         onclick={() => onChange(model.mine)}
       />
     {/if}
@@ -53,7 +106,7 @@
       <Button
         label="Assign someone"
         kind="ghost"
-        size="small"
+        size="compact"
         onclick={() => (assigning = !assigning)}
       />
     {/if}
@@ -96,15 +149,33 @@
       </div>
     </form>
   {/if}
-</section>
+</div>
 
 <style>
   .claims {
-    margin-block: 0.375rem;
-    padding: 0.375rem 0.5rem;
-    border-inline-start: 2px solid var(--caelestis-border);
-    font-size: 0.75rem;
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    padding: 0.5rem;
+    inline-size: 15rem;
+    max-inline-size: calc(100vw - 1rem);
+    max-block-size: calc(100vh - 1rem);
+    box-sizing: border-box;
+    overflow: auto;
+    border: 1px solid var(--caelestis-border);
+    border-radius: 0.375rem;
+    background: var(--caelestis-surface);
+    color: var(--caelestis-text);
+    white-space: normal;
+    box-shadow: var(--caelestis-shadow);
+    font: 400 0.75rem/1.25 ui-sans-serif, system-ui, sans-serif;
   }
+  .claim-marker { position: relative; display: inline-flex; align-items: center; justify-content: center; inline-size: 1rem; block-size: 1rem; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
+  .claim-marker::before { content: ''; position: absolute; inset: -0.375rem; border-radius: 0.25rem; }
+  .claim-marker:hover::before, .claim-marker[aria-expanded='true']::before { background: color-mix(in oklab, currentColor 10%, transparent); }
+  .claim-marker:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 3px; }
+  .claim-dot { position: absolute; inset-inline-end: -0.125rem; inset-block-start: -0.125rem; inline-size: 0.375rem; block-size: 0.375rem; border-radius: 50%; background: var(--caelestis-muted-text); outline: 1px solid var(--caelestis-surface); }
+  .claim-dot.mine { background: var(--caelestis-primary); }
   .person {
     display: flex;
     align-items: center;
