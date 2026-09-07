@@ -28,6 +28,8 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
       : target.templateId
   const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   let refreshPending = false
+  let reloadPending = false
+  let closed = false
   let model: TagManagerModel = {
     owner: server === null ? 'Local · This browser' : `${server.info?.name ?? server.url} · Server`,
     ...(templateId === undefined ? {} : { templateName: target.name }),
@@ -87,6 +89,7 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
     refreshPending = false
   }
   const reload = async (): Promise<void> => {
+    reloadPending = false
     update({ loading: true, error: undefined })
     try {
       await read()
@@ -95,12 +98,19 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
       update({ error: failure(error) })
     } finally {
       update({ loading: false })
+      reloadIfPending()
     }
   }
+  const reloadIfPending = (): void => {
+    if (reloadPending && !closed && !model.busy && !model.loading) void reload()
+  }
   const unsubscribe = onServerContents((owner) => {
-    if (server !== null && owner.url === server.url && !model.busy && !model.loading) void reload()
+    if (server === null || owner.url !== server.url) return
+    reloadPending = true
+    reloadIfPending()
   })
   const close = (): void => {
+    closed = true
     unsubscribe()
     manager.remove()
     if (restoreFocus?.isConnected) restoreFocus.focus()
@@ -134,6 +144,7 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
     } finally {
       update({ busy: false })
       rerender()
+      reloadIfPending()
     }
   }
   manager.model = model
