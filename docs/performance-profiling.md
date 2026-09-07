@@ -38,6 +38,7 @@ Read the report's `scope` fields before comparing samples:
 - Git metadata is unknown in source archives. Watch builds retain metadata from process startup; restart for a fresh revision.
 - Counters retain at most 256 names and actions retain the latest 200 markers. Dropped counts expose truncation.
 - Canvas-write counts include scratch canvases. Tile-sized uploads are draft candidates. Readback bytes measure returned RGBA data.
+- Written-pixel counts normalize and clip known integer rectangles to the canvas. Unknown or fractional rectangles only increment write counts.
 - Queue age starts when profiling first observes pending work. Cache evictions also include removed templates.
 - Action timestamps identify dispatch, not presentation. Frame cadence does not measure input latency.
 
