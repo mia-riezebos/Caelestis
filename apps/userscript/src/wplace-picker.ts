@@ -17,6 +17,7 @@ import {
   displayTemplatesForSurface,
   isTemplateVisible,
 } from './templates/local-store.js'
+import { isMoving } from './templates/move.js'
 import { sourceXAt } from './templates/placement.js'
 import { ensureTilePixels } from './tile-transform.js'
 import { worldNativePixels } from './world-native-pixels.js'
@@ -174,7 +175,33 @@ const exitNativePicker = (): void => {
   })
 }
 
+/** Install source-only native picking and continuous middle-button overlay picking. */
 export const installColourPicker = (): void => {
+  type MiddlePick = {
+    readonly pointerId: number
+    readonly target: Element
+    lastIndex: number
+  }
+  let middlePick: MiddlePick | null = null
+  let pendingMiddleClick: MiddlePick | null = null
+
+  const endMiddlePick = (released = false): void => {
+    const pick = middlePick
+    if (pick === null) return
+    middlePick = null
+    if (released) {
+      // Compatibility mouseup/auxclick follow pointerup in the same browser task.
+      setTimeout(() => {
+        if (pendingMiddleClick === pick) pendingMiddleClick = null
+      }, 0)
+    } else {
+      pendingMiddleClick = null
+    }
+    if (pick.target.hasPointerCapture(pick.pointerId)) {
+      pick.target.releasePointerCapture(pick.pointerId)
+    }
+  }
+
   let pendingLeftPick: {
     readonly pointerId: number
     readonly target: EventTarget | null
@@ -280,7 +307,9 @@ export const installColourPicker = (): void => {
   window.addEventListener(
     'pointerdown',
     (event) => {
-      if (event.button !== 1) return
+      if (event.button !== 1 || middlePick !== null) return
+      pendingMiddleClick = null
+      if (event.defaultPrevented || isMoving()) return
       const target = event.target
       if (!(target instanceof Element)) return
       const point = pickerPointAt(target, event.clientX, event.clientY)
@@ -297,25 +326,68 @@ export const installColourPicker = (): void => {
       // answer would leave the middle click doing nothing at all, which is worse than their answer.
       event.preventDefault()
       event.stopImmediatePropagation()
+      middlePick = { pointerId: event.pointerId, target, lastIndex: index }
+      pendingMiddleClick = middlePick
+      target.setPointerCapture(event.pointerId)
       log('install', 'picked a colour from the overlay', { x: point.x, y: point.y, index })
     },
     { capture: true },
   )
 
-  // Their own handler does this too. Swallowing the pointerdown means theirs never runs, and
-  // without it a middle click on the map starts the browser's autoscroll.
   window.addEventListener(
-    'mousedown',
+    'pointermove',
     (event) => {
-      if (event.button !== 1) return
-      const target = event.target
-      if (
-        target instanceof Element &&
-        pickerPointAt(target, event.clientX, event.clientY) !== null
-      ) {
-        event.preventDefault()
+      const pick = middlePick
+      if (pick === null || pick.pointerId !== event.pointerId) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if ((event.buttons & 4) === 0 || !isPaintOpen() || isMoving()) {
+        endMiddlePick()
+        return
       }
+      // Capture retargets events to the initial element. Hit-test the actual cursor so controls
+      // and positions outside the drawing surface never sample the map behind them.
+      const target = document.elementFromPoint(event.clientX, event.clientY)
+      if (target === null) return
+      const point = pickerPointAt(target, event.clientX, event.clientY)
+      if (point === null) return
+      const index = overlayIndexAt(point.surface, point.x, point.y)
+      if (index === null || index === pick.lastIndex) return
+      pick.lastIndex = index
+      selectPaintColour(index)
     },
     { capture: true },
   )
+
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
+    window.addEventListener(
+      type,
+      (event) => {
+        if (middlePick?.pointerId !== event.pointerId) return
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        endMiddlePick(type === 'pointerup')
+      },
+      { capture: true },
+    )
+  }
+  window.addEventListener('blur', () => endMiddlePick(), { capture: true })
+
+  // Suppress native autoscroll and compatibility map gestures only for the sequence we claimed.
+  for (const type of ['mousedown', 'mousemove', 'mouseup', 'auxclick'] as const) {
+    window.addEventListener(
+      type,
+      (event) => {
+        const claimed =
+          type === 'mousemove'
+            ? middlePick !== null
+            : event.button === 1 && pendingMiddleClick !== null
+        if (!claimed) return
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        if (type === 'auxclick') pendingMiddleClick = null
+      },
+      { capture: true },
+    )
+  }
 }

@@ -48,6 +48,7 @@ const harness = vi.hoisted(() => ({
 vi.mock('./alliance-surface.js', () => ({ activeAllianceSurface: () => harness.activeAlliance }))
 vi.mock('./debug.js', () => ({ log: vi.fn() }))
 vi.mock('./main.js', () => ({ canvasPixelAt: harness.canvasPixelAt }))
+vi.mock('./templates/move.js', () => ({ isMoving: () => false }))
 vi.mock('./templates/colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
 vi.mock('./templates/local-store.js', () => ({
   appearanceOf: () => harness.appearance,
