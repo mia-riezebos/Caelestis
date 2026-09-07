@@ -33,6 +33,7 @@ export interface TreeNode {
 
 export interface ServerManifest {
   readonly version: string
+  readonly workRevision?: number
   readonly season: number
   readonly surface: TemplateSurface
   readonly server: ServerInfo
@@ -397,6 +398,11 @@ export const parseServerManifest = (
   )
   return {
     version: value.version,
+    ...(typeof value.workRevision === 'number' &&
+    Number.isSafeInteger(value.workRevision) &&
+    value.workRevision >= 0
+      ? { workRevision: value.workRevision }
+      : {}),
     season: Number(value.season),
     surface,
     server,

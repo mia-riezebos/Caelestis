@@ -21,6 +21,7 @@
 
   let { model }: { model: WorkModel } = $props()
   const connectionClient = $derived(model.client)
+  const initialItemId = $derived(model.itemId ?? null)
   let collection = $state<WorkCollection>({ items: [], canPlan: false, canClaim: false })
   let loading = $state(true)
   let busy = $state(false)
@@ -48,6 +49,7 @@
   let generation = 0
   let historyGeneration = 0
   let detailElement = $state<HTMLElement>()
+  let revealInitialItem = $state(false)
 
   const actor = $derived(
     model.identity ?? {
@@ -116,9 +118,15 @@
   $effect(() => {
     connectionClient
     collection = { items: [], canPlan: false, canClaim: false }
-    selectedId = null
+    selectedId = initialItemId
+    revealInitialItem = initialItemId !== null
     draft = null
     error = ''
+  })
+  $effect(() => {
+    if (!revealInitialItem || selected === null || detailElement === undefined) return
+    revealInitialItem = false
+    detailElement.scrollIntoView({ block: 'start' })
   })
   $effect(() => {
     model.client
@@ -713,6 +721,7 @@
     align-self: start;
   }
   .item {
+    flex-shrink: 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 3px 8px;

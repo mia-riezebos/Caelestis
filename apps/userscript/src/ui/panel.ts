@@ -130,6 +130,7 @@ import {
   templateTreeAdapter,
   templateTreeKeyFor,
 } from './tree.js'
+import { openPanelWork, workSectionModel } from './work.js'
 import { findWplaceRail } from './wplace-rail.js'
 
 /**
@@ -964,6 +965,7 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
   maxWidth: maximumPanelWidth(),
   ...(currentView() === 'tree' && activeTreeAdapter !== null
     ? {
+        work: workSectionModel(panelSurface, rerenderTree),
         tree: {
           ...activeTreeAdapter.model,
           ...focusedTreeModel(),
@@ -1002,6 +1004,9 @@ const buildSveltePanel = (): CaelestisPanel => {
   panel.addEventListener('caelestis-panel-intent', (event) => {
     const intent = (event as CustomEvent<PanelIntent>).detail
     switch (intent.type) {
+      case 'work':
+        openPanelWork(intent.key, panelSurface, intent.itemId)
+        break
       case 'navigate':
         if (panelSurface.kind !== 'world' && intent.view === 'settings') break
         showView(intent.view)

@@ -18,4 +18,5 @@ export interface WorkModel {
   readonly rememberIdentity?: (identity: PainterIdentity | null) => void
   readonly nodeId?: string
   readonly templateId?: string
+  readonly itemId?: string
 }

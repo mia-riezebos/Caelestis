@@ -4,6 +4,7 @@
   import Icon from '../foundations/Icon.svelte'
   import AppearanceEditor from '../appearance/AppearanceEditor.svelte'
   import TemplateTree from '../tree/TemplateTree.svelte'
+  import WorkSummary from '../work/WorkSummary.svelte'
   import SettingsPanel from '../settings/SettingsPanel.svelte'
   import type { PanelIntent, PanelProps, PanelView, TemplateTreeIntent } from '../types.js'
 
@@ -135,6 +136,9 @@
   <div class="body">
     {#if model.view === 'tree' && model.tree !== undefined}
       <TemplateTree model={model.tree} allowGrid={poppedOut} onIntent={treeIntent} />
+      {#if model.work !== undefined && model.work.length > 0}
+        <WorkSummary groups={model.work} onopen={(key, itemId) => emit({ type: 'work', key, ...(itemId === undefined ? {} : { itemId }) })} />
+      {/if}
     {:else if model.view === 'appearance' && model.appearance !== undefined}
       <AppearanceEditor model={model.appearance} onIntent={(intent) => emit({ type: 'appearance', intent })} />
     {:else if model.view === 'settings' && model.settings !== undefined}

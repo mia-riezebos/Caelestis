@@ -1459,6 +1459,7 @@ export const countNodeSubtree = async (
  * than a tree that has thrown, and the cached copy is what it falls back to.
  */
 export interface ServerContents {
+  readonly workRevision?: number
   /** Opaque manifest revision, retained so the coordinator can back off while it is unchanged. */
   readonly revision?: string
   readonly nodes: readonly TreeNode[]
@@ -1585,6 +1586,7 @@ export const listServerContents = async (
         if (manifest === null || manifest.season !== season) return null
         const contents: ServerContents = {
           revision: manifest.version,
+          ...(manifest.workRevision === undefined ? {} : { workRevision: manifest.workRevision }),
           nodes: manifest.nodes,
           templates: manifest.templates,
         }
@@ -1626,6 +1628,7 @@ export const applyLiveServerManifest = (
   if (manifest === null || manifest.season !== server.season) return null
   const contents: ServerContents = {
     revision: manifest.version,
+    ...(manifest.workRevision === undefined ? {} : { workRevision: manifest.workRevision }),
     nodes: manifest.nodes,
     templates: manifest.templates,
   }

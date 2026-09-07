@@ -60,7 +60,7 @@ import { confirmDestructive } from '../ui/confirm.js'
 import { toast } from '../ui/toast.js'
 import type { TreeTarget } from '../ui/tree.js'
 import { startRenaming } from '../ui/tree-state.js'
-import { openWork } from '../ui/work.js'
+import { claimTemplate, openWork } from '../ui/work.js'
 import {
   claimFolderPublication,
   setFolderTemplatesPublished,
@@ -1156,6 +1156,9 @@ export const openContextMenu = (
     target.server === null
       ? existingEntries
       : [
+          ...(target.templateId === undefined
+            ? []
+            : [['check', 'Claim', () => void claimTemplate(target, rerender)] as const]),
           ['check', 'Work items', () => openWork(target)],
           ...(target.server.isAdmin || target.templateId !== undefined ? existingEntries : []),
         ]

@@ -94,11 +94,23 @@ export interface PanelModel {
   readonly minWidth: number
   readonly maxWidth: number
   readonly tree?: TemplateTreeModel
+  readonly work?: readonly {
+    readonly key: string
+    readonly name: string
+    readonly error: string
+    readonly items: readonly {
+      readonly id: string
+      readonly title: string
+      readonly status: 'open' | 'blocked' | 'completed'
+      readonly claimant: string
+    }[]
+  }[]
   readonly appearance?: AppearanceEditorModel
   readonly settings?: SettingsModel
 }
 
 export type PanelIntent =
+  | { readonly type: 'work'; readonly key: string; readonly itemId?: string }
   | { readonly type: 'navigate'; readonly view: PanelView }
   | { readonly type: 'close' }
   | { readonly type: 'resize-preview'; readonly width: number }

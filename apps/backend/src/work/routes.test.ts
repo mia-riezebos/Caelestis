@@ -70,6 +70,63 @@ const setup = async () => {
 }
 
 describe('shared work routes', () => {
+  it('claims a template without planning permission and admits only one concurrent painter', async () => {
+    const h = await setup()
+    const templateId = uuidV7()
+    await h.sql.insertTemplateVersion({
+      templateId,
+      versionId: uuidV7(),
+      season: 0,
+      surface: WORLD_TEMPLATE_SURFACE,
+      nodeId: null,
+      name: 'Box art',
+      createdWithToken: 'a'.repeat(64),
+      createdByUserId: null,
+      createdAt: millis(1000),
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      totalPixels: 1,
+      chunks: [{ tileX: 0, tileY: 0, hash: 'b'.repeat(64) }],
+    })
+    const claim = { action: 'claim-template', actor, expectedRevision: 0 }
+    expect((await h.mutate(templateId, claim, h.read)).status).toBe(403)
+    expect((await h.mutate(templateId, claim, h.report)).status).toBe(400)
+    await h.sql.setTemplatePublishedAt(templateId, millis(1000), millis(1000))
+    expect((await h.mutate(templateId, claim, h.report, 'season=1')).status).toBe(400)
+    const responses = await Promise.all(
+      [actor, other].map((painter) => h.mutate(templateId, { ...claim, actor: painter }, h.report)),
+    )
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409])
+    const item = await h.sql.work.read(templateId)
+    expect(item).toMatchObject({
+      title: 'Box art',
+      templateIds: [templateId],
+      revision: 1,
+      status: 'open',
+    })
+    const conflict = responses.find((response) => response.status === 409)
+    expect(await conflict?.json()).toMatchObject({
+      error: expect.stringContaining(`#${item?.claimant?.wplaceUserId}`),
+    })
+    expect((await h.mutate(templateId, { ...claim, actor: item?.claimant }, h.report)).status).toBe(
+      200,
+    )
+    expect(await h.sql.work.history(templateId, Number.MAX_SAFE_INTEGER)).toHaveLength(1)
+    expect(
+      (
+        await h.mutate(
+          templateId,
+          { action: 'release', actor: item?.claimant, expectedRevision: 1 },
+          h.report,
+        )
+      ).status,
+    ).toBe(200)
+    expect(
+      (await h.mutate(templateId, { ...claim, actor: other, expectedRevision: 2 }, h.report))
+        .status,
+    ).toBe(200)
+    expect(await h.sql.work.read(templateId)).toMatchObject({ claimant: other, revision: 3 })
+  })
+
   it('enforces planning scope and releases only the self-reported claimant', async () => {
     const h = await setup()
     const item = await h.create()

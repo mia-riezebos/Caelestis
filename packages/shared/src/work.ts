@@ -39,7 +39,7 @@ export interface WorkActivity {
 }
 
 export interface WorkMutation {
-  readonly action: WorkAction
+  readonly action: WorkAction | 'claim-template'
   readonly actor: PainterIdentity
   readonly expectedRevision: number
   readonly fields?: WorkFields

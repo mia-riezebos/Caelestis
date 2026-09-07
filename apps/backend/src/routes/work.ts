@@ -30,7 +30,8 @@ const parseMutation = (body: unknown): WorkMutation | null => {
     return null
   if (action === 'create' || action === 'edit')
     return isWorkFields(fields) ? { action, actor, expectedRevision, fields } : null
-  if (action === 'claim' || action === 'release') return { action, actor, expectedRevision }
+  if (action === 'claim' || action === 'release' || action === 'claim-template')
+    return { action, actor, expectedRevision }
   if (action === 'assign' && (claimant === null || isWorkIdentity(claimant)))
     return { action, actor, expectedRevision, claimant }
   return null

@@ -56,10 +56,30 @@ export const mutateWork = (
       return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
     }
     const held = yield* storage(() => sql.work.read(id))
-    if (mutation.action !== 'create' && held === null)
+    const templateClaim = mutation.action === 'claim-template'
+    if (mutation.action !== 'create' && !templateClaim && held === null)
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'Work item not found' }))
     if (held !== null && (held.season !== season || !sameTemplateSurface(held.surface, surface)))
       return yield* invalid('Work belongs to a different drawing scope')
+    const template = templateClaim ? yield* storage(() => sql.readTemplate(id)) : null
+    if (templateClaim) {
+      if (
+        template === null ||
+        !template.published ||
+        template.season !== season ||
+        !sameTemplateSurface(template.surface, surface)
+      )
+        return yield* invalid('Publish the template before claiming it')
+      if (held !== null && (held.templateIds.length !== 1 || held.templateIds[0] !== id))
+        return yield* invalid('This work item is not a template claim')
+      if (
+        held?.claimant?.wplaceUserId === mutation.actor.wplaceUserId &&
+        held.status !== 'completed'
+      ) {
+        yield* storage(() => publishManifestChange(live, season, surface, false))
+        return { conflict: false, item: held }
+      }
+    }
     if (
       (held?.revision ?? 0) !== mutation.expectedRevision ||
       (mutation.action === 'create' && held !== null)
@@ -68,7 +88,21 @@ export const mutateWork = (
       return { conflict: true, item: held }
     }
     const fields =
-      mutation.action === 'create' || mutation.action === 'edit' ? mutation.fields : held
+      mutation.action === 'create' || mutation.action === 'edit'
+        ? mutation.fields
+        : (held ??
+          (template === null
+            ? null
+            : {
+                title: template.name.slice(0, 160),
+                description: '',
+                status: 'open' as const,
+                priority: 'normal' as const,
+                tags: [],
+                blockerIds: [],
+                nodeId: template.nodeId,
+                templateIds: [id],
+              }))
     if (fields == null) return yield* invalid('Work fields are required')
     if (fields.blockerIds.includes(id)) return yield* invalid('Work cannot block itself')
     if (fields.nodeId !== null && fields.nodeId !== held?.nodeId) {
@@ -98,7 +132,7 @@ export const mutateWork = (
         return yield* invalid('Blocker is missing or belongs to a different drawing scope')
     }
     let claimant = held?.claimant ?? null
-    if (mutation.action === 'claim') {
+    if (mutation.action === 'claim' || templateClaim) {
       if (held?.status === 'completed')
         return yield* invalid('Reopen completed work before claiming it')
       if (claimant !== null) return { conflict: true, item: held }
@@ -134,7 +168,7 @@ export const mutateWork = (
         mutation.expectedRevision,
         {
           id: uuidV7(),
-          action: mutation.action,
+          action: templateClaim ? (held === null ? 'create' : 'claim') : mutation.action,
           actor: mutation.actor,
           item,
         },
