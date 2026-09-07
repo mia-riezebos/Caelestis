@@ -80,6 +80,38 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
 })
 
 describe('tree model adapter', () => {
+  it('offers server filters only when the current canvas has template data, including cached rows offline', () => {
+    const connected = server(SERVER_ID, 0, 'https://cached.example.com')
+    for (const status of ['unreachable', 'needs-token'] as const) {
+      setState({ servers: [{ ...connected, status }] })
+      expect(templateTreeAdapter(callbacks, vi.fn()).model.serverFiltersAvailable).toBe(false)
+    }
+    setState({ servers: [connected] })
+    acceptServerSnapshot(connected, {
+      nodes: [],
+      templates: [
+        {
+          id: TEMPLATE_A,
+          nodeId: null,
+          name: 'Cached',
+          version: 'v1',
+          published: true,
+          finished: true,
+          updatedAt: 1,
+          bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+          chunks: [],
+        },
+      ],
+    })
+    setState({ servers: [{ ...connected, status: 'unreachable' }] })
+    expect(templateTreeAdapter(callbacks, vi.fn()).model.serverFiltersAvailable).toBe(true)
+    expect(
+      templateTreeAdapter(callbacks, vi.fn(), '', {
+        kind: 'alliance-headquarters',
+        allianceId: 123,
+      }).model.serverFiltersAvailable,
+    ).toBe(false)
+  })
   it('maps focused local and server templates to their rendered row keys', () => {
     const connected = server(SERVER_ID, 0)
 

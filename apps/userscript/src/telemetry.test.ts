@@ -273,6 +273,44 @@ afterEach(async () => {
 })
 
 describe('server telemetry client', () => {
+  it('distinguishes unknown alarms from confirmed absence across HTTP, live, and manifest changes', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ alarms: [], version: 'a'.repeat(64) })),
+    )
+    const { installTelemetry, onServerAlarmChange, serverAlarmKindFor } = await import(
+      './telemetry.js'
+    )
+    installTelemetry()
+    const changed = vi.fn()
+    onServerAlarmChange(changed)
+    const contents = { nodes: [], templates: [template], revision: 'manifest-1' }
+    harness.serverContents?.(server, contents)
+    expect(serverAlarmKindFor(server, template)).toBeUndefined()
+
+    const resource = coordinator.resources.get('telemetry-alarms')
+    await resource?.refresh(server, 'connect', 'recovery')
+    expect(serverAlarmKindFor(server, template)).toBe('none')
+    expect(changed).toHaveBeenCalledTimes(1)
+
+    harness.serverContents?.(server, { ...contents })
+    expect(serverAlarmKindFor(server, template)).toBe('none')
+    harness.serverContents?.(server, { ...contents, revision: 'manifest-2' })
+    expect(serverAlarmKindFor(server, template)).toBeUndefined()
+
+    expect(
+      resource?.applyLiveEvent?.(server, {
+        type: 'alarms-snapshot',
+        alarms: { alarms: [], version: 'b'.repeat(64) },
+      }),
+    ).toBe(true)
+    expect(serverAlarmKindFor(server, template)).toBe('none')
+    expect(changed).toHaveBeenCalledTimes(2)
+    harness.retiredServers.add(server)
+    expect(serverAlarmKindFor(server, template)).toBeUndefined()
+  })
+
   it('carries an authoritative status revision into the shared coordinator', async () => {
     harness.state = { ...harness.state, servers: [] }
     vi.stubGlobal(

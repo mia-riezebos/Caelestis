@@ -15,7 +15,7 @@ import type {
   TreeRowModel,
 } from '@caelestis/ui/elements'
 import { allianceBounds } from '../alliance-coordinates.js'
-import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
+import { refreshAllianceManifest } from '../alliance-server-sync.js'
 import { activeAllianceSurface } from '../alliance-surface.js'
 import { goToLocalTemplate, goToServerTemplate } from '../application/tree-navigation.js'
 import {
@@ -25,7 +25,7 @@ import {
   nodeTreeKey,
   refreshServerSnapshot,
   renderedParent,
-  rowsFor,
+  rowsForSurface,
   serverSnapshotError,
   serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
@@ -43,7 +43,12 @@ import {
   setScopeVisible,
   setState,
 } from '../state.js'
-import { serverAlarmFor, serverColourProgressFor, serverProgressFor } from '../telemetry.js'
+import {
+  serverAlarmFor,
+  serverAlarmKindFor,
+  serverColourProgressFor,
+  serverProgressFor,
+} from '../telemetry.js'
 import {
   isServerTemplate,
   isTemplateVisible,
@@ -456,10 +461,7 @@ const buildTree = <Result>(
       ? pixelAccounting.read(template).colours
       : (allianceProgress.get(template.id)?.colours ?? [])
   const scopedRowsFor = (server: ConnectedServer) => {
-    const rows =
-      surface.kind === 'world'
-        ? rowsFor(server)
-        : (allianceManifestFor(server, surface) ?? undefined)
+    const rows = rowsForSurface(server, surface)
     if (rows === undefined || templateKeys === undefined) return rows
     return {
       nodes: [],
@@ -812,6 +814,8 @@ const buildTree = <Result>(
           const progress = serverTemplateProgress(server, template)
           const visibilityKey = serverTemplateKey(server.url, template.id, surface)
           const alarm = serverAlarmFor(server, template)
+          const alarmKind =
+            surface.kind === 'world' ? serverAlarmKindFor(server, template) : undefined
           const templateTarget: TreeTarget = {
             server,
             surface,
@@ -872,7 +876,7 @@ const buildTree = <Result>(
                   finished: template.finished === true,
                   frozen: template.timelapseFrozen === true,
                 },
-                alarm: alarm?.kind ?? 'none',
+                ...(alarmKind === undefined ? {} : { alarm: alarmKind }),
               },
               ...(colourProgress === undefined
                 ? {}
@@ -1293,7 +1297,9 @@ export const templateTreeAdapter = (
     sort: getState().sort,
     displayMode: templateDisplayMode(),
     filters: getState().filters,
-    serverFiltersAvailable: getState().servers.length > 0,
+    serverFiltersAvailable: getState().servers.some(
+      (server) => (rowsForSurface(server, surface)?.templates.length ?? 0) > 0,
+    ),
     entries,
     ...(renamingKey === null ? {} : { renamingKey }),
   }

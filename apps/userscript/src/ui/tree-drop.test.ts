@@ -33,6 +33,8 @@ vi.mock('../telemetry.js', async (importOriginal) => {
     ...original,
     serverAlarmFor: (_server: unknown, template: { id: string }) =>
       telemetryHarness.alarms.get(template.id) ?? null,
+    serverAlarmKindFor: (_server: unknown, template: { id: string }) =>
+      telemetryHarness.alarms.get(template.id)?.kind,
     serverProgressFor: (
       server: Parameters<typeof original.serverProgressFor>[0],
       template: Parameters<typeof original.serverProgressFor>[1],
@@ -226,6 +228,16 @@ const treeRows = (callbacks: TreeCallbacks, query = '') =>
   )
 
 describe('template filtering', () => {
+  it('excludes unknown telemetry from the no-active-alarm filter', () => {
+    const server = connectedServer()
+    setState({ servers: [server], filters: parseTemplateFilters({ alarm: ['none'] }) })
+    acceptServerSnapshot(server, {
+      nodes: [],
+      templates: [serverTemplate(TEMPLATE_A_ID, null, 'Awaiting telemetry', 1)],
+    })
+    expect(treeRows(callbacks)).toEqual([])
+  })
+
   const callbacks: TreeCallbacks = {
     onAddServer: vi.fn(),
     onCreateFolder: vi.fn(),
