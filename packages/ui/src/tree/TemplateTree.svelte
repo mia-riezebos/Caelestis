@@ -522,9 +522,7 @@
 </div>
 {#if grid && progressEntry?.progress !== undefined}
   <div class="progress-pane" class:overlaid={narrowDetails} bind:this={progressPane}>
-    {#key progressEntry.key}
-      <ProgressDetails name={progressEntry.name} progress={progressEntry.progress} colours={progressEntry.colourProgress} onClose={closeProgress} />
-    {/key}
+    <ProgressDetails name={progressEntry.name} progress={progressEntry.progress} colours={progressEntry.colourProgress} onClose={closeProgress} />
   </div>
 {/if}
 </div>

@@ -13,3 +13,5 @@ Preview canvases have bounded backing dimensions and draw only near the scroll v
 Grid progress opens from the card's progress bar into a separate details pane. Totals and per-colour progress appear together, with readable labels and an independently scrolling colour list. Cards never expand into long reports. At narrow widths, the pane covers the grid and temporarily makes the covered controls inert. Closing or Escape returns focus to the progress button. Tree mode retains its inline disclosures.
 
 Palette swatches identify colours. Progress bars keep the same complete, mismatched, and unpainted meanings throughout the pane, including white and black artwork colours.
+
+The popout uses 96% of viewport width and height, leaving a small backdrop margin even on wide displays. A native select beside Colours orders the breakdown by palette, name, completion, pixels left, mismatches, unpainted pixels, or size. Palette order breaks ties. Switching templates within the open pane keeps the chosen order. Percentage labels reserve three digits plus the percent sign so neighbouring progress tracks align.

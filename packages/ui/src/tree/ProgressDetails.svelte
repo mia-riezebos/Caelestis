@@ -11,6 +11,25 @@
     colours?: readonly TreeColourProgressModel[] | undefined
     onClose: () => void
   } = $props()
+
+  let sort = $state('palette')
+  const sortedColours = $derived.by(() => colours.toSorted((a, b) => {
+    let difference = 0
+    switch (sort) {
+      case 'name': difference = a.name.localeCompare(b.name); break
+      case 'least-complete':
+      case 'most-complete': {
+        const completion = (colour: TreeColourProgressModel) => colour.total === 0 ? 0 : colour.completed / colour.total
+        difference = (completion(a) - completion(b)) * (sort === 'least-complete' ? 1 : -1)
+        break
+      }
+      case 'remaining': difference = (b.total - b.completed) - (a.total - a.completed); break
+      case 'mismatched': difference = b.mismatched - a.mismatched; break
+      case 'unpainted': difference = b.unpainted - a.unpainted; break
+      case 'total': difference = b.total - a.total; break
+    }
+    return difference || a.index - b.index
+  }))
 </script>
 
 <aside aria-label={`Progress for ${name}`}>
@@ -30,9 +49,21 @@
     </dl>
   </div>
   {#if colours.length > 0}
-    <h4>Colours <span>{colours.length}</span></h4>
+    <div class="colour-toolbar">
+      <h4>Colours <span>{colours.length}</span></h4>
+      <select aria-label="Sort colours" value={sort} onchange={(event) => sort = event.currentTarget.value}>
+        <option value="palette">Palette order</option>
+        <option value="name">Name A–Z</option>
+        <option value="least-complete">Least complete</option>
+        <option value="most-complete">Most complete</option>
+        <option value="remaining">Most pixels left</option>
+        <option value="mismatched">Most mismatches</option>
+        <option value="unpainted">Most unpainted</option>
+        <option value="total">Most pixels</option>
+      </select>
+    </div>
     <ul>
-      {#each colours as colour (colour.index)}
+      {#each sortedColours as colour (colour.index)}
         <li title={`${colour.name}: ${formatPixels(colour.completed)} complete of ${formatPixels(colour.total)}`}>
           <div class="colour-name"><span class="swatch" style:background={colour.hex}></span>{colour.name}</div>
           <ProgressMeter progress={colour} size="sm" />
@@ -57,8 +88,11 @@
   .unpainted::before { opacity: 0.4; }
   .unscanned::before { background: transparent; border: 1px dashed var(--caelestis-muted-text); }
   dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
-  h4 { display: flex; justify-content: space-between; flex: 0 0 auto; margin: 0; padding: 0.75rem 1rem; border-block: 1px solid var(--caelestis-border); font-size: inherit; font-weight: 600; }
+  .colour-toolbar { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 1rem; border-block: 1px solid var(--caelestis-border); }
+  h4 { display: flex; gap: 0.375rem; margin: 0; font-size: inherit; font-weight: 600; }
   h4 span { color: var(--caelestis-muted-text); font-weight: 400; }
+  select { min-inline-size: 0; max-inline-size: 11rem; block-size: 2rem; padding-inline: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: 0.375rem; background: var(--caelestis-surface); color: inherit; font: inherit; }
+  select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   ul { flex: 1; min-block-size: 6rem; margin: 0; padding: 0 1rem 0.5rem; overflow-y: auto; list-style: none; overscroll-behavior: contain; }
   li { padding-block: 0.625rem; border-block-end: 1px solid var(--caelestis-border); }
   li:last-child { border-block-end: 0; }
