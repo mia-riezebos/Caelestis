@@ -5,7 +5,13 @@ const proxyRead: RequestHandler = async (event) => {
   const path = event.params.path
   if (path === undefined || path.length === 0) return new Response(null, { status: 404 })
   const headers = new Headers()
-  for (const name of ['accept', 'if-none-match', 'range']) {
+  const upgrade = event.request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+  for (const name of [
+    'accept',
+    'if-none-match',
+    'range',
+    ...(upgrade ? ['upgrade', 'connection', 'sec-websocket-protocol'] : []),
+  ]) {
     const value = event.request.headers.get(name)
     if (value !== null) headers.set(name, value)
   }
@@ -14,7 +20,7 @@ const proxyRead: RequestHandler = async (event) => {
       method: event.request.method,
       headers,
     })
-    return new Response(response.body, response)
+    return upgrade ? response : new Response(response.body, response)
   } catch (error) {
     console.error('frontend backend proxy failed', error)
     return Response.json({ error: 'template server unavailable' }, { status: 502 })

@@ -516,8 +516,8 @@
   .operation button, .context-menu button { min-block-size: 2rem; border: 0; border-radius: 0.45rem; background: transparent; color: inherit; cursor: pointer; }
   .operation button.primary { padding-inline: 0.75rem; background: var(--caelestis-primary); color: var(--caelestis-primary-text, white); }
   .operation button:disabled { cursor: wait; opacity: 0.55; }
-  .context-menu { position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; padding: 0.25rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-surface); box-shadow: var(--caelestis-shadow); }
-  .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; text-align: start; }
+  .context-menu { --context-item-radius: 0.45rem; --context-menu-padding: 0.25rem; position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; padding: var(--context-menu-padding); border: 1px solid var(--caelestis-border); border-radius: calc(var(--context-item-radius) + var(--context-menu-padding) + 1px); background: var(--caelestis-surface); box-shadow: var(--caelestis-shadow); }
+  .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; border-radius: var(--context-item-radius); text-align: start; }
   .context-menu button:hover, .context-menu button:focus-visible { background: var(--caelestis-raised-surface); }
   .context-menu button.danger { color: var(--caelestis-danger); }
   .context-menu svg { inline-size: 1rem; block-size: 1rem; fill: currentColor; }

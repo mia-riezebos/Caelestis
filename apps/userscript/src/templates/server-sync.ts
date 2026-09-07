@@ -18,6 +18,7 @@ import { registerServerSyncResource } from '../server-sync-coordinator.js'
 import { serverEndpoint } from '../server-url.js'
 import {
   activeServerToken,
+  applyLiveServerManifest,
   type ConnectedServer,
   getState,
   isCurrentServerConnection,
@@ -670,6 +671,27 @@ export const installServerSync = (): void => {
       return contents.revision === undefined
         ? { status: 'unchanged' }
         : { status: 'unchanged', revision: contents.revision }
+    },
+    applyLiveEvent: async (server, event) => {
+      if (
+        typeof event !== 'object' ||
+        event === null ||
+        !('type' in event) ||
+        event.type !== 'manifest-snapshot' ||
+        !('resource' in event) ||
+        event.resource !== 'world-manifest' ||
+        !('scope' in event) ||
+        event.scope !== 'world' ||
+        !('manifest' in event)
+      )
+        return false
+      const contents = applyLiveServerManifest(server, event.manifest)
+      if (contents === null) return false
+      rememberNodes(server.url, contents.nodes)
+      await syncServerTemplates(server, contents.templates, () =>
+        isLatestServerContents(server.url, contents),
+      )
+      return isLatestServerContents(server.url, contents)
     },
   })
   /**

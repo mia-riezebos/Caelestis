@@ -46,16 +46,19 @@ class FakeWebSocket extends EventTarget {
   readonly url: string
   readonly protocols: string[]
   readonly sent: string[] = []
+  protocol: string
   readyState = 0
 
   constructor(url: string | URL, protocols: string | string[]) {
     super()
     this.url = String(url)
     this.protocols = typeof protocols === 'string' ? [protocols] : protocols
+    this.protocol = this.protocols[0] ?? ''
     FakeWebSocket.instances.push(this)
   }
 
-  open(): void {
+  open(protocol = this.protocol): void {
+    this.protocol = protocol
     this.readyState = 1
     this.dispatchEvent(new Event('open'))
   }
@@ -523,6 +526,155 @@ describe('server sync coordinator', () => {
       acknowledgedDeliveryIds: ['01890f3e-7b2c-7abc-8def-000000000001'],
       unresolvedDeliveryIds: [],
     })
+  })
+
+  it('keeps v2 resources and paint delivery on the socket through a revision gap', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+      token: 'ABCDEFGHJKMNPQRSTVWXYZ2345',
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource, requestLivePaint } =
+      await import('./server-sync-coordinator.js')
+    const refresh = vi.fn(async () => ({ status: 'unchanged' as const }))
+    const applyLiveEvent = vi.fn(() => true)
+    registerServerSyncResource({
+      id: 'telemetry-status',
+      live: true,
+      scope: () => 'world',
+      refresh,
+      applyLiveEvent,
+    })
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    expect(socket.protocols.slice(0, 2)).toEqual(['caelestis.live.v2', 'caelestis.live.v1'])
+    socket.open()
+    socket.receive({ type: 'status-snapshot', status: { revision: 7, templates: [] } })
+    reconcileSocket(socket, 7, 'snapshot', [])
+    const event = {
+      eventId: '01890f3e-7b2c-7abc-8def-000000000011',
+      wplaceUserId: 42,
+      displayName: 'Mia',
+      season: 0,
+      ts: seconds(1_800_000_000),
+      tiles: [],
+      painted: 0,
+    }
+    const pending = requestLivePaint(liveServer, event)
+    const command = JSON.parse(socket.sent.at(-1) ?? '{}') as { requestId?: string }
+    socket.receive({
+      type: 'paint-result',
+      requestId: command.requestId,
+      eventId: event.eventId,
+      result: 'recorded',
+    })
+
+    await expect(pending).resolves.toMatchObject({ result: 'recorded' })
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(applyLiveEvent).toHaveBeenCalledOnce()
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('allows explicit v2 projection recovery without resuming interval polling', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, registerServerSyncResource, requestServerSync } =
+      await import('./server-sync-coordinator.js')
+    const refresh = vi.fn(async () => ({ status: 'unchanged' as const }))
+    registerServerSyncResource({
+      id: 'alliance-manifest',
+      live: true,
+      scope: () => 'alliance-picture:42',
+      refresh,
+    })
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    reconcileSocket(socket, 0, 'correction', [])
+    await vi.advanceTimersByTimeAsync(0)
+    refresh.mockClear()
+
+    requestServerSync('state-change', 'alliance-manifest', liveServer)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(refresh).toHaveBeenCalledWith(liveServer, 'state-change', 'recovery')
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(refresh).toHaveBeenCalledOnce()
+  })
+
+  it('uses v1 behavior when an advertised v2 server negotiates v1', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, requestLivePaint, serverLiveSyncVersion } = await import(
+      './server-sync-coordinator.js'
+    )
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open('caelestis.live.v1')
+    reconcileSocket(socket, 0, 'correction', [])
+    socket.sent.length = 0
+
+    const result = await requestLivePaint(liveServer, {
+      eventId: '01890f3e-7b2c-7abc-8def-000000000012',
+      wplaceUserId: 42,
+      displayName: 'Mia',
+      season: 0,
+      ts: seconds(1_800_000_000),
+      tiles: [],
+      painted: 0,
+    })
+
+    expect(serverLiveSyncVersion(liveServer)).toBe(1)
+    expect(result).toBeNull()
+    expect(socket.sent).toEqual([])
+  })
+
+  it('reconnects rejected v2 frames but accepts incomplete snapshot parts', async () => {
+    const liveServer = {
+      ...server,
+      info: { ...server.info, liveSync: 1 as const, liveSyncMax: 2 as const },
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { installServerSyncCoordinator, serverLiveSyncHealthy } = await import(
+      './server-sync-coordinator.js'
+    )
+    installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    reconcileSocket(socket, 0, 'correction', [])
+    await vi.advanceTimersByTimeAsync(0)
+
+    socket.receive({
+      type: 'snapshot-part',
+      messageId: 'snapshot',
+      index: 0,
+      total: 2,
+      chunk: '{"type":"status-snapshot",',
+    })
+    expect(socket.readyState).toBe(1)
+    expect(serverLiveSyncHealthy(liveServer)).toBe(true)
+
+    socket.receiveRaw('{')
+    expect(socket.readyState).toBe(3)
+    expect(serverLiveSyncHealthy(liveServer)).toBe(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
   })
 
   it('reconnects with cached versions and refreshes only divergent projections', async () => {

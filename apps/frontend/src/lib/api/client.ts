@@ -1,13 +1,16 @@
-import type {
-  AlarmsResponse,
-  CanvasTilesResponse,
-  ContributionsResponse,
-  HistoryResponse,
-  LeaderboardResponse,
-  Manifest,
-  ServerInfo,
-  StatusResponse,
-  TileHistoryResponse,
+import {
+  type AlarmsResponse,
+  type CanvasTilesResponse,
+  type ContributionsResponse,
+  type HistoryResponse,
+  type LeaderboardResponse,
+  LIVE_PROTOCOL_V1,
+  LIVE_PROTOCOL_V2,
+  type Manifest,
+  type ServerInfo,
+  type StatusResponse,
+  type TileHistoryResponse,
+  uuidV7,
 } from '@caelestis/shared'
 import { frontendClientAccept } from './client-metrics.js'
 import { isServerUrlConfigured, resolveSelectedServerUrl, resolveServerUrl } from './server-url.js'
@@ -18,6 +21,7 @@ import { isServerUrlConfigured, resolveSelectedServerUrl, resolveServerUrl } fro
  */
 const SERVER_KEY = 'caelestis:server'
 const TOKEN_KEY = 'caelestis:token'
+const LIVE_CLIENT_ID_KEY = 'caelestis:live-client-id'
 const API_VERSION_PATH = '/v1'
 type ApiVersionPath = typeof API_VERSION_PATH | ''
 let apiVersionPath: ApiVersionPath = API_VERSION_PATH
@@ -46,6 +50,44 @@ export const writeConnection = (url: string, token: string | null): void => {
   if (!serverUrlIsConfigured) localStorage.setItem(SERVER_KEY, resolveSelectedServerUrl(url))
   if (token === null || token.length === 0) localStorage.removeItem(TOKEN_KEY)
   else localStorage.setItem(TOKEN_KEY, token)
+}
+
+const liveCredentialProtocol = (token: string): string => {
+  const bytes = new TextEncoder().encode(token)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return `caelestis.auth.b64.${btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')}`
+}
+
+/** Open live reads through the Worker when it owns the credential. */
+export const openLiveSocket = (season: number, admin: boolean): WebSocket => {
+  const proxy = usesServerReadProxy()
+  const endpoint = new URL(
+    proxy
+      ? `/api${apiVersionPath}/telemetry/live`
+      : `${readServerUrl()}${apiVersionPath}/telemetry/live`,
+    window.location.href,
+  )
+  endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:'
+  endpoint.searchParams.set('season', String(season))
+  endpoint.searchParams.set('scope', admin ? 'admin' : 'public')
+  endpoint.searchParams.set('client', 'frontend')
+  endpoint.searchParams.set('stateVector', '1')
+  const protocols = [LIVE_PROTOCOL_V2, LIVE_PROTOCOL_V1]
+  const token = readToken()
+  if (!proxy && token !== null) protocols.push(liveCredentialProtocol(token))
+  if (!proxy && token === null) {
+    let clientId = localStorage.getItem(LIVE_CLIENT_ID_KEY)
+    if (clientId === null) {
+      clientId = uuidV7()
+      localStorage.setItem(LIVE_CLIENT_ID_KEY, clientId)
+    }
+    endpoint.searchParams.set('clientId', clientId)
+  }
+  return new WebSocket(endpoint, protocols)
 }
 
 export class ApiError extends Error {

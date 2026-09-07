@@ -9,7 +9,9 @@ import {
   ContributionsResponse,
   HistoryResponse,
   LeaderboardResponse,
+  LiveDashboardSubscription,
   LiveSyncClientEvent,
+  LiveTileUpload,
   Manifest,
   Node,
   NodeStatus,
@@ -112,6 +114,8 @@ const encoders = [
   Schema.encodeSync(PaintTile),
   Schema.encodeSync(PaintEvent),
   Schema.encodeSync(TileOffer),
+  Schema.encodeSync(LiveDashboardSubscription),
+  Schema.encodeSync(LiveTileUpload),
   Schema.encodeSync(LiveSyncClientEvent),
   Schema.encodeSync(TileOfferResponse),
   Schema.encodeSync(TileUploadResponse),
@@ -123,7 +127,7 @@ const encoders = [
 ]
 
 it('exposes every exported wire schema as a bidirectional codec', () => {
-  expect(encoders).toHaveLength(17)
+  expect(encoders).toHaveLength(19)
 })
 
 describe('live state vectors', () => {
@@ -146,6 +150,54 @@ describe('live state vectors', () => {
       ...state,
       projections: [state.projections[0], state.projections[0]],
     })
+  })
+
+  it('accepts v2 reports, subscriptions, and binary upload metadata', () => {
+    const subscription = {
+      subscriptionId: uuid(20),
+      templateIds: [TEMPLATE_ID],
+      contributionsFrom: SECONDS,
+      leaderboardLimit: 50,
+    }
+    expect(
+      Schema.decodeUnknownSync(LiveSyncClientEvent)({
+        type: 'paint-report',
+        requestId: uuid(21),
+        event: validEvent,
+      }),
+    ).toMatchObject({ type: 'paint-report', event: { eventId: EVENT_ID } })
+    expect(
+      Schema.decodeUnknownSync(LiveSyncClientEvent)({
+        type: 'dashboard-subscribe',
+        requestId: uuid(22),
+        subscription,
+      }),
+    ).toMatchObject({ type: 'dashboard-subscribe', subscription })
+    expect(
+      Schema.decodeUnknownSync(LiveTileUpload)({
+        type: 'tile-upload',
+        requestId: uuid(23),
+        deliveryId: uuid(24),
+        wplaceUserId: 123,
+        displayName: 'Painter',
+        season: 1,
+        tile: '325/1781',
+        sha256: HASH,
+        ts: SECONDS,
+      }),
+    ).toMatchObject({ type: 'tile-upload', deliveryId: uuid(24) })
+  })
+
+  it('bounds dashboard subscriptions and keeps template ids unique', () => {
+    const subscription = {
+      subscriptionId: uuid(20),
+      templateIds: [TEMPLATE_ID, TEMPLATE_ID],
+      contributionsFrom: SECONDS,
+      leaderboardLimit: 50,
+    }
+    expectRejected(LiveDashboardSubscription, subscription)
+    expectRejected(LiveDashboardSubscription, { ...subscription, templateIds: [] })
+    expectRejected(LiveDashboardSubscription, { ...subscription, leaderboardLimit: 201 })
   })
 })
 
@@ -284,7 +336,7 @@ describe('tile and template schemas', () => {
     else expectRejected(ServerInfo, server)
   })
 
-  it('accepts only the explicit live sync capability version', () => {
+  it('accepts the bounded v1-v2 live compatibility window', () => {
     const server = {
       id: SERVER_ID,
       name: 'Server',
@@ -293,8 +345,18 @@ describe('tile and template schemas', () => {
       liveTileOffers: 1,
     }
     expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
+    expect(
+      Schema.decodeUnknownSync(ServerInfo)({ ...server, liveSync: 1, liveSyncMax: 2 }),
+    ).toMatchObject({ liveSync: 1, liveSyncMax: 2 })
     expectRejected(ServerInfo, { ...server, liveSync: true })
-    expectRejected(ServerInfo, { ...server, liveSync: 2 })
+    expectRejected(ServerInfo, { ...server, liveSync: 3 })
+    expectRejected(ServerInfo, {
+      id: SERVER_ID,
+      name: 'Server',
+      auth: 'none',
+      liveSyncMax: 2,
+    })
+    expectRejected(ServerInfo, { ...server, liveSync: 2, liveSyncMax: 1 })
     expectRejected(ServerInfo, { ...server, liveTileOffers: true })
     expectRejected(ServerInfo, { ...server, liveTileOffers: 2 })
   })

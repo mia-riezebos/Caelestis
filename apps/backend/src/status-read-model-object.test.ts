@@ -1,5 +1,17 @@
-import { type Manifest, millis, sha256Hex, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import {
+  encodeIndexedPng,
+  encodeLiveTileUpload,
+  type Manifest,
+  millis,
+  seconds,
+  sha256Hex,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+  uuidV7,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import { createSeasonManifestReadModel } from './manifest/read-model.js'
 import { LIVE_D1_USAGE_HEADER } from './status-read-model/live-measurement.js'
@@ -8,6 +20,7 @@ import {
   createChunkedStatusPersistence,
   createLiveSessionFence,
   MAX_LIVE_ANONYMOUS_SUBSCRIBERS,
+  MAX_LIVE_CLIENT_BINARY_BYTES,
   MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS,
   MAX_LIVE_SUBSCRIBERS,
   MAX_LIVE_SUBSCRIBERS_PER_CLIENT,
@@ -30,6 +43,7 @@ vi.mock('cloudflare:workers', () => ({
 let database: SqliteD1Database | null = null
 
 afterEach(() => {
+  vi.restoreAllMocks()
   database?.close()
   database = null
 })
@@ -200,6 +214,297 @@ describe('status read-model Durable Object', () => {
     await object.webSocketMessage(correction.socket, JSON.stringify(firstStateVector))
     expect(correction.send).toHaveBeenCalledOnce()
     expect(correction.close).toHaveBeenCalledWith(1008, 'state vector already received')
+  })
+
+  it('delivers a v2 status snapshot over the resumed socket', async () => {
+    database = new SqliteD1Database()
+    let attachment: unknown = {
+      season: 8,
+      scope: 'public',
+      credentialScope: 'read',
+      tokenHash: 'a'.repeat(64),
+      revocable: true,
+      revoked: false,
+      protocol: 2,
+    }
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => attachment,
+      serializeAttachment: (next: unknown) => {
+        attachment = next
+      },
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+
+    await object.webSocketMessage(
+      socket,
+      JSON.stringify({
+        type: 'state-vector',
+        requestId: '01890f3e-7b2c-7abc-8def-000000000003',
+        revision: null,
+        projections: [],
+      }),
+    )
+
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toEqual({
+      type: 'status-snapshot',
+      status: { revision: 1, templates: [] },
+    })
+    expect(JSON.parse(String(send.mock.calls[1]?.[0]))).toMatchObject({
+      type: 'state-correction',
+      mode: 'snapshot',
+      revision: 1,
+    })
+  })
+
+  it('refreshes public alarm snapshots after template publication changes', async () => {
+    database = new SqliteD1Database()
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'read',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        protocol: 2,
+        projections: [{ resource: 'telemetry-alarms', scope: 'world', version: null }],
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(
+      objectState(new Map(), Number.POSITIVE_INFINITY, [socket]),
+      {
+        DB: database,
+        BLOBS: {},
+        TELEMETRY: { getByName: () => ({}) },
+      } as unknown as Env,
+    )
+
+    await object.notifyManifestChange(8, { kind: 'alliance-picture', allianceId: 42 })
+
+    expect(send).toHaveBeenCalledWith(expect.stringContaining('"type":"alarms-snapshot"'))
+  })
+
+  it('accepts a paint once and acknowledges its retry as a duplicate', async () => {
+    database = new SqliteD1Database()
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'report',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        revoked: false,
+        protocol: 2,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+      BLOBS: {},
+      TELEMETRY: { getByName: () => ({}) },
+    } as unknown as Env)
+    const report = {
+      type: 'paint-report',
+      requestId: '01890f3e-7b2c-7abc-8def-000000000004',
+      event: {
+        eventId: '01890f3e-7b2c-7abc-8def-000000000005',
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 8,
+        ts: seconds(1_750_000_000),
+        tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+        painted: null,
+      },
+    }
+
+    await object.webSocketMessage(socket, JSON.stringify(report))
+    await object.webSocketMessage(
+      socket,
+      JSON.stringify({ ...report, requestId: '01890f3e-7b2c-7abc-8def-000000000006' }),
+    )
+
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toMatchObject({
+      type: 'paint-result',
+      result: 'partial',
+    })
+    expect(JSON.parse(String(send.mock.calls[1]?.[0]))).toMatchObject({
+      type: 'paint-result',
+      result: 'duplicate',
+    })
+  })
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'attempts v2 alarm delivery with snapshot failure=%s and scheduler failure=%s',
+    async (snapshotFails, scheduleFails) => {
+      database = new SqliteD1Database()
+      const sql = new D1SqlStore(database as unknown as D1Database)
+      const blobs = new Map<string, Uint8Array>()
+      const chunk = await encodeIndexedPng(2, 1, new Uint8Array([0, 0]))
+      const hash = await sha256Hex(chunk)
+      blobs.set(`chunks/${hash}`, chunk)
+      const templateId = uuidV7()
+      const at = Math.floor(Date.now() / 1_000) - 10
+      await sql.insertTemplateVersion({
+        templateId,
+        versionId: uuidV7(),
+        surface: WORLD_TEMPLATE_SURFACE,
+        season: 0,
+        nodeId: null,
+        name: 'Alarm follow-up',
+        createdWithToken: 'a'.repeat(64),
+        createdByUserId: null,
+        createdAt: millis(at * 1_000),
+        bbox: { minX: 0, minY: 0, maxX: 2, maxY: 1 },
+        totalPixels: 2,
+        chunks: [{ tileX: 0, tileY: 0, hash }],
+      })
+      await sql.setTemplatePublishedAt(templateId, millis(at * 1_000), millis(at * 1_000))
+      const send = vi.fn()
+      const socket = {
+        deserializeAttachment: () => ({
+          season: 0,
+          scope: 'public',
+          credentialScope: 'report',
+          tokenHash: 'a'.repeat(64),
+          protocol: 2,
+          revocable: false,
+        }),
+        send,
+        close: vi.fn(),
+      } as unknown as WebSocket
+      const schedule = vi.fn(async () => undefined)
+      const object = new StatusReadModelObject(objectState(new Map(), Infinity, [socket]), {
+        DB: database,
+        BLOBS: {
+          get: async (key: string) => {
+            const bytes = blobs.get(key)
+            return bytes === undefined ? null : { arrayBuffer: async () => bytes.slice().buffer }
+          },
+          put: async (key: string, bytes: Uint8Array) => {
+            blobs.set(key, bytes.slice())
+          },
+        },
+        TELEMETRY: { getByName: () => ({}) },
+        ALARM_WATCHER: { getByName: () => ({ schedule }) },
+      } as unknown as Env)
+      const upload = async (colour: number, ts: number) => {
+        const pixels = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+        pixels[0] = colour
+        const payload = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, pixels)
+        const requestId = uuidV7()
+        const frame = encodeLiveTileUpload(
+          {
+            type: 'tile-upload',
+            requestId,
+            deliveryId: uuidV7(),
+            wplaceUserId: 42,
+            displayName: 'Painter',
+            season: 0,
+            tile: '0/0',
+            sha256: await sha256Hex(payload),
+            ts: seconds(ts),
+          },
+          payload,
+        )
+        await object.webSocketMessage(socket, frame.slice().buffer)
+        expect(send.mock.calls.map(([message]) => JSON.parse(String(message)))).toContainEqual(
+          expect.objectContaining({ type: 'tile-upload-result', requestId, accepted: true }),
+        )
+      }
+      await upload(0, at)
+      expect(await sql.readActiveAlarms(0, false)).toEqual([])
+      schedule.mockClear()
+      send.mockClear()
+      const snapshotError = new Error('alarm snapshot failed')
+      const scheduleError = new Error('alarm schedule failed')
+      const readAlarms = vi.spyOn(D1SqlStore.prototype, 'readActiveAlarms')
+      const logError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      if (snapshotFails) readAlarms.mockRejectedValueOnce(snapshotError)
+      if (scheduleFails) schedule.mockRejectedValueOnce(scheduleError)
+
+      await upload(1, at + 1)
+
+      const expectedErrors = [
+        ...(scheduleFails ? [scheduleError] : []),
+        ...(snapshotFails ? [expect.objectContaining({ cause: snapshotError })] : []),
+      ]
+      if (expectedErrors.length > 0) {
+        expect(logError).toHaveBeenCalledWith(expect.objectContaining({ errors: expectedErrors }))
+      } else {
+        expect(logError).not.toHaveBeenCalled()
+      }
+      readAlarms.mockRestore()
+      expect(await sql.readActiveAlarms(0, false)).toEqual([
+        expect.objectContaining({ templateId, kind: 'regression', pixelsLost: 1 }),
+      ])
+      expect(await sql.nextAlarmProbeAt()).toBe((at + 1) * 1_000 + 10 * 60 * 1_000)
+      expect(schedule).toHaveBeenCalledOnce()
+      if (snapshotFails) return
+      expect(send.mock.calls.map(([message]) => JSON.parse(String(message)))).toContainEqual(
+        expect.objectContaining({
+          type: 'alarms-snapshot',
+          alarms: expect.objectContaining({ alarms: [expect.objectContaining({ templateId })] }),
+        }),
+      )
+    },
+  )
+
+  it('scope-checks binary tile uploads before reading their bytes', async () => {
+    database = new SqliteD1Database()
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        season: 8,
+        scope: 'public',
+        credentialScope: 'read',
+        tokenHash: 'a'.repeat(64),
+        revocable: true,
+        revoked: false,
+        protocol: 2,
+      }),
+      send,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const object = new StatusReadModelObject(objectState(new Map()), {
+      DB: database,
+    } as unknown as Env)
+    const framed = encodeLiveTileUpload(
+      {
+        type: 'tile-upload',
+        requestId: '01890f3e-7b2c-7abc-8def-000000000007',
+        deliveryId: '01890f3e-7b2c-7abc-8def-000000000008',
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 8,
+        tile: '1/2',
+        sha256: 'a'.repeat(64),
+        ts: seconds(1_750_000_000),
+      },
+      new Uint8Array([1, 2, 3]),
+    )
+
+    await object.webSocketMessage(socket, framed.buffer as ArrayBuffer)
+
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toMatchObject({
+      type: 'tile-upload-result',
+      accepted: false,
+      error: 'forbidden',
+    })
   })
 
   it('fans one committed status update out to five clients within two seconds', async () => {
@@ -1030,7 +1335,7 @@ describe('status read-model Durable Object', () => {
       close: vi.fn(),
     } as unknown as WebSocket
 
-    object.webSocketMessage(socket, new ArrayBuffer(MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS + 1))
+    object.webSocketMessage(socket, new ArrayBuffer(MAX_LIVE_CLIENT_BINARY_BYTES + 1))
 
     expect(socket.close).toHaveBeenCalledWith(1009, 'live message too large')
     expect(socket.send).not.toHaveBeenCalled()

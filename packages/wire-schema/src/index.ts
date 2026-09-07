@@ -1,6 +1,7 @@
 import type * as Shared from '@caelestis/shared'
 import {
   MAX_LIVE_PROJECTIONS,
+  MAX_LIVE_TEMPLATE_IDS,
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   TILE_SIZE,
@@ -189,9 +190,19 @@ export const ServerInfo = Schema.Struct({
   name: Name,
   description: Schema.optionalKey(Description),
   auth: Schema.Literals(['none', 'access_token']),
-  liveSync: Schema.optionalKey(Schema.Literal(1)),
+  liveSync: Schema.optionalKey(Schema.Literals([1, 2])),
+  liveSyncMax: Schema.optionalKey(Schema.Literals([1, 2])),
   liveTileOffers: Schema.optionalKey(Schema.Literal(1)),
-})
+}).pipe(
+  Schema.check(
+    booleanFilter(
+      (server) =>
+        server.liveSyncMax === undefined ||
+        (server.liveSync !== undefined && server.liveSyncMax >= server.liveSync),
+      'liveSyncMax requires a liveSync version no newer than itself',
+    ),
+  ),
+)
 
 /**
  * A materialized group path: a leading slash and at least one segment.
@@ -641,6 +652,35 @@ const LiveProjectionState = Schema.Struct({
   version: Schema.NullOr(Hash),
 })
 
+export const LiveDashboardSubscription = Schema.Struct({
+  subscriptionId: Identifier,
+  templateIds: boundedArray(Identifier, MAX_LIVE_TEMPLATE_IDS),
+  contributionsFrom: Seconds,
+  leaderboardLimit: integerBetween(1, 200),
+}).pipe(
+  Schema.check(
+    booleanFilter(
+      (subscription) =>
+        subscription.templateIds.length > 0 &&
+        new Set(subscription.templateIds).size === subscription.templateIds.length,
+      'dashboard subscriptions need unique template ids',
+    ),
+  ),
+)
+
+export const LiveTileUpload = Schema.Struct({
+  type: Schema.Literal('tile-upload'),
+  requestId: Identifier,
+  deliveryId: Identifier,
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+  season: Season,
+  tile: TileKey,
+  sha256: Hash,
+  ts: Seconds,
+  coverageToken: Schema.optionalKey(boundedString(256)),
+})
+
 export const LiveSyncClientEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal('state-vector'),
@@ -661,6 +701,25 @@ export const LiveSyncClientEvent = Schema.Union([
     type: Schema.Literal('tile-offer-cache'),
     requestId: Identifier,
     batch: LiveTileOfferBatch,
+  }),
+  Schema.Struct({
+    type: Schema.Literal('tile-offer'),
+    requestId: Identifier,
+    batch: LiveTileOfferBatch,
+  }),
+  Schema.Struct({
+    type: Schema.Literal('paint-report'),
+    requestId: Identifier,
+    event: PaintEvent,
+  }),
+  Schema.Struct({
+    type: Schema.Literal('dashboard-subscribe'),
+    requestId: Identifier,
+    subscription: LiveDashboardSubscription,
+  }),
+  Schema.Struct({
+    type: Schema.Literal('dashboard-unsubscribe'),
+    subscriptionId: Identifier,
   }),
 ])
 
@@ -1025,6 +1084,10 @@ assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Schema.Type<typeof LiveTileOffer>, Shared.LiveTileOffer>>()
 assertExact<Exact<Schema.Schema.Type<typeof LiveTileOfferBatch>, Shared.LiveTileOfferBatch>>()
+assertExact<
+  Exact<Schema.Schema.Type<typeof LiveDashboardSubscription>, Shared.LiveDashboardSubscription>
+>()
+assertExact<Exact<Schema.Schema.Type<typeof LiveTileUpload>, Shared.LiveTileUpload>>()
 assertExact<Exact<Schema.Schema.Type<typeof LiveSyncClientEvent>, Shared.LiveSyncClientEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileUploadResponse>, Shared.TileUploadResponse>>()
@@ -1058,6 +1121,10 @@ assertExact<Exact<Schema.Codec.Encoded<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof LiveTileOffer>, Shared.LiveTileOffer>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof LiveTileOfferBatch>, Shared.LiveTileOfferBatch>>()
+assertExact<
+  Exact<Schema.Codec.Encoded<typeof LiveDashboardSubscription>, Shared.LiveDashboardSubscription>
+>()
+assertExact<Exact<Schema.Codec.Encoded<typeof LiveTileUpload>, Shared.LiveTileUpload>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof LiveSyncClientEvent>, Shared.LiveSyncClientEvent>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileUploadResponse>, Shared.TileUploadResponse>>()

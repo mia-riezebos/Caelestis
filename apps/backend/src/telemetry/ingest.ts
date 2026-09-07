@@ -45,6 +45,7 @@ import {
   finishTileGenerationCommit,
   prepareTileGenerationCommit,
   publishAlarmChange,
+  publishDashboardChange,
   repairCommittedStatusProjection,
   repairCommittedTileGeneration,
   resolveCurrentTileOffers,
@@ -985,13 +986,18 @@ export const recordPaint = (
 ): Effect.Effect<
   'duplicate' | 'partial' | 'recorded',
   TelemetryStorageError,
-  BlobStoreService | CounterStoreService | SqlStoreService
+  BlobStoreService | CounterStoreService | SqlStoreService | StatusReadModelService
 > =>
   Effect.gen(function* () {
     const blobs = yield* BlobStoreService
     const counters = yield* CounterStoreService
     const sql = yield* SqlStoreService
-    return yield* storage('recordPaint', () =>
+    const statusReadModel = yield* StatusReadModelService
+    const result = yield* storage('recordPaint', () =>
       recordPaintPromise({ blobs, counters, sql }, event, reporterTokenHash, includeUnpublished),
     )
+    if (result === 'recorded') {
+      yield* Effect.promise(() => publishDashboardChange(statusReadModel, event.season))
+    }
+    return result
   })

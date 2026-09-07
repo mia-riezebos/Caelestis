@@ -105,6 +105,10 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
     await this.scheduleAlarms?.()
   }
 
+  notifyDashboardChange(season: number): Promise<void> {
+    return this.shard(season).notifyDashboardChange(season)
+  }
+
   async closeCredential(currentSeason: number, tokenHash: string): Promise<void> {
     await Promise.all(
       Array.from({ length: currentSeason + 1 }, (_, season) =>
@@ -155,11 +159,13 @@ export class DurableObjectStatusReadModel implements StatusReadModelPort {
       readonly lastRevision: number | null
       readonly metricClient: string
       readonly metricClientVersion: string
+      readonly protocol: 1 | 2
     },
   ): Promise<Response> {
     const headers = new Headers(request.headers)
     headers.delete('authorization')
-    headers.set('sec-websocket-protocol', 'caelestis.live.v1')
+    headers.set('sec-websocket-protocol', `caelestis.live.v${connection.protocol}`)
+    headers.set('x-caelestis-live-protocol', String(connection.protocol))
     headers.set('x-caelestis-season', String(connection.season))
     headers.set('x-caelestis-scope', connection.scope)
     headers.set('x-caelestis-credential-scope', connection.credentialScope)

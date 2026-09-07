@@ -1,10 +1,7 @@
 const CLIENTS = 5
-const RECOVERY_INTERVAL_MINUTES = 60
-const RECOVERY_COHORTS_PER_DAY = 24
 const HEARTBEAT_COHORTS_PER_DAY = 96
 const ALARM_SCAN_INVALIDATIONS_PER_DAY = 4
 const LIVE_RESOURCES = 3
-const CACHED_RESOURCES = 2
 // The dashboard displays two-decimal `k` values. Use each bucket's lowest possible integer so the
 // 90% gate cannot pass only because a rounded baseline was treated as exact.
 const BASELINE = Object.freeze({
@@ -15,36 +12,25 @@ const BASELINE = Object.freeze({
 
 export const projectSyncCapacity = ({
   clients = CLIENTS,
-  recoveryCohorts = RECOVERY_COHORTS_PER_DAY,
   projectedTileOfferBatches = 0,
-  projectedExtraAlarmReads = 0,
+  projectedPaintReports = 0,
+  projectedTileUploads = 0,
 } = {}) => {
   const baselineAvoidableWorkerRequests = BASELINE.statusReads + BASELINE.manifestReads
   const socketUpgrades = clients
-  const bootstrapReads = clients * LIVE_RESOURCES
-  const recoveryReads = clients * recoveryCohorts * LIVE_RESOURCES
-  const alarmInvalidationReads = clients * ALARM_SCAN_INVALIDATIONS_PER_DAY
-  const projectedAvoidableWorkerRequests =
-    socketUpgrades +
-    bootstrapReads +
-    recoveryReads +
-    alarmInvalidationReads +
-    projectedExtraAlarmReads
+  const projectedAvoidableWorkerRequests = socketUpgrades
   const reduction = 1 - projectedAvoidableWorkerRequests / baselineAvoidableWorkerRequests
-  const resourceCohorts = (recoveryCohorts + 1) * CACHED_RESOURCES
-  const projectionReads = resourceCohorts * clients
-  const cacheOutcomes = {
-    miss: CACHED_RESOURCES,
-    stale: recoveryCohorts * CACHED_RESOURCES,
-    hit: resourceCohorts * Math.max(0, clients - 1),
-  }
   const incomingHeartbeatMessages = clients * HEARTBEAT_COHORTS_PER_DAY
+  const incomingTelemetryMessages =
+    projectedPaintReports + projectedTileOfferBatches + projectedTileUploads
+  const incomingMessages = incomingHeartbeatMessages + incomingTelemetryMessages
+  const initialProjectionSnapshots = clients * LIVE_RESOURCES
+  const dashboardSnapshotQueries = clients * 2
 
   return {
     scenario: {
       clients,
       hours: 24,
-      recoveryIntervalMinutes: RECOVERY_INTERVAL_MINUTES,
       liveResources: LIVE_RESOURCES,
     },
     baseline: {
@@ -56,32 +42,28 @@ export const projectSyncCapacity = ({
     },
     projected: {
       socketUpgrades,
-      bootstrapReads,
-      recoveryReads,
-      alarmInvalidationReads,
-      extraAlarmReads: projectedExtraAlarmReads,
-      requiredTileOfferBatches: projectedTileOfferBatches,
+      livePaintReports: projectedPaintReports,
+      liveTileOfferBatches: projectedTileOfferBatches,
+      liveTileUploads: projectedTileUploads,
       avoidableWorkerRequests: projectedAvoidableWorkerRequests,
       reductionPercent: Number((reduction * 100).toFixed(4)),
     },
     durableObject: {
-      projectionRpcRequests: projectionReads,
       websocketConnectionRequests: socketUpgrades,
       incomingHeartbeatMessages,
-      billableHeartbeatRequestUnits: Math.ceil(incomingHeartbeatMessages / 20),
+      incomingTelemetryMessages,
+      billableIncomingMessageUnits: Math.ceil(incomingMessages / 20),
       alarmNotificationRpcRequests: ALARM_SCAN_INVALIDATIONS_PER_DAY,
       projectedBillableRequestUnits:
-        projectionReads +
-        socketUpgrades +
-        Math.ceil(incomingHeartbeatMessages / 20) +
-        ALARM_SCAN_INVALIDATIONS_PER_DAY,
+        socketUpgrades + Math.ceil(incomingMessages / 20) + ALARM_SCAN_INVALIDATIONS_PER_DAY,
       heartbeatWakeups: 0,
     },
-    cache: {
-      projectionReads,
-      authoritativeRebuilds: cacheOutcomes.miss + cacheOutcomes.stale,
-      outcomes: cacheOutcomes,
-      d1Rows: 'data-dependent; capture from request metrics',
+    storage: {
+      initialProjectionSnapshots,
+      dashboardSnapshotQueries,
+      mutationQueries: incomingTelemetryMessages,
+      d1Rows: 'data-dependent; capture from D1 query metrics',
+      r2Reads: 'at most one per wanted tile upload validation',
     },
   }
 }
@@ -99,7 +81,8 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
     `${JSON.stringify(
       projectSyncCapacity({
         projectedTileOfferBatches: optionValue('--tile-offer-batches'),
-        projectedExtraAlarmReads: optionValue('--extra-alarm-reads'),
+        projectedPaintReports: optionValue('--paint-reports'),
+        projectedTileUploads: optionValue('--tile-uploads'),
       }),
       null,
       2,
