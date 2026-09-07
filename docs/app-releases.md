@@ -32,8 +32,8 @@ Merging the release pull request publishes the affected app tags:
 
 - `userscript-vX.Y.Z` remains the repository's latest release and includes both installers plus
   their checksums.
-- `frontend-vX.Y.Z` uses a non-latest release and posts to `DISCORD_FRONTEND_RELEASE_WEBHOOK_URL`.
-- `backend-vX.Y.Z` uses a non-latest release and does not post to Discord.
+- `frontend-vX.Y.Z` tags the deployed commit and posts to `DISCORD_RELEASE_WEBHOOK_URL`.
+- `backend-vX.Y.Z` tags the deployed commit and does not post to Discord.
 
 Semantic app versions describe releases. Production deployments still use the exact deployment
 commit from `github.sha` as their operational build identity.
@@ -41,5 +41,5 @@ commit from `github.sha` as their operational build identity.
 ## Repository setting
 
 GitHub Actions must be allowed to create pull requests. Enable this once under repository Settings,
-Actions, General, Workflow permissions. Configure `DISCORD_RELEASE_WEBHOOK_URL` for userscript
-announcements and `DISCORD_FRONTEND_RELEASE_WEBHOOK_URL` for frontend announcements.
+Actions, General, Workflow permissions. Configure `DISCORD_RELEASE_WEBHOOK_URL` for both userscript
+and frontend announcements.
