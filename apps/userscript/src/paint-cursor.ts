@@ -3,28 +3,34 @@ import type { MapLike } from './map-handle.js'
 import { isPaintOpen } from './wplace-paint.js'
 
 const forwardedMoves = new WeakSet<Event>()
-type PaintCursor = Pick<
-  MouseEvent,
-  'clientX' | 'clientY' | 'buttons' | 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'
->
 
 /** Whether this is movement forwarded by Caelestis rather than a compatibility mouse event. */
 export const isForwardedPaintMove = (event: Event): boolean => forwardedMoves.has(event)
 
-/** Feed Wplace its native mouse-move path without starting a mouse gesture. */
-export const forwardPaintMove = (target: Element, position: PaintCursor): void => {
-  const event = new MouseEvent('mousemove', {
+/** Feed the world's mouse or alliance pointer movement path without starting a gesture. */
+export const forwardPaintMove = (
+  target: Element,
+  position: PointerEvent,
+  type: 'mousemove' | 'pointermove' = 'mousemove',
+  client: { clientX: number; clientY: number } = position,
+): void => {
+  const init: PointerEventInit = {
     bubbles: true,
     cancelable: true,
     composed: true,
-    clientX: position.clientX,
-    clientY: position.clientY,
+    clientX: client.clientX,
+    clientY: client.clientY,
     buttons: position.buttons,
     altKey: position.altKey,
     ctrlKey: position.ctrlKey,
     metaKey: position.metaKey,
     shiftKey: position.shiftKey,
-  })
+    pointerId: position.pointerId,
+    pointerType: position.pointerType,
+    isPrimary: position.isPrimary,
+    button: -1,
+  }
+  const event = type === 'pointermove' ? new PointerEvent(type, init) : new MouseEvent(type, init)
   forwardedMoves.add(event)
   target.dispatchEvent(event)
 }
@@ -37,28 +43,7 @@ export const refreshPaintCursor = (root: Element, type: 'mousemove' | 'pointermo
   if (cursor === null || !isPaintOpen() || !root.isConnected) return
   const target = document.elementFromPoint(cursor.clientX, cursor.clientY)
   if (target === null || !root.contains(target)) return
-  if (type === 'mousemove') {
-    forwardPaintMove(target, cursor)
-    return
-  }
-  target.dispatchEvent(
-    new PointerEvent('pointermove', {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      pointerId: cursor.pointerId,
-      pointerType: 'mouse',
-      isPrimary: true,
-      button: -1,
-      buttons: cursor.buttons,
-      clientX: cursor.clientX,
-      clientY: cursor.clientY,
-      altKey: cursor.altKey,
-      ctrlKey: cursor.ctrlKey,
-      metaKey: cursor.metaKey,
-      shiftKey: cursor.shiftKey,
-    }),
-  )
+  forwardPaintMove(target, cursor, type)
 }
 
 const refreshWorldCursor = (): void => {

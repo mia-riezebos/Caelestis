@@ -35,6 +35,7 @@ const mapAt = (element: HTMLCanvasElement) => {
     getZoom: () => 20,
     getCenter: () => ({ lng: 0, lat: 0 }),
     getCanvas: () => element,
+    unproject: () => ({ lng: 0, lat: 0 }),
     on: (type, listener) => events.addEventListener(type, listener),
     off: (type, listener) => events.removeEventListener(type, listener),
   } satisfies MapLike

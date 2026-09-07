@@ -456,6 +456,7 @@ describe('transparent browser hooks', () => {
             getZoom: () => 1,
             getCenter: () => ({ lng: 0, lat: 0 }),
             getCanvas: () => mapCanvas as unknown as HTMLCanvasElement,
+            unproject: () => ({ lng: 0, lat: 0 }),
             on: () => undefined,
             off: () => undefined,
           }

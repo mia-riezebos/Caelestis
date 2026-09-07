@@ -40,6 +40,7 @@ export interface MapLike {
   getZoom(): number
   getCenter(): { lng: number; lat: number }
   getCanvas(): HTMLCanvasElement
+  unproject(point: [number, number]): { lng: number; lat: number }
   on(type: 'moveend', listener: () => void): unknown
   off(type: 'moveend', listener: () => void): unknown
   cameraForBounds?(

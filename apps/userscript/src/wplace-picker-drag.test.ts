@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { TRANSPARENT_INDEX, WORLD_PIXELS } from '@caelestis/shared'
+import { canvasPixelToLatLng, TRANSPARENT_INDEX, WORLD_PIXELS } from '@caelestis/shared'
 import { afterEach, beforeEach, expect, it, type MockInstance, vi } from 'vitest'
 import type { ActiveAllianceSurface } from './alliance-surface.js'
 
@@ -16,6 +16,7 @@ interface SourceTemplate {
 
 const harness = vi.hoisted(() => ({
   alliance: null as ActiveAllianceSurface | null,
+  nativePoint: null as { x: number; y: number } | null,
   templates: [] as SourceTemplate[],
   paintOpen: true,
   moving: false,
@@ -31,6 +32,12 @@ const harness = vi.hoisted(() => ({
 vi.mock('./alliance-surface.js', () => ({ activeAllianceSurface: () => harness.alliance }))
 vi.mock('./debug.js', () => ({ log: vi.fn() }))
 vi.mock('./main.js', () => ({ canvasPixelAt: (x: number, y: number) => ({ x, y }) }))
+vi.mock('./map-handle.js', () => ({
+  getMap: () => {
+    const point = harness.nativePoint
+    return point === null ? null : { unproject: () => canvasPixelToLatLng(point) }
+  },
+}))
 vi.mock('./state.js', () => ({
   getState: () => ({ hiddenColours: [] }),
   onlySelectedColourFor: () => harness.onlySelected,
@@ -67,6 +74,7 @@ let listeners: MockInstance<typeof window.addEventListener>
 
 beforeEach(async () => {
   harness.alliance = null
+  harness.nativePoint = null
   harness.templates = [source()]
   harness.paintOpen = true
   harness.moving = false
@@ -152,6 +160,78 @@ it('forwards mouse movement through repeated colours and transparent gaps', () =
     [3.1, 4],
   ])
   expect(harness.select.mock.calls).toEqual([[12]])
+})
+
+it.each(['x', 'y'] as const)('uses the native paint cell at a fractional %s boundary', (axis) => {
+  const template = source([12, 23])
+  if (axis === 'y') {
+    template.width = 1
+    template.height = 2
+  }
+  harness.templates = [template]
+  harness.nativePoint = { x: 0.1, y: 0.5 }
+  pointer('pointerdown')
+  // The rendered tile is half a screen pixel ahead of the native map projection.
+  harness.nativePoint[axis] = 0.99
+  pointer('pointermove', axis === 'x' ? 0.91 : 0, { clientY: axis === 'y' ? 1.01 : 0.5 })
+  expect(harness.selected).toBe(12)
+  harness.nativePoint[axis] = 1.01
+  pointer('pointermove', axis === 'x' ? 0.97 : 0, { clientY: axis === 'y' ? 1.07 : 0.5 })
+  expect(harness.selected).toBe(23)
+})
+
+it.each(['world', 'alliance'] as const)(
+  'keeps the previous %s pixel colour during held-Space picking',
+  (surface) => {
+    if (surface === 'alliance') {
+      const frame = document.createElement('div')
+      frame.append(map)
+      document.body.append(frame)
+      frame.getBoundingClientRect = () => new DOMRect(0, 0, 1000, 1000)
+      harness.alliance = {
+        surface: { kind: 'alliance-headquarters', allianceId: 1 },
+        stage: frame,
+        frame,
+        draftId: null,
+        bounds: { minX: 0, minY: 0, maxX: 1000, maxY: 1000 },
+      }
+    }
+    const draft = new Map<number, number>()
+    let previous = 0
+    // Wplace includes the previous pixel in each held-Space movement's painted line.
+    map.addEventListener(surface === 'world' ? 'mousemove' : 'pointermove', (event) => {
+      const current = Math.floor(event.clientX)
+      for (let x = Math.min(previous, current); x <= Math.max(previous, current); x++)
+        draft.set(x, harness.selected)
+      previous = current
+    })
+    pointer('pointerdown')
+    draft.set(0, harness.selected)
+    pointer('pointermove', 1)
+    expect([...draft]).toEqual([
+      [0, 12],
+      [1, 23],
+    ])
+  },
+)
+
+it('samples intermediate colours when held-Space movement skips several pixels', () => {
+  harness.templates = [source([12, 23, 7])]
+  const draft = new Map<number, number>([[0, 12]])
+  let previous = 0
+  map.addEventListener('mousemove', (event) => {
+    const current = Math.floor(event.clientX)
+    for (let x = previous; x <= current; x++) draft.set(x, harness.selected)
+    previous = current
+  })
+  pointer('pointerdown')
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }))
+  pointer('pointermove', 2)
+  expect([...draft]).toEqual([
+    [0, 12],
+    [1, 23],
+    [2, 7],
+  ])
 })
 
 it('resolves overlaps, transparent cells and hidden colours in the existing drawing order', () => {
@@ -289,7 +369,7 @@ it('keeps native hover movement while suppressing the claimed gesture start and 
     )
   }
   pointer('pointermove', 1)
-  expect(hover).toHaveBeenCalledTimes(2)
+  expect(hover).toHaveBeenCalledTimes(3)
   pointer('pointerup', 1, { buttons: 0 })
   pointer('lostpointercapture', 1, { buttons: 0 })
   for (const type of ['mouseup', 'auxclick']) {
