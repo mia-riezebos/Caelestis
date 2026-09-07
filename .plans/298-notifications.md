@@ -15,6 +15,7 @@ Remove desktop alerts and let players choose which in-page notices they receive.
 - [x] Verify rendered settings and project checks.
 - [x] Apply the requested quiet defaults while preserving saved choices.
 - [x] Fix the clipped colour-order dropdown with DaisyUI geometry and responsive layout.
+- [x] Share compact styling across every active select, sort menu, context menu, and dashboard dropdown.
 
 ## Notes
 - Reuse SettingsPanel's section header, setting rows, and toggles. Keep notification choices together before Contribution.
@@ -28,3 +29,7 @@ Remove desktop alerts and let players choose which in-page notices they receive.
 - Raw CDP and arbitrary page scripting were unavailable to the verifier. Temporary fixture buttons and theme URLs enabled the remaining checks through the browser API. The full Wplace integration was not exercised.
 - Browser viewport reset and owned tabs closed. Evidence report: /tmp/caelestis-298-verify.UwylkO/report.md, supplemented by parent browser screenshots and toast checks.
 - Follow-up validation: 105 focused userscript tests, 118 UI tests, dependency builds/checks, lint, and release checks pass. Fresh browser storage shows only update notices enabled. Dropdown mouse/keyboard selection and reload persistence pass; light/dark 320px pickers show both full labels.
+- All six shared native selects and four custom menu containers now use MenuStyles. It owns corners, spacing, typography, borders, hover/focus, and shadows; components keep their existing interaction and placement behavior.
+- Menu validation: userscript/frontend dependency builds and checks, 118 UI tests, 92 frontend tests, lint, and 32 release-tool tests pass.
+- Local Chromium fixtures confirm compact select, sort, context, and painter menus despite oversized host radius variables. Light/dark and 320px/desktop views were inspected. Native selection, keyboard sorting, context-menu keyboard dismissal, painter search/toggling, and Escape focus return pass.
+- The painter fixture renders the actual frontend component with built frontend CSS. The full template playback route was not browser-tested.

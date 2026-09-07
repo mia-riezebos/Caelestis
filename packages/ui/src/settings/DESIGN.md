@@ -7,3 +7,4 @@ the action-feedback hint explains that errors and warnings remain visible.
 
 The colour-order select uses DaisyUI select geometry and a themed native picker. Its label and
 control wrap onto separate lines in narrow panels, so both full option labels remain readable.
+Use the shared menu styling described in ../foundations/MENUS.md.

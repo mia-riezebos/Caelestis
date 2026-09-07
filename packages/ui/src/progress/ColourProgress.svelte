@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import { formatCount, formatExactCount, formatPixels, type TemplateColourStatus, WPLACE_PALETTE } from '@caelestis/shared'
   import type { ColourProgressSort } from '../types.js'
 
@@ -46,9 +47,11 @@
   })
 </script>
 
+<MenuStyles />
+
 <div class="toolbar">
   <label for="caelestis-colour-sort">Sort by</label>
-  <select id="caelestis-colour-sort" value={sort} onchange={(event) => onSortChange?.(event.currentTarget.value as ColourProgressSort)}>
+  <select class="caelestis-select" id="caelestis-colour-sort" value={sort} onchange={(event) => onSortChange?.(event.currentTarget.value as ColourProgressSort)}>
     {#each sorts as option (option.key)}<option value={option.key}>{option.label}</option>{/each}
   </select>
 </div>
@@ -67,7 +70,7 @@
 
 <style>
   .toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; margin-block-end: 0.5rem; color: var(--caelestis-muted-text); font: 500 0.72rem/1.2 ui-sans-serif, system-ui, sans-serif; }
-  select { min-block-size: 1.75rem; inline-size: 9rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); color: var(--caelestis-text); }
+  select { inline-size: 11rem; }
   ul { display: flex; flex-direction: column; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
   li { display: grid; grid-template-columns: 1.5rem 1rem minmax(5rem, 9rem) minmax(4rem, 1fr) 8.5rem; align-items: center; gap: 0.5rem; color: var(--caelestis-text); font: 500 0.8rem/1.2 ui-sans-serif, system-ui, sans-serif; }
   .index, .count, .percent { color: var(--caelestis-muted-text); text-align: end; font-size: 0.72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }

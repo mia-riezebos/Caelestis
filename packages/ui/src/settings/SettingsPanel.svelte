@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import Button from '../foundations/Button.svelte'
   import SectionHeader from '../foundations/SectionHeader.svelte'
   import SettingRow from '../foundations/SettingRow.svelte'
@@ -66,6 +67,8 @@
   })
 </script>
 
+<MenuStyles />
+
 <div class="settings" data-caelestis-scroller>
   <SectionHeader title="Servers" icon="server" />
   <div class="connect">
@@ -113,7 +116,7 @@
                 <div class="new-token">
                   <div class="new-token-row">
                     <input data-caelestis-draft={`token-label:${server.url}`} type="text" maxlength="128" value={accessLabelDrafts[server.url] ?? ''} oninput={(event) => accessLabelDrafts[server.url] = event.currentTarget.value} placeholder="Who is it for?" aria-label="New token label" onkeydown={(event) => { if (event.key === 'Enter') submitAccessToken(server) }} />
-                    <select aria-label="New token scope" value={accessScopeDrafts[server.url] ?? 'report'} onchange={(event) => accessScopeDrafts[server.url] = event.currentTarget.value as AccessTokenScope}><option value="read">Read</option><option value="report">Report</option><option value="admin">Admin</option></select>
+                    <select class="caelestis-select" aria-label="New token scope" value={accessScopeDrafts[server.url] ?? 'report'} onchange={(event) => accessScopeDrafts[server.url] = event.currentTarget.value as AccessTokenScope}><option value="read">Read</option><option value="report">Report</option><option value="admin">Admin</option></select>
                     <Button label="Create" kind="primary" size="small" disabled={server.accessTokens.creating === true} onclick={() => submitAccessToken(server)} />
                   </div>
                   {#if server.accessTokens.createError !== undefined}<p class="error token-error" role="status">{server.accessTokens.createError}</p>{/if}
@@ -130,7 +133,7 @@
   <SectionHeader title="Painting" icon="palette" />
   <div class="colour-order">
     <label for="colour-navigation-order">Middle-click colour order<small>Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.</small></label>
-    <select id="colour-navigation-order" aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>
+    <select class="caelestis-select" id="colour-navigation-order" aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>
   </div>
 
   <SectionHeader title="Notifications" icon="bell" />
@@ -159,34 +162,12 @@
 <style>
   .settings { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 400 0.875rem/1.35 ui-sans-serif, system-ui, sans-serif; }
   .connect, .token-row { display: flex; gap: 0.5rem; padding: 0 var(--caelestis-content-inset, 1rem); }
-  input, select { min-inline-size: 0; block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; font: inherit; }
+  input { min-inline-size: 0; block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; font: inherit; }
   input { flex: 1; padding-inline: 0.6rem; }
-  select { max-inline-size: 11rem; }
   .colour-order { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; padding: 0.5rem var(--caelestis-content-inset, 1rem); }
   .colour-order label { flex: 1 1 15rem; min-inline-size: 0; }
   .colour-order small { display: block; color: var(--caelestis-muted-text); font-size: 0.75rem; }
-  /* DaisyUI select geometry, using the same shadow-root theme tokens as our other controls. */
-  .colour-order select {
-    appearance: none;
-    box-sizing: border-box;
-    flex: 1 1 17rem;
-    inline-size: 100%;
-    max-inline-size: min(100%, 20rem);
-    padding-inline: 0.75rem 1.75rem;
-    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-    background-position: calc(100% - 20px) calc(1px + 50%), calc(100% - 16.1px) calc(1px + 50%);
-    background-repeat: no-repeat;
-    background-size: 4px 4px;
-    touch-action: manipulation;
-    cursor: pointer;
-  }
-  @supports (appearance: base-select) {
-    .colour-order select, .colour-order select::picker(select) { appearance: base-select; }
-  }
-  .colour-order select::picker-icon { display: none; }
-  .colour-order select::picker(select) { color: var(--caelestis-text); border: var(--border, 1px) solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-surface); padding: 0.5rem; margin-block: 0.5rem; box-shadow: 0 8px 24px #0002; }
-  .colour-order option { padding: 0.375rem 0.625rem; border-radius: var(--caelestis-field-radius, 0.5rem); }
-  .colour-order option:is(:hover, :focus-visible) { background: color-mix(in oklab, var(--caelestis-text) 10%, transparent); }
+  .colour-order select { flex: 1 1 17rem; inline-size: 100%; max-inline-size: min(100%, 20rem); }
   .message, .subtle { margin: 0.3rem var(--caelestis-content-inset, 1rem); color: var(--caelestis-muted-text); font-size: 0.72rem; }
   .servers { display: flex; flex-direction: column; }
   .server { padding: 0.35rem var(--caelestis-content-inset, 1rem); }
@@ -211,6 +192,6 @@
   .profile { margin: 0.35rem var(--caelestis-content-inset, 1rem); padding: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   .metric { display: flex; justify-content: space-between; gap: 1rem; padding-block: 0.15rem; font-size: 0.72rem; }.metric span { color: var(--caelestis-muted-text); }.metric strong { font-variant-numeric: tabular-nums; }
   .profile-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; margin-block-start: 0.5rem; }.profile-actions span { margin-inline-end: auto; color: var(--caelestis-muted-text); font-size: 0.72rem; }
-  input:focus-visible, select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
-  @media (pointer: coarse) { input, select { font-size: 1rem; } }
+  input:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
+  @media (pointer: coarse) { input { font-size: 1rem; } }
 </style>

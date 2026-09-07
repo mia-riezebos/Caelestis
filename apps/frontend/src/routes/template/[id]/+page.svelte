@@ -5,8 +5,7 @@
     type TileHistoryFrame,
     type TileKey,
   } from '@caelestis/shared'
-  import { ProgressMeter, TemplateAdmin, TemplateState } from '@caelestis/ui'
-  import { Icon } from '@caelestis/ui'
+  import { Icon, MenuStyles, ProgressMeter, TemplateAdmin, TemplateState } from '@caelestis/ui'
   import { page } from '$app/state'
   import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
   import ColourProgress from '$lib/components/ColourProgress.svelte'
@@ -161,6 +160,8 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     })
 </script>
 
+<MenuStyles />
+
 <svelte:head>
   <title>{template === null ? 'Template' : template.name} · Caelestis</title>
 </svelte:head>
@@ -282,7 +283,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
               {speed.toFixed(2).replace(/0$/, '')}×
             </button>
             <div
-              class="dropdown-content pointer-events-none z-20 mb-1 flex w-64 flex-col gap-3 rounded-xl border-[1.5px] border-base-300 bg-base-100 p-3 shadow-md group-focus-within:pointer-events-auto"
+              class="caelestis-menu dropdown-content pointer-events-none z-20 mb-1 flex w-64 flex-col gap-3 group-focus-within:pointer-events-auto"
             >
               <div class="flex items-center gap-2">
                 <Slider

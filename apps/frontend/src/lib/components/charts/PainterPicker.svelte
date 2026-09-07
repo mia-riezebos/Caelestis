@@ -6,7 +6,7 @@
    * cut at a bounded page, so a thousand painters cost a thousand entries in memory and fifty in
    * the DOM.
    */
-  import { Icon } from '@caelestis/ui'
+  import { Icon, MenuStyles } from '@caelestis/ui'
   import { Command, Popover } from 'bits-ui'
   import {
     MAX_SELECTED_PAINTERS,
@@ -69,6 +69,8 @@
     onHover(value === '' || value === ALL_USERS ? null : Number(value))
 </script>
 
+<MenuStyles />
+
 <Popover.Root
   bind:open
   onOpenChange={(next) => {
@@ -91,7 +93,7 @@
       data-painter-list
       sideOffset={4}
       align="start"
-      class="z-50 w-72 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none"
+      class="caelestis-menu z-50 w-72 outline-none"
     >
       <!-- The command cursor is the keyboard's pointer: wherever it lands gets the spotlight. -->
       <Command.Root shouldFilter={false} loop class="flex flex-col gap-1" onValueChange={spotlight}>
@@ -108,7 +110,7 @@
             <Command.Item
               value={ALL_USERS}
               data-all-users
-              class="relative flex w-full cursor-default select-none items-center gap-2 rounded-md py-1 pe-7 ps-1.5 text-xs outline-hidden data-selected:bg-accent data-selected:text-accent-foreground"
+              class="caelestis-menu-item w-full select-none"
               onSelect={onToggleAllUsers}
             >
               <span
@@ -119,7 +121,7 @@
               ></span>
               <span class="min-w-0 flex-1 truncate font-medium">All users</span>
               <span class="sr-only" data-painter-state>{allUsersShown ? 'drawn' : 'not drawn'}</span>
-              <span class="absolute end-2 flex size-3.5 items-center justify-center">
+              <span class="flex size-3.5 shrink-0 items-center justify-center">
                 {#if allUsersShown}
                   <Icon name="check" class="size-3.5" />
                 {/if}
@@ -133,7 +135,7 @@
                 disabled={full && !isSelected}
                 data-painter-option={painter.wplaceUserId}
                 data-selected-painter={isSelected ? '' : undefined}
-                class="relative flex w-full cursor-default select-none items-center gap-2 rounded-md py-1 pe-7 ps-1.5 text-xs outline-hidden data-selected:bg-accent data-selected:text-accent-foreground data-disabled:opacity-50"
+                class="caelestis-menu-item w-full select-none"
                 onSelect={() => onToggle(painter.wplaceUserId)}
                 onpointerenter={() => onHover(painter.wplaceUserId)}
                 onpointerleave={() => onHover(null)}
@@ -150,7 +152,7 @@
                 </span>
                 <!-- `aria-selected` is the command cursor, so the drawn state is read out as text. -->
                 <span class="sr-only" data-painter-state>{isSelected ? 'drawn' : 'not drawn'}</span>
-                <span class="absolute end-2 flex size-3.5 items-center justify-center">
+                <span class="flex size-3.5 shrink-0 items-center justify-center">
                   {#if isSelected}
                     <Icon name="check" class="size-3.5" />
                   {/if}
