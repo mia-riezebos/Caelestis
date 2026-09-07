@@ -80,7 +80,13 @@
       align="start"
       class="z-50 w-72 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none"
     >
-      <Command.Root shouldFilter={false} loop class="flex flex-col gap-1">
+      <!-- The command cursor is the keyboard's pointer: wherever it lands gets the spotlight. -->
+      <Command.Root
+        shouldFilter={false}
+        loop
+        class="flex flex-col gap-1"
+        onValueChange={(value) => onHover(value === '' ? null : Number(value))}
+      >
         <Command.Input
           data-painter-search
           class="input input-xs w-full text-xs"
@@ -112,6 +118,8 @@
                 <span class="shrink-0 text-[10px] tabular-nums text-base-content/50">
                   {painter.placed.toLocaleString()} px
                 </span>
+                <!-- `aria-selected` is the command cursor, so the drawn state is read out as text. -->
+                <span class="sr-only" data-painter-state>{isSelected ? 'drawn' : 'not drawn'}</span>
                 <span class="absolute end-2 flex size-3.5 items-center justify-center">
                   {#if isSelected}
                     <CheckIcon class="size-3.5" />

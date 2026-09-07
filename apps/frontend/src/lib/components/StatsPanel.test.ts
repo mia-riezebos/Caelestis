@@ -359,6 +359,10 @@ describe('painter pace', () => {
       expect(document.querySelector('path[data-painter-line="10"]')).not.toBeNull(),
     )
     expect(api.getPainterHistory.mock.calls.at(-1)?.[1]).toEqual([5, 6, 7, 8, 9, 10])
+    // The row's read-out state follows the toggle, independent of the command cursor.
+    expect(
+      document.querySelector('[data-painter-option="10"] [data-painter-state]')?.textContent,
+    ).toBe('drawn')
   })
 
   it('draws the template lines alone when the server has no painter buckets', async () => {

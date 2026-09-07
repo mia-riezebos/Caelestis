@@ -218,6 +218,21 @@ describe('painter lines', () => {
     flushSync()
     await vi.waitFor(() => expect(document.querySelector('[data-painter-search]')).not.toBeNull())
     expect(document.querySelectorAll('[data-painter-option]')).toHaveLength(9)
+    // The drawn state is read out as text: `aria-selected` belongs to the command cursor.
+    const stateOf = (id: number): string | undefined =>
+      document.querySelector(`[data-painter-option="${id}"] [data-painter-state]`)?.textContent
+    expect(stateOf(1)).toBe('drawn')
+    expect(stateOf(42)).toBe('not drawn')
+    // The cursor starts on the first row and spotlights it; ArrowDown moves the spotlight along.
+    const opacityOf = (id: number): string | null =>
+      document.querySelector(`path[data-painter-line="${id}"]`)?.getAttribute('stroke-opacity') ??
+      null
+    await vi.waitFor(() => expect(opacityOf(2)).toBe('0.25'))
+    expect(opacityOf(1)).toBe('0.9')
+    search().dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }))
+    flushSync()
+    await vi.waitFor(() => expect(opacityOf(2)).toBe('0.9'))
+    expect(opacityOf(1)).toBe('0.25')
 
     const input = search()
     input.value = 'ada'
