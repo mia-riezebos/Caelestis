@@ -369,6 +369,68 @@ export const telemetryBuckets = sqliteTable(
   ],
 )
 
+/**
+ * `telemetry_buckets` with a painter in the key: one painter's share of each folded bucket, on
+ * the same ladder, so a dashboard draws a painter's rolling pace at the template's precision.
+ *
+ * Rows are additive. They are written per paint report under the `applied_events` claim, which is
+ * what makes a plain `+ excluded` upsert exact, and the fold sums sources into the target in one
+ * transaction with their removal. The template table replaces instead, because the counter shard
+ * rewrites whole buckets; nothing rewrites these.
+ */
+export const painterTelemetryBuckets = sqliteTable(
+  'painter_telemetry_buckets',
+  {
+    templateId: text('template_id').notNull(),
+    wplaceUserId: integer('wplace_user_id').notNull(),
+    resolution: integer('resolution').notNull(),
+    bucketStartS: integer('bucket_start_s').$type<Seconds>().notNull(),
+    placed: integer('placed').notNull(),
+    correct: integer('correct').notNull(),
+    repairs: integer('repairs').notNull(),
+  },
+  (table) => [
+    // Painter last: every read and fold constrains template, tier and time and only then cares
+    // who painted, so the key has to seek on those three before it fans out per painter.
+    primaryKey({
+      columns: [table.templateId, table.resolution, table.bucketStartS, table.wplaceUserId],
+    }),
+    check(
+      'painter_telemetry_buckets_resolution_check',
+      sql`${table.resolution} IN (60, 300, 900, 3600, 21600)`,
+    ),
+    check(
+      'painter_telemetry_buckets_alignment_check',
+      sql`typeof(${table.bucketStartS}) = 'integer' AND ${table.bucketStartS} >= 0
+        AND ${table.bucketStartS} % ${table.resolution} = 0`,
+    ),
+    // wplace_user_id is reporter-supplied, so it gets the same type guard `contributions` gives it.
+    check(
+      'painter_telemetry_buckets_counter_check',
+      sql`typeof(${table.wplaceUserId}) = 'integer' AND ${table.wplaceUserId} >= 0
+        AND typeof(${table.placed}) = 'integer' AND typeof(${table.correct}) = 'integer'
+        AND typeof(${table.repairs}) = 'integer'
+        AND ${table.repairs} >= 0
+        AND ${table.repairs} <= ${table.correct} AND ${table.correct} <= ${table.placed}`,
+    ),
+  ],
+)
+
+/**
+ * When this deployment began keeping painter buckets. The table above starts empty and older
+ * `applied_events` carry no painter share to backfill, so a history read must not advertise the
+ * time before this row as covered: nobody was silent then, nobody was counted. One row, written by
+ * the migration that created the table.
+ */
+export const painterBucketCollection = sqliteTable(
+  'painter_bucket_collection',
+  {
+    id: integer('id').primaryKey(),
+    sinceS: integer('since_s').$type<Seconds>().notNull(),
+  },
+  (table) => [check('painter_bucket_collection_single_row_check', sql`${table.id} = 1`)],
+)
+
 export const contributions = sqliteTable(
   'contributions',
   {

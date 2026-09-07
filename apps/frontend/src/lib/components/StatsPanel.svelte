@@ -4,18 +4,33 @@
     ContributionDay,
     HistoryBucket,
     LeaderboardEntry,
+    PainterTotal,
     Template,
   } from '@caelestis/shared'
-  import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
+  import {
+    getContributions,
+    getHistory,
+    getLeaderboard,
+    getPainterHistory,
+    getPainterTotals,
+  } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
+  import {
+    defaultVisiblePainters,
+    MAX_PAINTER_OPTIONS,
+    MAX_SELECTED_PAINTERS,
+    togglePainterSelection,
+  } from '$lib/components/charts/painter-pace'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
     PACE_WINDOWS,
     type PaceHistorySource,
+    type PainterHistorySource,
     averagePace,
   } from '$lib/components/charts/progress-pace'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
+  import { persisted } from '$lib/persisted.svelte'
   import type { Progress } from '$lib/tree'
   import type { DashboardSnapshot } from '$lib/state/app.svelte'
 
@@ -65,6 +80,29 @@
   let paceHistories = $state<readonly PaceHistorySource[]>([])
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
+  /** The rolling pace windows the chart draws; shared so painter lines are fetched for the same. */
+  const storedWindows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h'])
+  /** Who painted in the scope, leading first: the picker's list and the source of the default set. */
+  let painters = $state<readonly PainterTotal[]>([])
+  // The leading painters draw by default. The picker records an override per painter, so the
+  // default set can shift with the data without undoing anyone's choices.
+  let painterOverrides = $state<Record<number, boolean>>({})
+  const defaultPainters = $derived(defaultVisiblePainters(painters))
+  const painterShown = (wplaceUserId: number): boolean =>
+    painterOverrides[wplaceUserId] ?? defaultPainters.has(wplaceUserId)
+  const selectedPainters = $derived(
+    new Set(
+      painters
+        .filter((painter) => painterShown(painter.wplaceUserId))
+        .map((painter) => painter.wplaceUserId),
+    ),
+  )
+  // Never past the history route's bound: one refused request would take every line with it.
+  const togglePainter = (wplaceUserId: number): void => {
+    painterOverrides = togglePainterSelection(painterOverrides, selectedPainters, wplaceUserId)
+  }
+  /** The selected painters' retained tiers for each enabled rolling window, like `paceHistories`. */
+  let painterHistories = $state<readonly PainterHistorySource[]>([])
   let failed = $state(false)
   let historyScope: string | undefined
 
@@ -128,6 +166,8 @@
     const ids = [...templateIds]
     contributions = null
     leaderboard = null
+    // The heatmap draws sixteen weeks, and that is all this read is for: painter pace comes from
+    // the bucket ladder below, at whatever range the scope has.
     const contributionsFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
     if (liveDashboard)
       return subscribeDashboard(ids, contributionsFrom, (snapshot) => {
@@ -164,6 +204,73 @@
       generation.cancelled = true
       clearInterval(interval)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  })
+
+  // Who painted is one bounded list per scope, summed by the server, refreshed on its own slow
+  // clock. Painter lines then read the same ladder as the template lines: one retained tier per
+  // enabled rolling window, for the selected painters only. A window nobody enabled and a painter
+  // nobody chose are never fetched, so a crowded server pays for what it draws.
+  const PAINTERS_REFRESH_MS = 5 * 60_000
+  let painterScope: string | undefined
+  $effect(() => {
+    if (templateIds.length === 0) return
+    const ids = [...templateIds]
+    const generation = { cancelled: false }
+    const scope = `${ids.join('\0')}:${from}`
+    if (painterScope !== scope) {
+      painterScope = scope
+      painters = []
+      painterOverrides = {}
+      painterHistories = []
+    }
+    const refresh = (): void => {
+      const requestedAt = Math.floor(Date.now() / 1_000) + 1
+      getPainterTotals(ids, from, requestedAt, { limit: MAX_PAINTER_OPTIONS })
+        .then((response) => {
+          if (!generation.cancelled) painters = response.painters
+        })
+        .catch(() => {
+          // A server without painter buckets still draws the template lines.
+        })
+    }
+    refresh()
+    const interval = setInterval(refresh, PAINTERS_REFRESH_MS)
+    return () => {
+      generation.cancelled = true
+      clearInterval(interval)
+    }
+  })
+
+  $effect(() => {
+    if (templateIds.length === 0) return
+    const generation = { cancelled: false }
+    const enabled = new Set(storedWindows.value)
+    const chosen = [...selectedPainters].slice(0, MAX_SELECTED_PAINTERS)
+    if (chosen.length === 0) {
+      painterHistories = []
+      return
+    }
+    Promise.all(
+      PACE_WINDOWS.filter((window) => enabled.has(window.key)).map(
+        async (window): Promise<PainterHistorySource | null> => {
+          try {
+            const history = await getPainterHistory(templateIds, chosen, from, to, {
+              maxResolution: window.seconds / 2,
+            })
+            return { window: window.key, history }
+          } catch {
+            return null
+          }
+        },
+      ),
+    ).then((responses) => {
+      if (!generation.cancelled) {
+        painterHistories = responses.filter((response) => response !== null)
+      }
+    })
+    return () => {
+      generation.cancelled = true
     }
   })
 
@@ -221,6 +328,11 @@
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
         live={templates.some((template) => template.finishedAt === null)}
+        {painters}
+        {selectedPainters}
+        onTogglePainter={togglePainter}
+        {painterHistories}
+        windows={storedWindows}
       />
     {/if}
   </section>

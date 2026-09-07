@@ -6,6 +6,9 @@ import {
   type HistoryResponse,
   type LeaderboardEntry,
   type LeaderboardResponse,
+  type PainterHistoryBucket,
+  type PainterHistoryResponse,
+  type PainterTotalsResponse,
   type Seconds,
   type StatusResponse,
   seconds,
@@ -268,6 +271,162 @@ export const readHistory = (input: {
         input.legacyResolution === undefined
           ? coalesceTelemetryHistory(buckets, resolution, input.range)
           : buckets,
+    }
+  })
+
+/**
+ * `coalesceTelemetryHistory` per painter: the same tier selection and overlap rules, grouped by
+ * template, painter and target bucket, so a painter's line lands on the template's grid exactly.
+ */
+const coalescePainterHistory = (
+  buckets: readonly (PainterHistoryBucket & { readonly wplaceUserId: number })[],
+  resolution: number,
+  range: HistoryRange,
+): readonly PainterHistoryBucket[] => {
+  const groups = new Map<string, PainterHistoryBucket[]>()
+  for (const bucket of buckets) {
+    const bucketStart = seconds(Math.floor(bucket.bucketStart / resolution) * resolution)
+    if (bucketStart < range.fromSeconds || bucketStart >= range.toSeconds) continue
+    const key = `${bucket.templateId} ${bucket.wplaceUserId} ${bucketStart}`
+    const held = groups.get(key) ?? []
+    held.push(bucket)
+    groups.set(key, held)
+  }
+  const folded: PainterHistoryBucket[] = []
+  for (const [key, candidates] of groups) {
+    const [templateId = '', wplaceUserId = '', start = ''] = key.split(' ')
+    const selected: PainterHistoryBucket[] = []
+    for (const candidate of [...candidates].sort(
+      (left, right) => right.resolution - left.resolution || left.bucketStart - right.bucketStart,
+    )) {
+      const end = candidate.bucketStart + candidate.resolution
+      if (
+        selected.some(
+          (held) =>
+            candidate.bucketStart < held.bucketStart + held.resolution && end > held.bucketStart,
+        )
+      ) {
+        continue
+      }
+      selected.push(candidate)
+    }
+    folded.push({
+      templateId,
+      wplaceUserId: Number(wplaceUserId),
+      displayName: candidates[0]?.displayName ?? wplaceUserId,
+      resolution,
+      bucketStart: seconds(Number(start)),
+      placed: selected.reduce((total, bucket) => total + bucket.placed, 0),
+      correct: selected.reduce((total, bucket) => total + bucket.correct, 0),
+      repairs: selected.reduce((total, bucket) => total + bucket.repairs, 0),
+    })
+  }
+  return folded.sort(
+    (left, right) =>
+      (left.templateId < right.templateId ? -1 : left.templateId > right.templateId ? 1 : 0) ||
+      left.wplaceUserId - right.wplaceUserId ||
+      left.bucketStart - right.bucketStart,
+  )
+}
+
+/**
+ * `readHistory` per painter. Same tier selection, coverage boundary and publish gate; the rows
+ * come from `painter_telemetry_buckets`, which only ever holds what paint reports said, so a
+ * painter whose client does not report is simply absent.
+ */
+export const readPainterHistory = (input: {
+  readonly templateIds: readonly string[]
+  /** The painters to draw; the read is bounded by this list, not by the scope's age. */
+  readonly wplaceUserIds: readonly number[]
+  readonly range: HistoryRange
+  readonly maxResolution?: number | undefined
+  readonly includeUnpublished: boolean
+}): Effect.Effect<PainterHistoryResponse, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const maxResolution = input.maxResolution
+    const selectableTiers =
+      maxResolution === undefined
+        ? TELEMETRY_HISTORY_TIERS
+        : TELEMETRY_HISTORY_TIERS.filter((tier) => tier.resolution <= maxResolution)
+    const readAt = seconds(Math.floor(Date.now() / 1_000))
+    const resolution = selectHistoryResolution(selectableTiers, input.range, readAt)
+    const visibleIds = input.includeUnpublished
+      ? input.templateIds
+      : yield* sqlRead('filterPublishedTemplateIds', () =>
+          sql.filterPublishedTemplateIds(input.templateIds),
+        )
+    const buckets =
+      visibleIds.length === 0 || input.wplaceUserIds.length === 0
+        ? []
+        : yield* sqlRead('readPainterBuckets', () =>
+            sql.readPainterBuckets({
+              templateIds: visibleIds,
+              wplaceUserIds: input.wplaceUserIds,
+              resolution: LADDER_RESOLUTIONS.filter((tier) => tier <= resolution),
+              ...input.range,
+            }),
+          )
+    const names = yield* sqlRead('readPainterNames', () =>
+      sql.readPainterNames([...new Set(buckets.map((bucket) => bucket.wplaceUserId))]),
+    )
+    const labelled = buckets.map((bucket) => ({
+      ...bucket,
+      displayName: names.get(bucket.wplaceUserId) ?? String(bucket.wplaceUserId),
+    }))
+    // The ladder says how far back a tier is kept; the collection marker says how far back this
+    // deployment kept painters at all. Coverage is the later of the two, so the time before the
+    // table existed stays unavailable instead of reading as silence.
+    const collectionStart = yield* sqlRead('readPainterCollectionStart', () =>
+      sql.readPainterCollectionStart(),
+    )
+    const coverageStart = seconds(
+      Math.max(
+        telemetryCoverageStart(resolution, input.range, readAt),
+        collectionStart === null ? readAt : Math.ceil(collectionStart / resolution) * resolution,
+      ),
+    )
+    return {
+      ...(input.maxResolution === undefined ? {} : { resolution, coverageStart }),
+      buckets: coalescePainterHistory(labelled, resolution, input.range),
+    }
+  })
+
+/**
+ * Who painted in a range and how much, leading first: the list a dashboard picks painters from.
+ * Summed in the database at the tier `/painter-history` would choose for the range, so a scope's
+ * lifetime costs one bounded list per read rather than every retained row.
+ */
+export const readPainterTotals = (input: {
+  readonly templateIds: readonly string[]
+  readonly range: HistoryRange
+  readonly limit: number
+  readonly includeUnpublished: boolean
+}): Effect.Effect<PainterTotalsResponse, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const visibleIds = input.includeUnpublished
+      ? input.templateIds
+      : yield* sqlRead('filterPublishedTemplateIds', () =>
+          sql.filterPublishedTemplateIds(input.templateIds),
+        )
+    const totals =
+      visibleIds.length === 0
+        ? []
+        : yield* sqlRead('readPainterTotals', () =>
+            sql.readPainterTotals(
+              { templateIds: visibleIds, resolution: LADDER_RESOLUTIONS, ...input.range },
+              input.limit,
+            ),
+          )
+    const names = yield* sqlRead('readPainterNames', () =>
+      sql.readPainterNames(totals.map((total) => total.wplaceUserId)),
+    )
+    return {
+      painters: totals.map((total) => ({
+        ...total,
+        displayName: names.get(total.wplaceUserId) ?? String(total.wplaceUserId),
+      })),
     }
   })
 

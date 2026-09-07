@@ -1162,6 +1162,26 @@ describe('telemetry routes', () => {
     await expect(counters.readPending([templateId])).resolves.toEqual([
       expect.objectContaining({ templateId, placed: 1, correct: 1, repairs: 1 }),
     ])
+    // The painter's share rides the ladder too, once per event, at the minute the paint happened.
+    await expect(
+      sql.readPainterBuckets({
+        templateIds: [templateId],
+        wplaceUserIds: [42],
+        resolution: 60,
+        fromSeconds: seconds(now - 120),
+        toSeconds: seconds(now + 60),
+      }),
+    ).resolves.toEqual([
+      {
+        templateId,
+        wplaceUserId: 42,
+        resolution: 60,
+        bucketStart: seconds(Math.floor(now / 60) * 60),
+        placed: 1,
+        correct: 1,
+        repairs: 1,
+      },
+    ])
 
     const forbidden = await app.request('/telemetry/paints', {
       method: 'POST',

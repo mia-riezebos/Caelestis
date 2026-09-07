@@ -7,6 +7,8 @@ const api = vi.hoisted(() => ({
   getContributions: vi.fn(),
   getHistory: vi.fn(),
   getLeaderboard: vi.fn(),
+  getPainterHistory: vi.fn(),
+  getPainterTotals: vi.fn(),
 }))
 const live = vi.hoisted(() => ({ subscribe: vi.fn() }))
 
@@ -48,6 +50,8 @@ beforeEach(() => {
   api.getHistory.mockReset().mockResolvedValue({ buckets: [] })
   api.getContributions.mockReset().mockResolvedValue({ days: [] })
   api.getLeaderboard.mockReset().mockResolvedValue({ entries: [] })
+  api.getPainterHistory.mockReset().mockResolvedValue({ buckets: [] })
+  api.getPainterTotals.mockReset().mockResolvedValue({ painters: [] })
   live.subscribe.mockReset().mockReturnValue(() => undefined)
 })
 
@@ -257,5 +261,138 @@ describe('live counts', () => {
     await vi.advanceTimersByTimeAsync(15_000)
     expect(api.getContributions).toHaveBeenCalledTimes(2)
     expect(api.getLeaderboard).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('painter pace', () => {
+  it('reads painter buckets for the enabled windows and draws them on the progress chart', async () => {
+    const bucketStart = seconds(NOW_SECONDS - 1_800)
+    api.getHistory.mockResolvedValue({
+      buckets: [
+        { templateId: 'live', resolution: 900, bucketStart, placed: 4, correct: 4, repairs: 0 },
+      ],
+    })
+    const painter = (wplaceUserId: number, displayName: string, placed: number) => ({
+      wplaceUserId,
+      displayName,
+      placed,
+      correct: placed,
+      repairs: 0,
+    })
+    // Seven painters: the leading five draw by default, the others wait in the picker.
+    api.getPainterTotals.mockResolvedValue({
+      painters: [
+        painter(5, 'Ada', 70),
+        painter(6, 'Bo', 60),
+        painter(7, 'Cyd', 50),
+        painter(8, 'Dee', 40),
+        painter(9, 'Eli', 30),
+        painter(10, 'Fen', 20),
+        painter(11, 'Gus', 10),
+      ],
+    })
+    api.getPainterHistory.mockImplementation((_ids, painters: readonly number[]) =>
+      Promise.resolve({
+        resolution: 900,
+        coverageStart: seconds(0),
+        buckets: painters.map((wplaceUserId) => ({
+          templateId: 'live',
+          wplaceUserId,
+          displayName: `painter ${wplaceUserId}`,
+          resolution: 900,
+          bucketStart,
+          placed: 3,
+          correct: 3,
+          repairs: 0,
+        })),
+      }),
+    )
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: true,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 4, mismatched: 0, unpainted: 1, known: 5, total: 5 },
+      },
+    })
+    flushSync()
+
+    // One bounded list of painters for the scope, then one retained tier per enabled window (1h
+    // and 6h) for the selected painters only.
+    await vi.waitFor(() => expect(api.getPainterTotals).toHaveBeenCalledTimes(1))
+    expect(api.getPainterTotals.mock.calls[0]?.[3]).toEqual({ limit: 500 })
+    await vi.waitFor(() => expect(api.getPainterHistory).toHaveBeenCalledTimes(2))
+    expect(api.getPainterHistory.mock.calls.map((call) => call[4]?.maxResolution).sort()).toEqual(
+      [10_800, 1_800].sort(),
+    )
+    expect(api.getPainterHistory.mock.calls[0]?.[1]).toEqual([5, 6, 7, 8, 9])
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('path[data-painter-line="5"][data-pace-window="1h"]'),
+      ).not.toBeNull(),
+    )
+    expect(
+      document.querySelectorAll('path[data-painter-line][data-pace-window="6h"]'),
+    ).toHaveLength(5)
+    expect(document.querySelector('path[data-painter-line="10"]')).toBeNull()
+    expect(document.querySelector('[data-painter-trigger]')?.textContent).toContain('5 of 7')
+    expect(api.getContributions).not.toHaveBeenCalled()
+    // The heatmap read stays sixteen weeks: painter pace no longer rides on contribution days.
+    expect(live.subscribe.mock.calls[0]?.[1]).toBe(NOW_SECONDS - 86_400 * 7 * 16)
+
+    // Choosing another painter from the popout fetches the windows again for the new selection.
+    document.querySelector<HTMLButtonElement>('[data-painter-trigger]')?.click()
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelector('[data-painter-search]')).not.toBeNull())
+    const input = document.querySelector<HTMLInputElement>('[data-painter-search]')
+    if (input !== null) input.value = 'fen'
+    input?.dispatchEvent(new Event('input', { bubbles: true }))
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('[data-painter-option]')).toHaveLength(1),
+    )
+    ;(document.querySelector('[data-painter-option="10"]') as HTMLElement).click()
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.querySelector('path[data-painter-line="10"]')).not.toBeNull(),
+    )
+    expect(api.getPainterHistory.mock.calls.at(-1)?.[1]).toEqual([5, 6, 7, 8, 9, 10])
+    // The row's read-out state follows the toggle, independent of the command cursor.
+    expect(
+      document.querySelector('[data-painter-option="10"] [data-painter-state]')?.textContent,
+    ).toBe('drawn')
+  })
+
+  it('draws the template lines alone when the server has no painter buckets', async () => {
+    api.getHistory.mockResolvedValue({
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: 900,
+          bucketStart: seconds(NOW_SECONDS - 900),
+          placed: 1,
+          correct: 1,
+          repairs: 0,
+        },
+      ],
+    })
+    api.getPainterTotals.mockRejectedValue(new Error('404'))
+    api.getPainterHistory.mockRejectedValue(new Error('404'))
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: true,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
+      },
+    })
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
+    expect(document.querySelector('[data-painter-trigger]')).toBeNull()
+    expect(document.querySelector('path[data-painter-line]')).toBeNull()
   })
 })

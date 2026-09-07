@@ -31,4 +31,31 @@ describe('backend browser proxy', () => {
     expect(headers.get('upgrade')).toBe('websocket')
     expect(headers.get('sec-websocket-protocol')).toBe('caelestis.live.v2, caelestis.live.v1')
   })
+
+  it('drops the transfer headers of an already-decoded backend body', async () => {
+    fetchBackend.mockResolvedValue(
+      new Response('{"buckets":[]}', {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'content-encoding': 'gzip',
+          'content-length': '9',
+          etag: '"abc"',
+        },
+      }),
+    )
+    const request = new Request('https://frontend.test/api/v1/telemetry/history?from=1&to=2')
+
+    const response = await GET({
+      params: { path: 'v1/telemetry/history' },
+      request,
+      url: new URL(request.url),
+    } as Parameters<typeof GET>[0])
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-encoding')).toBeNull()
+    expect(response.headers.get('content-length')).toBeNull()
+    expect(response.headers.get('etag')).toBe('"abc"')
+    await expect(response.json()).resolves.toEqual({ buckets: [] })
+  })
 })

@@ -20,15 +20,17 @@ import {
   WRONG,
 } from '@caelestis/shared'
 import { Effect } from 'effect'
-import type {
-  BlobStore,
-  ContributionDelta,
-  CounterDelta,
-  CounterStore,
-  SqlStore,
-  TelemetryTarget,
-  TemplateTileStatusRecord,
-  TileObservation,
+import {
+  type BlobStore,
+  type ContributionDelta,
+  type CounterDelta,
+  type CounterStore,
+  type PainterTelemetryBucket,
+  painterBucketResolution,
+  type SqlStore,
+  type TelemetryTarget,
+  type TemplateTileStatusRecord,
+  type TileObservation,
 } from '../ports/index.js'
 import {
   BlobStoreService,
@@ -718,6 +720,10 @@ const recordPaintPromise = async (
 
   const counters: CounterDelta[] = []
   const contributions: ContributionDelta[] = []
+  const painterBuckets: PainterTelemetryBucket[] = []
+  // The painter's bucket lands at whichever ladder tier its window has already reached, so a
+  // report that arrives after the fold still reads at once instead of hiding under a coarser row.
+  const painterResolution = painterBucketResolution(event.ts, seconds(Math.floor(seenAt / 1_000)))
   for (const [templateId, total] of totals) {
     counters.push({ templateId, occurredAt: event.ts, ...total })
     contributions.push({
@@ -728,13 +734,20 @@ const recordPaintPromise = async (
       reportedByUserId: event.wplaceUserId,
       ...total,
     })
+    painterBuckets.push({
+      templateId,
+      wplaceUserId: event.wplaceUserId,
+      resolution: painterResolution,
+      bucketStart: seconds(Math.floor(event.ts / painterResolution) * painterResolution),
+      ...total,
+    })
   }
   const application = await ports.sql.applyPaintEvent(
     event.eventId,
     event.wplaceUserId,
     event.displayName,
     seenAt,
-    { counters, contributions },
+    { counters, contributions, painterBuckets },
   )
   if (application.accounting === null) return 'duplicate'
   await ports.counters.record(application.accounting.counters, event.eventId)

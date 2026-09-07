@@ -22,6 +22,7 @@ import {
 } from '../metrics/request-metrics.js'
 import {
   LADDER_RESOLUTIONS,
+  MAX_PAINTER_HISTORY_IDS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   TILE_HISTORY_RESOLUTIONS,
 } from '../ports/index.js'
@@ -40,6 +41,8 @@ import {
   readContributions,
   readHistory,
   readLeaderboard,
+  readPainterHistory,
+  readPainterTotals,
   readStatus,
   readTileHistory,
   selectTelemetryHistoryResolution,
@@ -117,6 +120,16 @@ const wholeNumber = (value: string | undefined): number | null => {
 }
 
 /** Comma-separated template ids, validated per id and bounded by the port's read cap. */
+/** The most painters `/painters` lists; the wire schema bounds the response to the same. */
+const MAX_PAINTER_TOTALS = 500
+
+const parsePainterIds = (value: string | undefined): number[] | null => {
+  if (value === undefined || value.length === 0) return null
+  const ids = value.split(',').map((id) => wholeNumber(id))
+  if (ids.length > MAX_PAINTER_HISTORY_IDS || ids.some((id) => id === null)) return null
+  return [...new Set(ids as number[])]
+}
+
 const parseTemplateIds = (value: string | undefined): string[] | null => {
   if (value === undefined || value.length === 0) return null
   const ids = value.split(',')
@@ -409,6 +422,79 @@ export const createTelemetryRoutes = (
         range,
         ...(typeof legacyResolution === 'number' ? { legacyResolution } : {}),
         ...(typeof maxResolution === 'number' ? { maxResolution } : {}),
+        includeUnpublished: c.get('caller').scope === 'admin',
+      }),
+      (response) => c.json(response),
+    )
+  })
+
+  routes.get('/painter-history', requireScopeEffect(runtime, auth, 'read'), (c) => {
+    const templateIds = parseTemplateIds(c.req.query('templateIds'))
+    if (templateIds === null) {
+      return c.json(
+        { error: `templateIds must be 1..${MAX_READ_BUCKETS_TEMPLATE_IDS} comma-separated ids` },
+        400,
+      )
+    }
+    const requestedMaxResolution = c.req.query('maxResolution')
+    const maxResolution =
+      requestedMaxResolution === undefined ? undefined : wholeNumber(requestedMaxResolution)
+    if (
+      requestedMaxResolution !== undefined &&
+      (typeof maxResolution !== 'number' || maxResolution < (LADDER_RESOLUTIONS[0] ?? 0))
+    ) {
+      return c.json({ error: `maxResolution must be at least ${LADDER_RESOLUTIONS[0]}` }, 400)
+    }
+    const range = parseRange(c.req.query('from'), c.req.query('to'))
+    if (range === null) {
+      return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
+    }
+    // Named painters only: the response is bounded by who is drawn, whatever the scope's age.
+    const wplaceUserIds = parsePainterIds(c.req.query('painters'))
+    if (wplaceUserIds === null) {
+      return c.json(
+        { error: `painters must be 1..${MAX_PAINTER_HISTORY_IDS} comma-separated wplace user ids` },
+        400,
+      )
+    }
+    return runBackendHttp(
+      c,
+      runtime,
+      readPainterHistory({
+        templateIds,
+        wplaceUserIds,
+        range,
+        ...(typeof maxResolution === 'number' ? { maxResolution } : {}),
+        includeUnpublished: c.get('caller').scope === 'admin',
+      }),
+      (response) => c.json(response),
+    )
+  })
+
+  routes.get('/painters', requireScopeEffect(runtime, auth, 'read'), (c) => {
+    const templateIds = parseTemplateIds(c.req.query('templateIds'))
+    if (templateIds === null) {
+      return c.json(
+        { error: `templateIds must be 1..${MAX_READ_BUCKETS_TEMPLATE_IDS} comma-separated ids` },
+        400,
+      )
+    }
+    const range = parseRange(c.req.query('from'), c.req.query('to'))
+    if (range === null) {
+      return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
+    }
+    const requestedLimit = c.req.query('limit')
+    const limit = requestedLimit === undefined ? MAX_PAINTER_TOTALS : wholeNumber(requestedLimit)
+    if (limit === null || limit < 1) {
+      return c.json({ error: 'limit must be a positive integer' }, 400)
+    }
+    return runBackendHttp(
+      c,
+      runtime,
+      readPainterTotals({
+        templateIds,
+        range,
+        limit: Math.min(limit, MAX_PAINTER_TOTALS),
         includeUnpublished: c.get('caller').scope === 'admin',
       }),
       (response) => c.json(response),

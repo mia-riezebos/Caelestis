@@ -1,4 +1,4 @@
-import type { HistoryResponse } from '@caelestis/shared'
+import type { HistoryResponse, PainterHistoryResponse } from '@caelestis/shared'
 
 export const PACE_WINDOWS = [
   { key: '30m', seconds: 1_800 },
@@ -16,6 +16,12 @@ export type PaceWindowKey = (typeof PACE_WINDOWS)[number]['key']
 export interface PaceHistorySource {
   readonly window: PaceWindowKey
   readonly history: HistoryResponse
+}
+
+/** The per-painter counterpart of `PaceHistorySource`, on the same retained tier. */
+export interface PainterHistorySource {
+  readonly window: PaceWindowKey
+  readonly history: PainterHistoryResponse
 }
 
 export interface PaceAverage {

@@ -36,7 +36,9 @@ import {
   canvasTiles,
   contributions,
   nodes,
+  painterBucketCollection,
   painters,
+  painterTelemetryBuckets,
   serverSettings,
   telemetryBuckets,
   templateAlarmStates,
@@ -59,6 +61,7 @@ import {
   type AlarmTileRecord,
   assertValidBuckets,
   assertValidContributionQuery,
+  assertValidPainterBuckets,
   assertValidPublishedFilter,
   assertValidTemplateVersion,
   assertValidTileHistoryQuery,
@@ -67,12 +70,14 @@ import {
   type ContributionQuery,
   compareBuckets,
   compareContributionDays,
+  comparePainterBuckets,
   DECAY_FOLD_GROUP_LIMIT,
   foldTileFrames,
   foldTileReporterRows,
   InvalidNodeParentError,
   type LatestTileObservation,
   MAX_NODE_PATH_LENGTH,
+  MAX_PAINTER_HISTORY_IDS,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
@@ -85,6 +90,9 @@ import {
   NodeSubtreeChangedError,
   type PaintEventAccounting,
   type PaintEventApplication,
+  type PainterBucketQuery,
+  type PainterTelemetryBucket,
+  type PainterTotalRow,
   READ_BUCKETS_CHUNK_SIZE,
   type ServerSettings,
   type SqlStore,
@@ -2719,6 +2727,35 @@ export class D1SqlStore implements SqlStore {
           .bind(JSON.stringify(accounting.contributions)),
       )
     }
+    const painterBuckets = accounting.painterBuckets ?? []
+    if (painterBuckets.length > 0) {
+      // Ahead of the batch, so a poison row is a synchronous error naming the column rather than a
+      // CHECK failure that fails the whole paint.
+      assertValidPainterBuckets(painterBuckets)
+      statements.push(
+        this.client
+          .prepare(
+            `INSERT INTO painter_telemetry_buckets (
+               template_id, wplace_user_id, resolution, bucket_start_s, placed, correct, repairs
+             )
+             SELECT
+               json_extract(value, '$.templateId'),
+               json_extract(value, '$.wplaceUserId'),
+               json_extract(value, '$.resolution'),
+               json_extract(value, '$.bucketStart'),
+               json_extract(value, '$.placed'),
+               json_extract(value, '$.correct'),
+               json_extract(value, '$.repairs')
+             FROM json_each(?)
+             WHERE changes() > 0
+             ON CONFLICT(template_id, wplace_user_id, resolution, bucket_start_s) DO UPDATE SET
+               placed = painter_telemetry_buckets.placed + excluded.placed,
+               correct = painter_telemetry_buckets.correct + excluded.correct,
+               repairs = painter_telemetry_buckets.repairs + excluded.repairs`,
+          )
+          .bind(JSON.stringify(painterBuckets)),
+      )
+    }
     statements.push(
       this.client
         .prepare(
@@ -2942,6 +2979,191 @@ export class D1SqlStore implements SqlStore {
     // what was on wplace, and revoking a credential ends its future access rather than editing the
     // past.
     await this.database.delete(accessTokens).where(eq(accessTokens.tokenHash, tokenHash))
+  }
+
+  async foldPainterBuckets(templateIds: readonly string[], now: Seconds): Promise<void> {
+    const ids = [...new Set(templateIds)].slice(0, READ_BUCKETS_CHUNK_SIZE)
+    if (ids.length === 0) return
+    const idBindings = ids.map(() => '?').join(', ')
+    for (const edge of TELEMETRY_DECAY_EDGES) {
+      const targetStart = `CAST(source.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}`
+      // One group per template and target window across all its painters, so the group limit
+      // bounds windows rather than painters and a window never half-folds.
+      const chosen = `
+        SELECT source.template_id, ${targetStart} AS target_start
+        FROM painter_telemetry_buckets AS source
+        WHERE source.resolution = ${edge.source}
+          AND source.template_id IN (${idBindings})
+          AND ${targetStart} + ${edge.target} <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM painter_telemetry_buckets AS finer
+            WHERE finer.template_id = source.template_id
+              AND finer.resolution < ${edge.source}
+              AND finer.bucket_start_s >= ${targetStart}
+              AND finer.bucket_start_s < ${targetStart} + ${edge.target}
+          )
+        GROUP BY source.template_id, target_start
+        ORDER BY MIN(source.bucket_start_s), source.template_id
+        LIMIT ?`
+      // Additive into the target, unlike the template fold: a late report may already sit there.
+      // Insert and delete share one batch, so the sum is never applied twice.
+      const insert = `
+        WITH chosen AS (${chosen})
+        INSERT INTO painter_telemetry_buckets (
+          template_id, wplace_user_id, resolution, bucket_start_s, placed, correct, repairs
+        )
+        SELECT source.template_id, source.wplace_user_id, ${edge.target}, chosen.target_start,
+          SUM(source.placed), SUM(source.correct), SUM(source.repairs)
+        FROM painter_telemetry_buckets AS source
+        INNER JOIN chosen
+          ON chosen.template_id = source.template_id
+          AND chosen.target_start = CAST(source.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}
+        WHERE source.resolution = ${edge.source}
+        GROUP BY source.template_id, source.wplace_user_id, chosen.target_start
+        ON CONFLICT(template_id, wplace_user_id, resolution, bucket_start_s) DO UPDATE SET
+          placed = painter_telemetry_buckets.placed + excluded.placed,
+          correct = painter_telemetry_buckets.correct + excluded.correct,
+          repairs = painter_telemetry_buckets.repairs + excluded.repairs`
+      const remove = `
+        WITH chosen AS (${chosen})
+        DELETE FROM painter_telemetry_buckets AS source
+        WHERE source.resolution = ${edge.source}
+          AND EXISTS (
+            SELECT 1 FROM chosen
+            WHERE chosen.template_id = source.template_id
+              AND chosen.target_start = CAST(source.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}
+          )`
+      const cutoff = now - edge.retainSeconds
+      const bindings = [...ids, cutoff, DECAY_FOLD_GROUP_LIMIT]
+      await this.client.batch([
+        this.client.prepare(insert).bind(...bindings),
+        this.client.prepare(remove).bind(...bindings),
+      ])
+    }
+  }
+
+  async readPainterBuckets(query: PainterBucketQuery): Promise<readonly PainterTelemetryBucket[]> {
+    const wplaceUserIds = [...new Set(query.wplaceUserIds)]
+    if (wplaceUserIds.length > MAX_PAINTER_HISTORY_IDS) {
+      throw new Error(
+        `readPainterBuckets accepts at most ${MAX_PAINTER_HISTORY_IDS} painters per call; received ${wplaceUserIds.length}`,
+      )
+    }
+    if (query.templateIds.length === 0 || wplaceUserIds.length === 0) return []
+    const resolutions = [
+      ...new Set(typeof query.resolution === 'number' ? [query.resolution] : query.resolution),
+    ]
+    if (resolutions.length === 0) return []
+    const templateIds = [...new Set(query.templateIds)]
+    if (templateIds.length > MAX_READ_BUCKETS_TEMPLATE_IDS)
+      throw tooManyTemplateIds(templateIds.length, 'readPainterBuckets')
+    // Chunked and concatenated for the same reasons as `readBuckets`.
+    let rows: (typeof painterTelemetryBuckets.$inferSelect)[] = []
+    for (let offset = 0; offset < templateIds.length; offset += READ_BUCKETS_CHUNK_SIZE) {
+      const chunk = templateIds.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)
+      rows = rows.concat(
+        await this.database
+          .select()
+          .from(painterTelemetryBuckets)
+          .where(
+            and(
+              inArray(painterTelemetryBuckets.resolution, resolutions),
+              gte(painterTelemetryBuckets.bucketStartS, query.fromSeconds),
+              lt(painterTelemetryBuckets.bucketStartS, query.toSeconds),
+              inArray(painterTelemetryBuckets.templateId, chunk),
+              inArray(painterTelemetryBuckets.wplaceUserId, wplaceUserIds),
+            ),
+          ),
+      )
+    }
+    return rows
+      .map(
+        (row): PainterTelemetryBucket => ({
+          templateId: row.templateId,
+          wplaceUserId: row.wplaceUserId,
+          resolution: row.resolution,
+          bucketStart: row.bucketStartS,
+          placed: row.placed,
+          correct: row.correct,
+          repairs: row.repairs,
+        }),
+      )
+      .sort(comparePainterBuckets)
+  }
+
+  async readPainterNames(wplaceUserIds: readonly number[]): Promise<ReadonlyMap<number, string>> {
+    const ids = [...new Set(wplaceUserIds)]
+    if (ids.length > MAX_READ_BUCKETS_TEMPLATE_IDS) {
+      throw tooManyTemplateIds(ids.length, 'readPainterNames')
+    }
+    const names = new Map<number, string>()
+    // Chunked like `readBuckets` for the same bound-parameter budget.
+    for (let offset = 0; offset < ids.length; offset += READ_BUCKETS_CHUNK_SIZE) {
+      const chunk = ids.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)
+      const rows = await this.database
+        .select({ wplaceUserId: painters.wplaceUserId, displayName: painters.displayName })
+        .from(painters)
+        .where(inArray(painters.wplaceUserId, chunk))
+      for (const row of rows) names.set(row.wplaceUserId, row.displayName)
+    }
+    return names
+  }
+
+  async readPainterTotals(query: BucketQuery, limit: number): Promise<readonly PainterTotalRow[]> {
+    if (query.templateIds.length === 0) return []
+    const resolutions = [
+      ...new Set(typeof query.resolution === 'number' ? [query.resolution] : query.resolution),
+    ]
+    if (resolutions.length === 0) return []
+    const templateIds = [...new Set(query.templateIds)]
+    if (templateIds.length > MAX_READ_BUCKETS_TEMPLATE_IDS) {
+      throw tooManyTemplateIds(templateIds.length, 'readPainterTotals')
+    }
+    // Summed in SQL per chunk and merged here, so a scope's lifetime never leaves the database as
+    // rows; the caller gets at most `limit` painters however long the range.
+    const totals = new Map<number, { placed: number; correct: number; repairs: number }>()
+    for (let offset = 0; offset < templateIds.length; offset += READ_BUCKETS_CHUNK_SIZE) {
+      const chunk = templateIds.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)
+      const rows = await this.database
+        .select({
+          wplaceUserId: painterTelemetryBuckets.wplaceUserId,
+          placed: sql<number>`sum(${painterTelemetryBuckets.placed})`,
+          correct: sql<number>`sum(${painterTelemetryBuckets.correct})`,
+          repairs: sql<number>`sum(${painterTelemetryBuckets.repairs})`,
+        })
+        .from(painterTelemetryBuckets)
+        .where(
+          and(
+            inArray(painterTelemetryBuckets.resolution, resolutions),
+            gte(painterTelemetryBuckets.bucketStartS, query.fromSeconds),
+            lt(painterTelemetryBuckets.bucketStartS, query.toSeconds),
+            inArray(painterTelemetryBuckets.templateId, chunk),
+          ),
+        )
+        .groupBy(painterTelemetryBuckets.wplaceUserId)
+      for (const row of rows) {
+        const held = totals.get(row.wplaceUserId) ?? { placed: 0, correct: 0, repairs: 0 }
+        held.placed += Number(row.placed)
+        held.correct += Number(row.correct)
+        held.repairs += Number(row.repairs)
+        totals.set(row.wplaceUserId, held)
+      }
+    }
+    return [...totals]
+      .map(([wplaceUserId, held]) => ({ wplaceUserId, ...held }))
+      .sort(
+        (a, b) => b.correct - a.correct || b.placed - a.placed || a.wplaceUserId - b.wplaceUserId,
+      )
+      .slice(0, limit)
+  }
+
+  async readPainterCollectionStart(): Promise<Seconds | null> {
+    const [row] = await this.database
+      .select({ sinceS: painterBucketCollection.sinceS })
+      .from(painterBucketCollection)
+      .where(eq(painterBucketCollection.id, 1))
+      .limit(1)
+    return row?.sinceS ?? null
   }
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
