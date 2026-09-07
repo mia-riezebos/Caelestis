@@ -717,6 +717,9 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
   )
 }
 
+// The first refresh can join a manifest read that started before the mutation.
+const LIFECYCLE_REFRESH_ATTEMPTS = 2
+
 const commitLifecycle = (
   id: string,
   field: 'finished' | 'frozen',
@@ -738,6 +741,10 @@ const commitLifecycle = (
     return
   }
   pendingLifecycle.set(id, field)
+  const confirmed = (): boolean => {
+    const current = templateFor(id)
+    return current !== undefined && serverLifecycleFor(current)?.[field] === value
+  }
   let message = 'Could not update this template. Try again.'
   settle(
     id,
@@ -748,17 +755,21 @@ const commitLifecycle = (
         target.templateId,
         field === 'finished' ? { finished: value } : { timelapseFrozen: value },
       )
-      if (!result.ok) message = result.message
-      await refreshServerTemplateSurface(target.server, template)
-      return result.ok
+      message = result.ok
+        ? 'Change saved, but its current state could not be confirmed. Refresh the server before trying again.'
+        : result.message
+      for (let attempt = 0; attempt < LIFECYCLE_REFRESH_ATTEMPTS; attempt++) {
+        const server = getState().servers.find((current) => current.url === target.server.url)
+        if (server === undefined) return false
+        await refreshServerTemplateSurface(server, template)
+        if (!result.ok || confirmed()) return result.ok
+      }
+      return false
     },
     () => message,
     () => pendingLifecycle.delete(id),
     rerender,
-    () => {
-      const current = templateFor(id)
-      return current !== undefined && serverLifecycleFor(current)?.[field] === value
-    },
+    confirmed,
     false,
   )
 }

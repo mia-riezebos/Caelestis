@@ -330,6 +330,7 @@ afterEach(() => {
   harness.setAppearance.mockImplementation(async () => true)
   harness.setLocalVisible.mockResolvedValue(true)
   harness.patchTemplate.mockReset().mockResolvedValue({ ok: true })
+  harness.listServerContents.mockReset().mockResolvedValue(null)
 })
 
 describe('template-local lifecycle actions', () => {
@@ -393,6 +394,57 @@ describe('template-local lifecycle actions', () => {
     expect((await byKey('frozen')).textContent).toBe('Freeze timelapse')
   })
 
+  it('reports an unconfirmed save when manifest refreshes leave stale lifecycle state', async () => {
+    connectServerTemplate(true)
+    openServerMenu()
+    ;(await byKey('finished')).click()
+    await settle()
+    expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toContain(
+      'Change saved, but its current state could not be confirmed.',
+    )
+    expect((await byKey('finished')).getAttribute('aria-disabled')).toBe('false')
+    expect((await byKey('finished')).textContent).toBe('Mark as complete')
+
+    Object.assign(harness.serverTemplates[0] ?? {}, { finished: true, timelapseFrozen: true })
+    rerender()
+    expect((await menuRoot()).querySelector('[data-caelestis-error]')).toBeNull()
+    expect((await byKey('finished')).textContent).toBe('Reopen template')
+  })
+
+  it('retries a stale manifest with current credentials while keeping the action pending', async () => {
+    connectServerTemplate(true)
+    harness.patchTemplate.mockImplementationOnce(async () => {
+      const server = harness.servers[0]
+      if (server === undefined) throw new Error('missing server')
+      harness.servers[0] = { ...server, token: 'replacement-token' }
+      return { ok: true }
+    })
+    let confirmRefresh: (() => void) | undefined
+    harness.listServerContents.mockResolvedValueOnce(null).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          confirmRefresh = () => {
+            Object.assign(harness.serverTemplates[0] ?? {}, {
+              finished: true,
+              timelapseFrozen: true,
+            })
+            resolve(null)
+          }
+        }),
+    )
+    openServerMenu()
+    ;(await byKey('finished')).click()
+    await settle()
+    expect(harness.listServerContents).toHaveBeenCalledTimes(2)
+    expect(harness.listServerContents).toHaveBeenNthCalledWith(1, harness.servers[0])
+    expect(harness.listServerContents).toHaveBeenNthCalledWith(2, harness.servers[0])
+    expect((await byKey('finished')).textContent).toBe('Saving…')
+    confirmRefresh?.()
+    await settle()
+    expect((await byKey('finished')).textContent).toBe('Reopen template')
+    expect((await menuRoot()).querySelector('[data-caelestis-error]')).toBeNull()
+  })
+
   it('shows a rejected freeze inline and permits retry without asserting unsaved state', async () => {
     connectServerTemplate(true)
     harness.patchTemplate.mockResolvedValueOnce({
@@ -407,6 +459,10 @@ describe('template-local lifecycle actions', () => {
     )
     expect((await byKey('frozen')).textContent).toBe('Freeze timelapse')
     expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('false')
+    harness.listServerContents.mockImplementationOnce(async () => {
+      Object.assign(harness.serverTemplates[0] ?? {}, { timelapseFrozen: true })
+      return null
+    })
     ;(await byKey('frozen')).click()
     await settle()
     expect(harness.patchTemplate).toHaveBeenLastCalledWith(harness.servers[0], 'remote-a', {
