@@ -21,10 +21,12 @@ describe('app release workflow', () => {
     }
   })
 
-  it('keeps the userscript latest and marks app releases as non-latest', () => {
+  it('keeps GitHub Releases userscript-only and tags deployed apps', () => {
     assert.match(workflow, /--title "Caelestis userscript v\$VERSION"[\s\S]*?--latest \\/)
-    assert.match(workflow, /--title "Caelestis frontend v\$VERSION"[\s\S]*?--latest=false/)
-    assert.match(workflow, /--title "Caelestis backend v\$VERSION"[\s\S]*?--latest=false/)
+    assert.equal(workflow.match(/gh release create/g)?.length, 1)
+    assert.match(workflow, /Create frontend version tag/)
+    assert.match(workflow, /Create backend version tag/)
+    assert.equal(workflow.match(/git push origin "refs\/tags\/\$TAG"/g)?.length, 2)
   })
 
   it('announces frontend and userscript releases through separate webhooks', () => {
@@ -33,24 +35,24 @@ describe('app release workflow', () => {
     assert.doesNotMatch(workflow, /Announce backend release/)
   })
 
-  it('releases deployed apps only after the same commit passes deployment', () => {
+  it('tags deployed apps only after the same commit passes deployment', () => {
     const deployedApps = workflow.indexOf('deployed-apps:')
     const deploymentGate = workflow.indexOf("Wait for this commit's production deployment")
-    const frontendRelease = workflow.indexOf('Create frontend GitHub release')
-    const backendRelease = workflow.indexOf('Create backend GitHub release')
+    const frontendTag = workflow.indexOf('Create frontend version tag')
+    const backendTag = workflow.indexOf('Create backend version tag')
 
     assert.ok(deployedApps >= 0)
     assert.ok(deploymentGate > deployedApps)
-    assert.ok(frontendRelease > deploymentGate)
-    assert.ok(backendRelease > deploymentGate)
+    assert.ok(frontendTag > deploymentGate)
+    assert.ok(backendTag > deploymentGate)
     assert.match(workflow, /gh run list --workflow deploy\.yml --commit "\$GITHUB_SHA"/)
     assert.match(workflow, /gh run watch "\$run_id" --exit-status/)
   })
 
   it('isolates userscript and frontend announcement retries', () => {
     assert.match(workflow, /userscript:\n[\s\S]*?name: Release userscript/)
-    assert.match(workflow, /deployed-apps:\n[\s\S]*?name: Release deployed frontend and backend/)
-    assert.equal(workflow.match(/--json targetCommitish/g)?.length, 2)
+    assert.match(workflow, /deployed-apps:\n[\s\S]*?name: Tag deployed frontend and backend/)
+    assert.equal(workflow.match(/--json targetCommitish/g)?.length, 1)
     assert.equal(workflow.match(/outputs\.matches_sha == 'true'/g)?.length, 3)
     assert.doesNotMatch(workflow, /^\s+github\.run_attempt > 1 \|\|$/m)
   })

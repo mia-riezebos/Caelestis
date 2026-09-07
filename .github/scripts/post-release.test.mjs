@@ -57,12 +57,24 @@ describe('release announcement', () => {
       payload.embeds[0].description,
       '### Patch Changes\n\n- [abc1234](https://github.com/mia-riezebos/Caelestis/commit/abc1234) `fix(frontend)` Keep the dashboard useful.',
     )
-    assert.deepEqual(payload.components[0].components[0], {
-      type: 2,
-      style: 5,
-      label: 'Open dashboard',
-      url: 'https://caelestis.mia.cx',
-    })
+    assert.equal(
+      payload.embeds[0].url,
+      'https://github.com/mia-riezebos/Caelestis/blob/frontend-v1.2.3/apps/frontend/CHANGELOG.md',
+    )
+    assert.deepEqual(payload.components[0].components, [
+      {
+        type: 2,
+        style: 5,
+        label: 'Open dashboard',
+        url: 'https://caelestis.mia.cx',
+      },
+      {
+        type: 2,
+        style: 5,
+        label: 'Read all changes',
+        url: 'https://github.com/mia-riezebos/Caelestis/blob/frontend-v1.2.3/apps/frontend/CHANGELOG.md',
+      },
+    ])
   })
 
   it('caps the summary at 18 changes and prioritizes level then influence', () => {

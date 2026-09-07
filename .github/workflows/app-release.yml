@@ -205,7 +205,7 @@ jobs:
           --repository "$GITHUB_REPOSITORY"
 
   deployed-apps:
-    name: Release deployed frontend and backend
+    name: Tag deployed frontend and backend
     needs: version
     if: >-
       needs.version.outputs.has_frontend_changesets == 'false' ||
@@ -249,7 +249,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Prepare frontend release
+      - name: Prepare frontend version
         id: frontend
         if: >-
           needs.version.outputs.has_frontend_changesets == 'false' ||
@@ -260,7 +260,7 @@ jobs:
           --output-dir "${{ runner.temp }}/frontend-release"
           --github-output "$GITHUB_OUTPUT"
 
-      - name: Prepare backend release
+      - name: Prepare backend version
         id: backend
         if: needs.version.outputs.has_backend_changesets == 'false'
         run: >-
@@ -269,18 +269,16 @@ jobs:
           --output-dir "${{ runner.temp }}/backend-release"
           --github-output "$GITHUB_OUTPUT"
 
-      - name: Check whether this frontend version already exists
-        id: frontend-existing
+      - name: Check whether this frontend tag already exists
+        id: frontend-tag
         if: >-
           needs.version.outputs.has_frontend_changesets == 'false' ||
           inputs.retry_frontend_announcement
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.frontend.outputs.tag }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if target="$(git rev-list -n 1 "refs/tags/$TAG" 2>/dev/null)" && [ -n "$target" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
             if [ "$target" = "$GITHUB_SHA" ]; then
               echo "matches_sha=true" >> "$GITHUB_OUTPUT"
             else
@@ -291,58 +289,45 @@ jobs:
             echo "matches_sha=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check whether this backend version already exists
-        id: backend-existing
+      - name: Check whether this backend tag already exists
+        id: backend-tag
         if: needs.version.outputs.has_backend_changesets == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.backend.outputs.tag }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if git rev-list -n 1 "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create frontend GitHub release
+      - name: Create frontend version tag
         if: >-
           (needs.version.outputs.has_frontend_changesets == 'false' ||
           inputs.retry_frontend_announcement) &&
-          steps.frontend-existing.outputs.exists == 'false'
+          steps.frontend-tag.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.frontend.outputs.tag }}
-          VERSION: ${{ steps.frontend.outputs.version }}
-          NOTES: ${{ steps.frontend.outputs.notesPath }}
         run: |
-          gh release create "$TAG" \
-            --target "$GITHUB_SHA" \
-            --title "Caelestis frontend v$VERSION" \
-            --notes-file "$NOTES" \
-            --latest=false
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
 
-      - name: Create backend GitHub release
+      - name: Create backend version tag
         if: >-
           needs.version.outputs.has_backend_changesets == 'false' &&
-          steps.backend-existing.outputs.exists == 'false'
+          steps.backend-tag.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.backend.outputs.tag }}
-          VERSION: ${{ steps.backend.outputs.version }}
-          NOTES: ${{ steps.backend.outputs.notesPath }}
         run: |
-          gh release create "$TAG" \
-            --target "$GITHUB_SHA" \
-            --title "Caelestis backend v$VERSION" \
-            --notes-file "$NOTES" \
-            --latest=false
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
 
       - name: Announce frontend release in Discord
         if: >-
           (needs.version.outputs.has_frontend_changesets == 'false' ||
           inputs.retry_frontend_announcement) &&
-          (steps.frontend-existing.outputs.exists == 'false' ||
-          (steps.frontend-existing.outputs.matches_sha == 'true' &&
+          (steps.frontend-tag.outputs.exists == 'false' ||
+          (steps.frontend-tag.outputs.matches_sha == 'true' &&
           github.run_attempt > 1) ||
           inputs.retry_frontend_announcement)
         env:

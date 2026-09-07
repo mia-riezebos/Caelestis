@@ -26,12 +26,16 @@ const COMMIT_IMPACT = {
 }
 const RELEASES = {
   userscript: {
+    notes: (repository, tag) =>
+      `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`,
     link: (repository) => ({
       label: 'Install or update',
       url: `https://github.com/${repository}/releases/latest/download/caelestis.user.js`,
     }),
   },
   frontend: {
+    notes: (repository, tag) =>
+      `https://github.com/${repository}/blob/${encodeURIComponent(tag)}/apps/frontend/CHANGELOG.md`,
     link: () => ({ label: 'Open dashboard', url: 'https://caelestis.mia.cx' }),
   },
 }
@@ -132,7 +136,7 @@ export const releaseAnnouncementPayloads = ({
   if (!REPOSITORY.test(repository)) throw new Error(`invalid GitHub repository: ${repository}`)
   if (notes.trim().length === 0) throw new Error('release notes are empty')
 
-  const releaseUrl = `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`
+  const notesUrl = release.notes(repository, tag)
   const changes = parseChanges(notes, repository, commitSubject)
   if (changes.length === 0) throw new Error('release notes contain no changes')
 
@@ -143,7 +147,7 @@ export const releaseAnnouncementPayloads = ({
       embeds: [
         {
           title: `Caelestis ${app} v${version}`,
-          url: releaseUrl,
+          url: notesUrl,
           description: renderSummary(changes),
           color: 0x6366f1,
         },
@@ -153,7 +157,7 @@ export const releaseAnnouncementPayloads = ({
           type: 1,
           components: [
             { type: 2, style: 5, ...release.link(repository) },
-            { type: 2, style: 5, label: 'Read all changes', url: releaseUrl },
+            { type: 2, style: 5, label: 'Read all changes', url: notesUrl },
           ],
         },
       ],
