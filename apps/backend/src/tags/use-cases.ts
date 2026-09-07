@@ -20,13 +20,7 @@ export const readTags = (templateId?: string) =>
         const template = await sql.readTemplate(templateId)
         if (template === null)
           throw new ResourceNotFoundError({ message: 'Template no longer exists.' })
-        const assignments = await sql.listManifestTags(template, true)
-        return {
-          tags,
-          selected: assignments
-            .filter((entry) => entry.templateId === templateId)
-            .map((entry) => entry.tag.id),
-        }
+        return { tags, selected: await sql.listTemplateTagIds(templateId) }
       },
       catch: (cause) =>
         cause instanceof ResourceNotFoundError

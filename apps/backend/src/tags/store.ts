@@ -17,6 +17,8 @@ export class TagConflictError extends Error {}
 export interface TagStore {
   /** All reusable names, including tags with no assignments. */
   listTags(): Promise<readonly TemplateTag[]>
+  /** Read only one template's assignments, bounded by the reusable tag catalog. */
+  listTemplateTagIds(templateId: string): Promise<readonly string[]>
   /** Read labels and assignments together, respecting manifest publication and canvas scope. */
   listManifestTags(
     scope: TemplateManifestScope,

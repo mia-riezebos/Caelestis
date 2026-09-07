@@ -27,7 +27,7 @@ const harness = () => {
       headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
-  return { app, request, notify }
+  return { app, request, notify, sql }
 }
 
 describe('v1 tag routes', () => {
@@ -62,7 +62,7 @@ describe('v1 tag routes', () => {
   })
 
   it('invalidates manifests and syncs attach, rename, detach, and delete through v1', async () => {
-    const { app, request, notify } = harness()
+    const { app, request, notify, sql } = harness()
     const form = new FormData()
     form.set(
       'png',
@@ -96,9 +96,13 @@ describe('v1 tag routes', () => {
     expect(await (await request('/manifest')).json()).toMatchObject({
       templates: [{ tags: [{ id, name: 'Priority' }] }],
     })
+    const scopeRead = vi
+      .spyOn(sql, 'listManifestTags')
+      .mockRejectedValue(new Error('Manifest-wide assignment scan exceeded the read budget.'))
     expect(await (await request(`/admin/tags?templateId=${templateId}`)).json()).toMatchObject({
       selected: [id],
     })
+    scopeRead.mockRestore()
     expect((await request(`/admin/tags/${id}/templates/${templateId}`, 'DELETE')).status).toBe(204)
     expect(await (await request(`/admin/tags?templateId=${templateId}`)).json()).toMatchObject({
       selected: [],

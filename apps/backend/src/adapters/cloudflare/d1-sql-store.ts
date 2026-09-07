@@ -315,6 +315,14 @@ export class D1SqlStore implements SqlStore {
     return result.results
   }
 
+  async listTemplateTagIds(templateId: string): Promise<readonly string[]> {
+    const result = await this.client
+      .prepare('SELECT tag_id AS id FROM template_tags WHERE template_id = ? ORDER BY tag_id')
+      .bind(templateId)
+      .all<{ id: string }>()
+    return result.results.map(({ id }) => id)
+  }
+
   async listManifestTags(scope: TemplateManifestScope, includeUnpublished: boolean) {
     const result = await this.client
       .prepare(`SELECT tt.template_id AS templateId, tags.id, tags.name

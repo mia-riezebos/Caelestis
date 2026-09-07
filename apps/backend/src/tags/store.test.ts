@@ -48,6 +48,8 @@ describe.each(['memory', 'D1'])('%s tag storage', (adapter) => {
     }
     await sql.mutateTag({ type: 'rename', id: 'tag', name: 'Priority' }, millis(3000))
     if (database !== undefined) sql = new D1SqlStore(database as unknown as D1Database)
+    expect(await sql.listTemplateTagIds('first')).toEqual(['tag'])
+    expect(await sql.listTemplateTagIds('missing')).toEqual([])
     expect(await sql.listManifestTags(scope, false)).toEqual([
       { templateId: 'first', tag: { id: 'tag', name: 'Priority' } },
       { templateId: 'second', tag: { id: 'tag', name: 'Priority' } },
@@ -57,6 +59,8 @@ describe.each(['memory', 'D1'])('%s tag storage', (adapter) => {
       millis(3500),
     )
     expect(await sql.listManifestTags(scope, true)).toHaveLength(1)
+    expect(await sql.listTemplateTagIds('first')).toEqual([])
+    expect(await sql.listTemplateTagIds('second')).toEqual(['tag'])
     await sql.mutateTag({ type: 'delete', id: 'tag' }, millis(4000))
     expect(await sql.listTags()).toEqual([])
     expect(await sql.listManifestTags(scope, true)).toEqual([])
