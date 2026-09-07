@@ -43,7 +43,7 @@
 
   const DAY_SECONDS = 86_400
   const RESOLUTION = 900
-  const COMPATIBILITY_REFRESH_MS = 15_000
+  const STATS_REFRESH_MS = 15_000
 
   let liveTo = $state(Math.floor(Date.now() / 1_000) + 1)
   // Start at a day boundary so every retained tier can return the bucket containing creation.
@@ -67,6 +67,21 @@
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   let failed = $state(false)
   let historyScope: string | undefined
+
+  // Historical chart windows keep advancing independently of live dashboard subscriptions.
+  $effect(() => {
+    if (!hasLiveTemplate) return
+    const refresh = (): void => {
+      if (document.visibilityState === 'visible') liveTo = Math.floor(Date.now() / 1_000) + 1
+    }
+    refresh()
+    const interval = setInterval(refresh, STATS_REFRESH_MS)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  })
 
   $effect(() => {
     if (templateIds.length === 0) return
@@ -143,7 +158,7 @@
       if (document.visibilityState === 'visible') refresh()
     }
     refresh()
-    const interval = setInterval(refreshWhenVisible, COMPATIBILITY_REFRESH_MS)
+    const interval = setInterval(refreshWhenVisible, STATS_REFRESH_MS)
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       generation.cancelled = true
