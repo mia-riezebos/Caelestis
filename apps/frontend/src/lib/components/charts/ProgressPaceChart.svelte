@@ -248,8 +248,14 @@
     }),
   )
 
+  // Everyone's rolling pace lines are one more entry in the pace picker, pinned at the top, so a
+  // reader can leave painters alone on the axis or bring the whole template back.
+  const storedAllUsers = persisted<boolean>('caelestis:pace-all-users', true)
+  const allUsersShown = $derived(storedAllUsers.value !== false)
   const enabledPaces = $derived(
-    paceWindows.filter((pace) => enabledWindows.has(pace.key) && pace.usable),
+    allUsersShown
+      ? paceWindows.filter((pace) => enabledWindows.has(pace.key) && pace.usable)
+      : [],
   )
 
   // ── Painters ─────────────────────────────────────────────────────────────────────────────────
@@ -969,13 +975,17 @@
       {/each}
     </div>
 
-    {#if painters.length > 0}
-      <div class="flex flex-wrap items-center gap-2" role="group" aria-label="painter pace lines">
-        <span class="text-base-content/65">painters</span>
+    {#if hasActivity}
+      <div class="flex flex-wrap items-center gap-2" role="group" aria-label="whose pace lines">
+        <span class="text-base-content/65">who</span>
         <PainterPicker
           options={painters}
           selected={selectedPainters}
           onToggle={onTogglePainter}
+          {allUsersShown}
+          onToggleAllUsers={() => {
+            storedAllUsers.value = !allUsersShown
+          }}
           onHover={(wplaceUserId) => {
             spotlightPainter = wplaceUserId
           }}

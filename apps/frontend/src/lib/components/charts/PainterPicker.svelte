@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
-   * The painter legend for a crowded server: a button in the legend that pops out a searchable
-   * list whose rows toggle, rather than one button per painter on the page. The search box lives
-   * in the popout, the list shows the best matches first and stops at a bounded page, so a
-   * thousand painters cost a thousand entries in memory and fifty in the DOM.
+   * The pace legend for a crowded server: a button that pops out a searchable list whose rows
+   * toggle, rather than one button per painter on the page. "All users", the template's own pace
+   * lines, is pinned at the top whatever the search says; painters follow, best matches first,
+   * cut at a bounded page, so a thousand painters cost a thousand entries in memory and fifty in
+   * the DOM.
    */
   import CheckIcon from '@lucide/svelte/icons/check'
   import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
@@ -20,6 +21,8 @@
     options,
     selected,
     onToggle,
+    allUsersShown,
+    onToggleAllUsers,
     onHover = () => {},
     pageSize = 50,
     max = MAX_SELECTED_PAINTERS,
@@ -28,12 +31,17 @@
     /** Painters currently drawn. */
     selected: ReadonlySet<number>
     onToggle: (wplaceUserId: number) => void
+    /** Whether the template's own rolling pace lines, everyone together, are drawn. */
+    allUsersShown: boolean
+    onToggleAllUsers: () => void
     /** The row under the pointer or keyboard, so the chart can spotlight that painter's line. */
     onHover?: (wplaceUserId: number | null) => void
     pageSize?: number
     /** The most painters that can be drawn at once; further rows wait until one is unticked. */
     max?: number
   } = $props()
+
+  const ALL_USERS = 'all-users'
 
   let query = $state('')
   let open = $state(false)
@@ -42,18 +50,24 @@
   const hidden = $derived(ranked.length - page.length)
   const full = $derived(selected.size >= max)
 
-  const summary = $derived(
-    selected.size === 0
-      ? 'none'
-      : selected.size === 1
-        ? painterLabel(
-            options.find((painter) => selected.has(painter.wplaceUserId)) ?? {
-              wplaceUserId: [...selected][0] ?? 0,
-              displayName: '',
-            },
-          )
-        : `${selected.size} of ${options.length}${full ? ' (max)' : ''}`,
-  )
+  const summary = $derived.by(() => {
+    const painters =
+      selected.size === 0
+        ? null
+        : selected.size === 1
+          ? painterLabel(
+              options.find((painter) => selected.has(painter.wplaceUserId)) ?? {
+                wplaceUserId: [...selected][0] ?? 0,
+                displayName: '',
+              },
+            )
+          : `${selected.size} of ${options.length}${full ? ' (max)' : ''}`
+    if (allUsersShown) return painters === null ? 'all users' : `all users + ${painters}`
+    return painters ?? 'none'
+  })
+
+  const spotlight = (value: string): void =>
+    onHover(value === '' || value === ALL_USERS ? null : Number(value))
 </script>
 
 <Popover.Root
@@ -68,7 +82,7 @@
   <Popover.Trigger
     data-painter-trigger
     class="btn btn-xs btn-soft gap-1.5 tabular-nums"
-    aria-label="choose painters"
+    aria-label="choose whose pace to draw"
   >
     <span>{summary}</span>
     <ChevronsUpDownIcon class="size-3.5 text-base-content/60" />
@@ -81,12 +95,7 @@
       class="z-50 w-72 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none"
     >
       <!-- The command cursor is the keyboard's pointer: wherever it lands gets the spotlight. -->
-      <Command.Root
-        shouldFilter={false}
-        loop
-        class="flex flex-col gap-1"
-        onValueChange={(value) => onHover(value === '' ? null : Number(value))}
-      >
+      <Command.Root shouldFilter={false} loop class="flex flex-col gap-1" onValueChange={spotlight}>
         <Command.Input
           data-painter-search
           class="input input-xs w-full text-xs"
@@ -96,6 +105,28 @@
         />
         <Command.List class="max-h-64 overflow-y-auto">
           <Command.Viewport>
+            <!-- Pinned: the search never hides everyone's line. -->
+            <Command.Item
+              value={ALL_USERS}
+              data-all-users
+              class="relative flex w-full cursor-default select-none items-center gap-2 rounded-md py-1 pe-7 ps-1.5 text-xs outline-hidden data-selected:bg-accent data-selected:text-accent-foreground"
+              onSelect={onToggleAllUsers}
+            >
+              <span
+                class="size-2.5 shrink-0 rounded-full"
+                style:background="var(--chart-placed)"
+                style:opacity={allUsersShown ? 1 : 0.4}
+                aria-hidden="true"
+              ></span>
+              <span class="min-w-0 flex-1 truncate font-medium">All users</span>
+              <span class="sr-only" data-painter-state>{allUsersShown ? 'drawn' : 'not drawn'}</span>
+              <span class="absolute end-2 flex size-3.5 items-center justify-center">
+                {#if allUsersShown}
+                  <CheckIcon class="size-3.5" />
+                {/if}
+              </span>
+            </Command.Item>
+            <Command.Separator forceMount class="my-1 h-px bg-base-300" />
             {#each page as painter (painter.wplaceUserId)}
               {@const isSelected = selected.has(painter.wplaceUserId)}
               <Command.Item
@@ -127,7 +158,11 @@
                 </span>
               </Command.Item>
             {/each}
-            {#if page.length === 0}
+            {#if options.length === 0}
+              <div class="px-2 py-3 text-center text-xs text-base-content/50">
+                No painters have reported yet.
+              </div>
+            {:else if page.length === 0}
               <div class="px-2 py-3 text-center text-xs text-base-content/50">No painter matches.</div>
             {:else if hidden > 0}
               <div class="px-2 py-1.5 text-center text-[10px] text-base-content/50" data-painter-more>

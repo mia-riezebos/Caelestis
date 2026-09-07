@@ -392,7 +392,8 @@ describe('painter pace', () => {
     })
     flushSync()
     await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
-    expect(document.querySelector('[data-painter-trigger]')).toBeNull()
+    // Everyone's pace is still there to toggle; there are just no painters to add to it.
+    expect(document.querySelector('[data-painter-trigger]')?.textContent).toContain('all users')
     expect(document.querySelector('path[data-painter-line]')).toBeNull()
   })
 })

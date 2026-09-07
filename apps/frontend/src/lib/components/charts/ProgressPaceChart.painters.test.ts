@@ -223,10 +223,18 @@ describe('painter lines', () => {
       document.querySelector(`[data-painter-option="${id}"] [data-painter-state]`)?.textContent
     expect(stateOf(1)).toBe('drawn')
     expect(stateOf(42)).toBe('not drawn')
-    // The cursor starts on the first row and spotlights it; ArrowDown moves the spotlight along.
+    // The cursor starts on the pinned "All users" row, which spotlights nobody; each ArrowDown
+    // moves the spotlight down the painters.
     const opacityOf = (id: number): string | null =>
       document.querySelector(`path[data-painter-line="${id}"]`)?.getAttribute('stroke-opacity') ??
       null
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-all-users][data-selected]')).not.toBeNull(),
+    )
+    expect(opacityOf(1)).toBe('0.9')
+    expect(opacityOf(2)).toBe('0.9')
+    search().dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }))
+    flushSync()
     await vi.waitFor(() => expect(opacityOf(2)).toBe('0.25'))
     expect(opacityOf(1)).toBe('0.9')
     search().dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }))
@@ -250,9 +258,55 @@ describe('painter lines', () => {
     expect(onTogglePainter).toHaveBeenCalledTimes(1)
   })
 
-  it('draws nothing painter-specific without painters', () => {
+  it('pins everyone’s pace at the top of the picker and toggles it with the painters', async () => {
+    stored.set('caelestis:pace-windows', JSON.stringify(['1h']))
+    mountChart({
+      painters: [painter(1, 'Ada')],
+      selectedPainters: new Set([1]),
+      painterHistories: sources(['1h'], [painterBucket(1, 6 * HOUR)]),
+    })
+    const paceLines = (): number =>
+      document.querySelectorAll('path[data-pace-window]:not([data-painter-line])').length
+    expect(paceLines()).toBe(1)
+    const trigger = document.querySelector<HTMLButtonElement>('[data-painter-trigger]')
+    expect(trigger?.textContent).toContain('all users + Ada')
+    trigger?.click()
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelector('[data-all-users]')).not.toBeNull())
+    // First row, and it stays put while the search narrows the painters.
+    const rows = () => [...document.querySelectorAll('[data-all-users], [data-painter-option]')]
+    expect(rows()[0]?.hasAttribute('data-all-users')).toBe(true)
+    search().value = 'zzz'
+    search().dispatchEvent(new Event('input', { bubbles: true }))
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('[data-painter-option]')).toHaveLength(0),
+    )
+    expect(document.querySelector('[data-all-users] [data-painter-state]')?.textContent).toBe(
+      'drawn',
+    )
+
+    ;(document.querySelector('[data-all-users]') as HTMLElement).click()
+    flushSync()
+    await vi.waitFor(() => expect(paceLines()).toBe(0))
+    expect(lines()).toEqual(['1:1h'])
+    expect(stored.get('caelestis:pace-all-users')).toBe('false')
+    expect(document.querySelector('[data-all-users] [data-painter-state]')?.textContent).toBe(
+      'not drawn',
+    )
+    expect(document.querySelector('[data-painter-trigger]')?.textContent).toContain('Ada')
+    expect(document.querySelector('[data-painter-trigger]')?.textContent).not.toContain('all users')
+  })
+
+  it('offers everyone’s pace but no painter lines without painters', async () => {
     mountChart({})
-    expect(document.querySelector('[data-painter-search]')).toBeNull()
     expect(lines()).toEqual([])
+    const trigger = document.querySelector<HTMLButtonElement>('[data-painter-trigger]')
+    expect(trigger?.textContent).toContain('all users')
+    trigger?.click()
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelector('[data-all-users]')).not.toBeNull())
+    expect(document.querySelectorAll('[data-painter-option]')).toHaveLength(0)
+    expect(document.body.textContent).toContain('No painters have reported yet')
   })
 })
