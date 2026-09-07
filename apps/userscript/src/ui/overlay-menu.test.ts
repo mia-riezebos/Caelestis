@@ -38,6 +38,13 @@ const harness = vi.hoisted(() => ({
   forgetServerTemplate: vi.fn(async (_id: string) => {}),
   deleteServerTemplate: vi.fn(async () => ({ ok: true as const })),
   listServerContents: vi.fn(async () => null),
+  patchTemplate: vi.fn<
+    (
+      server: unknown,
+      id: string,
+      patch: { finished?: boolean; timelapseFrozen?: boolean },
+    ) => Promise<{ ok: true } | { ok: false; message: string }>
+  >(async () => ({ ok: true })),
   uploadTemplateVersion: vi.fn(async () => ({ ok: true as const, versionId: 'version-2' })),
   templateAsPng: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
   servers: [] as Array<{
@@ -53,6 +60,8 @@ const harness = vi.hoisted(() => ({
     published: boolean
     version: string
     updatedAt: number
+    finished?: boolean
+    timelapseFrozen?: boolean
   }>,
   // A projection, not a constant: the module derives the overlay's on-screen box from one
   // projected corner plus the scale, and a constant would make every template a zero-size point.
@@ -97,6 +106,7 @@ vi.mock('../state.js', () => ({
   getSurfaceAppearance: () => harness.surfaceAppearance,
   onlySelectedColourFor: () => false,
   listServerContents: harness.listServerContents,
+  patchTemplate: harness.patchTemplate,
   removeTreeStateKeys: harness.removeTreeStateKeys,
   setState: vi.fn(),
   uploadTemplateVersion: harness.uploadTemplateVersion,
@@ -319,6 +329,145 @@ afterEach(() => {
   harness.removeLocalTemplate.mockResolvedValue(true)
   harness.setAppearance.mockImplementation(async () => true)
   harness.setLocalVisible.mockResolvedValue(true)
+  harness.patchTemplate.mockReset().mockResolvedValue({ ok: true })
+})
+
+describe('template-local lifecycle actions', () => {
+  const openServerMenu = (): void => {
+    harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
+    rerender()
+    gear('a').click()
+    rerender()
+  }
+
+  it('keeps both actions pending until the authoritative manifest reflects completion', async () => {
+    connectServerTemplate(true)
+    let resolvePatch: ((result: { ok: true }) => void) | undefined
+    harness.patchTemplate.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePatch = resolve
+        }),
+    )
+    harness.listServerContents.mockImplementationOnce(async () => {
+      Object.assign(harness.serverTemplates[0] ?? {}, { finished: true, timelapseFrozen: true })
+      return null
+    })
+    openServerMenu()
+    ;(await byKey('finished')).click()
+    expect(harness.patchTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a', {
+      finished: true,
+    })
+    expect((await byKey('finished')).textContent).toBe('Saving…')
+    expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('true')
+    ;(await byKey('frozen')).click()
+    expect(harness.patchTemplate).toHaveBeenCalledTimes(1)
+    resolvePatch?.({ ok: true })
+    await settle()
+    expect(harness.listServerContents).toHaveBeenCalledWith(harness.servers[0])
+    expect((await byKey('finished')).textContent).toBe('Reopen template')
+    expect((await byKey('frozen')).textContent).toBe('Thaw timelapse')
+    expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('true')
+    expect((await menuRoot()).querySelector('[aria-label="Finished"]')).not.toBeNull()
+  })
+
+  it('reopens and thaws through separate existing lifecycle patches', async () => {
+    connectServerTemplate(false)
+    Object.assign(harness.serverTemplates[0] ?? {}, { finished: true, timelapseFrozen: true })
+    harness.patchTemplate.mockImplementation(async (_server, _id, patch) => {
+      Object.assign(harness.serverTemplates[0] ?? {}, patch)
+      return { ok: true }
+    })
+    openServerMenu()
+    ;(await byKey('finished')).click()
+    await settle()
+    expect(harness.patchTemplate).toHaveBeenLastCalledWith(harness.servers[0], 'remote-a', {
+      finished: false,
+    })
+    expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('false')
+    ;(await byKey('frozen')).click()
+    await settle()
+    expect(harness.patchTemplate).toHaveBeenLastCalledWith(harness.servers[0], 'remote-a', {
+      timelapseFrozen: false,
+    })
+    expect((await byKey('frozen')).textContent).toBe('Freeze timelapse')
+  })
+
+  it('shows a rejected freeze inline and permits retry without asserting unsaved state', async () => {
+    connectServerTemplate(true)
+    harness.patchTemplate.mockResolvedValueOnce({
+      ok: false,
+      message: 'Server refused the freeze.',
+    })
+    openServerMenu()
+    ;(await byKey('frozen')).click()
+    await settle()
+    expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toBe(
+      'Server refused the freeze.',
+    )
+    expect((await byKey('frozen')).textContent).toBe('Freeze timelapse')
+    expect((await byKey('frozen')).getAttribute('aria-disabled')).toBe('false')
+    ;(await byKey('frozen')).click()
+    await settle()
+    expect(harness.patchTemplate).toHaveBeenLastCalledWith(harness.servers[0], 'remote-a', {
+      timelapseFrozen: true,
+    })
+    expect((await menuRoot()).querySelector('[data-caelestis-error]')).toBeNull()
+  })
+
+  it('releases pending state after an unexpected error', async () => {
+    connectServerTemplate(true)
+    harness.patchTemplate.mockRejectedValueOnce(new Error('network gone'))
+    openServerMenu()
+    ;(await byKey('finished')).click()
+    await settle()
+    expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toContain(
+      'Could not update',
+    )
+    expect((await byKey('finished')).getAttribute('aria-disabled')).toBe('false')
+  })
+
+  it('rechecks admin access when an already-rendered action is used', async () => {
+    connectServerTemplate(true)
+    openServerMenu()
+    const action = await byKey('finished')
+    const server = harness.servers[0]
+    if (server === undefined) throw new Error('missing server')
+    server.isAdmin = false
+    action.click()
+    expect(harness.patchTemplate).not.toHaveBeenCalled()
+    expect((await menuRoot()).querySelector('[data-caelestis-control="finished"]')).toBeNull()
+    expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toContain(
+      'Admin access',
+    )
+  })
+
+  it('hides lifecycle mutations for local and read-only templates', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    expect((await menuRoot()).querySelector('[aria-label="Template lifecycle"]')).toBeNull()
+    ;(await byKey('close')).click()
+    connectServerTemplate(true, false)
+    Object.assign(harness.serverTemplates[0] ?? {}, { finished: true, timelapseFrozen: true })
+    openServerMenu()
+    expect((await menuRoot()).querySelector('[data-caelestis-control="finished"]')).toBeNull()
+    expect((await menuRoot()).querySelector('[aria-label="Finished"]')).not.toBeNull()
+  })
+
+  it('rejects a stale thaw intent after another menu completes the template', async () => {
+    connectServerTemplate(true)
+    Object.assign(harness.serverTemplates[0] ?? {}, { timelapseFrozen: true })
+    openServerMenu()
+    const thaw = await byKey('frozen')
+    Object.assign(harness.serverTemplates[0] ?? {}, { finished: true })
+    thaw.click()
+    expect(harness.patchTemplate).not.toHaveBeenCalled()
+    expect((await menuRoot()).querySelector('[role="alert"]')?.textContent).toContain(
+      'Reopen the template',
+    )
+  })
 })
 
 describe('the open menu tracks intended state, not a snapshot and not a lagging store', () => {
@@ -1973,7 +2122,7 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
 })
 
 describe('the menu is ours and has a keyboard exit', () => {
-  it('offers move and delete from an alliance server manifest', async () => {
+  it('offers lifecycle, move, and delete actions from an alliance server manifest', async () => {
     connectServerTemplate(false)
     const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
     harness.localTemplates.mockReturnValue([
@@ -2009,6 +2158,14 @@ describe('the menu is ours and has a keyboard exit', () => {
     draw()
     gear('a').click()
     draw()
+
+    ;(await byKey('frozen')).click()
+    await settle()
+    expect(harness.patchTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a', {
+      timelapseFrozen: true,
+    })
+    expect(harness.refreshAllianceManifest).toHaveBeenCalledWith(harness.servers[0], surface)
+    expect(harness.listServerContents).not.toHaveBeenCalled()
 
     expect(await byKey('move')).not.toBeNull()
     expect(await byKey('delete')).not.toBeNull()

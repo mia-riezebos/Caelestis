@@ -52,6 +52,43 @@ const model: OverlayControlsModel = {
 }
 
 describe('overlay controls', () => {
+  it.each([
+    [false, false, 'Mark as complete', 'Freeze timelapse', false],
+    [false, true, 'Mark as complete', 'Thaw timelapse', false],
+    [true, true, 'Reopen template', 'Thaw timelapse', true],
+    [true, false, 'Reopen template', 'Freeze timelapse', false],
+  ] as const)(
+    'offers lifecycle actions for finished=%s, frozen=%s',
+    (finished, frozen, finishLabel, freezeLabel, thawBlocked) => {
+      const onIntent = vi.fn()
+      const component = mount(OverlayControls, {
+        target: document.body,
+        props: {
+          model: { ...model, lifecycle: { finished, frozen, griefed: false, editable: true } },
+          onIntent,
+        },
+      })
+      flushSync()
+      const finish = document.querySelector<HTMLButtonElement>(
+        '[data-caelestis-control="finished"]',
+      )
+      const freeze = document.querySelector<HTMLButtonElement>('[data-caelestis-control="frozen"]')
+      expect(finish?.textContent).toBe(finishLabel)
+      expect(freeze?.textContent).toBe(freezeLabel)
+      finish?.click()
+      expect(onIntent).toHaveBeenCalledWith({ type: 'set-finished', value: !finished })
+      freeze?.click()
+      expect(freeze?.getAttribute('aria-disabled')).toBe(String(thawBlocked))
+      if (thawBlocked) {
+        expect(freeze?.title).toBe('Reopen the template before thawing')
+        expect(onIntent).toHaveBeenCalledTimes(1)
+      } else {
+        expect(onIntent).toHaveBeenCalledWith({ type: 'set-frozen', value: !frozen })
+      }
+      void unmount(component)
+    },
+  )
+
   it('uses Wplace compact-menu insets', () => {
     const component = mount(OverlayControls, { target: document.body, props: { model } })
     flushSync()
