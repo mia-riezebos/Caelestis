@@ -1071,7 +1071,9 @@ export const openContextMenu = (
             () => void setServerFolderPublished(target, false, rerender),
           ]
         : ['eye', 'Publish folder', () => void setServerFolderPublished(target, true, rerender)]
-  const existingEntries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> =
+  const existingEntries: ReadonlyArray<
+    readonly [TreeIcon, string, () => void, returnToCanvas?: true]
+  > =
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined

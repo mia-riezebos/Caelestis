@@ -60,6 +60,7 @@ Each TODO is one buildable commit, with tests included alongside its behavior. S
 - Final validation: 2,234 package tests pass with `pnpm exec turbo run test --concurrency=1 -- --maxWorkers=2`; fixture/capacity checks pass. `pnpm check`, `pnpm lint`, `pnpm build`, and all 32 release tests pass. The original unconstrained test run timed out in unrelated count/fixture tests under competing pools; bounded rerun passes without test changes.
 - Final Chromium verification passes desktop and 390px light/dark layouts, folder/template filters, native dialog focus, Close, Escape, live updates and reload convergence. The actual userscript dialog was bundled with only connection adapters pointing at disposable local data; no Wplace storage or daily-driver installation was changed. Dialog border-box sizing includes padding in its phone-width limit.
 - Local verification report and screenshots are under `/tmp/caelestis-263-verify/`. Deliver through the supplied branch after rebasing onto current `origin/main`; do not merge or deploy.
+- Rebased onto `acc5831b` from current main. Regenerated coordination as migration 0016 after main's painter-bucket migration 0015, preserving both schemas and the tree menu's new canvas-focus behavior. Full typechecks and focused schema, work, tree-action and persistence tests pass.
 
 ## Manual review
 
