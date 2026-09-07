@@ -156,7 +156,7 @@
 
 <style>
   .docked { block-size: 100%; min-block-size: 0; }
-  dialog { position: fixed; inset: 0; inline-size: min(72rem, calc(100vw - 2rem)); block-size: min(54rem, calc(100dvh - 2rem)); max-inline-size: none; max-block-size: none; margin: auto; padding: 0; border: 1px solid var(--caelestis-border); border-radius: 0.75rem; overflow: visible; color: inherit; background: transparent; }
+  dialog { position: fixed; inset: 0; inline-size: 96vw; block-size: 96dvh; max-inline-size: none; max-block-size: none; margin: auto; padding: 0; border: 1px solid var(--caelestis-border); border-radius: 0.75rem; overflow: visible; color: inherit; background: transparent; }
   dialog .panel { border-radius: calc(0.75rem - 1px); }
   dialog::backdrop { background: rgb(0 0 0 / 0.4); }
   .panel { container: panel / inline-size; }
