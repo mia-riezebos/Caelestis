@@ -29,6 +29,31 @@ afterEach(() => {
 })
 
 describe('template filter menu', () => {
+  it('closes when a pointer moves focus back to the trigger before clicking it', async () => {
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          query: '',
+          sort: { field: 'custom', direction: 'asc' },
+          entries: [],
+          filters: EMPTY_TEMPLATE_FILTERS,
+        },
+      },
+    })
+    flushSync()
+    const trigger = document.querySelector<HTMLButtonElement>('.filter-trigger')
+    if (trigger === null) throw new Error('Missing filter trigger')
+    trigger.click()
+    flushSync()
+    expect(document.activeElement?.tagName).toBe('INPUT')
+    trigger.focus()
+    flushSync()
+    trigger.click()
+    flushSync()
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    await unmount(component)
+  })
   it('sits beside search, keeps selections open, clears all categories, and restores keyboard focus', async () => {
     let filters: TemplateFilters = EMPTY_TEMPLATE_FILTERS
     let update = () => {}

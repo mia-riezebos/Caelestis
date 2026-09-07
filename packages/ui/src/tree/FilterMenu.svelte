@@ -53,7 +53,7 @@
   <Icon name="filter" />
   {#if count > 0}<span class="count" aria-hidden="true">{count}</span>{/if}
 </button>
-<div bind:this={menu} id={menuId} class="filter-menu" popover="auto" role="dialog" aria-label="Filter templates" tabindex="-1" style:left={`${left}px`} style:top={`${top}px`} onbeforetoggle={(event) => open = event.newState === 'open'} onkeydown={keydown} onfocusout={(event) => { if (event.relatedTarget instanceof Node && !menu.contains(event.relatedTarget)) close() }}>
+<div bind:this={menu} id={menuId} class="filter-menu" popover="auto" role="dialog" aria-label="Filter templates" tabindex="-1" style:left={`${left}px`} style:top={`${top}px`} onbeforetoggle={(event) => open = event.newState === 'open'} onkeydown={keydown} onfocusout={(event) => { if (event.relatedTarget instanceof Node && event.relatedTarget !== trigger && !menu.contains(event.relatedTarget)) close() }}>
   <div class="heading"><span>Filters</span><button type="button" disabled={count === 0} onclick={clear}>Clear filters</button></div>
   {#each categories as category}
     {#if category === 'source' || category === 'visibility' || serverFiltersAvailable || filters[category].length > 0}
