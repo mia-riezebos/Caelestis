@@ -1,8 +1,16 @@
 // @vitest-environment happy-dom
 import { expect, it, vi } from 'vitest'
 import { navigateAllianceArtboardTo } from './alliance-navigation.js'
+import { refreshPaintCursor } from './paint-cursor.js'
+
+vi.mock('./paint-cursor.js', () => ({ refreshPaintCursor: vi.fn() }))
 
 it('centres an alliance target with inverse wheel steps at unchanged zoom', () => {
+  let refresh: FrameRequestCallback | undefined
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    refresh = callback
+    return 1
+  })
   class TestWheelEvent extends Event {
     static readonly DOM_DELTA_PIXEL = 0
     readonly clientX: number
@@ -42,4 +50,8 @@ it('centres an alliance target with inverse wheel steps at unchanged zoom', () =
   const [out, restore] = wheel.mock.calls.map(([event]) => event as WheelEvent)
   expect([out?.deltaY, restore?.deltaY]).toEqual([-100, 100])
   expect([restore?.clientX, restore?.clientY]).toEqual([400, 350])
+  expect(refreshPaintCursor).not.toHaveBeenCalled()
+  refresh?.(0)
+  expect(refreshPaintCursor).toHaveBeenCalledWith(frame, 'pointermove')
+  vi.unstubAllGlobals()
 })

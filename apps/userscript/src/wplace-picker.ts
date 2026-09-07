@@ -1,7 +1,9 @@
 import {
+  latLngToCanvasPixel,
   type TemplateSurface,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import { allianceBounds, alliancePointAt } from './alliance-coordinates.js'
@@ -9,7 +11,9 @@ import { type ActiveAllianceSurface, activeAllianceSurface } from './alliance-su
 import { log } from './debug.js'
 import { readArtboardPixels } from './gl/artboard-pixels.js'
 import { canvasPixelAt } from './main.js'
+import { getMap } from './map-handle.js'
 import { nativePixelAt } from './native-pixels.js'
+import { forwardPaintMove, isForwardedPaintMove } from './paint-cursor.js'
 import { pickerIndex } from './picker-source.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
 import {
@@ -17,6 +21,7 @@ import {
   displayTemplatesForSurface,
   isTemplateVisible,
 } from './templates/local-store.js'
+import { isMoving } from './templates/move.js'
 import { sourceXAt } from './templates/placement.js'
 import { ensureTilePixels } from './tile-transform.js'
 import { worldNativePixels } from './world-native-pixels.js'
@@ -63,6 +68,7 @@ import { isPaintOpen, selectPaintColour } from './wplace-paint.js'
  * outside it, which is the distinction being drawn.
  */
 const MAP_SURFACE = '.maplibregl-canvas-container, canvas.maplibregl-canvas'
+const MIDDLE_BUTTON_MASK = 4
 
 /** The palette index our overlay claims at a logical canvas pixel, or null if it claims none. */
 const overlayIndexAt = (surface: TemplateSurface, x: number, y: number): number | null => {
@@ -111,7 +117,13 @@ const pickerPointAt = (target: Element, clientX: number, clientY: number): Picke
     return point === null ? null : { surface: alliance.surface, ...point, alliance }
   }
   if (target.closest(MAP_SURFACE) === null) return null
-  const point = canvasPixelAt(clientX, clientY)
+  // Rendered tile bounds can be rounded by half a screen pixel. Use the same projection as
+  // Wplace's paint listener so a boundary never picks the next row or column prematurely.
+  const map = getMap()
+  const point =
+    map === null
+      ? canvasPixelAt(clientX, clientY)
+      : latLngToCanvasPixel(map.unproject([clientX, clientY]))
   return point === null ? null : { surface: WORLD_TEMPLATE_SURFACE, ...point, alliance: null }
 }
 
@@ -174,7 +186,52 @@ const exitNativePicker = (): void => {
   })
 }
 
+/** Install source-only native picking and continuous middle-button overlay picking. */
 export const installColourPicker = (): void => {
+  type MiddlePick = {
+    readonly pointerId: number
+    readonly target: Element
+    lastIndex: number
+    lastPosition: { clientX: number; clientY: number }
+  }
+  let middlePick: MiddlePick | null = null
+  let pendingMiddleClick: MiddlePick | null = null
+  let spaceHeld = false
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.code === 'Space') spaceHeld = true
+    },
+    { capture: true },
+  )
+  window.addEventListener(
+    'keyup',
+    (event) => {
+      if (event.code === 'Space') spaceHeld = false
+    },
+    { capture: true },
+  )
+  window.addEventListener('blur', () => {
+    spaceHeld = false
+  })
+
+  const endMiddlePick = (released = false): void => {
+    const pick = middlePick
+    if (pick === null) return
+    middlePick = null
+    if (released) {
+      // Compatibility mouseup/auxclick follow pointerup in the same browser task.
+      setTimeout(() => {
+        if (pendingMiddleClick === pick) pendingMiddleClick = null
+      }, 0)
+    } else {
+      pendingMiddleClick = null
+    }
+    if (pick.target.hasPointerCapture(pick.pointerId)) {
+      pick.target.releasePointerCapture(pick.pointerId)
+    }
+  }
+
   let pendingLeftPick: {
     readonly pointerId: number
     readonly target: EventTarget | null
@@ -280,7 +337,9 @@ export const installColourPicker = (): void => {
   window.addEventListener(
     'pointerdown',
     (event) => {
-      if (event.button !== 1) return
+      if (event.button !== 1 || middlePick !== null) return
+      pendingMiddleClick = null
+      if (event.defaultPrevented || isMoving()) return
       const target = event.target
       if (!(target instanceof Element)) return
       const point = pickerPointAt(target, event.clientX, event.clientY)
@@ -297,25 +356,101 @@ export const installColourPicker = (): void => {
       // answer would leave the middle click doing nothing at all, which is worse than their answer.
       event.preventDefault()
       event.stopImmediatePropagation()
+      middlePick = {
+        pointerId: event.pointerId,
+        target,
+        lastIndex: index,
+        lastPosition: { clientX: event.clientX, clientY: event.clientY },
+      }
+      pendingMiddleClick = middlePick
+      target.setPointerCapture(event.pointerId)
       log('install', 'picked a colour from the overlay', { x: point.x, y: point.y, index })
     },
     { capture: true },
   )
 
-  // Their own handler does this too. Swallowing the pointerdown means theirs never runs, and
-  // without it a middle click on the map starts the browser's autoscroll.
   window.addEventListener(
-    'mousedown',
+    'pointermove',
     (event) => {
-      if (event.button !== 1) return
-      const target = event.target
-      if (
-        target instanceof Element &&
-        pickerPointAt(target, event.clientX, event.clientY) !== null
-      ) {
+      if (isForwardedPaintMove(event)) return
+      const pick = middlePick
+      if (pick === null || pick.pointerId !== event.pointerId) return
+      if ((event.buttons & MIDDLE_BUTTON_MASK) === 0 || !isPaintOpen() || isMoving()) {
         event.preventDefault()
+        event.stopImmediatePropagation()
+        // A middle release within a button chord arrives as pointermove rather than pointerup.
+        endMiddlePick(event.button === 1 && (event.buttons & MIDDLE_BUTTON_MASK) === 0)
+        return
+      }
+      // Capture retargets events to the initial element. Hit-test the actual cursor so controls
+      // and positions outside the drawing surface never sample the map behind them.
+      const target = document.elementFromPoint(event.clientX, event.clientY)
+      if (target === null) return
+      const point = pickerPointAt(target, event.clientX, event.clientY)
+      if (point === null) return
+      const movement = point.alliance === null ? 'mousemove' : 'pointermove'
+      const from = pick.lastPosition
+      pick.lastPosition = { clientX: event.clientX, clientY: event.clientY }
+      const start = pickerPointAt(target, from.clientX, from.clientY)
+      let steps = 1
+      if (spaceHeld && start !== null) {
+        const dx = Math.abs(point.x - start.x)
+        const width = point.alliance === null ? Math.min(dx, WORLD_PIXELS - dx) : dx
+        // Native painting fills between events. Sample at most one logical pixel apart so fast
+        // movement cannot fill an unsampled colour run with the previous run's colour.
+        steps = Math.max(1, Math.ceil(Math.max(width, Math.abs(point.y - start.y))))
+      }
+      for (let step = 1; step <= steps; step++) {
+        const client = {
+          clientX: from.clientX + ((event.clientX - from.clientX) * step) / steps,
+          clientY: from.clientY + ((event.clientY - from.clientY) * step) / steps,
+        }
+        const sample =
+          step === steps ? point : pickerPointAt(target, client.clientX, client.clientY)
+        if (sample === null) continue
+        // Advance with the old colour before changing the swatch: native lines include their
+        // previous pixel. Then repaint only the new endpoint with its newly picked colour.
+        forwardPaintMove(target, event, movement, client)
+        const index = overlayIndexAt(sample.surface, sample.x, sample.y)
+        if (index === null || index === pick.lastIndex) continue
+        pick.lastIndex = index
+        if (selectPaintColour(index)) forwardPaintMove(target, event, movement, client)
       }
     },
     { capture: true },
   )
+
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
+    window.addEventListener(
+      type,
+      (event) => {
+        if (middlePick?.pointerId !== event.pointerId) return
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        endMiddlePick(type === 'pointerup')
+      },
+      { capture: true },
+    )
+  }
+  window.addEventListener('blur', () => endMiddlePick(), { capture: true })
+
+  // The claimed press cannot start a native drag. Keep movement flowing so Wplace updates its
+  // crosshair and the pixel painted by Space while we select overlay colours.
+  for (const type of ['mousedown', 'mousemove', 'mouseup', 'auxclick'] as const) {
+    window.addEventListener(
+      type,
+      (event) => {
+        if (isForwardedPaintMove(event)) return
+        const claimed =
+          type === 'mousemove'
+            ? middlePick !== null
+            : event.button === 1 && pendingMiddleClick !== null
+        if (!claimed) return
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        if (type === 'auxclick') pendingMiddleClick = null
+      },
+      { capture: true },
+    )
+  }
 }
