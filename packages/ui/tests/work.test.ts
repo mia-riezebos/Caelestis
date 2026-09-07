@@ -54,6 +54,44 @@ const setup = async (override: Partial<WorkClient> = {}) => {
 }
 
 describe('work interactions', () => {
+  it('keeps a dedicated claim blocker identifiable and removable without exposing task controls', async () => {
+    const id = '01900000-0000-7000-8000-000000000004'
+    const claim = {
+      ...item,
+      id,
+      title: 'Claimed artwork',
+      templateIds: [id],
+      claimant: { displayName: 'Mia', wplaceUserId: 1 },
+    }
+    const { root, client } = await setup({
+      list: async () => ({
+        items: [{ ...item, blockerIds: [id] }, claim],
+        canPlan: true,
+        canClaim: true,
+      }),
+    })
+    root.shadowRoot?.querySelector<HTMLButtonElement>('.item')?.click()
+    await settle()
+    expect(root.shadowRoot?.querySelector('article')?.textContent).toContain(claim.title)
+    expect(root.shadowRoot?.querySelector('article')?.textContent).not.toContain(
+      'Removed work item',
+    )
+    button(root, 'Edit')?.click()
+    await settle()
+    const blocker = root.shadowRoot?.querySelector<HTMLInputElement>(
+      `input[type="checkbox"][value="${id}"]`,
+    )
+    expect(blocker?.checked).toBe(true)
+    blocker?.click()
+    root.shadowRoot
+      ?.querySelector('form')
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    expect(client.mutate).toHaveBeenCalledWith(
+      item.id,
+      expect.objectContaining({ fields: expect.objectContaining({ blockerIds: [] }) }),
+    )
+  })
   it('keeps dedicated template claims out of the single-owner task board', async () => {
     const actor = { displayName: 'Mia', wplaceUserId: 1 }
     const claim = {

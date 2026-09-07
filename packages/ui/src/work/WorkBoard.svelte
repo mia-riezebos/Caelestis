@@ -58,11 +58,12 @@
       wplaceUserId: userId.trim() === '' ? -1 : Number(userId),
     },
   )
-  const selected = $derived(collection.items.find((item) => item.id === selectedId) ?? null)
-  const tags = $derived([...new Set(collection.items.flatMap((item) => item.tags))].sort())
+  const tasks = $derived(collection.items.filter((item) => !isTemplateClaim(item)))
+  const selected = $derived(tasks.find((item) => item.id === selectedId) ?? null)
+  const tags = $derived([...new Set(tasks.flatMap((item) => item.tags))].sort())
   const painters = $derived([
     ...new Map(
-      collection.items.flatMap((item) =>
+      tasks.flatMap((item) =>
         item.claimant === null ? [] : [[item.claimant.wplaceUserId, item.claimant] as const],
       ),
     ).values(),
@@ -83,7 +84,7 @@
     return ids
   })
   const visible = $derived(
-    filterWork(collection.items, {
+    filterWork(tasks, {
       state: statusFilter,
       search,
       tag,
@@ -109,7 +110,7 @@
     try {
       const result = await client.list()
       if (run !== generation) return
-      collection = { ...result, items: result.items.filter((item) => !isTemplateClaim(item)) }
+      collection = result
     } catch (cause) {
       if (run === generation) error = cause instanceof Error ? cause.message : String(cause)
     } finally {
@@ -457,7 +458,9 @@
             <h4>Blockers</h4>
             {#each selected.blockerIds as id (id)}{@const blocker = collection.items.find(
                 (item) => item.id === id,
-              )}<button
+              )}{#if blocker !== undefined && isTemplateClaim(blocker)}
+                <p class="link-name">{blocker.title} · Template claim</p>
+              {:else}<button
                 class="text-button"
                 disabled={!blocker}
                 onclick={() => {
@@ -465,7 +468,7 @@
                 }}
                 >{blocker?.title ?? 'Removed work item'} · {blocker?.status ??
                   'unavailable'}</button
-              >{/each}
+              >{/if}{/each}
           </div>{/if}
         <div class="actions">
           {#if collection.canClaim && selected.status !== 'completed' && selected.claimant === null}<button
