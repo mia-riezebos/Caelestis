@@ -2,6 +2,7 @@
   import { tagName, tagNameKey } from '@caelestis/shared'
   import { onMount } from 'svelte'
   import Button from '../foundations/Button.svelte'
+  import Checkbox from '../foundations/Checkbox.svelte'
   import type { TagManagerIntent, TagManagerModel } from '../types.js'
 
   let { model, onIntent }: { model: TagManagerModel; onIntent?: (intent: TagManagerIntent) => void } = $props()
@@ -53,7 +54,7 @@
               <div class="delete"><p>Remove “{tag.name}” from every template and folder?</p><div class="row"><Button label="Delete tag" size="small" kind="danger" disabled={disabled} onclick={() => emit({ type: 'delete', id: tag.id })} /><Button label="Cancel" size="small" kind="ghost" disabled={disabled} onclick={() => deleting = null} /></div></div>
             {:else}
               <div class="row">
-                {#if model.targetName !== undefined}<label><input type="checkbox" checked={model.selected.includes(tag.id)} disabled={disabled} onchange={(event) => emit({ type: 'assign', id: tag.id, attached: event.currentTarget.checked })} /><span>{tag.name}</span></label>{:else}<span class="name">{tag.name}</span>{/if}
+                {#if model.targetName !== undefined}<label><Checkbox checked={model.selected.includes(tag.id)} {disabled} onChange={(attached) => emit({ type: 'assign', id: tag.id, attached })} /><span>{tag.name}</span></label>{:else}<span class="name">{tag.name}</span>{/if}
                 <Button label={`Rename ${tag.name}`} title="Rename tag" size="small" kind="ghost" iconOnly disabled={disabled} onclick={() => { editing = tag.id; rename = tag.name; validation = '' }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5-12 12H4v-5L16 3Zm-1 1 5 5" /></svg></Button>
                 <Button label={`Delete ${tag.name}`} title="Delete tag" size="small" kind="danger-ghost" iconOnly disabled={disabled} onclick={() => { deleting = tag.id; validation = '' }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7" /></svg></Button>
               </div>
@@ -87,7 +88,6 @@
   label, .name { flex: 1; min-inline-size: 0; overflow-wrap: anywhere; }
   input { box-sizing: border-box; font: inherit; color: inherit; }
   input:not([type='checkbox']) { flex: 1; min-inline-size: 0; inline-size: 100%; block-size: 2rem; border: 1px solid color-mix(in oklab, currentColor 25%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); padding-inline: 0.625rem; background: var(--caelestis-raised-surface, #f4f4f4); }
-  input[type='checkbox'] { inline-size: 1.125rem; block-size: 1.125rem; flex-shrink: 0; accent-color: var(--caelestis-primary); }
   input:focus-visible { outline: 2px solid var(--caelestis-primary, #467ee5); outline-offset: 2px; }
   input:disabled { opacity: 0.5; }
   .create { margin-block-start: 0.75rem; }

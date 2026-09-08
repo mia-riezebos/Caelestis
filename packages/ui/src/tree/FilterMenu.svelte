@@ -1,6 +1,7 @@
 <script lang="ts">
   import { EMPTY_TEMPLATE_FILTERS, TEMPLATE_FILTER_OPTIONS, templateFilterCount, type TemplateFilterCategory, type TemplateFilters } from '@caelestis/shared'
   import Icon from '../foundations/Icon.svelte'
+  import Checkbox from '../foundations/Checkbox.svelte'
   import TagFilter from './TagFilter.svelte'
   import type { TemplateTreeModel } from '../types.js'
 
@@ -70,7 +71,7 @@
         <legend>{labels[category]}</legend>
         {#each options(category) as choice}
           <label class="choice">
-            <input class="checkbox" type="checkbox" checked={(filters[category] as readonly string[]).includes(choice)} onchange={() => toggle(category, choice)} />
+            <Checkbox checked={(filters[category] as readonly string[]).includes(choice)} onChange={() => toggle(category, choice)} />
             <span>{TEMPLATE_FILTER_OPTIONS[category][choice]}</span>
           </label>
         {/each}
@@ -106,20 +107,13 @@
   .choice { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); cursor: pointer; user-select: none; transition: background-color 200ms; }
   .choice:hover, .choice:has(:focus-visible) { background: color-mix(in oklab, var(--caelestis-text) 10%, transparent); }
   .choice span { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .checkbox { position: relative; display: inline-block; flex-shrink: 0; inline-size: 1.25rem; block-size: 1.25rem; margin: 0; padding: 0.1875rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: transparent; color: var(--color-primary-content, white); box-shadow: 0 1px oklch(0% 0 0 / calc(var(--depth, 1) * 0.1)) inset; appearance: none; cursor: pointer; transition: background-color 200ms, border-color 200ms, box-shadow 200ms; }
-  .checkbox::before { content: ''; display: block; inline-size: 100%; block-size: 100%; background: currentColor; box-shadow: 0 3px oklch(100% 0 0 / calc(var(--depth, 1) * 0.1)) inset; clip-path: polygon(20% 100%, 20% 80%, 50% 80%, 50% 80%, 70% 80%, 70% 100%); opacity: 0; rotate: 45deg; transition: clip-path 300ms 100ms, opacity 100ms 100ms; }
-  .checkbox:checked { border-color: var(--caelestis-primary); background: var(--caelestis-primary); box-shadow: 0 8px 0 -4px oklch(100% 0 0 / calc(var(--depth, 1) * 0.1)) inset, 0 1px oklch(0% 0 0 / calc(var(--depth, 1) * 0.1)); }
-  .checkbox:checked::before { clip-path: polygon(20% 100%, 20% 80%, 50% 80%, 50% 0%, 70% 0%, 70% 100%); opacity: 1; }
-  .checkbox:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
 
   @media (prefers-reduced-motion: reduce) {
-    .filter-trigger, .clear, .choice, .checkbox, .checkbox::before { transition: none; }
+    .filter-trigger, .clear, .choice { transition: none; }
   }
 
   @media (forced-colors: active) {
-    .filter-trigger, .clear, .checkbox { border-color: ButtonText; }
-    .checkbox:checked { background: Highlight; border-color: Highlight; }
-    .checkbox:checked::before { background: HighlightText; }
+    .filter-trigger, .clear { border-color: ButtonText; }
     .badge { background: Highlight; color: HighlightText; }
   }
 </style>
