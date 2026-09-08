@@ -18,11 +18,17 @@
   let dialog = $state<HTMLDialogElement>()
   let dockedPanel = $state<HTMLElement>()
 
+  // The host hears about the modal after it opens and before it closes, so anything it needs to
+  // show above the popout, such as toasts, can move into the dialog while it exists.
   $effect(() => {
-    if (poppedOut && dialog !== undefined && !dialog.open) dialog.showModal()
+    if (poppedOut && dialog !== undefined && !dialog.open) {
+      dialog.showModal()
+      emit({ type: 'popout', open: true })
+    }
   })
 
   const dock = async (): Promise<void> => {
+    emit({ type: 'popout', open: false })
     dialog?.close()
     poppedOut = false
     await tick()

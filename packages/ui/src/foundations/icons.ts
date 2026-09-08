@@ -21,12 +21,14 @@ import deleteOutline from '@iconify-icons/material-symbols/delete-outline'
 import dns from '@iconify-icons/material-symbols/dns'
 import download from '@iconify-icons/material-symbols/download'
 import editOutline from '@iconify-icons/material-symbols/edit-outline'
+import error from '@iconify-icons/material-symbols/error'
 import extension from '@iconify-icons/material-symbols/extension'
 import filterAltOutline from '@iconify-icons/material-symbols/filter-alt-outline'
 import fitScreen from '@iconify-icons/material-symbols/fit-screen'
 import folder from '@iconify-icons/material-symbols/folder'
 import gridView from '@iconify-icons/material-symbols/grid-view'
 import image from '@iconify-icons/material-symbols/image'
+import info from '@iconify-icons/material-symbols/info'
 import keyboardArrowDown from '@iconify-icons/material-symbols/keyboard-arrow-down'
 import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
 import labelOutline from '@iconify-icons/material-symbols/label-outline'
@@ -50,6 +52,7 @@ import uploadFileOutline from '@iconify-icons/material-symbols/upload-file-outli
 import viewSidebarOutline from '@iconify-icons/material-symbols/view-sidebar-outline'
 import visibility from '@iconify-icons/material-symbols/visibility'
 import visibilityOff from '@iconify-icons/material-symbols/visibility-off'
+import warning from '@iconify-icons/material-symbols/warning'
 // Brand marks are not Material Symbols; Simple Icons is the Iconify set for those.
 import github from '@iconify-icons/simple-icons/github'
 
@@ -78,6 +81,7 @@ export const ICONS = define({
   darkMode,
   dock: viewSidebarOutline,
   download,
+  error,
   expandLess: keyboardArrowUp,
   expandMore: keyboardArrowDown,
   extension,
@@ -89,6 +93,7 @@ export const ICONS = define({
   github,
   gridView,
   image,
+  info,
   kebab: moreVert,
   lightMode,
   move: openWith,
@@ -111,6 +116,7 @@ export const ICONS = define({
   tune,
   unfoldMore,
   uploadFile: uploadFileOutline,
+  warning,
 })
 
 export type IconName = keyof typeof ICONS

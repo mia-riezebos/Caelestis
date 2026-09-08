@@ -16,29 +16,102 @@ const model = (overrides: Partial<NotificationsModel> = {}): NotificationsModel 
 })
 
 describe('notifications', () => {
-  it('renders an atomic live region and emits a composed dismiss intent', async () => {
+  it('keeps both live regions mounted while empty so later toasts are announced', async () => {
+    const root = new CaelestisNotifications()
+    document.body.append(root)
+    await tick()
+
+    const status = root.shadowRoot?.querySelector('[role="status"]')
+    expect(status?.getAttribute('aria-live')).toBe('polite')
+    expect(status?.children).toHaveLength(0)
+    expect(root.shadowRoot?.querySelector('[role="alert"]')?.children).toHaveLength(0)
+  })
+
+  it('announces errors as alerts, notices as status, and emits a composed dismiss intent', async () => {
     const root = new CaelestisNotifications()
     const intent = vi.fn()
     root.addEventListener('caelestis-notifications-intent', intent)
     root.model = model({
-      toasts: [{ id: 'toast-1', kind: 'error', message: 'Upload failed' }],
+      toasts: [
+        { id: 'toast-1', kind: 'error', message: 'Upload failed' },
+        { id: 'toast-2', kind: 'info', message: 'Exported “City”.' },
+      ],
     })
     document.body.append(root)
     await tick()
 
-    const region = root.shadowRoot?.querySelector('[role="status"]')
-    expect(region?.getAttribute('aria-live')).toBe('polite')
-    expect(region?.getAttribute('aria-atomic')).toBe('true')
-    expect(region?.textContent).toContain('Upload failed')
+    const alert = root.shadowRoot?.querySelector('[role="alert"]')
+    expect(alert?.textContent).toContain('Upload failed')
+    expect(alert?.textContent).not.toContain('Exported')
+    const status = root.shadowRoot?.querySelector('[role="status"]')
+    expect(status?.textContent).toContain('Exported “City”.')
 
-    root.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click()
+    // The newest toast is on top of the pile, so its dismiss button is the one shown.
+    expect(root.shadowRoot?.querySelector('[aria-label="Dismiss error"]')).toBeNull()
+    root.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')
+      ?.click()
     expect(intent).toHaveBeenCalledWith(
       expect.objectContaining({
-        detail: { type: 'dismiss-toast', id: 'toast-1' },
+        detail: { type: 'dismiss-toast', id: 'toast-2' },
         bubbles: true,
         composed: true,
       }),
     )
+  })
+
+  it('piles several toasts behind the newest and expands into a list on request', async () => {
+    const root = new CaelestisNotifications()
+    const intent = vi.fn()
+    root.addEventListener('caelestis-notifications-intent', intent)
+    root.model = model({
+      toasts: [
+        { id: 'toast-1', kind: 'error', message: 'Upload failed' },
+        { id: 'toast-2', kind: 'error', message: 'Delete failed' },
+        { id: 'toast-3', kind: 'info', message: 'Exported “City”.' },
+      ],
+    })
+    document.body.append(root)
+    await tick()
+
+    const shadow = root.shadowRoot
+    expect(shadow?.querySelectorAll('.toast')).toHaveLength(1)
+    expect(shadow?.querySelector('.toast')?.textContent).toContain('Exported “City”.')
+    expect(shadow?.querySelectorAll('.peek')).toHaveLength(2)
+
+    const more = [...(shadow?.querySelectorAll('button') ?? [])].find(
+      (button) => button.textContent?.trim() === '+2 more',
+    )
+    more?.click()
+    await tick()
+    const listed = [...(shadow?.querySelectorAll('.toast') ?? [])].map(
+      (item) => item.querySelector('.message')?.textContent,
+    )
+    expect(listed).toEqual(['Exported “City”.', 'Delete failed', 'Upload failed'])
+    expect(shadow?.querySelectorAll('.peek')).toHaveLength(0)
+
+    const showLess = [...(shadow?.querySelectorAll('button') ?? [])].find(
+      (button) => button.textContent?.trim() === 'Show less',
+    )
+    showLess?.click()
+    await tick()
+    expect(shadow?.querySelectorAll('.toast')).toHaveLength(1)
+
+    // Dismissing the top card removes only it; the host then promotes the next one.
+    shadow?.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')?.click()
+    expect(intent).toHaveBeenCalledTimes(1)
+    expect(intent).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { type: 'dismiss-toast', id: 'toast-3' } }),
+    )
+    root.model = model({
+      toasts: [
+        { id: 'toast-1', kind: 'error', message: 'Upload failed' },
+        { id: 'toast-2', kind: 'error', message: 'Delete failed' },
+      ],
+    })
+    await tick()
+    expect(shadow?.querySelector('.toast')?.textContent).toContain('Delete failed')
+    expect(shadow?.querySelectorAll('.peek')).toHaveLength(1)
   })
 
   it('renders a toast action as an external link', async () => {
