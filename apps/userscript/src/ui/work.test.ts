@@ -109,8 +109,9 @@ it('refreshes on work revisions, ignores painting updates, and discards disconne
     response: { status: 200 },
     body: { items: [item], canClaim: true, canPlan: false },
   })
-  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.known).toBe(false)
   await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1))
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.known).toBe(true)
   expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.people).toEqual([
     state.identity,
   ])

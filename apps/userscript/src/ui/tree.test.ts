@@ -1,3 +1,8 @@
+import {
+  EMPTY_TEMPLATE_FILTERS,
+  parseTemplateFilters,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_TREE_NODES } from '../server-manifest.js'
 
@@ -47,7 +52,7 @@ afterEach(() => {
   forgetServerRows('https://public.example.com')
   forgetServerRows('https://cached.example.com')
   forgetServerRows('https://loading.example.com')
-  setState({ servers: [], customOrder: [], collapsed: [] })
+  setState({ servers: [], customOrder: [], collapsed: [], filters: EMPTY_TEMPLATE_FILTERS })
   serverCache.cacheServer.mockClear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -80,6 +85,63 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
 })
 
 describe('tree model adapter', () => {
+  it('filters tree and grid by current claims, retaining unknown claims outside unclaimed results', () => {
+    const connected = server(SERVER_ID, 0, 'https://cached.example.com')
+    setState({ servers: [connected] })
+    acceptServerSnapshot(connected, {
+      nodes: [],
+      templates: [
+        {
+          id: TEMPLATE_A,
+          nodeId: null,
+          name: 'Claimed art',
+          version: 'v1',
+          published: true,
+          updatedAt: 1,
+          bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+          chunks: [],
+        },
+      ],
+    })
+    const key = serverTemplateTreeKey(connected, TEMPLATE_A)
+    for (const mode of ['tree', 'grid'] as const) {
+      setTemplateDisplayMode(mode)
+      for (const [choice, mine, claimed, known, expected] of [
+        ['mine', true, true, true, true],
+        ['mine', false, true, true, false],
+        ['claimed', false, true, true, true],
+        ['unclaimed', false, false, true, true],
+        ['unclaimed', false, false, false, false],
+      ] as const) {
+        setState({ filters: parseTemplateFilters({ claims: [choice] }) })
+        const claims = new Map([
+          [
+            key,
+            {
+              mine,
+              known,
+              people: claimed ? [{ wplaceUserId: 42, displayName: 'Mia' }] : [],
+              canAssign: false,
+              canClaim: true,
+            },
+          ],
+        ])
+        const model = templateTreeAdapter(
+          callbacks,
+          vi.fn(),
+          '',
+          WORLD_TEMPLATE_SURFACE,
+          false,
+          undefined,
+          claims,
+        ).model
+        expect(model.entries.some((entry) => entry.type === 'row' && entry.key === key)).toBe(
+          expected,
+        )
+      }
+    }
+    setTemplateDisplayMode('tree')
+  })
   it('offers server filters only when the current canvas has template data, including cached rows offline', () => {
     const connected = server(SERVER_ID, 0, 'https://cached.example.com')
     for (const status of ['unreachable', 'needs-token'] as const) {

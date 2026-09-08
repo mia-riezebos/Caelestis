@@ -4,6 +4,7 @@ import { EMPTY_TEMPLATE_FILTERS, type TemplateFilters } from '@caelestis/shared'
 import { flushSync, mount, unmount } from 'svelte'
 import { createSubscriber } from 'svelte/reactivity'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import TagFilter from '../src/tree/TagFilter.svelte'
 import TemplateTree from '../src/tree/TemplateTree.svelte'
 
 // Native popover dismissal and layout are covered by browser verification.
@@ -29,6 +30,60 @@ afterEach(() => {
 })
 
 describe('template filter menu', () => {
+  it('searches tags, adds multiple chips, and removes them with a button or Backspace', async () => {
+    let selected: readonly string[] = []
+    let update = () => {}
+    const subscribe = createSubscriber((notify) => {
+      update = notify
+    })
+    const component = mount(TagFilter, {
+      target: document.body,
+      props: {
+        options: [
+          { id: 'a', name: 'Repair', owner: 'Local' },
+          { id: 'b', name: 'Priority', owner: 'Server' },
+        ],
+        active: true,
+        get selected() {
+          subscribe()
+          return selected
+        },
+        onChange(ids) {
+          selected = ids
+          update()
+        },
+      },
+    })
+    flushSync()
+    const input = document.querySelector<HTMLInputElement>('[role="combobox"]')
+    if (input === null) throw new Error('Missing tag input')
+    const key = (value: string) => {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }),
+      )
+      flushSync()
+    }
+    input.focus()
+    input.value = 'rep'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    flushSync()
+    expect(document.querySelectorAll('[role="option"]')).toHaveLength(1)
+    key('Enter')
+    expect(selected).toEqual(['a'])
+    expect(input.value).toBe('')
+    key('Enter')
+    expect(selected).toEqual(['a', 'b'])
+    expect(document.querySelectorAll('.chip')).toHaveLength(2)
+    document.querySelector<HTMLButtonElement>('[aria-label="Remove Repair"]')?.click()
+    flushSync()
+    expect(selected).toEqual(['b'])
+    key('Backspace')
+    expect(selected).toEqual([])
+    key('Escape')
+    expect(input.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(input)
+    await unmount(component)
+  })
   it('closes when a pointer moves focus back to the trigger before clicking it', async () => {
     const component = mount(TemplateTree, {
       target: document.body,
@@ -92,14 +147,18 @@ describe('template filter menu', () => {
       new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }),
     )
     flushSync()
-    const inputs = [...document.querySelectorAll<HTMLInputElement>('[popover] input')]
-    expect(inputs).toHaveLength(10)
+    const inputs = [
+      ...document.querySelectorAll<HTMLInputElement>('[popover] input[type="checkbox"]'),
+    ]
+    expect(inputs).toHaveLength(13)
     expect(document.activeElement).toBe(inputs[0])
-    for (const index of [0, 1, 3, 5, 7]) {
+    for (const index of [0, 1, 3, 8, 10]) {
       inputs[index]?.click()
       flushSync()
     }
     expect(filters).toEqual({
+      claims: [],
+      tags: [],
       source: ['local', 'server'],
       visibility: ['hidden'],
       lifecycle: ['finished'],
@@ -139,6 +198,7 @@ describe('template filter menu', () => {
     expect([...document.querySelectorAll('legend')].map((legend) => legend.textContent)).toEqual([
       'Source',
       'Visibility',
+      'Claims',
       'Alarms',
     ])
     expect(document.querySelector('input:checked')).not.toBeNull()
