@@ -1,5 +1,5 @@
 <script lang="ts">
-import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
+import { Icon } from '@caelestis/ui'
 import { Select as SelectPrimitive } from 'bits-ui'
 import { cn, type WithoutChild } from '$lib/utils.js'
 
@@ -25,5 +25,5 @@ let {
 	{...restProps}
 >
 	{@render children?.()}
-	<ChevronDownIcon class="size-4 text-muted-foreground pointer-events-none" />
+	<Icon name="expandMore" class="size-4 text-muted-foreground pointer-events-none" />
 </SelectPrimitive.Trigger>

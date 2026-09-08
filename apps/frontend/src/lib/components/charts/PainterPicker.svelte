@@ -6,8 +6,7 @@
    * cut at a bounded page, so a thousand painters cost a thousand entries in memory and fifty in
    * the DOM.
    */
-  import CheckIcon from '@lucide/svelte/icons/check'
-  import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
+  import { Icon } from '@caelestis/ui'
   import { Command, Popover } from 'bits-ui'
   import {
     MAX_SELECTED_PAINTERS,
@@ -85,7 +84,7 @@
     aria-label="choose whose pace to draw"
   >
     <span>{summary}</span>
-    <ChevronsUpDownIcon class="size-3.5 text-base-content/60" />
+    <Icon name="unfoldMore" class="size-3.5 text-base-content/60" />
   </Popover.Trigger>
   <Popover.Portal>
     <Popover.Content
@@ -122,7 +121,7 @@
               <span class="sr-only" data-painter-state>{allUsersShown ? 'drawn' : 'not drawn'}</span>
               <span class="absolute end-2 flex size-3.5 items-center justify-center">
                 {#if allUsersShown}
-                  <CheckIcon class="size-3.5" />
+                  <Icon name="check" class="size-3.5" />
                 {/if}
               </span>
             </Command.Item>
@@ -153,7 +152,7 @@
                 <span class="sr-only" data-painter-state>{isSelected ? 'drawn' : 'not drawn'}</span>
                 <span class="absolute end-2 flex size-3.5 items-center justify-center">
                   {#if isSelected}
-                    <CheckIcon class="size-3.5" />
+                    <Icon name="check" class="size-3.5" />
                   {/if}
                 </span>
               </Command.Item>

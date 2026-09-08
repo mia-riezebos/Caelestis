@@ -6,4 +6,4 @@ Circular buttons stay circular. Dots and circular colour markers retain their sh
 
 # Icons
 
-Glyphs are Material Symbols, the family wplace renders, taken from Iconify's per-icon modules in `@iconify-icons/material-symbols`. `foundations/icons.ts` names each glyph once and `Icon.svelte` is the only place icon SVG is rendered. Filled variants are the default, matching wplace's rail; `-outline` variants are reserved for glyphs that lose their meaning filled at 16px, such as edit, delete, upload file, and the sidebar. Do not paste path data into components.
+Glyphs are Material Symbols, the family wplace renders, taken from Iconify's per-icon modules in `@iconify-icons/material-symbols`. `foundations/icons.ts` names each glyph once and `Icon.svelte` is the only place icon SVG is rendered, in the userscript panel and in the frontend alike. Filled variants are the default, matching wplace's rail; `-outline` variants are reserved for glyphs that lose their meaning filled at 16px, such as edit, delete, upload file, and the sidebar. Brand marks come from Iconify's Simple Icons set. Do not paste path data into components and do not add a second icon family.

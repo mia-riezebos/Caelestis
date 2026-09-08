@@ -5,7 +5,7 @@
     type TileKey,
     timelapseCaptureRect,
   } from '@caelestis/shared'
-  import { Maximize, Minus, Plus } from '@lucide/svelte'
+  import { Icon } from '@caelestis/ui'
   import {
     type CanvasRect,
     chunkImage,
@@ -310,13 +310,13 @@
 
   <div class="absolute end-2 top-2 flex flex-col gap-1">
     <button class="btn btn-xs btn-circle border-base-300 bg-base-100/90" aria-label="zoom in" onclick={() => zoomAt(viewWidth / 2, viewHeight / 2, 1.5)}>
-      <Plus class="size-3.5" />
+      <Icon name="add" class="size-3.5" />
     </button>
     <button class="btn btn-xs btn-circle border-base-300 bg-base-100/90" aria-label="zoom out" onclick={() => zoomAt(viewWidth / 2, viewHeight / 2, 1 / 1.5)}>
-      <Minus class="size-3.5" />
+      <Icon name="remove" class="size-3.5" />
     </button>
     <button class="btn btn-xs btn-circle border-base-300 bg-base-100/90" aria-label="fit template" onclick={() => { fitToArt(); }}>
-      <Maximize class="size-3.5" />
+      <Icon name="fitScreen" class="size-3.5" />
     </button>
   </div>
 
