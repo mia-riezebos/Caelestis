@@ -135,7 +135,7 @@ export const importTemplatesToServer = async (
         toast('Another placement started. Import the image again when it is finished.', 'warning')
         return
       }
-      toast(`Place “${first.name}”, then Apply to upload it.`)
+      toast(`Place “${first.name}”, then Apply to upload it.`, 'warning')
       return
     }
 

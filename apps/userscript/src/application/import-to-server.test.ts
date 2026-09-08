@@ -106,6 +106,10 @@ describe('server file import', () => {
 
     expect(state.uploadTemplate).not.toHaveBeenCalled()
     expect(reservation.start).toHaveBeenCalledWith('local-template', expect.any(Function))
+    expect(toasts.toast).toHaveBeenCalledWith(
+      'Place “Artwork”, then Apply to upload it.',
+      'warning',
+    )
     finished?.()
     await vi.waitFor(() => expect(state.uploadTemplate).toHaveBeenCalledOnce())
   })
