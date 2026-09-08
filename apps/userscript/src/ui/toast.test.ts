@@ -169,6 +169,10 @@ describe('toast', () => {
     expect(root?.style.getPropertyValue('--caelestis-toasts-inset-end')).toBe('472px')
     expect(root?.style.getPropertyValue('--caelestis-toasts-inline-size')).toBe('384px')
 
+    panel.id = 'caelestis-alliance-panel'
+    syncToastPlacement(panel.id)
+    expect(root?.style.getPropertyValue('--caelestis-toasts-inset-end')).toBe('472px')
+
     Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
     panel.getBoundingClientRect = () =>
       ({ left: 70, width: 260, top: 8, right: 330, bottom: 836, height: 828 }) as DOMRect
@@ -179,6 +183,7 @@ describe('toast', () => {
     panel.remove()
     syncToastPlacement()
     expect(root?.style.getPropertyValue('--caelestis-toasts-inset-end')).toBe('60px')
+    syncToastPlacement(PANEL_ID)
   })
 
   it('moves into a popped-out panel dialog and back without losing retained errors', async () => {
