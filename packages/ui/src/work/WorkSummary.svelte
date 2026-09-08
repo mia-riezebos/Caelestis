@@ -27,18 +27,25 @@
     <div class="t-acc-panel-inner">
       <div class="list">
         {#if model.canShowOthers}
-          <SettingRow label="Show other claims" compact>
-            <Toggle
-              label="Show other claims"
-              compact
-              checked={showOtherClaims}
-              onChange={onshowothers}
-            />
-          </SettingRow>
+          <div class="options">
+            <SettingRow label="Show other claims" compact>
+              <Toggle
+                label="Show other claims"
+                compact
+                checked={showOtherClaims}
+                onChange={onshowothers}
+              />
+            </SettingRow>
+          </div>
         {/if}
-        {#if model.error}<p role="status">{model.error}</p><Button label="Retry" kind="ghost" size="small" onclick={onretry} />{/if}
+        {#if model.error}
+          <div class="notice" role="status">
+            <span>{model.error}</span>
+            <Button label="Retry" size="compact" onclick={onretry} />
+          </div>
+        {/if}
         {#if count === 0}
-          <p>Right-click a template and choose Claim to keep it here.</p>
+          <p class="empty">Right-click a template and choose Claim to keep it here.</p>
         {:else}
           <TemplateTree model={model.tree} toolbar={false} {onIntent} />
         {/if}
@@ -100,6 +107,9 @@
     overflow-y: auto;
     padding: 0 0 6px;
   }
+  .options {
+    padding: 0.25rem 0.75rem 0;
+  }
   button {
     width: 100%;
     text-align: start;
@@ -118,13 +128,28 @@
     outline: 2px solid var(--caelestis-focus, currentColor);
     outline-offset: -2px;
   }
-  p {
+  .empty {
+    margin: 0.375rem 1rem 0.5rem;
     font-size: 12px;
+    line-height: 1.5;
     color: var(--caelestis-muted-text);
   }
-  p {
-    margin: 6px;
-    line-height: 1.5;
+  .notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin: 0.25rem 0.5rem;
+    padding: 0.375rem 0.375rem 0.375rem 0.625rem;
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
+    background: color-mix(in oklab, var(--caelestis-danger, oklch(0.59 0.2 27)) 10%, transparent);
+    color: var(--caelestis-text);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .notice > span {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
   }
 
   .t-acc-panel {

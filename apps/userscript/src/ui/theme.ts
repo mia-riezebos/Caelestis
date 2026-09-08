@@ -20,6 +20,7 @@ export const applyWplaceTheme = (target: HTMLElement): void => {
     compactTarget: '2rem',
     touchTarget: '2.5rem',
     shadow: '0 24px 80px rgb(0 0 0 / 0.35)',
+    popoverShadow: '0 1px 2px rgb(0 0 0 / 0.12), 0 10px 24px -6px rgb(0 0 0 / 0.28)',
     motionDuration: '160ms',
   })
 }

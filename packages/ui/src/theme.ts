@@ -15,6 +15,7 @@ export interface CaelestisThemeTokens {
   readonly compactTarget: string
   readonly touchTarget: string
   readonly shadow: string
+  readonly popoverShadow: string
   readonly motionDuration: string
 }
 
@@ -37,6 +38,7 @@ const PROPERTIES: Record<CaelestisThemeToken, `--caelestis-${string}`> = {
   compactTarget: '--caelestis-compact-target',
   touchTarget: '--caelestis-touch-target',
   shadow: '--caelestis-shadow',
+  popoverShadow: '--caelestis-popover-shadow',
   motionDuration: '--caelestis-motion-duration',
 }
 
