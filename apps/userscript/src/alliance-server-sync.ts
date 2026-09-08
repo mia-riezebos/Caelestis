@@ -74,11 +74,11 @@ export const onAllianceManifestChange = (listener: () => void): (() => void) => 
   return () => manifestListeners.delete(listener)
 }
 
-/** Refresh one server after an alliance-surface edit instead of waiting for the next poll. */
+/** Refresh an edited alliance surface and report whether its manifest was admitted. */
 export const refreshAllianceManifest = async (
   server: ConnectedServer,
   surface: TemplateSurface,
-): Promise<void> => {
+): Promise<ServerSyncResult> => {
   const ownGeneration = generation
   const signal = controller?.signal
   if (
@@ -87,10 +87,10 @@ export const refreshAllianceManifest = async (
     selected === null ||
     !sameTemplateSurface(selected, surface)
   )
-    return
+    return { status: 'skipped' }
   const current = getState().servers.find((candidate) => candidate.url === server.url)
-  if (current === undefined || !isCurrentServerConnection(current)) return
-  await readServer(current, surface, ownGeneration, signal, 'manual', 'compatibility-poll')
+  if (current === undefined || !isCurrentServerConnection(current)) return { status: 'skipped' }
+  return await readServer(current, surface, ownGeneration, signal, 'manual', 'compatibility-poll')
 }
 
 const currentSurface = (surface: TemplateSurface, ownGeneration: number): boolean => {

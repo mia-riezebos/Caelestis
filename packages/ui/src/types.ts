@@ -254,10 +254,31 @@ export interface ShortcutHelpModel {
 
 export type ShortcutHelpIntent = { readonly type: 'close' }
 
+export interface TagManagerModel {
+  readonly owner: string
+  readonly targetName?: string
+  readonly tags: readonly import('@caelestis/shared').TemplateTag[]
+  readonly selected: readonly string[]
+  readonly loading: boolean
+  readonly ready: boolean
+  readonly busy: boolean
+  readonly error?: string | undefined
+  readonly revision: number
+}
+
+export type TagManagerIntent =
+  | { readonly type: 'close' }
+  | { readonly type: 'retry' }
+  | { readonly type: 'create'; readonly name: string }
+  | { readonly type: 'rename'; readonly id: string; readonly name: string }
+  | { readonly type: 'delete'; readonly id: string }
+  | { readonly type: 'assign'; readonly id: string; readonly attached: boolean }
+
 export type RailControlIntent = { readonly type: 'activate'; readonly id: RailControlId }
 
 export type TreeIcon = Extract<
   IconName,
+  | 'tag'
   | 'folder'
   | 'image'
   | 'server'
@@ -355,6 +376,8 @@ export interface TreeRowModel {
 }
 
 export interface TemplateClaimsModel {
+  /** False until an authoritative claim collection has arrived. */
+  readonly known?: boolean
   readonly people: readonly import('@caelestis/shared').PainterIdentity[]
   readonly mine: boolean
   readonly canAssign: boolean
@@ -390,6 +413,11 @@ export interface TemplateTreeModel {
   readonly displayMode?: 'tree' | 'grid'
   readonly filters?: import('@caelestis/shared').TemplateFilters
   readonly serverFiltersAvailable?: boolean
+  readonly tagOptions?: readonly {
+    readonly id: string
+    readonly name: string
+    readonly owner: string
+  }[]
   readonly entries: readonly TreeEntryModel[]
   /** The template row at the centre of the active canvas. */
   readonly focusedKey?: string

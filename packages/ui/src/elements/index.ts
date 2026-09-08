@@ -5,6 +5,7 @@ import type {
   PanelModel,
   RailControlModel,
   ShortcutHelpModel,
+  TagManagerModel,
 } from '../types.js'
 import type { WorkModel } from '../work/model.js'
 import NotificationsElement from './Notifications.element.svelte'
@@ -13,6 +14,7 @@ import PaletteProgressElement from './PaletteProgress.element.svelte'
 import PanelElement from './Panel.element.svelte'
 import RailControlElement from './RailControl.element.svelte'
 import ShortcutHelpElement from './ShortcutHelp.element.svelte'
+import TagManagerElement from './TagManager.element.svelte'
 import TemplateAdminElement from './TemplateAdmin.element.svelte'
 import TemplateStateElement from './TemplateState.element.svelte'
 import WorkElement from './Work.element.svelte'
@@ -29,6 +31,8 @@ export const PANEL_TAG = 'caelestis-panel'
 export const PALETTE_PROGRESS_TAG = 'caelestis-palette-progress'
 export const RAIL_CONTROL_TAG = 'caelestis-rail-control'
 export const SHORTCUT_HELP_TAG = 'caelestis-shortcut-help'
+export const TAG_MANAGER_TAG = 'caelestis-tag-manager'
+export type CaelestisTagManager = HTMLElement & { model: TagManagerModel }
 
 export type CaelestisTemplateAdmin = HTMLElement & {
   finished: boolean
@@ -77,12 +81,16 @@ export const CaelestisRailControl =
   RailControlElement.element as ElementConstructor<CaelestisRailControl>
 export const CaelestisShortcutHelp =
   ShortcutHelpElement.element as ElementConstructor<CaelestisShortcutHelp>
+export const CaelestisTagManager =
+  TagManagerElement.element as ElementConstructor<CaelestisTagManager>
 
 /** Browser-only and idempotent, so both hosts can call it whenever their UI mounts. */
 export const registerCaelestisUi = (): void => {
   if (typeof customElements === 'undefined') return
   if (customElements.get('caelestis-work') === undefined)
     customElements.define('caelestis-work', CaelestisWork)
+  if (customElements.get(TAG_MANAGER_TAG) === undefined)
+    customElements.define(TAG_MANAGER_TAG, CaelestisTagManager)
   if (customElements.get(TEMPLATE_STATE_TAG) === undefined) {
     customElements.define(TEMPLATE_STATE_TAG, CaelestisTemplateState)
   }
@@ -111,6 +119,7 @@ export const registerCaelestisUi = (): void => {
 
 declare global {
   interface HTMLElementTagNameMap {
+    'caelestis-tag-manager': CaelestisTagManager
     'caelestis-template-admin': CaelestisTemplateAdmin
     'caelestis-template-state': CaelestisTemplateState
     'caelestis-notifications': CaelestisNotifications

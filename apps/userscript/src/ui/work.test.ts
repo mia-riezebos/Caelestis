@@ -109,8 +109,9 @@ it('refreshes on work revisions, ignores painting updates, and discards disconne
     response: { status: 200 },
     body: { items: [item], canClaim: true, canPlan: false },
   })
-  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.known).toBe(false)
   await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1))
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.known).toBe(true)
   expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.people).toEqual([
     state.identity,
   ])
@@ -299,6 +300,53 @@ it('does not turn a claimed linked task into a template claim', async () => {
       false,
     ).entries,
   ).toEqual([])
+})
+
+it('invalidates previous claims while a newer revision is pending or failed, then recovers on retry', async () => {
+  const { item, key } = setup()
+  const changed = vi.fn()
+  state.request.mockResolvedValueOnce({
+    response: { status: 200 },
+    body: { items: [item], canClaim: true, canPlan: false },
+  })
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
+  expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)).toMatchObject({
+    known: true,
+    mine: true,
+  })
+  let fail: (error: Error) => void = () => {}
+  state.request.mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        fail = reject
+      }),
+  )
+  state.contents = { ...state.contents, nodes: [], templates: [], workRevision: 2 }
+  const pending = workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)
+  fail(new Error('New claims unavailable'))
+  await vi.waitFor(() =>
+    expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).error).toContain(
+      'New claims unavailable',
+    ),
+  )
+  expect.soft(pending?.known).toBe(false)
+  expect
+    .soft(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)?.known)
+    .toBe(false)
+  state.request.mockResolvedValueOnce({
+    response: { status: 200 },
+    body: { items: [], canClaim: true, canPlan: false },
+  })
+  retryTemplateClaims(WORLD_TEMPLATE_SURFACE, changed)
+  workSectionModel(WORLD_TEMPLATE_SURFACE, changed)
+  await vi.waitFor(() =>
+    expect(workSectionModel(WORLD_TEMPLATE_SURFACE, changed).templates.get(key)).toMatchObject({
+      known: true,
+      mine: false,
+      people: [],
+    }),
+  )
 })
 
 it('retries a failed list at the same revision only after an explicit retry', async () => {

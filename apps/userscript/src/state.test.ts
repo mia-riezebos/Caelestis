@@ -52,8 +52,17 @@ describe('server state boundaries', () => {
       stored = value
     })
     const { loadState, setState } = await import('./state.js')
-    expect(loadState().filters).toEqual({ source: [], visibility: [], lifecycle: [], alarm: [] })
+    expect(loadState().filters).toEqual({
+      source: [],
+      visibility: [],
+      lifecycle: [],
+      alarm: [],
+      claims: [],
+      tags: [],
+    })
     const filters = {
+      claims: ['mine'],
+      tags: ['019fed50-87a1-7523-a88c-bdeafad49681'],
       source: ['server'],
       visibility: ['hidden'],
       lifecycle: ['finished'],

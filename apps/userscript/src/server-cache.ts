@@ -1,4 +1,10 @@
-import { type TemplateSurface, templateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import {
+  parseTemplateTags,
+  type TemplateSurface,
+  type TemplateTag,
+  templateSurface,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { warn } from './debug.js'
 import {
   MAX_MANIFEST_CHUNKS,
@@ -8,6 +14,7 @@ import {
   type TreeNode,
 } from './server-manifest.js'
 import { migrateTemplateStorePalette } from './templates/palette-migration.js'
+import { upgradeLocalTags } from './templates/tag-schema.js'
 
 /**
  * What a server told us, kept between sessions.
@@ -23,7 +30,7 @@ import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 const DB_NAME = 'caelestis'
 const STORE = 'server-cache'
 // Shared with local template persistence. Opening an older version after v3 exists is a VersionError.
-const VERSION = 5
+const VERSION = 6
 
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
@@ -39,6 +46,7 @@ export interface CachedServer {
 }
 
 export interface ServerTemplate {
+  readonly tags?: readonly TemplateTag[]
   readonly id: string
   readonly nodeId: string | null
   readonly name: string
@@ -79,6 +87,7 @@ const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefi
       typeof candidate.id !== 'string' ||
       (candidate.nodeId !== null && typeof candidate.nodeId !== 'string') ||
       typeof candidate.name !== 'string' ||
+      (candidate.tags !== undefined && parseTemplateTags(candidate.tags) === null) ||
       typeof candidate.version !== 'string' ||
       (candidate.totalPixels !== undefined &&
         (!Number.isSafeInteger(candidate.totalPixels) || Number(candidate.totalPixels) <= 0)) ||
@@ -113,6 +122,7 @@ const open = (): Promise<IDBDatabase> =>
     let abandoned = false
     request.onupgradeneeded = (event) => {
       const db = request.result
+      upgradeLocalTags(db)
       // The local-template store lives in the same database and must survive this upgrade.
       if (!db.objectStoreNames.contains('local-templates')) {
         db.createObjectStore('local-templates', { keyPath: 'id' })

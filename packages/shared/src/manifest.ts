@@ -1,3 +1,4 @@
+import type { TemplateTag } from './tags.js'
 import type { TemplateSurface } from './template-surface.js'
 import type { Millis } from './time.js'
 
@@ -10,6 +11,8 @@ export type SurfaceChunkKey = `${number}/${number}`
  * 304 is the common case and a full body is cheap when it is not.
  */
 export interface Manifest {
+  /** Reusable catalog; admin manifests also include unassigned labels. */
+  readonly tags?: readonly TemplateTag[]
   /** Opaque, changes whenever anything below changes. Surfaced to the user as a "what changed" diff. */
   readonly version: string
   readonly season: number
@@ -45,6 +48,7 @@ export interface ServerInfo {
  * any depth is one prefix query. Templates may also sit directly under the server root.
  */
 export interface Node {
+  readonly tags?: readonly TemplateTag[]
   readonly id: string
   readonly parentId: string | null
   /** e.g. `/canada/toronto/skyline` */
@@ -55,6 +59,8 @@ export interface Node {
 }
 
 export interface Template {
+  /** Authoritative labels; absent on servers predating tags. */
+  readonly tags?: readonly TemplateTag[]
   readonly id: string
   readonly nodeId: string | null
   readonly name: string

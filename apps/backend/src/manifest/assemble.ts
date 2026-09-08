@@ -30,12 +30,38 @@ const assembleManifestWithSql = async (
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
   const surface = options.surface ?? { kind: 'world', allianceId: null }
-  const [nodeRecords, templateRecords, tileRecords, workRevision] = await Promise.all([
+  const [
+    nodeRecords,
+    templateRecords,
+    tileRecords,
+    tagRecords,
+    catalog,
+    nodeTagRecords,
+    workRevision,
+  ] = await Promise.all([
     sql.listNodes(options.season, surface),
     sql.listManifestTemplates({ season: options.season, surface }, options.includeUnpublished),
     sql.listManifestTiles({ season: options.season, surface }, options.includeUnpublished),
+    sql.listManifestTags({ season: options.season, surface }, options.includeUnpublished),
+    options.includeUnpublished ? sql.listTags() : Promise.resolve([]),
+    sql.listManifestNodeTags({ season: options.season, surface }),
     sql.work.revision(options.season, surface),
   ])
+
+  const tagsByTemplate = new Map<string, import('@caelestis/shared').TemplateTag[]>()
+  for (const { templateId, tag } of tagRecords) {
+    const tags = tagsByTemplate.get(templateId) ?? []
+    tags.push(tag)
+    tagsByTemplate.set(templateId, tags)
+  }
+  for (const tags of tagsByTemplate.values()) tags.sort((a, b) => a.id.localeCompare(b.id))
+  const tagsByNode = new Map<string, import('@caelestis/shared').TemplateTag[]>()
+  for (const { nodeId, tag } of nodeTagRecords) {
+    const tags = tagsByNode.get(nodeId) ?? []
+    tags.push(tag)
+    tagsByNode.set(nodeId, tags)
+  }
+  for (const tags of tagsByNode.values()) tags.sort((a, b) => a.id.localeCompare(b.id))
 
   const nodes = nodeRecords
     .map(({ id, parentId, path, name, description, createdAt }) =>
@@ -43,6 +69,10 @@ const assembleManifestWithSql = async (
         ? { id, parentId, path, name, createdAt }
         : { id, parentId, path, name, description, createdAt },
     )
+    .map((node) => ({
+      ...node,
+      ...(tagsByNode.has(node.id) ? { tags: tagsByNode.get(node.id) ?? [] } : {}),
+    }))
     .sort((left, right) => left.id.localeCompare(right.id))
 
   const chunksByVersion = new Map<string, Array<{ tile: SurfaceChunkKey; hash: string }>>()
@@ -78,6 +108,7 @@ const assembleManifestWithSql = async (
       id: template.id,
       nodeId: template.nodeId,
       name: template.name,
+      ...(tagsByTemplate.has(template.id) ? { tags: tagsByTemplate.get(template.id) ?? [] } : {}),
       version: template.versionId,
       bbox: { ...template.bbox },
       totalPixels: template.totalPixels,
@@ -152,6 +183,9 @@ const assembleManifestWithSql = async (
             : { liveTileOffers: options.server.liveTileOffers }),
         }
   const unsigned: Manifest = {
+    ...(catalog.length === 0
+      ? {}
+      : { tags: [...catalog].sort((a, b) => a.id.localeCompare(b.id)) }),
     version: VERSION_PLACEHOLDER,
     season: options.season,
     ...(surface.kind === 'world' ? {} : { surface }),

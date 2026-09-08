@@ -7,6 +7,43 @@ import {
 } from './template-filters.js'
 
 describe('template filters', () => {
+  it('combines tag alternatives with claim choices and rejects unknown claim state', () => {
+    const tags = ['019fed50-87a1-7523-a88c-bdeafad49681', '019fed50-87a1-7523-a88c-bdeafad49682']
+    const filters = parseTemplateFilters({ tags, claims: ['mine'] })
+    const facts = {
+      source: 'server',
+      visible: true,
+      tags: [tags[1] ?? ''],
+      claims: { mine: true, claimed: true },
+    } as const
+    expect(matchesTemplateFilters(facts, filters)).toBe(true)
+    expect(matchesTemplateFilters({ ...facts, tags: [] }, filters)).toBe(false)
+    expect(
+      matchesTemplateFilters({ ...facts, claims: { mine: false, claimed: true } }, filters),
+    ).toBe(false)
+    for (const choice of ['mine', 'claimed', 'unclaimed'])
+      expect(
+        matchesTemplateFilters(
+          { source: 'server', visible: true },
+          parseTemplateFilters({ claims: [choice] }),
+        ),
+      ).toBe(false)
+    expect(
+      matchesTemplateFilters(
+        { ...facts, claims: { mine: false, claimed: false } },
+        parseTemplateFilters({ claims: ['unclaimed'] }),
+      ),
+    ).toBe(true)
+    expect(
+      matchesTemplateFilters(facts, parseTemplateFilters({ claims: ['claimed', 'unclaimed'] })),
+    ).toBe(true)
+    expect(
+      parseTemplateFilters({
+        tags: [...tags, tags[0], 'invalid'],
+        claims: ['mine', 'mine', 'invalid'],
+      }),
+    ).toMatchObject({ tags, claims: ['mine'] })
+  })
   it('uses OR within categories and AND between categories', () => {
     const filters = parseTemplateFilters({
       source: ['local', 'server'],
@@ -54,6 +91,8 @@ describe('template filters', () => {
       alarm: ['none'],
     })
     expect(filters).toEqual({
+      claims: [],
+      tags: [],
       source: ['server'],
       visibility: ['hidden'],
       lifecycle: [],

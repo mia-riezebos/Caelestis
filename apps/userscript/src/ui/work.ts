@@ -51,6 +51,7 @@ const workClient = (
   )
 
 interface WorkPreview {
+  loaded: boolean
   readonly signal: AbortSignal
   revision: string
   collection: WorkCollection
@@ -93,6 +94,7 @@ export const workSectionModel = (surface: TemplateSurface, changed: () => void) 
     let preview = previews.get(key)
     if (preview?.signal !== signal) {
       preview = {
+        loaded: false,
         signal,
         revision: '',
         collection: { items: [], canPlan: false, canClaim: false },
@@ -110,6 +112,7 @@ export const workSectionModel = (surface: TemplateSurface, changed: () => void) 
     }
     if (preview.revision !== revision) {
       preview.revision = revision
+      preview.loaded = false
       const held = preview
       const request = ++held.request
       void workClient(server, server.season, surface, signal)
@@ -118,6 +121,7 @@ export const workSectionModel = (surface: TemplateSurface, changed: () => void) 
           (collection) => {
             if (signal.aborted || held.request !== request) return
             held.collection = collection
+            held.loaded = true
             held.error = ''
             changed()
           },
@@ -137,6 +141,7 @@ export const workSectionModel = (surface: TemplateSurface, changed: () => void) 
         for (const person of workClaimants(item)) people.set(person.wplaceUserId, person)
       }
       templates.set(serverTemplateTreeKey(server, template.id), {
+        known: preview.loaded,
         people: [...people.values()],
         mine: painterId !== undefined && people.has(painterId),
         canAssign: preview.collection.canPlan && template.published,

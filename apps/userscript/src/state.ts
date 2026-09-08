@@ -6,10 +6,12 @@ import {
   PALETTE_SIZE,
   type PainterIdentity,
   parseTemplateFilters,
+  parseTemplateTags,
   type ReconciliationReason,
   type SyncTransport,
   type TemplateFilters,
   type TemplateSurface,
+  type TemplateTag,
   templateSurface,
   templateSurfaceKey,
   WORLD_TEMPLATE_SURFACE,
@@ -1779,6 +1781,99 @@ export const patchTemplate = async (
     }
   } catch (error) {
     return { ok: false, message: String(error), retryable: true }
+  }
+}
+
+export type ServerTagMutation =
+  | {
+      readonly type: 'assign-folder'
+      readonly id: string
+      readonly folderId: string
+      readonly attached: boolean
+    }
+  | { readonly type: 'create'; readonly name: string }
+  | { readonly type: 'rename'; readonly id: string; readonly name: string }
+  | { readonly type: 'delete'; readonly id: string }
+  | {
+      readonly type: 'assign'
+      readonly id: string
+      readonly templateId: string
+      readonly attached: boolean
+    }
+
+/** Fetch the authoritative server catalog and optional template assignments with admin credentials. */
+export const listServerTags = async (
+  server: ConnectedServer,
+  templateId?: string,
+  folderId?: string,
+): Promise<
+  | {
+      readonly ok: true
+      readonly tags: readonly TemplateTag[]
+      readonly selected: readonly string[]
+    }
+  | { readonly ok: false; readonly message: string }
+> => {
+  try {
+    const query =
+      folderId !== undefined
+        ? `?folderId=${encodeURIComponent(folderId)}`
+        : templateId === undefined
+          ? ''
+          : `?templateId=${encodeURIComponent(templateId)}`
+    const { response, body } = await requestServerTree(
+      serverEndpoint(server.url, `/admin/tags${query}`),
+      { headers: adminHeaders(server) },
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    const tags = isRecord(body) ? parseTemplateTags(body.tags) : null
+    if (
+      tags === null ||
+      !isRecord(body) ||
+      !Array.isArray(body.selected) ||
+      body.selected.length > tags.length ||
+      body.selected.some((id) => typeof id !== 'string' || !tags.some((tag) => tag.id === id))
+    )
+      return { ok: false, message: 'The server returned invalid tags.' }
+    return { ok: true, tags, selected: body.selected as string[] }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/** Apply one tag mutation under the same authorization boundary as template metadata. */
+export const mutateServerTag = async (
+  server: ConnectedServer,
+  mutation: ServerTagMutation,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> => {
+  try {
+    const suffix =
+      mutation.type === 'create'
+        ? ''
+        : `/${encodeURIComponent(mutation.id)}${mutation.type === 'assign' ? `/templates/${encodeURIComponent(mutation.templateId)}` : mutation.type === 'assign-folder' ? `/folders/${encodeURIComponent(mutation.folderId)}` : ''}`
+    const method =
+      mutation.type === 'create'
+        ? 'POST'
+        : mutation.type === 'rename'
+          ? 'PATCH'
+          : (mutation.type === 'assign' || mutation.type === 'assign-folder') && mutation.attached
+            ? 'PUT'
+            : 'DELETE'
+    const { response, body } = await requestServerMutation(
+      serverEndpoint(server.url, `/admin/tags${suffix}`),
+      {
+        method,
+        headers: adminHeaders(server),
+        ...('name' in mutation ? { body: JSON.stringify({ name: mutation.name }) } : {}),
+      },
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    return response.ok
+      ? { ok: true }
+      : { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
   }
 }
 

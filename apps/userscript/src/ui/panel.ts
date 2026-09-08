@@ -101,6 +101,7 @@ import { pixelAccounting } from '../templates/mismatch.js'
 import { focusedTemplate } from '../templates/nearest.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
+import { ensureLocalTags } from '../templates/tags.js'
 import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
@@ -1006,6 +1007,7 @@ const claimTreeModels = (
       panelSurface,
       true,
       new Set(keys),
+      claims.templates,
     )
     claimedTreeSource = adapter
     claimedTreeKeys = keys
@@ -1176,7 +1178,15 @@ const rerenderTree = (): void => {
   if (!panelOpen() || currentView() !== 'tree') return
   const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
   if (panel === null) return
-  activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery, panelSurface)
+  activeTreeAdapter = templateTreeAdapter(
+    treeCallbacks(),
+    rerenderTree,
+    searchQuery,
+    panelSurface,
+    false,
+    undefined,
+    workSectionModel(panelSurface, rerenderTree).templates,
+  )
   panel.model = panelModel(currentPanelWidth(panel))
   if (panelSessions.isWorldTreeVisible()) {
     for (const listener of worldTreeVisibleListeners) listener()
@@ -1213,6 +1223,9 @@ const showView = (view: PanelView): void => {
       rerenderTree,
       searchQuery,
       panelSurface,
+      false,
+      undefined,
+      workSectionModel(panelSurface, rerenderTree).templates,
     )
     void primeFromCache(rerenderTree)
   } else {
@@ -1434,6 +1447,9 @@ export const syncColourModeState = (): void => {
  * a button they threw away.
  */
 export const installPanel = (): void => {
+  void ensureLocalTags()
+    .then(refreshView)
+    .catch((error) => toast(`Could not load local tags: ${String(error)}`, 'error'))
   loadState()
   panelSessions.select('world')
   panelHost = document.body

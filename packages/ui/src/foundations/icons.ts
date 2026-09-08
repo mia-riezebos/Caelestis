@@ -29,6 +29,7 @@ import gridView from '@iconify-icons/material-symbols/grid-view'
 import image from '@iconify-icons/material-symbols/image'
 import keyboardArrowDown from '@iconify-icons/material-symbols/keyboard-arrow-down'
 import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
+import labelOutline from '@iconify-icons/material-symbols/label-outline'
 import lightMode from '@iconify-icons/material-symbols/light-mode'
 import moreVert from '@iconify-icons/material-symbols/more-vert'
 import openInNew from '@iconify-icons/material-symbols/open-in-new'
@@ -102,6 +103,7 @@ export const ICONS = define({
   share,
   snowflake: acUnit,
   sort: sortByAlphaRounded,
+  tag: labelOutline,
   trash: deleteOutline,
   treeView: accountTree,
   tune,

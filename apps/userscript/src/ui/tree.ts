@@ -8,6 +8,7 @@ import {
   WPLACE_PALETTE,
 } from '@caelestis/shared'
 import type {
+  TemplateClaimsModel,
   TemplateTreeIntent,
   TemplateTreeModel,
   TreeActionModel,
@@ -31,7 +32,12 @@ import {
 } from '../application/tree-server-state.js'
 import { artboardColourProgress, artboardTemplateProgress } from '../gl/artboard-markers.js'
 import { readArtboardPixels } from '../gl/artboard-pixels.js'
-import { moveLocalFolder, renameLocalFolder, setLocalFolderVisible } from '../local-folders.js'
+import {
+  localFolderChainVisible,
+  moveLocalFolder,
+  renameLocalFolder,
+  setLocalFolderVisible,
+} from '../local-folders.js'
 import type { ServerTemplate } from '../server-cache.js'
 import {
   type ConnectedServer,
@@ -65,6 +71,7 @@ import {
 } from '../templates/mismatch.js'
 import { nodeChainVisible, nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { localFolderTags, localTagCatalog, localTemplateTags } from '../templates/tags.js'
 import { templateDisplayMode } from './display-mode.js'
 import {
   emptyProgress,
@@ -171,6 +178,12 @@ export interface TreeCallbacks {
 }
 
 const reportTreeError = (message: string): void => toast(message, 'error')
+
+const openTagManager = (target: TreeTarget, rerender: () => void): void => {
+  void import('./tags.js')
+    .then((editor) => editor.openTagManager(target, rerender))
+    .catch((error) => reportTreeError(`Could not open tags: ${String(error)}`))
+}
 
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
@@ -395,7 +408,14 @@ const buildTree = <Result>(
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
   includeCollapsed = false,
   templateKeys?: ReadonlySet<string>,
+  claims?: ReadonlyMap<string, TemplateClaimsModel>,
 ): Result => {
+  const claimFacts = (key: string) => {
+    const claim = claims?.get(key)
+    return claim === undefined || claim.known === false
+      ? undefined
+      : { mine: claim.mine, claimed: claim.people.length > 0 }
+  }
   const dropInLocal = async (
     draggedKey: string,
     parentKey: string | null,
@@ -685,6 +705,7 @@ const buildTree = <Result>(
         : undefined,
       actions: canCreate
         ? [
+            { icon: 'tag', label: 'Manage tags', run: () => openTagManager(target, rerender) },
             {
               icon: 'createFolder',
               label: 'New folder',
@@ -771,6 +792,14 @@ const buildTree = <Result>(
             item: {
               key: nodeKey,
               name: node.name,
+              tagNames: node.tags?.map((tag) => tag.name) ?? [],
+              filterFacts: {
+                source: 'server',
+                visible:
+                  isScopeVisible(`server:${server.url}`) &&
+                  nodeChainVisible(server.url, node.id, surface),
+                tags: node.tags?.map((tag) => tag.id) ?? [],
+              },
               kind: 'folder',
               childrenOf: node.id,
               descendantAlarmKind: nodeAlarms.get(node.id),
@@ -789,6 +818,11 @@ const buildTree = <Result>(
               ...(canCreate
                 ? {
                     actions: [
+                      {
+                        icon: 'tag' as const,
+                        label: 'Edit tags',
+                        run: () => openTagManager(nodeTarget, rerender),
+                      },
                       {
                         icon: 'createFolder' as const,
                         label: 'New folder',
@@ -832,6 +866,16 @@ const buildTree = <Result>(
             item: {
               key: templateKey,
               name: template.name,
+              tagNames: template.tags?.map((tag) => tag.name) ?? [],
+              actions: canCreate
+                ? [
+                    {
+                      icon: 'tag',
+                      label: 'Edit tags',
+                      run: () => openTagManager(templateTarget, rerender),
+                    },
+                  ]
+                : undefined,
               kind: 'image',
               childrenOf: null,
               preview: {
@@ -866,6 +910,8 @@ const buildTree = <Result>(
               },
               filterFacts: {
                 source: 'server',
+                tags: template.tags?.map((tag) => tag.id) ?? [],
+                claims: claimFacts(templateKey),
                 visible:
                   drawn === undefined
                     ? isScopeVisible(`server:${server.url}`) &&
@@ -978,6 +1024,12 @@ const buildTree = <Result>(
           item: {
             key: `lf:${folder.id}`,
             name: folder.name,
+            tagNames: localFolderTags(folder.id).map((tag) => tag.name),
+            filterFacts: {
+              source: 'local',
+              visible: localFolderChainVisible(folder.id),
+              tags: localFolderTags(folder.id).map((tag) => tag.id),
+            },
             kind: 'folder',
             childrenOf: folder.id,
             ...(folder.createdAt === undefined ? {} : { createdAt: folder.createdAt }),
@@ -988,6 +1040,11 @@ const buildTree = <Result>(
             onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
             onRename: (value) => void renameTarget(folderTarget, value, rerender, surface),
             actions: [
+              {
+                icon: 'tag',
+                label: 'Edit tags',
+                run: () => openTagManager(folderTarget, rerender),
+              },
               {
                 icon: 'createFolder',
                 label: 'New folder',
@@ -1016,6 +1073,7 @@ const buildTree = <Result>(
           item: {
             key: `local:${template.id}`,
             name: template.name,
+            tagNames: localTemplateTags(template.id).map((tag) => tag.name),
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
@@ -1025,7 +1083,12 @@ const buildTree = <Result>(
               indices: template.indices,
               ownership: 'Local',
             },
-            filterFacts: { source: 'local', visible: isTemplateVisible(template) },
+            filterFacts: {
+              source: 'local',
+              visible: isTemplateVisible(template),
+              tags: localTemplateTags(template.id).map((tag) => tag.id),
+              claims: claimFacts(`local:${template.id}`),
+            },
             updatedAt: template.updatedAt,
             totalPixels: template.opaque,
             mismatched: drawnProgress(template).mismatched,
@@ -1048,6 +1111,11 @@ const buildTree = <Result>(
               },
             ],
             actions: [
+              {
+                icon: 'tag',
+                label: 'Edit tags',
+                run: () => openTagManager(templateTarget, rerender),
+              },
               {
                 icon: 'uploadFile' as const,
                 label: 'Copy to a server',
@@ -1148,6 +1216,7 @@ const canReorderRow = (row: TreeRowOptions): boolean =>
 
 const actionIcon = (name: string): TreeActionModel['icon'] => {
   switch (name) {
+    case 'tag':
     case 'search':
     case 'createFolder':
     case 'uploadFile':
@@ -1167,6 +1236,7 @@ export const templateTreeAdapter = (
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
   includeCollapsed = false,
   templateKeys?: ReadonlySet<string>,
+  claims?: ReadonlyMap<string, TemplateClaimsModel>,
 ): TemplateTreeAdapter => {
   const entries: TreeEntryModel[] = []
   const rows = new Map<string, TreeRowOptions>()
@@ -1272,7 +1342,17 @@ export const templateTreeAdapter = (
     finish: () => undefined,
   }
 
-  buildTree(output, callbacks, rerender, query, surface, includeCollapsed, templateKeys)
+  buildTree(output, callbacks, rerender, query, surface, includeCollapsed, templateKeys, claims)
+
+  const tagOptions = new Map(
+    localTagCatalog().map((tag) => [tag.id, { id: tag.id, name: tag.name, owner: 'Local' }]),
+  )
+  for (const server of getState().servers) {
+    const source = rowsForSurface(server, surface)
+    for (const row of [...(source?.nodes ?? []), ...(source?.templates ?? [])])
+      for (const tag of row.tags ?? [])
+        tagOptions.set(tag.id, { ...tag, owner: server.info?.name ?? server.url })
+  }
 
   const siblingRows = new Map<string, TreeRowModel[]>()
   for (const entry of entries) {
@@ -1297,6 +1377,9 @@ export const templateTreeAdapter = (
     sort: getState().sort,
     displayMode: templateDisplayMode(),
     filters: getState().filters,
+    tagOptions: [...tagOptions.values()].sort(
+      (a, b) => a.name.localeCompare(b.name) || a.owner.localeCompare(b.owner),
+    ),
     serverFiltersAvailable: getState().servers.some(
       (server) => (rowsForSurface(server, surface)?.templates.length ?? 0) > 0,
     ),
