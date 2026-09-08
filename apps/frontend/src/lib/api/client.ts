@@ -120,10 +120,6 @@ const fetchWithTransientRetry = async (url: string, init: RequestInit): Promise<
   return fetch(url, init)
 }
 
-/** Authenticated coordination requests use the same selected connection as template views. */
-export const requestWork = (path: string, init?: RequestInit): Promise<Response> =>
-  request(path, init)
-
 const request = async (
   path: string,
   init?: RequestInit,
