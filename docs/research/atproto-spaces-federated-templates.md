@@ -11,15 +11,9 @@ No runtime prototype, provider account, production deployment, or browser test f
 
 ## Research frame
 
-Mia chose Spaces-first development and accepts the working alpha as a development dependency.
-The starting organization is a personal space per user and a space per alliance.
-Templates remain user-owned, with at most one active alliance publication per template.
-Publication grants alliance admins a revocable management lease over that template only.
-The owner retains control and can end publication. These are requirements against which this research evaluates the protocol.
-
-The intended account direction uses existing AT identities, including Bluesky accounts on compatible infrastructure.
-Whether Caelestis hosts a PDS or adds Google, Discord, or GitHub login remains undecided.
-Mia uses Workers Paid. Free-tier limits do not determine the architecture.
+Read [Record the Spaces-first federation decisions](https://github.com/mia-riezebos/Caelestis/issues/303) for the agreed constraints.
+That ticket owns the decisions; this artifact evaluates the protocol against them.
+Account hosting, optional external identity providers, and revision retention remain open decisions.
 
 Earlier exploration compared server-owned ActivityPub actors with AT accounts and AppViews.
 ActivityPub delivers activities between actors through inboxes. AT Spaces lets applications pull permissioned author repositories.
@@ -191,7 +185,7 @@ It does not automatically create an AT repository or authorize an existing one. 
 - Authoritative live services, cross-user coordination, history retention, self-hosting, and migration boundaries.
 
 The next useful prototype follows one template through private draft, alliance publication, collaborator revision, and unpublication.
-It must demonstrate owner access after the collaborator leaves or deletes a revision, rather than assuming a CID preserves it.
+It must test the chosen retention guarantee when a collaborator leaves or deletes a revision, rather than assuming a CID preserves it.
 
 ## Primary sources
 
