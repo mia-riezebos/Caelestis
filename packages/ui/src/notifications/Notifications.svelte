@@ -102,7 +102,7 @@
   {#each notices as toast (toast.id)}<p>{toast.message}</p>{/each}
 </div>
 
-<div class="toasts">
+<div class="toasts" class:listed>
   {#if listed}
     <div class="list-header">
       <span>{stack.length} notifications</span>
@@ -192,7 +192,8 @@
     pointer-events: none;
   }
 
-  .toasts > * { pointer-events: auto; }
+  .toasts.listed { overflow-y: auto; overscroll-behavior: contain; pointer-events: auto; }
+  .toasts > * { flex-shrink: 0; pointer-events: auto; }
 
   .list-header {
     display: flex;
