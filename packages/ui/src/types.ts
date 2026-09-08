@@ -376,6 +376,8 @@ export interface TreeRowModel {
 }
 
 export interface TemplateClaimsModel {
+  /** False until an authoritative claim collection has arrived. */
+  readonly known?: boolean
   readonly people: readonly import('@caelestis/shared').PainterIdentity[]
   readonly mine: boolean
   readonly canAssign: boolean
@@ -411,6 +413,11 @@ export interface TemplateTreeModel {
   readonly displayMode?: 'tree' | 'grid'
   readonly filters?: import('@caelestis/shared').TemplateFilters
   readonly serverFiltersAvailable?: boolean
+  readonly tagOptions?: readonly {
+    readonly id: string
+    readonly name: string
+    readonly owner: string
+  }[]
   readonly entries: readonly TreeEntryModel[]
   /** The template row at the centre of the active canvas. */
   readonly focusedKey?: string

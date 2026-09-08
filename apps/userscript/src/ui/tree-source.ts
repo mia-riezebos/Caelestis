@@ -259,15 +259,17 @@ export const treeMatcher = (
     const cached = matches.get(item.key)
     if (cached !== undefined) return cached
     if (
-      (!filtering || item.childrenOf === null) &&
+      (!filtering || item.childrenOf === null || filters.tags.length > 0) &&
       (item.name.toLocaleLowerCase().includes(needle) ||
         item.tagNames?.some((name) => name.toLocaleLowerCase().includes(needle)))
     ) {
       const result =
         !filtering ||
         (item.filterFacts !== undefined && matchesTemplateFilters(item.filterFacts, filters))
-      matches.set(item.key, result)
-      return result
+      if (result) {
+        matches.set(item.key, true)
+        return true
+      }
     }
     if (item.childrenOf === null || visiting.has(item.key)) {
       matches.set(item.key, false)

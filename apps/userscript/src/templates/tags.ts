@@ -36,6 +36,9 @@ export type LocalTagMutation =
 let snapshot: readonly LocalTag[] = []
 let hydration: Promise<readonly LocalTag[]> | undefined
 
+/** Catalog snapshot for filter choices after local tag hydration. */
+export const localTagCatalog = (): readonly LocalTag[] => snapshot
+
 /** Current labels for a tree row, after the catalog has loaded. */
 export const localTemplateTags = (templateId: string): readonly TemplateTag[] =>
   snapshot.filter((tag) => tag.templateIds.includes(templateId))

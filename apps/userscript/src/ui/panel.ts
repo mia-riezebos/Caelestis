@@ -1007,6 +1007,7 @@ const claimTreeModels = (
       panelSurface,
       true,
       new Set(keys),
+      claims.templates,
     )
     claimedTreeSource = adapter
     claimedTreeKeys = keys
@@ -1177,7 +1178,15 @@ const rerenderTree = (): void => {
   if (!panelOpen() || currentView() !== 'tree') return
   const panel = document.getElementById(currentPanelId()) as CaelestisPanel | null
   if (panel === null) return
-  activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery, panelSurface)
+  activeTreeAdapter = templateTreeAdapter(
+    treeCallbacks(),
+    rerenderTree,
+    searchQuery,
+    panelSurface,
+    false,
+    undefined,
+    workSectionModel(panelSurface, rerenderTree).templates,
+  )
   panel.model = panelModel(currentPanelWidth(panel))
   if (panelSessions.isWorldTreeVisible()) {
     for (const listener of worldTreeVisibleListeners) listener()
@@ -1214,6 +1223,9 @@ const showView = (view: PanelView): void => {
       rerenderTree,
       searchQuery,
       panelSurface,
+      false,
+      undefined,
+      workSectionModel(panelSurface, rerenderTree).templates,
     )
     void primeFromCache(rerenderTree)
   } else {

@@ -1,15 +1,18 @@
 <script lang="ts">
   import { EMPTY_TEMPLATE_FILTERS, TEMPLATE_FILTER_OPTIONS, templateFilterCount, type TemplateFilterCategory, type TemplateFilters } from '@caelestis/shared'
   import Icon from '../foundations/Icon.svelte'
+  import TagFilter from './TagFilter.svelte'
+  import type { TemplateTreeModel } from '../types.js'
 
-  let { filters, serverFiltersAvailable = false, onFilter }: {
+  let { filters, serverFiltersAvailable = false, tagOptions = [], onFilter }: {
     filters: TemplateFilters
     serverFiltersAvailable?: boolean
+    tagOptions?: TemplateTreeModel['tagOptions']
     onFilter: (filters: TemplateFilters) => void
   } = $props()
   const menuId = $props.id()
-  const categories: readonly TemplateFilterCategory[] = ['source', 'visibility', 'lifecycle', 'alarm']
-  const labels = { source: 'Source', visibility: 'Visibility', lifecycle: 'Lifecycle', alarm: 'Alarms' }
+  const categories: readonly TemplateFilterCategory[] = ['source', 'visibility', 'claims', 'lifecycle', 'alarm']
+  const labels = { source: 'Source', visibility: 'Visibility', lifecycle: 'Lifecycle', alarm: 'Alarms', claims: 'Claims' }
   let trigger: HTMLButtonElement
   let menu: HTMLDivElement
   let open = $state(false)
@@ -24,20 +27,22 @@
   }
   const show = (): void => {
     const rect = trigger.getBoundingClientRect()
+    menu.style.maxBlockSize = 'calc(100vh - 1rem)'
     menu.showPopover()
     left = Math.max(8, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))
     top = Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - menu.offsetHeight - 8))
-    menu.querySelector<HTMLInputElement>('input')?.focus()
+    menu.style.maxBlockSize = `calc(100vh - ${top + 8}px)`
+    menu.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()
   }
   const toggle = <Category extends TemplateFilterCategory>(category: Category, choice: keyof (typeof TEMPLATE_FILTER_OPTIONS)[Category]): void => {
     const selected = filters[category]
-    onFilter({ ...filters, [category]: selected.includes(choice) ? selected.filter(value => value !== choice) : [...selected, choice] })
+    onFilter({ ...filters, [category]: selected.some(value => value === choice) ? selected.filter(value => value !== choice) : [...selected, choice] })
   }
   const options = <Category extends TemplateFilterCategory>(category: Category) =>
     Object.keys(TEMPLATE_FILTER_OPTIONS[category]) as (keyof (typeof TEMPLATE_FILTER_OPTIONS)[Category])[]
   const clear = (): void => {
     onFilter(EMPTY_TEMPLATE_FILTERS)
-    menu.querySelector<HTMLInputElement>('input')?.focus()
+    menu.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()
   }
   const keydown = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
@@ -58,8 +63,9 @@
     <span class="title">Filters</span>
     <button class="clear" type="button" aria-label="Clear filters" disabled={count === 0} onclick={clear}>Clear</button>
   </div>
+  <TagFilter options={tagOptions} selected={filters.tags} active={open} onChange={(tags) => onFilter({ ...filters, tags })} />
   {#each categories as category}
-    {#if category === 'source' || category === 'visibility' || serverFiltersAvailable || filters[category].length > 0}
+    {#if category === 'source' || category === 'visibility' || category === 'claims' || serverFiltersAvailable || filters[category].length > 0}
       <fieldset>
         <legend>{labels[category]}</legend>
         {#each options(category) as choice}

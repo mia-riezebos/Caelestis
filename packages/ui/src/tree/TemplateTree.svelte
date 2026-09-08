@@ -266,7 +266,7 @@
     <input type="search" placeholder="Search templates" aria-label="Search templates" value={query} oninput={search} />
   </label>
   {#if model.filters !== undefined}
-    <FilterMenu filters={model.filters} serverFiltersAvailable={model.serverFiltersAvailable ?? false} onFilter={(filters) => emit({ type: 'filter', filters })} />
+    <FilterMenu filters={model.filters} serverFiltersAvailable={model.serverFiltersAvailable ?? false} tagOptions={model.tagOptions} onFilter={(filters) => emit({ type: 'filter', filters })} />
   {/if}
   <SortMenu sort={model.sort} onSort={(sort) => emit({ type: 'sort', sort })} />
   {#if allowGrid}
