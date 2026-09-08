@@ -2,7 +2,7 @@
 
 import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { showAmbientToast } from './notification-host.js'
+import { mountNotificationsIn, showAmbientToast, syncToastPlacement } from './notification-host.js'
 import { PANEL_ID, toast } from './toast.js'
 
 const preferences = vi.hoisted(() => ({ notifyActivity: true }))
@@ -18,7 +18,10 @@ beforeEach(() => {
   document.body.appendChild(panel)
 })
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  mountNotificationsIn(null)
+  vi.useRealTimers()
+})
 
 const settle = async (): Promise<void> => {
   await Promise.resolve()
@@ -118,6 +121,23 @@ describe('toast', () => {
     expect(shadow()?.querySelector('[data-caelestis-toast="error"]')).toBeNull()
   })
 
+  it('piles errors up behind the newest one and drops the oldest past the cap', async () => {
+    for (let index = 1; index <= 8; index++) toast(`Failure ${index}`, 'error')
+    await settle()
+
+    const alert = shadow()?.querySelector('[role="alert"]')
+    expect(alert?.children).toHaveLength(6)
+    expect(alert?.textContent).not.toContain('Failure 2')
+    expect(alert?.textContent).toContain('Failure 3')
+    expect(shadow()?.querySelector('.toast .message')?.textContent).toBe('Failure 8')
+    expect(shadow()?.querySelectorAll('.peek')).toHaveLength(2)
+
+    shadow()?.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click()
+    await settle()
+    expect(shadow()?.querySelector('.toast .message')?.textContent).toBe('Failure 7')
+    expect(alert?.children).toHaveLength(5)
+  })
+
   it('replaces stale progress with an error without letting later progress erase it', async () => {
     toast('Preparing…')
     toast('Export failed', 'error')
@@ -128,11 +148,60 @@ describe('toast', () => {
       'Export failed',
     )
 
+    // Later progress goes on top of the pile; the error waits behind it, still announced.
     toast('Trying something else…')
     await settle()
-    expect(shadow()?.querySelector('[data-caelestis-toast="error"]')?.textContent).toContain(
-      'Export failed',
+    expect(shadow()?.querySelector('[data-caelestis-toast="info"]')?.textContent).toContain(
+      'Trying something else…',
     )
+    expect(shadow()?.querySelector('[role="alert"]')?.textContent).toContain('Export failed')
+    expect(shadow()?.querySelectorAll('.peek')).toHaveLength(1)
+  })
+
+  it('stands beside the open panel, and runs along the bottom when there is no room beside it', async () => {
+    const panel = document.getElementById(PANEL_ID) as HTMLElement
+    Object.defineProperty(window, 'innerWidth', { value: 2000, configurable: true })
+    panel.getBoundingClientRect = () =>
+      ({ left: 1540, width: 400, top: 8, right: 1940, bottom: 992, height: 984 }) as DOMRect
+    syncToastPlacement()
+
+    const root = document.querySelector<HTMLElement>('caelestis-notifications')
+    expect(root?.style.getPropertyValue('--caelestis-toasts-inset-end')).toBe('472px')
+    expect(root?.style.getPropertyValue('--caelestis-toasts-inline-size')).toBe('384px')
+
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
+    panel.getBoundingClientRect = () =>
+      ({ left: 70, width: 260, top: 8, right: 330, bottom: 836, height: 828 }) as DOMRect
+    syncToastPlacement()
+    expect(root?.style.getPropertyValue('--caelestis-toasts-inset-end')).toBe('8px')
+    expect(root?.style.getPropertyValue('--caelestis-toasts-inline-size')).toBe('374px')
+
+    panel.remove()
+    syncToastPlacement()
+    expect(root?.style.getPropertyValue('--caelestis-toasts-inset-end')).toBe('60px')
+  })
+
+  it('moves into a popped-out panel dialog and back without losing retained errors', async () => {
+    toast('Upload failed', 'error')
+    await settle()
+    const root = document.querySelector('caelestis-notifications')
+    expect(root?.parentNode).toBe(document.body)
+
+    const dialog = document.createElement('dialog')
+    document.body.append(dialog)
+    mountNotificationsIn(dialog)
+    toast('Exported')
+    await settle()
+    expect(root?.parentNode).toBe(dialog)
+    expect(shadow()?.textContent).toContain('Upload failed')
+    expect(shadow()?.textContent).toContain('Exported')
+
+    mountNotificationsIn(null)
+    dialog.remove()
+    await settle()
+    expect(root?.parentNode).toBe(document.body)
+    expect(shadow()?.querySelector('[role="alert"]')?.textContent).toContain('Upload failed')
+    expect(shadow()?.querySelectorAll('.peek')).toHaveLength(1)
   })
 
   it('removes non-errors after six seconds without removing the custom-element root', async () => {
