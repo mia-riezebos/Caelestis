@@ -33,7 +33,17 @@
     :global(select.caelestis-select), :global(select.caelestis-select::picker(select)) { appearance: base-select; }
   }
   :global(select.caelestis-select::picker-icon) { display: none; }
-  :global(.caelestis-menu), :global(select.caelestis-select::picker(select)) {
+  :global(.caelestis-menu) {
+    box-sizing: border-box;
+    padding: var(--menu-padding);
+    border: 1px solid var(--menu-border);
+    border-radius: var(--menu-radius);
+    background: var(--menu-surface);
+    color: var(--menu-text);
+    box-shadow: 0 8px 24px #0002;
+  }
+  /* Keep picker selectors separate so unsupported browsers retain custom-menu styles. */
+  :global(select.caelestis-select::picker(select)) {
     box-sizing: border-box;
     padding: var(--menu-padding);
     border: 1px solid var(--menu-border);
