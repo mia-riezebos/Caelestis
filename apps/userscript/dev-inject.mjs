@@ -21,10 +21,11 @@
  * work and proves nothing about the sandboxed path. Verify that separately before relying on it.
  */
 import { spawn } from 'node:child_process'
-import { readFileSync, watch, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ensureChromium } from './chromium.mjs'
+import { watchSources } from './dev-watch.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const BUNDLE = join(here, 'dist/wplace-template-server.user.js')
@@ -55,14 +56,32 @@ const shotPath = flag('--shot', null)
 const url = flag('--url', 'https://wplace.live/')
 const settleMs = Number(flag('--settle', shotPath ? 12_000 : 4_000))
 
-const build = () =>
+const run = (command, args) =>
   new Promise((resolve, reject) => {
-    const child = spawn('node', [join(here, 'build.mjs'), '--development'], {
+    const child = spawn(command, args, {
       cwd: here,
       stdio: 'inherit',
     })
-    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`build exited ${code}`))))
+    child.on('error', reject)
+    child.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)),
+    )
   })
+
+let dependenciesDirty = true
+const build = async () => {
+  if (dependenciesDirty) {
+    dependenciesDirty = false
+    try {
+      await run('pnpm', ['--filter', '@caelestis/shared', 'build'])
+      await run('pnpm', ['--filter', '@caelestis/ui', 'build'])
+    } catch (error) {
+      dependenciesDirty = true
+      throw error
+    }
+  }
+  await run('node', [join(here, 'build.mjs'), '--development'])
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -88,20 +107,20 @@ const renderArg = (arg) => {
 
 class Tab {
   #ws
+  #sessionId
   #id = 1
   #pending = new Map()
 
   static async open() {
     // Start a debuggable Chromium if there is not one already, so this needs no setup by hand.
     await ensureChromium({ relaunch })
-    const res = await fetch(`${CDP}/json/new?about:blank`, { method: 'PUT' })
+    const res = await fetch(`${CDP}/json/version`)
     if (!res.ok) {
-      throw new Error(`could not open a tab (${res.status})`)
+      throw new Error(`could not connect to Chromium (${res.status})`)
     }
-    const target = await res.json()
+    const browser = await res.json()
     const tab = new Tab()
-    tab.target = target
-    tab.#ws = new WebSocket(target.webSocketDebuggerUrl)
+    tab.#ws = new WebSocket(browser.webSocketDebuggerUrl)
     await new Promise((resolve, reject) => {
       tab.#ws.addEventListener('open', resolve, { once: true })
       tab.#ws.addEventListener('error', reject, { once: true })
@@ -132,12 +151,20 @@ class Tab {
         )
       }
     })
+    const { targetId } = await tab.send('Target.createTarget', {
+      url: 'about:blank',
+      background: true,
+    })
+    tab.target = { id: targetId }
+    const { sessionId } = await tab.send('Target.attachToTarget', { targetId, flatten: true })
+    tab.#sessionId = sessionId
+    await tab.send('Emulation.setFocusEmulationEnabled', { enabled: true })
     return tab
   }
 
   send(method, params = {}) {
     const id = this.#id++
-    this.#ws.send(JSON.stringify({ id, method, params }))
+    this.#ws.send(JSON.stringify({ id, method, params, sessionId: this.#sessionId }))
     return new Promise((resolve, reject) => this.#pending.set(id, { resolve, reject }))
   }
 }
@@ -165,7 +192,9 @@ const load = async () => {
 
 let initialLoad = load
 if (watching) {
-  console.log('watching src/ — save to rebuild and reload. Ctrl-C to stop.')
+  console.log(
+    'watching userscript, UI, and shared sources — save to rebuild and reload. Ctrl-C to stop.',
+  )
   let debounce = null
   let reloading = false
   let dirty = false
@@ -188,7 +217,8 @@ if (watching) {
   initialLoad = reload
   // Register before the first build/navigation: edits during startup become a dirty rerun instead
   // of disappearing into the initial four-second settle window.
-  watch(join(here, 'src'), { recursive: true }, () => {
+  watchSources(here, (dependencies) => {
+    dependenciesDirty ||= dependencies
     if (debounce !== null) clearTimeout(debounce)
     debounce = setTimeout(() => {
       debounce = null
