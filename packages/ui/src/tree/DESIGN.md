@@ -22,9 +22,9 @@ The popout uses 96% of viewport width and height, leaving a small backdrop margi
 
 # Template filters
 
-The filter button follows search and matches the existing 32px sort control. Its count records selected choices.
+The filter button follows search and matches the existing 32px sort control. While filters apply it takes the DaisyUI soft primary button look and carries the selected count as a primary badge on its corner.
 
-The nonmodal popover uses the tree's theme tokens, compact checkboxes, and the same inset corner treatment as SortMenu. Related choices sit together under native fieldset legends. Choices apply immediately. Escape returns focus to the trigger; Tab follows the controls and exits normally. Clear filters preserves the search text.
+The nonmodal popover is a DaisyUI dropdown menu rebuilt on the tree's theme tokens, since the shadow root cannot reach wplace's stylesheet: a card-radius surface, a heading with a ghost Clear button, menu-title legends, and one menu row per choice with a small primary checkbox drawn the way DaisyUI draws it. SortMenu shares the same surface and item radii. Choices apply immediately. Escape returns focus to the trigger; Tab follows the controls and exits normally. Clear filters preserves the search text.
 
 Visibility means effective visibility, including ancestor switches. Active means not marked finished; timelapse freezing is independent. Local templates have no server lifecycle or alarm state. Server-only categories appear when the current canvas has server templates, including cached rows offline, or a saved choice needs clearing. No active alarm requires an authoritative telemetry snapshot; unknown telemetry matches no alarm choice.
 
