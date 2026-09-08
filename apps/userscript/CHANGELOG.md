@@ -1,5 +1,94 @@
 # @caelestis/userscript
 
+## 0.8.0
+
+### Minor Changes
+
+- 2368304: Open the Caelestis menu in a modal from its header, with grid browsing available only in the popout.
+- f7659b4: Add notification settings for template regressions, sustained griefing, userscript updates, and action feedback.
+- 31ee638: Update a template to match committed Wplace artwork from either template menu while preserving its previous image version.
+- 5ebc1b6: Add a locally saved preview grid with folder grouping, artwork, progress, and template actions alongside the default tree view.
+- d8e11e5: Add completion and timelapse freeze controls to the template-local menu.
+- f82d861: Show grid progress in a separate pane with readable totals and a scrollable colour breakdown instead of expanding cards.
+- 51ad3ba: Create, manage, and search tags on local and server folders.
+- 1e0b8cb: Create, manage, and search reusable tags for local and server templates.
+- 526dda5: Plan and claim shared work under folders and templates, with painter assignments, tags, blockers, live updates, and activity history.
+- 54ddfad: Hold the middle mouse button and drag across an overlay to pick its source colours continuously.
+- e3a3605: Sort the grid's per-colour progress by palette, name, completion, remaining pixels, mismatches, unpainted pixels, or total pixels.
+- b38c8fc: Filter templates by My claims, Claimed, or Unclaimed.
+- b38c8fc: Filter templates and folders by multiple tags using a searchable chip input.
+- 6d71303: Filter templates by source, visibility, lifecycle, and alarms alongside search, with saved selections and one-action clearing.
+
+### Patch Changes
+
+- b489c21: Show server artwork actions only with a usable admin or bootstrap token, while keeping local artwork updates available without one.
+- ef7f64c: Let admins show other painters' active claims in the In progress drawer.
+- d774c25: Keep progress bars aligned by reserving a fixed width for percentage labels.
+- 6e87dc9: Show the updating state immediately in the open template controls.
+- 6e0e9d7: Refresh server artwork after uncertain uploads using a request started after the upload finishes.
+- fd4d7dc: Report capture reasons, readback bytes, retries, occupancy scans, notification batches, and GPU upload activity within each performance profile.
+- b9c3f31: Keep Appearance controls in a bounded form column with aligned slider tracks.
+- 18ab3c0: Limit local artwork history to 256 versions or 64 MiB, preserving existing versions when storage is full.
+- 37d4a01: Count observed canvas pixels within canvas bounds, including clears with negative dimensions.
+- 54068c3: Keep held-Space colour picking aligned with the current paint pixel without recolouring the previous pixel.
+- da007aa: Explain that merging canvas artwork accepts current mismatches as canonical and that previous versions cannot currently be restored.
+- cfa3728: Tighten claim popover spacing and keep action labels on one line without moving controls between claim states.
+- a843895: Recover failed claim and account loads with Retry, and hide Claim on read-only connections.
+- eb2fe3d: Make claims easier to scan with a titled popover, full-width actions, smaller menu shadows, and an inline retry notice.
+- 8fdd15e: Capture committed artwork for hidden templates and include accepted paint while Wplace tiles catch up.
+- 871a971: Shorten the artwork update action to “Use canvas artwork” in both template menus.
+- f35c951: Give preview cards compact corners and a contained current-template highlight.
+- 343f50a: Match filter, tag, and claim dropdowns to the shared compact menu style.
+- a2dedc3: Keep the colour-order dropdown corners compact under rounded Wplace themes.
+- b596618: Restore template icons with compact claim indicators, show claim controls without shifting rows, and reduce progress indentation.
+- 8c264c9: Confirm canvas artwork updates before saving, explaining that previous versions cannot currently be restored.
+- 328e170: Render slider fills from their value across the full track width, including signed ranges.
+- 26b9f1e: Keep custom menus styled in browsers without customizable select support.
+- 87568c3: Match tag and filter checkboxes to Wplace's DaisyUI shape, colors, and checked states.
+- e1f3c79: Omit stale scenario labels and browser zoom from disabled performance reports.
+- 05bbb71: Keep excluded alarms unacknowledged and require confirmed telemetry before matching templates with no active alarm.
+- 9ffe647: Restyle template filters with single-column checkbox rows, category headings, an active-count badge, and corners matching the sort menu.
+- c11318a: Offer server filters when the current canvas has template data, including cached templates offline.
+- b3a721d: Close the filter menu when its button is clicked again.
+- ee87212: Keep claim filters unknown during a refresh and after a failed refresh until current claims load successfully.
+- 15807ca: Keep template lifecycle indicators inline with the local menu title so state changes do not shift its content.
+- 8abda47: Draw every icon from Material Symbols through Iconify's per-icon modules, the family wplace itself renders, instead of hand-copied path data in the userscript and Lucide in the frontend.
+- 376beff: Announce each grid progress button's template or folder name and whether its details are open.
+- ef7f64c: Keep the In progress drawer visible and show only your active template claims.
+- 1125caa: Announce preview card action menus and their open state to screen readers.
+- b583205: Default to userscript update notices only while preserving saved notification choices.
+- e08ef19: Update the paint cursor under a stationary mouse after flying to an unpainted pixel.
+- 328e170: Hide slider reset buttons at their default value without shifting the track.
+- 9d87af0: Claim templates from their context menu and browse active work below the template list.
+- c85faf5: Keep template alarm notifications inside Wplace and remove desktop alerts.
+- a4ba064: Keep colour-order options readable in narrow settings panels with a DaisyUI-style dropdown.
+- d2d7301: Make toasts readable and reachable wherever the panel is.
+
+  - Toasts follow the Wplace theme instead of turning dark in OS dark mode, carry an icon for their kind, and keep the surface text colour so the message stays legible.
+  - Toasts stand beside the open panel rather than covering its In progress footer, and move into the popped-out menu so they are visible and dismissible there.
+  - Several toasts pile up behind the newest one; "+N more" opens the pile into a list, dismiss removes only the top card, and the next one takes its place.
+  - Errors are announced as alerts and stay until dismissed, and import failures name the file instead of a raw error.
+- 263c5c1: Include build, environment, camera, paint state, and action markers in performance reports, with explicit browser-zoom and long-task support metadata.
+- 82d93af: Keep view-save errors and image upload instructions visible when action feedback is disabled.
+- fd1ec84: Expand the menu popout to 96% of the viewport width and height.
+- 6578c35: Use the context menu's corner radius throughout Caelestis while preserving circular buttons.
+- a2dedc3: Give dropdowns, sort menus, and context menus one consistent compact style.
+- 2c54c30: Let multiple painters claim a template independently, with admin assignment and personal release.
+- 9b26cf5: Separate the search and sort toolbar from scrolling templates with a consistent gap.
+- 7cc174d: Keep button borders and menu dimensions stable on hover, with a clear keyboard focus outline.
+- 7996ad5: Show claim counts over template icons without shifting rows and dismiss claim popovers when the template list scrolls.
+- 1aea07e: Keep the empty claim row and claim actions the same size when claiming or releasing a template.
+- 176407e: Keep folder moves, artwork replacement, and server copies inside the menu popout.
+- 1da37cf: Keep the menu header height steady when switching between templates, Appearance, and Settings.
+- ef7f64c: Remove the redundant Work items action from template menus now that claims have a drawer.
+- f0e7610: Keep template claims separate from linked tasks and their single-owner controls.
+- a312b4e: Move template lifecycle controls into the action rail, with blue highlights for completed templates and frozen timelapses.
+- a843895: Show claimed server and local templates together in the In progress drawer with navigation, expandable progress, and participant markers.
+- 95eca01: Show template lifecycle controls only while a usable token has confirmed admin or bootstrap access.
+- fa7b5e7: Rebuild and reload development userscripts after UI or shared-source edits, keeping Chromium tabs in the background.
+- 527f3bd: Keep work in a collapsible bottom drawer with a persistent count and toggle.
+- 9d87af0: Keep long work-item rows readable in the scrolling mobile list.
+
 ## 0.7.2
 
 ### Patch Changes
