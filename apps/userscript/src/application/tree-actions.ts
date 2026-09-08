@@ -1303,7 +1303,8 @@ export const importTemplate = async (
           reservation?.release()
         }
       } catch (error) {
-        toast(`Could not import: ${String(error)}`, 'error')
+        const reason = (error instanceof Error ? error.message : String(error)).replace(/\.$/, '')
+        toast(`Could not import “${file.name}”: ${reason}.`, 'error')
       }
     })()
   })

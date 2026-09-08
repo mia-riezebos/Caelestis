@@ -9,13 +9,27 @@ import type {
   ToastModel,
 } from '@caelestis/ui/elements'
 import { getState } from '../state.js'
+import { CLEAR_OF_RAIL, EDGE, GAP } from './metrics.js'
 import { applyWplaceTheme } from './theme.js'
 
 export const PANEL_ID = 'caelestis-panel'
 const NOTIFICATIONS_ID = 'caelestis-notifications'
 const MAX_PENDING_AMBIENT_TOASTS = 20
+/** Errors kept behind the newest toast; a bulk operation can fail many times over. */
+const MAX_RETAINED_ERRORS = 6
+/** The widest a toast grows; the same as the panel's narrower comfortable width. */
+const TOAST_MAX_WIDTH = 384
+/** Below this, a column beside the panel is too narrow to read, so toasts run along the bottom instead. */
+const TOAST_MIN_BESIDE_PANEL = 240
 
 let root: CaelestisNotifications | null = null
+/** Where the root lives while the panel is popped out into a modal, so toasts stay above it. */
+let mountTarget: HTMLElement | null = null
+let placementBound = false
+/** The panel mounts asynchronously and is dragged to new widths, so its size is watched rather than read once. */
+let observedPanel: Element | null = null
+const panelObserver =
+  typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => placeToasts())
 let sequence = 0
 let toasts: ToastModel[] = []
 let confirm: ConfirmDialogModel | null = null
@@ -44,6 +58,7 @@ const clearToastTimer = (id: string): void => {
   timers.delete(id)
 }
 
+/** A root the page threw away takes its toasts with it; moving between mounts never detaches it. */
 const resetDetachedState = (): void => {
   for (const id of timers.keys()) clearToastTimer(id)
   toasts = []
@@ -55,8 +70,42 @@ const resetDetachedState = (): void => {
   pendingSecret = undefined
 }
 
+const observePanel = (panel: Element | null): void => {
+  if (panel === observedPanel) return
+  if (observedPanel !== null) panelObserver?.unobserve(observedPanel)
+  observedPanel = panel
+  if (panel !== null) panelObserver?.observe(panel)
+}
+
+/**
+ * Toasts stand beside the docked panel, aligned to its bottom edge, so they never cover the work
+ * summary at its foot. Without the panel they take its place against the rail. When the viewport
+ * leaves no readable column beside the panel, they run along the bottom edge instead.
+ */
+const placeToasts = (): void => {
+  if (root === null) return
+  const panel = mountTarget === null ? document.getElementById(PANEL_ID) : null
+  observePanel(panel)
+  const rect = panel?.getBoundingClientRect()
+  let insetEnd = CLEAR_OF_RAIL
+  let inlineSize = Math.min(TOAST_MAX_WIDTH, window.innerWidth - CLEAR_OF_RAIL - EDGE)
+  if (rect !== undefined && rect.width > 0) {
+    const room = rect.left - GAP - EDGE
+    if (room >= TOAST_MIN_BESIDE_PANEL) {
+      insetEnd = window.innerWidth - rect.left + GAP
+      inlineSize = Math.min(TOAST_MAX_WIDTH, room)
+    } else {
+      insetEnd = EDGE
+      inlineSize = window.innerWidth - EDGE * 2
+    }
+  }
+  root.style.setProperty('--caelestis-toasts-inset-end', `${insetEnd}px`)
+  root.style.setProperty('--caelestis-toasts-inline-size', `${inlineSize}px`)
+}
+
 const render = (): void => {
   if (root !== null) root.model = model()
+  placeToasts()
 }
 
 const finishConfirmation = (id: string, value: boolean): void => {
@@ -114,6 +163,9 @@ const handleIntent = (intent: NotificationsIntent): void => {
   }
 }
 
+const mountParent = (): HTMLElement =>
+  mountTarget?.isConnected === true ? mountTarget : document.body
+
 const ensureRoot = (): CaelestisNotifications => {
   if (root?.isConnected === true) return root
   if (root !== null) resetDetachedState()
@@ -124,8 +176,35 @@ const ensureRoot = (): CaelestisNotifications => {
   root.addEventListener('caelestis-notifications-intent', (event) => {
     handleIntent((event as CustomEvent<NotificationsIntent>).detail)
   })
-  document.body.append(root)
+  mountParent().append(root)
+  if (!placementBound) {
+    placementBound = true
+    window.addEventListener('resize', placeToasts)
+  }
+  placeToasts()
   return root
+}
+
+/** Called by the panel host whenever the panel opens, closes, or changes width. */
+export const syncToastPlacement = (): void => {
+  if (document.body === null) return
+  ensureRoot()
+  placeToasts()
+}
+
+/**
+ * Move the notifications into a modal container, or back to the body with `null`.
+ *
+ * A modal dialog makes everything outside it inert and paints over it, so toasts that stay in the
+ * body are neither visible nor dismissible while the panel is popped out. Moving the same element
+ * keeps every retained error and running timer.
+ */
+export const mountNotificationsIn = (container: HTMLElement | null): void => {
+  mountTarget = container
+  if (root === null) return
+  const parent = mountParent()
+  if (root.parentNode !== parent) parent.append(root)
+  placeToasts()
 }
 
 const removeToast = (id: string): void => {
@@ -137,9 +216,14 @@ const removeToast = (id: string): void => {
 const pushToast = (message: string, kind: ToastKind, action?: ToastActionModel): void => {
   ensureRoot()
 
-  const replaced = kind === 'error' ? toasts : toasts.filter((toast) => toast.kind !== 'error')
-  for (const toast of replaced) clearToastTimer(toast.id)
-  toasts = kind === 'error' ? [] : toasts.filter((toast) => toast.kind === 'error')
+  // A notice and the outcome that follows it cannot both be current, so every new toast replaces
+  // the notices before it. Errors each name a different failure still waiting on the user, so they
+  // pile up behind the newest toast, oldest first to go once the pile is full.
+  for (const toast of toasts) if (toast.kind !== 'error') clearToastTimer(toast.id)
+  toasts = toasts.filter((toast) => toast.kind === 'error')
+  if (kind === 'error' && toasts.length >= MAX_RETAINED_ERRORS) {
+    toasts = toasts.slice(toasts.length - MAX_RETAINED_ERRORS + 1)
+  }
 
   const id = `toast-${++sequence}`
   toasts.push({ id, kind, message, ...(action === undefined ? {} : { action }) })

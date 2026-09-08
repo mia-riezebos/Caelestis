@@ -108,6 +108,7 @@ import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colo
 import { setTemplateDisplayMode } from './display-mode.js'
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
+import { mountNotificationsIn, syncToastPlacement } from './notification-host.js'
 import { refreshOverlayMenu } from './overlay-menu.js'
 import { panelWidthAfterMount } from './panel-geometry.js'
 import { canvasWritesTouchArtboard } from './panel-progress.js'
@@ -1086,6 +1087,11 @@ const buildSveltePanel = (): CaelestisPanel => {
       case 'close':
         setOpen(false)
         break
+      case 'popout':
+        mountNotificationsIn(
+          intent.open ? (panel.shadowRoot?.querySelector('dialog') ?? null) : null,
+        )
+        break
       case 'resize-preview':
         if (allianceStage !== null) {
           allianceDrawerInset.apply(allianceStage, intent.width, GAP)
@@ -1260,6 +1266,7 @@ const setOpen = (next: boolean): void => {
     syncProfileTimer()
     // Give map-anchored controls the reclaimed width immediately, even while the map is still.
     redraw()
+    syncToastPlacement()
     return
   }
   if (existing !== null) return
@@ -1274,6 +1281,7 @@ const setOpen = (next: boolean): void => {
   for (const listener of panelOpenListeners) listener()
   // The panel's measured left edge is now the map controls' right edge.
   redraw()
+  syncToastPlacement()
 }
 
 /** Open or close the panel for the canvas currently in front of the user. */
@@ -1453,7 +1461,7 @@ export const syncColourModeState = (): void => {
 export const installPanel = (): void => {
   void ensureLocalTags()
     .then(refreshView)
-    .catch((error) => toast(`Could not load local tags: ${String(error)}`, 'error'))
+    .catch(() => toast('Could not load local tags. Reload the page to try again.', 'error'))
   loadState()
   panelSessions.select('world')
   panelHost = document.body
