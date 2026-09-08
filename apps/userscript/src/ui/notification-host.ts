@@ -26,6 +26,7 @@ let root: CaelestisNotifications | null = null
 /** Where the root lives while the panel is popped out into a modal, so toasts stay above it. */
 let mountTarget: HTMLElement | null = null
 let placementBound = false
+let activePanelId = PANEL_ID
 /** The panel mounts asynchronously and is dragged to new widths, so its size is watched rather than read once. */
 let observedPanel: Element | null = null
 const panelObserver =
@@ -84,7 +85,7 @@ const observePanel = (panel: Element | null): void => {
  */
 const placeToasts = (): void => {
   if (root === null) return
-  const panel = mountTarget === null ? document.getElementById(PANEL_ID) : null
+  const panel = mountTarget === null ? document.getElementById(activePanelId) : null
   observePanel(panel)
   const rect = panel?.getBoundingClientRect()
   let insetEnd = CLEAR_OF_RAIL
@@ -185,8 +186,9 @@ const ensureRoot = (): CaelestisNotifications => {
   return root
 }
 
-/** Called by the panel host whenever the panel opens, closes, or changes width. */
-export const syncToastPlacement = (): void => {
+/** Follow the current panel when it opens, closes, or switches between world and alliance. */
+export const syncToastPlacement = (panelId = activePanelId): void => {
+  activePanelId = panelId
   if (document.body === null) return
   ensureRoot()
   placeToasts()

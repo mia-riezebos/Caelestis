@@ -1257,6 +1257,7 @@ const setOpen = (next: boolean): void => {
   const existing = document.getElementById(currentPanelId())
   if (!panelOpen()) {
     cancelTreeActionSetup(new Error('panel closed'))
+    mountNotificationsIn(null)
     existing?.remove()
     if (panelSessions.scope() === 'alliance') {
       allianceDrawerInset.clear()
@@ -1266,7 +1267,7 @@ const setOpen = (next: boolean): void => {
     syncProfileTimer()
     // Give map-anchored controls the reclaimed width immediately, even while the map is still.
     redraw()
-    syncToastPlacement()
+    syncToastPlacement(currentPanelId())
     return
   }
   if (existing !== null) return
@@ -1281,7 +1282,7 @@ const setOpen = (next: boolean): void => {
   for (const listener of panelOpenListeners) listener()
   // The panel's measured left edge is now the map controls' right edge.
   redraw()
-  syncToastPlacement()
+  syncToastPlacement(currentPanelId())
 }
 
 /** Open or close the panel for the canvas currently in front of the user. */
@@ -1298,7 +1299,9 @@ const togglePanelFor = (scope: PanelScope): void => {
 }
 
 const unmountSelectedPanel = (): void => {
+  mountNotificationsIn(null)
   document.getElementById(currentPanelId())?.remove()
+  syncToastPlacement(currentPanelId())
   if (panelSessions.scope() === 'alliance') allianceDrawerInset.clear()
   activeTreeAdapter = null
   claimedTreeAdapter = null
