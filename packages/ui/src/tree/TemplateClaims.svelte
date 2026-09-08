@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import type { PainterIdentity } from '@caelestis/shared'
   import type { Snippet } from 'svelte'
   import Button from '../foundations/Button.svelte'
@@ -61,6 +62,8 @@
   }
 </script>
 
+<MenuStyles />
+
 <svelte:window onresize={() => { if (open) close() }} />
 
 <button bind:this={trigger} class="claim-marker" type="button" popovertarget={popupId}
@@ -77,7 +80,7 @@
   {@render children()}
   {#if model.people.length > 0}<span class="claim-count" class:mine={model.mine} aria-hidden="true">{model.people.length > 99 ? '99+' : model.people.length}</span>{/if}
 </button>
-<div bind:this={popup} id={popupId} class="claims" popover="auto" role="dialog" tabindex="-1" aria-label={`Claims for ${name}`}
+<div bind:this={popup} id={popupId} class="claims caelestis-menu" popover="auto" role="dialog" tabindex="-1" aria-label={`Claims for ${name}`}
   style:left={`${left}px`} style:top={`${top}px`}
   onbeforetoggle={(event) => { open = event.newState === 'open'; if (!open) assigning = false }}
   onclick={(event) => event.stopPropagation()}
@@ -108,13 +111,13 @@
   {#if model.canClaim || model.canAssign}
     <div class="claim-actions">
       {#if model.canClaim}
-        <button type="button" class="action" onclick={() => onChange(model.mine)}>
+        <button type="button" class="action caelestis-menu-item" onclick={() => onChange(model.mine)}>
           <Icon name={model.mine ? 'close' : 'check'} />
           <span>{model.mine ? 'Release claim' : 'Claim'}</span>
         </button>
       {/if}
       {#if model.canAssign}
-        <button type="button" class="action" aria-expanded={assigning} onclick={() => (assigning = !assigning)}>
+        <button type="button" class="action caelestis-menu-item" aria-expanded={assigning} onclick={() => (assigning = !assigning)}>
           <Icon name="rename" />
           <span>Assign someone…</span>
         </button>
@@ -162,24 +165,7 @@
 </div>
 
 <style>
-  .claims {
-    position: fixed;
-    inset: auto;
-    margin: 0;
-    padding: 0.25rem;
-    inline-size: 15rem;
-    max-inline-size: calc(100vw - 1rem);
-    max-block-size: calc(100vh - 1rem);
-    box-sizing: border-box;
-    overflow: auto;
-    border: 1px solid var(--caelestis-border);
-    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
-    background: var(--caelestis-surface);
-    color: var(--caelestis-text);
-    white-space: normal;
-    box-shadow: var(--caelestis-popover-shadow, 0 1px 2px rgb(0 0 0 / 0.12), 0 10px 24px -6px rgb(0 0 0 / 0.28));
-    font: 400 0.75rem/1.25 ui-sans-serif, system-ui, sans-serif;
-  }
+  .claims { position: fixed; inset: auto; margin: 0; inline-size: 15rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; }
   .claims:popover-open { display: flex; flex-direction: column; }
   .claims:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .claim-marker { position: relative; display: inline-flex; align-items: center; justify-content: center; inline-size: 1rem; block-size: 1rem; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
@@ -253,25 +239,9 @@
     padding-block-start: 0.25rem;
     border-block-start: 1px solid var(--caelestis-border);
   }
-  .action {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    inline-size: 100%;
-    min-block-size: 2rem;
-    padding-inline: 0.5rem;
-    border: 0;
-    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
-    background: transparent;
-    color: inherit;
-    font: 600 0.75rem/1 ui-sans-serif, system-ui, sans-serif;
-    text-align: start;
-    white-space: nowrap;
-    cursor: pointer;
-  }
+  .action { inline-size: 100%; }
   .action :global(svg) { flex: 0 0 auto; color: var(--caelestis-muted-text); }
-  .action:hover, .action:focus-visible, .action[aria-expanded='true'] { background: var(--caelestis-raised-surface); }
-  .action:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
+  .action[aria-expanded='true'] { background: var(--menu-hover); }
   form {
     display: grid;
     gap: 0.5rem;

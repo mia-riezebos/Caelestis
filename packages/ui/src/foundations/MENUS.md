@@ -10,3 +10,6 @@ compact regardless of Wplace's field and card radius settings.
 
 Keep native select, popover, and existing keyboard behavior. Selected marks and action icons
 occupy the leading icon column; searchable multi-select lists may retain their trailing checks.
+
+Filter choices, tag suggestions, and claim actions use these same classes. Two-line tag rows
+keep their name and owner layout. Forms keep their field layout inside the shared menu container.

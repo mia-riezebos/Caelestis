@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import { onMount, tick } from 'svelte'
   import type { TemplateTreeModel } from '../types.js'
   import Icon from '../foundations/Icon.svelte'
@@ -73,6 +74,8 @@
   })
 </script>
 
+<MenuStyles />
+
 <svelte:window onresize={close} />
 <div class="tag-filter" onfocusout={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) close() }}>
   <label class="title" for={id}>Tags</label>
@@ -86,9 +89,9 @@
     {/each}
     <input bind:this={input} id={id} role="combobox" aria-label="Search tags" aria-expanded={open} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={open && available[current] !== undefined ? optionId(current) : undefined} autocomplete="off" placeholder="Search tags..." bind:value={query} onfocus={show} oninput={() => { current = 0; show() }} onkeydown={keydown} />
   </div>
-  <div bind:this={list} id={`${id}-list`} class="suggestions" popover="manual" role="listbox" aria-label="Tags" aria-multiselectable="true" style:left={`${left}px`} style:top={`${top}px`} style:width={`${width}px`}>
+  <div bind:this={list} id={`${id}-list`} class="suggestions caelestis-menu" popover="manual" role="listbox" aria-label="Tags" aria-multiselectable="true" style:left={`${left}px`} style:top={`${top}px`} style:width={`${width}px`}>
     {#each available as option, index (option.id)}
-      <button id={optionId(index)} class:highlighted={index === current} type="button" role="option" aria-selected="false" tabindex="-1" onpointerdown={(event) => event.preventDefault()} onclick={() => select(option.id)}>
+      <button id={optionId(index)} class="caelestis-menu-item" class:highlighted={index === current} type="button" role="option" aria-selected="false" tabindex="-1" onpointerdown={(event) => event.preventDefault()} onclick={() => select(option.id)}>
         <span>{option.name}</span><small>{option.owner}</small>
       </button>
     {:else}<span class="empty" role="status">{options.length === 0 ? 'No tags yet' : 'No matching tags'}</span>{/each}
@@ -105,10 +108,10 @@
   .chip button { display: grid; place-items: center; flex: 0 0 1.5rem; inline-size: 1.5rem; block-size: 1.5rem; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
   input { flex: 1 1 7rem; inline-size: 7rem; min-inline-size: 0; block-size: 1.5rem; padding: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; font-size: 0.8125rem; }
   input::placeholder { color: var(--caelestis-muted-text); }
-  .suggestions { position: fixed; inset: auto; margin: 0; box-sizing: border-box; max-block-size: 10rem; overflow-y: auto; padding: 0.25rem; border: 1px solid var(--caelestis-border); border-radius: calc(0.375rem + 0.25rem + 1px); background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow); font: 400 0.8125rem/1.25 ui-sans-serif, system-ui, sans-serif; }
+  .suggestions { position: fixed; inset: auto; margin: 0; max-block-size: 10rem; overflow-y: auto; }
   .suggestions:popover-open { display: flex; flex-direction: column; }
-  .suggestions button { display: flex; flex-direction: column; align-items: flex-start; flex-shrink: 0; gap: 0.125rem; min-block-size: 2.25rem; padding: 0.375rem 0.5rem; border: 0; border-radius: 0.375rem; background: transparent; color: inherit; font: inherit; text-align: start; overflow-wrap: anywhere; cursor: pointer; }
-  .suggestions button:hover, .suggestions button.highlighted { background: var(--caelestis-raised-surface); }
+  .suggestions button { flex-direction: column; align-items: flex-start; flex-shrink: 0; gap: 0.125rem; overflow-wrap: anywhere; }
+  .suggestions button.highlighted { background: var(--menu-hover); }
   small, .empty { color: var(--caelestis-muted-text); font-size: 0.6875rem; }
   .empty { padding: 0.5rem; }
   button:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }

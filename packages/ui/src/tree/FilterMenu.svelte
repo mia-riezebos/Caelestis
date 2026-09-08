@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import { EMPTY_TEMPLATE_FILTERS, TEMPLATE_FILTER_OPTIONS, templateFilterCount, type TemplateFilterCategory, type TemplateFilters } from '@caelestis/shared'
   import Icon from '../foundations/Icon.svelte'
   import Checkbox from '../foundations/Checkbox.svelte'
@@ -53,13 +54,15 @@
   }
 </script>
 
+<MenuStyles />
+
 <svelte:window onresize={() => close()} />
 
 <button bind:this={trigger} class="filter-trigger" class:active={count > 0} type="button" popovertarget={menuId} aria-label={label} title={label} aria-haspopup="dialog" aria-expanded={open} onclick={(event) => { event.preventDefault(); open ? close(true) : show() }} onkeydown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); show() } }}>
   <Icon name="filter" />
   {#if count > 0}<span class="badge" aria-hidden="true">{count}</span>{/if}
 </button>
-<div bind:this={menu} id={menuId} class="filter-menu" popover="auto" role="dialog" aria-label="Filter templates" tabindex="-1" style:left={`${left}px`} style:top={`${top}px`} onbeforetoggle={(event) => open = event.newState === 'open'} onkeydown={keydown} onfocusout={(event) => { if (event.relatedTarget instanceof Node && event.relatedTarget !== trigger && !menu.contains(event.relatedTarget)) close() }}>
+<div bind:this={menu} id={menuId} class="filter-menu caelestis-menu" popover="auto" role="dialog" aria-label="Filter templates" tabindex="-1" style:left={`${left}px`} style:top={`${top}px`} onbeforetoggle={(event) => open = event.newState === 'open'} onkeydown={keydown} onfocusout={(event) => { if (event.relatedTarget instanceof Node && event.relatedTarget !== trigger && !menu.contains(event.relatedTarget)) close() }}>
   <div class="heading">
     <span class="title">Filters</span>
     <button class="clear" type="button" aria-label="Clear filters" disabled={count === 0} onclick={clear}>Clear</button>
@@ -70,7 +73,7 @@
       <fieldset>
         <legend>{labels[category]}</legend>
         {#each options(category) as choice}
-          <label class="choice">
+          <label class="choice caelestis-menu-item">
             <Checkbox checked={(filters[category] as readonly string[]).includes(choice)} onChange={() => toggle(category, choice)} />
             <span>{TEMPLATE_FILTER_OPTIONS[category][choice]}</span>
           </label>
@@ -88,13 +91,13 @@
    * `dropdown-content menu`, legends are `menu-title` rows, and each choice is a menu item carrying a
    * `checkbox checkbox-sm checkbox-primary`.
    */
-  .filter-trigger { position: relative; display: grid; place-items: center; flex: 0 0 2rem; inline-size: 2rem; block-size: 2rem; padding: 0; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; cursor: pointer; transition: color 200ms, background-color 200ms, border-color 200ms; }
+  .filter-trigger { position: relative; display: grid; place-items: center; flex: 0 0 2rem; inline-size: 2rem; block-size: 2rem; padding: 0; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: 0.5rem; background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; cursor: pointer; transition: color 200ms, background-color 200ms, border-color 200ms; }
   .filter-trigger:hover { background: var(--caelestis-raised-surface); }
   .filter-trigger.active { border-color: color-mix(in oklab, var(--caelestis-primary) 10%, var(--caelestis-surface)); background: color-mix(in oklab, var(--caelestis-primary) 8%, var(--caelestis-surface)); color: var(--caelestis-primary); box-shadow: none; }
   .filter-trigger.active:hover { background: color-mix(in oklab, var(--caelestis-primary) 16%, var(--caelestis-surface)); }
   .filter-trigger:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   .badge { position: absolute; inset-block-start: 0; inset-inline-end: 0; display: inline-flex; align-items: center; justify-content: center; block-size: 1rem; min-inline-size: 1rem; padding-inline: calc(0.5rem - var(--border, 1px)); border: var(--border, 1px) solid var(--caelestis-primary); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-primary); color: var(--color-primary-content, white); box-shadow: 0 0 0 2px var(--caelestis-surface); font: 600 0.625rem/1 ui-sans-serif, system-ui, sans-serif; translate: 40% -40%; pointer-events: none; }
-  .filter-menu { position: fixed; inset: auto; margin: 0; z-index: 60; inline-size: 15rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); box-sizing: border-box; overflow: auto; padding: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
+  .filter-menu { position: fixed; inset: auto; margin: 0; z-index: 60; inline-size: 15rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; }
   .filter-menu:popover-open { display: flex; flex-direction: column; }
   .heading { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.25rem 0.25rem 0.5rem 0.75rem; border-block-end: 1px solid color-mix(in oklab, var(--caelestis-text) 10%, transparent); }
   .title { font-weight: 600; }
@@ -104,8 +107,8 @@
   .clear:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   fieldset { display: flex; flex-direction: column; min-inline-size: 0; margin: 0; padding: 0; border: 0; }
   legend { padding: 0.625rem 0.75rem 0.25rem; color: color-mix(in oklab, var(--caelestis-text) 40%, transparent); font-size: 0.75rem; font-weight: 600; }
-  .choice { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); cursor: pointer; user-select: none; transition: background-color 200ms; }
-  .choice:hover, .choice:has(:focus-visible) { background: color-mix(in oklab, var(--caelestis-text) 10%, transparent); }
+  .choice { user-select: none; transition: background-color 200ms; }
+  .choice:has(:focus-visible) { background: color-mix(in oklab, var(--caelestis-text) 10%, transparent); }
   .choice span { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   @media (prefers-reduced-motion: reduce) {
