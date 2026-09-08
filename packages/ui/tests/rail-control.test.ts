@@ -3,9 +3,14 @@
 import { tick } from 'svelte'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaelestisRailControl, registerCaelestisUi } from '../src/elements/index.js'
+import { ICONS, type IconName } from '../src/foundations/icons.js'
 
 beforeAll(() => registerCaelestisUi())
 beforeEach(() => document.body.replaceChildren())
+
+/** The path Material Symbols ships for a glyph, so the assertion follows the library rather than a pasted copy. */
+const materialGlyph = (name: IconName): string | undefined =>
+  ICONS[name].body.match(/ d="([^"]+)"/)?.[1]
 
 describe('rail control', () => {
   it('keeps the active lifecycle state visible while a save is pending', async () => {
@@ -92,6 +97,8 @@ describe('rail control', () => {
     document.body.append(control)
     await tick()
 
-    expect(control.shadowRoot?.querySelector('path')?.getAttribute('d')).toContain('Zm-220-440')
+    expect(control.shadowRoot?.querySelector('path')?.getAttribute('d')).toBe(
+      materialGlyph('palette'),
+    )
   })
 })

@@ -1,4 +1,5 @@
 import type { AlarmKind, Template } from '@caelestis/shared'
+import type { IconName } from './foundations/icons.js'
 
 export type TemplateLifecycleState = Pick<
   Template,
@@ -255,7 +256,8 @@ export type ShortcutHelpIntent = { readonly type: 'close' }
 
 export type RailControlIntent = { readonly type: 'activate'; readonly id: RailControlId }
 
-export type TreeIcon =
+export type TreeIcon = Extract<
+  IconName,
   | 'folder'
   | 'image'
   | 'server'
@@ -275,6 +277,7 @@ export type TreeIcon =
   | 'expandLess'
   | 'reset'
   | 'download'
+>
 
 export interface TreeProgressModel {
   readonly completed: number

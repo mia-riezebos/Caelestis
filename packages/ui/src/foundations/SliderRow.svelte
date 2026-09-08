@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from './Icon.svelte'
+
   interface Props {
     label: string
     value: number
@@ -98,7 +100,7 @@
       aria-label={`Reset ${label.toLowerCase()}`}
       title={`Reset ${label.toLowerCase()}`}
       onclick={reset}
-    ><svg viewBox="0 -960 960 960" aria-hidden="true"><path d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z" /></svg></button>{/if}
+    ><Icon name="reset" size="0.75rem" /></button>{/if}
   </span>
 </label>
 
@@ -119,7 +121,6 @@
   button { display: grid; flex: 0 0 1.5rem; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; }
   button[hidden] { visibility: hidden; }
   button:hover { background: color-mix(in oklab, currentColor 10%, transparent); }
-  button svg { inline-size: 0.75rem; block-size: 0.75rem; fill: currentColor; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--caelestis-focus, currentColor); outline-offset: 2px; }
   .hierarchy { grid-template-columns: minmax(0, 1fr) 8.5rem; padding-block: 0.5rem; padding-inline-start: calc(1.25rem * var(--depth)); }
   .hierarchy .control { gap: 0.5rem; }

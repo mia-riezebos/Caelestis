@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte'
+  import Icon from '../foundations/Icon.svelte'
   import type { NotificationsIntent, NotificationsProps } from '../types.js'
 
   const EMPTY_MODEL = { toasts: [], confirm: null } as const
@@ -69,9 +70,7 @@
         {#if toast.kind === 'error' || toast.action !== undefined}
           {@const dismissLabel = toast.kind === 'error' ? 'Dismiss error' : 'Dismiss notification'}
           <button type="button" aria-label={dismissLabel} title={dismissLabel} onclick={() => dismiss(toast.id)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 6l12 12M18 6 6 18" />
-            </svg>
+            <Icon name="close" />
           </button>
         {/if}
       </div>
@@ -167,7 +166,7 @@
   }
 
   .toast button:hover { background: color-mix(in oklch, currentColor 12%, transparent); }
-  .toast svg { inline-size: 1rem; block-size: 1rem; fill: none; stroke: currentColor; stroke-width: 2; }
+  .toast :global(svg) { inline-size: 1rem; block-size: 1rem; }
 
   .toast-action {
     display: flex;
