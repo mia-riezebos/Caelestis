@@ -1359,7 +1359,7 @@
     <!-- The strip is a pointer gesture surface; its keyboard equivalent is the two grips inside. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
-      class="relative touch-none select-none {brushDrag === 'move'
+      class="relative isolate touch-none select-none {brushDrag === 'move'
         ? 'cursor-grabbing'
         : brushDrag === 'head' || brushDrag === 'tail'
           ? 'cursor-ew-resize'
