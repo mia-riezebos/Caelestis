@@ -30,16 +30,23 @@ const assembleManifestWithSql = async (
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
   const surface = options.surface ?? { kind: 'world', allianceId: null }
-  const [nodeRecords, templateRecords, tileRecords, tagRecords, catalog, nodeTagRecords, workRevision] =
-    await Promise.all([
-      sql.listNodes(options.season, surface),
-      sql.listManifestTemplates({ season: options.season, surface }, options.includeUnpublished),
-      sql.listManifestTiles({ season: options.season, surface }, options.includeUnpublished),
-      sql.listManifestTags({ season: options.season, surface }, options.includeUnpublished),
-      options.includeUnpublished ? sql.listTags() : Promise.resolve([]),
-      sql.listManifestNodeTags({ season: options.season, surface }),
-      sql.work.revision(options.season, surface),
-    ])
+  const [
+    nodeRecords,
+    templateRecords,
+    tileRecords,
+    tagRecords,
+    catalog,
+    nodeTagRecords,
+    workRevision,
+  ] = await Promise.all([
+    sql.listNodes(options.season, surface),
+    sql.listManifestTemplates({ season: options.season, surface }, options.includeUnpublished),
+    sql.listManifestTiles({ season: options.season, surface }, options.includeUnpublished),
+    sql.listManifestTags({ season: options.season, surface }, options.includeUnpublished),
+    options.includeUnpublished ? sql.listTags() : Promise.resolve([]),
+    sql.listManifestNodeTags({ season: options.season, surface }),
+    sql.work.revision(options.season, surface),
+  ])
 
   const tagsByTemplate = new Map<string, import('@caelestis/shared').TemplateTag[]>()
   for (const { templateId, tag } of tagRecords) {
