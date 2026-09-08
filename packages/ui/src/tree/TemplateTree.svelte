@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import { formatCount, formatPixels } from '@caelestis/shared'
   import Button from '../foundations/Button.svelte'
   import SortMenu from './SortMenu.svelte'
@@ -257,6 +258,8 @@
   }
 </script>
 
+<MenuStyles />
+
 <svelte:window onpointerdown={dismissContextMenu} onkeydown={dismissTransient} />
 
 {#if toolbar}
@@ -286,7 +289,7 @@
   <section class="operation" aria-live="polite" aria-busy={model.operation.pending === true}>
     <span>{model.operation.label}</span>
     {#if model.operation.options !== undefined}
-      <select aria-label={model.operation.label} value={operationSelection} disabled={model.operation.pending === true} onchange={(event) => operationSelection = event.currentTarget.value}>
+      <select class="caelestis-select" aria-label={model.operation.label} value={operationSelection} disabled={model.operation.pending === true} onchange={(event) => operationSelection = event.currentTarget.value}>
         {#each model.operation.options as option}<option value={option.value}>{option.label}</option>{/each}
       </select>
     {/if}
@@ -306,7 +309,7 @@
   <div
     bind:this={contextMenuElement}
     data-caelestis-context-menu
-    class="context-menu"
+    class="context-menu caelestis-menu"
     role="menu"
     tabindex="-1"
     onkeydown={navigateContextMenu}
@@ -314,7 +317,7 @@
     style:top={`max(0.5rem, min(${model.contextMenu.y}px, calc(100vh - 18rem)))`}
   >
     {#each model.contextMenu.items as item (item.id)}
-      <button class:danger={item.danger === true} type="button" role="menuitem" onclick={() => emit({ type: 'context-menu-action', menuId: model.contextMenu?.id ?? '', actionId: item.id })}>
+      <button class="caelestis-menu-item" class:danger={item.danger === true} type="button" role="menuitem" onclick={() => emit({ type: 'context-menu-action', menuId: model.contextMenu?.id ?? '', actionId: item.id })}>
         <Icon name={item.icon} />
         <span>{item.label}</span>
       </button>
@@ -527,8 +530,6 @@
   .search { display: flex; flex: 1; align-items: center; gap: 0.5rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.75rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   .search :global(svg) { opacity: 0.55; }
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
-  select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
-  select { padding-inline: 0.75rem 2rem; }
   .browser { position: relative; display: flex; flex: 1; min-block-size: 0; min-inline-size: 0; overflow: hidden; }
   .scroller { flex: 1; min-block-size: 0; min-inline-size: 0; overflow: auto; container-type: inline-size; }
   .progress-pane { flex: 0 0 20rem; min-block-size: 0; border-inline-start: 1px solid var(--caelestis-border); background: var(--caelestis-surface); }
@@ -607,15 +608,14 @@
   .standalone-icon { display: inline-flex; flex: 0 0 auto; opacity: 0.6; }
   .notice button { border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
   .operation { display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; margin: 0 0.5rem 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); font: 500 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
-  .operation select { min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; }
+  .operation select { inline-size: 100%; }
   .operation small { color: var(--caelestis-muted-text); }
   .operation-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
-  .operation button, .context-menu button { min-block-size: 2rem; border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: transparent; color: inherit; cursor: pointer; }
+  .operation button { min-block-size: 2rem; border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: transparent; color: inherit; cursor: pointer; }
   .operation button.primary { padding-inline: 0.75rem; background: var(--caelestis-primary); color: var(--caelestis-primary-text, white); }
   .operation button:disabled { cursor: wait; opacity: 0.55; }
-  .context-menu { --context-menu-padding: 0.25rem; position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; padding: var(--context-menu-padding); border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); box-shadow: var(--caelestis-popover-shadow, 0 1px 2px rgb(0 0 0 / 0.12), 0 10px 24px -6px rgb(0 0 0 / 0.28)); }
-  .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); text-align: start; }
-  .context-menu button:hover, .context-menu button:focus-visible { background: var(--caelestis-raised-surface); }
+  .context-menu { position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; }
+  .context-menu button { inline-size: 100%; }
   .context-menu button.danger { color: var(--caelestis-danger); }
   @media (hover: hover) {
     .actions { opacity: 0; pointer-events: none; }

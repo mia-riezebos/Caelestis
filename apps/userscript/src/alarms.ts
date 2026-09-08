@@ -1,4 +1,5 @@
 import type { Alarm } from '@caelestis/shared'
+import { getState } from './state.js'
 import { activeServerAlarms, onServerAlarmChange } from './telemetry.js'
 import { showAmbientToast } from './ui/notification-host.js'
 import { isWorldTemplatePresented, onWorldTemplateTreeVisible, setAlarmBadge } from './ui/panel.js'
@@ -46,13 +47,6 @@ const notice = (name: string, alarm: Alarm): string =>
     ? `${name} is still being griefed · ${alarm.pixelsLost.toLocaleString()} px lost`
     : `${name} regressed · ${alarm.pixelsLost.toLocaleString()} px lost`
 
-const desktopNotice = (message: string): void => {
-  const notify = gm.GM_notification as
-    | ((details: { readonly title: string; readonly text: string }) => void)
-    | undefined
-  if (typeof notify === 'function') notify({ title: 'Caelestis alarm', text: message })
-}
-
 let installed = false
 let acknowledged = new Set<string>()
 let known = new Set<string>()
@@ -84,10 +78,15 @@ const syncAlarms = (): void => {
   for (const { server, template, alarm } of current) {
     const fingerprint = alarmFingerprint(server.url, alarm)
     if (known.has(fingerprint) || acknowledged.has(fingerprint)) continue
-    const message = notice(template.name, alarm)
-    if (isPaintOpen()) continue
-    if (document.visibilityState === 'hidden') desktopNotice(message)
-    else showAmbientToast(message, 'warning')
+    if (isPaintOpen() || document.visibilityState === 'hidden') continue
+    const preferences = getState()
+    if (
+      alarm.kind === 'sustained-griefing'
+        ? !preferences.notifyGriefing
+        : !preferences.notifyRegressions
+    )
+      continue
+    showAmbientToast(notice(template.name, alarm), 'warning')
   }
   known = fingerprints
 }

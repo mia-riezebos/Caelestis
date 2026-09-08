@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import Button from '../foundations/Button.svelte'
   import SectionHeader from '../foundations/SectionHeader.svelte'
   import SettingRow from '../foundations/SettingRow.svelte'
@@ -66,6 +67,8 @@
   })
 </script>
 
+<MenuStyles />
+
 <div class="settings" data-caelestis-scroller>
   <SectionHeader title="Servers" icon="server" />
   <div class="connect">
@@ -113,7 +116,7 @@
                 <div class="new-token">
                   <div class="new-token-row">
                     <input data-caelestis-draft={`token-label:${server.url}`} type="text" maxlength="128" value={accessLabelDrafts[server.url] ?? ''} oninput={(event) => accessLabelDrafts[server.url] = event.currentTarget.value} placeholder="Who is it for?" aria-label="New token label" onkeydown={(event) => { if (event.key === 'Enter') submitAccessToken(server) }} />
-                    <select aria-label="New token scope" value={accessScopeDrafts[server.url] ?? 'report'} onchange={(event) => accessScopeDrafts[server.url] = event.currentTarget.value as AccessTokenScope}><option value="read">Read</option><option value="report">Report</option><option value="admin">Admin</option></select>
+                    <select class="caelestis-select" aria-label="New token scope" value={accessScopeDrafts[server.url] ?? 'report'} onchange={(event) => accessScopeDrafts[server.url] = event.currentTarget.value as AccessTokenScope}><option value="read">Read</option><option value="report">Report</option><option value="admin">Admin</option></select>
                     <Button label="Create" kind="primary" size="small" disabled={server.accessTokens.creating === true} onclick={() => submitAccessToken(server)} />
                   </div>
                   {#if server.accessTokens.createError !== undefined}<p class="error token-error" role="status">{server.accessTokens.createError}</p>{/if}
@@ -128,9 +131,17 @@
   </div>
 
   <SectionHeader title="Painting" icon="palette" />
-  <SettingRow label="Middle-click colour order" hint="Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.">
-    {#snippet children()}<select aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>{/snippet}
-  </SettingRow>
+  <div class="colour-order">
+    <label for="colour-navigation-order">Middle-click colour order<small>Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.</small></label>
+    <select class="caelestis-select" id="colour-navigation-order" aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>
+  </div>
+
+  <SectionHeader title="Notifications" icon="bell" />
+  <p class="subtle">Toast messages inside Wplace only.</p>
+  <SettingRow label="Template regressions" hint="When a template loses progress.">{#snippet children()}<Toggle label="Template regressions" checked={model.notifyRegressions} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyRegressions', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Sustained griefing" hint="When damage to a template continues.">{#snippet children()}<Toggle label="Sustained griefing" checked={model.notifyGriefing} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyGriefing', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Userscript updates" hint="When a new Caelestis version is available.">{#snippet children()}<Toggle label="Userscript updates" checked={model.notifyUpdates} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyUpdates', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Action feedback" hint="Progress and success messages. Errors and action warnings always appear.">{#snippet children()}<Toggle label="Action feedback" checked={model.notifyActivity} onChange={(value) => emit({ type: 'set-boolean', key: 'notifyActivity', value })} />{/snippet}</SettingRow>
 
   <SectionHeader title="Contribution" icon="share" />
   <SettingRow label="Report my activity" hint="Shares paint activity only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Report my activity" checked={model.reportPaints} onChange={(value) => emit({ type: 'set-boolean', key: 'reportPaints', value })} />{/snippet}</SettingRow>
@@ -151,9 +162,12 @@
 <style>
   .settings { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 400 0.875rem/1.35 ui-sans-serif, system-ui, sans-serif; }
   .connect, .token-row { display: flex; gap: 0.5rem; padding: 0 var(--caelestis-content-inset, 1rem); }
-  input, select { min-inline-size: 0; block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; font: inherit; }
+  input { min-inline-size: 0; block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; font: inherit; }
   input { flex: 1; padding-inline: 0.6rem; }
-  select { max-inline-size: 11rem; }
+  .colour-order { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; padding: 0.5rem var(--caelestis-content-inset, 1rem); }
+  .colour-order label { flex: 1 1 15rem; min-inline-size: 0; }
+  .colour-order small { display: block; color: var(--caelestis-muted-text); font-size: 0.75rem; }
+  .colour-order select { flex: 1 1 17rem; inline-size: 100%; max-inline-size: min(100%, 20rem); }
   .message, .subtle { margin: 0.3rem var(--caelestis-content-inset, 1rem); color: var(--caelestis-muted-text); font-size: 0.72rem; }
   .servers { display: flex; flex-direction: column; }
   .server { padding: 0.35rem var(--caelestis-content-inset, 1rem); }
@@ -178,6 +192,6 @@
   .profile { margin: 0.35rem var(--caelestis-content-inset, 1rem); padding: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   .metric { display: flex; justify-content: space-between; gap: 1rem; padding-block: 0.15rem; font-size: 0.72rem; }.metric span { color: var(--caelestis-muted-text); }.metric strong { font-variant-numeric: tabular-nums; }
   .profile-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; margin-block-start: 0.5rem; }.profile-actions span { margin-inline-end: auto; color: var(--caelestis-muted-text); font-size: 0.72rem; }
-  input:focus-visible, select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
-  @media (pointer: coarse) { input, select { font-size: 1rem; } }
+  input:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
+  @media (pointer: coarse) { input { font-size: 1rem; } }
 </style>

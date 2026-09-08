@@ -226,6 +226,10 @@ export interface State {
   readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
+  readonly notifyRegressions: boolean
+  readonly notifyGriefing: boolean
+  readonly notifyUpdates: boolean
+  readonly notifyActivity: boolean
 }
 
 const DEFAULT_STATE: State = {
@@ -247,6 +251,10 @@ const DEFAULT_STATE: State = {
   appearance: DEFAULT_APPEARANCE,
   reportPaints: true,
   shareTiles: true,
+  notifyRegressions: false,
+  notifyGriefing: false,
+  notifyUpdates: true,
+  notifyActivity: false,
 }
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -576,6 +584,10 @@ export const loadState = (): State => {
       // disable either feed; an explicit false remains durable across reloads.
       reportPaints: stored.reportPaints !== false,
       shareTiles: stored.shareTiles !== false,
+      notifyRegressions: stored.notifyRegressions === true,
+      notifyGriefing: stored.notifyGriefing === true,
+      notifyUpdates: stored.notifyUpdates !== false,
+      notifyActivity: stored.notifyActivity === true,
     }
     log('install', 'state loaded', { servers: state.servers.length })
     if (storedRaw.legacyPalette || scopesMigrated) writeRaw(JSON.stringify(state))

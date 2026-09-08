@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { showAmbientToast } from './notification-host.js'
 import { PANEL_ID, toast } from './toast.js'
 
+const preferences = vi.hoisted(() => ({ notifyActivity: true }))
+vi.mock('../state.js', () => ({ getState: () => preferences }))
+
 beforeEach(() => {
+  preferences.notifyActivity = true
   registerCaelestisUi()
   vi.useFakeTimers()
   document.body.replaceChildren()
@@ -25,6 +29,25 @@ const shadow = (): ShadowRoot | null =>
   document.querySelector('caelestis-notifications')?.shadowRoot ?? null
 
 describe('toast', () => {
+  it('mutes action feedback immediately while retaining errors, warnings, and ambient notices', async () => {
+    preferences.notifyActivity = false
+    toast('Exported')
+    await settle()
+    expect(shadow()).toBeNull()
+    toast('Export failed', 'error')
+    toast('Finish placement first', 'warning')
+    await settle()
+    expect(shadow()?.textContent).toContain('Export failed')
+    expect(shadow()?.textContent).toContain('Finish placement first')
+    showAmbientToast('Update available')
+    await settle()
+    expect(shadow()?.textContent).toContain('Update available')
+    preferences.notifyActivity = true
+    toast('Exported')
+    await settle()
+    expect(shadow()?.textContent).toContain('Exported')
+  })
+
   it('can announce a page-level warning while the panel is closed', async () => {
     document.getElementById(PANEL_ID)?.remove()
     showAmbientToast('Template regressed', 'warning')

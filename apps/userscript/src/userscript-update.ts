@@ -1,4 +1,5 @@
 import { userscriptVersion } from './client-metrics.js'
+import { getState } from './state.js'
 import { showAmbientToast } from './ui/notification-host.js'
 
 export const USERSCRIPT_INSTALLER_URL =
@@ -51,7 +52,7 @@ const decodeLatestVersion = (value: unknown): PublishedVersion | null => {
   return typeof value.tag_name === 'string' ? parseVersion(value.tag_name, RELEASE_TAG) : null
 }
 
-/** Build one silent update checker. Each published version is announced at most once. */
+/** Check when update notices are enabled, announcing each published version at most once. */
 export const createUserscriptUpdateCheck = (
   dependencies: Partial<UpdateCheckDependencies> = {},
 ): (() => Promise<void>) => {
@@ -62,7 +63,7 @@ export const createUserscriptUpdateCheck = (
 
   return async (): Promise<void> => {
     try {
-      if (running === null) return
+      if (running === null || !getState().notifyUpdates) return
       const response = await fetchLatest(LATEST_RELEASE_URL, {
         headers: { accept: 'application/vnd.github+json' },
       })
@@ -70,6 +71,7 @@ export const createUserscriptUpdateCheck = (
       const latest = decodeLatestVersion(await response.json())
       if (
         latest === null ||
+        !getState().notifyUpdates ||
         latest.label === announcedVersion ||
         compareVersions(latest.parts, running.parts) <= 0
       )

@@ -574,6 +574,10 @@ const settingsModel = (): SettingsModel => {
     colourNavigationOrder: state.colourNavigationOrder,
     reportPaints: state.reportPaints,
     shareTiles: state.shareTiles,
+    notifyRegressions: state.notifyRegressions,
+    notifyGriefing: state.notifyGriefing,
+    notifyUpdates: state.notifyUpdates,
+    notifyActivity: state.notifyActivity,
     debugLogging: isDebugEnabled(),
     performanceProfiling: isProfileEnabled(),
     ...(snapshot === null
@@ -1120,7 +1124,7 @@ const buildSveltePanel = (): CaelestisPanel => {
           rerenderTree()
         } else if (intent.intent.type === 'display-mode') {
           if (!setTemplateDisplayMode(intent.intent.mode))
-            toast('Could not save the template view.')
+            toast('Could not save the template view.', 'error')
           rerenderTree()
         } else if (intent.intent.type === 'filter') {
           setState({ filters: intent.intent.filters })

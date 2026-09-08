@@ -32,6 +32,7 @@ import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
 import labelOutline from '@iconify-icons/material-symbols/label-outline'
 import lightMode from '@iconify-icons/material-symbols/light-mode'
 import moreVert from '@iconify-icons/material-symbols/more-vert'
+import notifications from '@iconify-icons/material-symbols/notifications-outline'
 import openInNew from '@iconify-icons/material-symbols/open-in-new'
 import openWith from '@iconify-icons/material-symbols/open-with'
 import palette from '@iconify-icons/material-symbols/palette'
@@ -68,6 +69,7 @@ export const ICONS = define({
   add,
   arrowBack,
   bug: bugReport,
+  bell: notifications,
   caret: arrowRight,
   check,
   chevronRight,

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import { formatCount, formatPixels } from '@caelestis/shared'
   import Button from '../foundations/Button.svelte'
   import Icon from '../foundations/Icon.svelte'
@@ -32,6 +33,8 @@
   }))
 </script>
 
+<MenuStyles />
+
 <aside aria-label={`Progress for ${name}`}>
   <header>
     <div><h3>{name}</h3><p>{formatPixels(progress.total)} total</p></div>
@@ -51,7 +54,7 @@
   {#if colours.length > 0}
     <div class="colour-toolbar">
       <h4>Colours <span>{colours.length}</span></h4>
-      <select aria-label="Sort colours" value={sort} onchange={(event) => sort = event.currentTarget.value}>
+      <select class="caelestis-select" aria-label="Sort colours" value={sort} onchange={(event) => sort = event.currentTarget.value}>
         <option value="palette">Palette order</option>
         <option value="name">Name A–Z</option>
         <option value="least-complete">Least complete</option>
@@ -91,8 +94,7 @@
   .colour-toolbar { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 1rem; border-block: 1px solid var(--caelestis-border); }
   h4 { display: flex; gap: 0.375rem; margin: 0; font-size: inherit; font-weight: 600; }
   h4 span { color: var(--caelestis-muted-text); font-weight: 400; }
-  select { min-inline-size: 0; max-inline-size: 11rem; block-size: 2rem; padding-inline: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; font: inherit; }
-  select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
+  select { max-inline-size: 11rem; }
   ul { flex: 1; min-block-size: 6rem; margin: 0; padding: 0 1rem 0.5rem; overflow-y: auto; list-style: none; overscroll-behavior: contain; }
   li { padding-block: 0.625rem; border-block-end: 1px solid var(--caelestis-border); }
   li:last-child { border-block-end: 0; }

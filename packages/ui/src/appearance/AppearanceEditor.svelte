@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MenuStyles from '../foundations/MenuStyles.svelte'
   import SettingRow from '../foundations/SettingRow.svelte'
   import SectionHeader from '../foundations/SectionHeader.svelte'
   import SliderRow from '../foundations/SliderRow.svelte'
@@ -48,6 +49,8 @@
     emit({ type: 'layout' })
   }
 </script>
+
+<MenuStyles />
 
 <div class:compact class="editor" data-caelestis-scroller>
   <section>
@@ -148,7 +151,7 @@
     {#if model.markerBudget !== undefined && model.markerBudgetOptions !== undefined}
       <SettingRow label="Visible marker limit" hint="Approximate GPU target per marker kind across the viewport" {compact}>
         {#snippet children()}
-          <select aria-label="Visible marker limit" value={model.markerBudget} onchange={(event) => emit({ type: 'marker-budget', value: Number(event.currentTarget.value) })}>
+          <select class="caelestis-select" aria-label="Visible marker limit" value={model.markerBudget} onchange={(event) => emit({ type: 'marker-budget', value: Number(event.currentTarget.value) })}>
             {#each model.markerBudgetOptions as value}<option {value}>{value.toLocaleString()}</option>{/each}
           </select>
         {/snippet}
@@ -236,8 +239,8 @@
   .swatch-badge > span { display: flex; align-items: center; justify-content: center; inline-size: 72%; block-size: 72%; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); box-sizing: border-box; }
   .palette-swatch[data-on='true'] .swatch-badge > span { background: var(--caelestis-text); color: var(--caelestis-surface); }
   .palette-swatch[data-on='false'] .swatch-badge > span { border: 1.5px solid var(--caelestis-text); background: var(--caelestis-surface); color: var(--caelestis-text); }
-  select { min-block-size: 2rem; padding-inline: 0.75rem 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; font: inherit; }
-  button:focus-visible, select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
+
+  button:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   button:disabled, button[aria-disabled='true'] { pointer-events: none; cursor: not-allowed; opacity: 0.3; }
   @media (forced-colors: active) { .palette-swatch[data-on='true'] { outline: 3px solid CanvasText; } }
 </style>

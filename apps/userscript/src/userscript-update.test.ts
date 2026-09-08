@@ -1,11 +1,17 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createUserscriptUpdateCheck,
   installUserscriptUpdateCheck,
   USERSCRIPT_INSTALLER_URL,
 } from './userscript-update.js'
+
+const preferences = vi.hoisted(() => ({ notifyUpdates: true }))
+vi.mock('./state.js', () => ({ getState: () => preferences }))
+beforeEach(() => {
+  preferences.notifyUpdates = true
+})
 
 const release = (
   tagName: string,
@@ -32,6 +38,23 @@ const checker = (response: Response | Promise<Response>, runningVersion = '0.6.0
 afterEach(() => vi.useRealTimers())
 
 describe('userscript update check', () => {
+  it('skips disabled update checks and respects changes during a pending request', async () => {
+    let resolve!: (response: Response) => void
+    const pending = new Promise<Response>((done) => {
+      resolve = done
+    })
+    const { check, fetchLatest, notify } = checker(pending)
+    preferences.notifyUpdates = false
+    await check()
+    expect(fetchLatest).not.toHaveBeenCalled()
+    preferences.notifyUpdates = true
+    const checking = check()
+    preferences.notifyUpdates = false
+    resolve(release('userscript-v0.7.0'))
+    await checking
+    expect(notify).not.toHaveBeenCalled()
+  })
+
   it('announces a newer stable release with the canonical installer', async () => {
     const { check, notify } = checker(release('userscript-v0.7.0'))
 
