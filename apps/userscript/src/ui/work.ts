@@ -112,6 +112,7 @@ export const workSectionModel = (surface: TemplateSurface, changed: () => void) 
     }
     if (preview.revision !== revision) {
       preview.revision = revision
+      preview.loaded = false
       const held = preview
       const request = ++held.request
       void workClient(server, server.season, surface, signal)
