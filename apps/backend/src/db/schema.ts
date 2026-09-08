@@ -15,16 +15,44 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core'
 
-/**
- * Operator-set overrides for what this server calls itself.
- *
- * One row, pinned by a check constraint, because there is exactly one server per deployment and a
- * table that permits two would eventually hold two with nothing to say which is current.
- *
- * Separate from `wrangler.toml`'s `[vars]` rather than replacing them: the vars stay the value a
- * fresh deployment starts with, and this is what an admin has since decided. A null column means
- * "not decided", which is different from an empty string and falls back to the var.
- */
+/** Versioned coordination records; deleted artwork remains identifiable in activity snapshots. */
+export const workItems = sqliteTable(
+  'work_items',
+  {
+    id: text('id').primaryKey(),
+    season: integer('season').notNull(),
+    surfaceKind: text('surface_kind').notNull(),
+    allianceId: integer('alliance_id'),
+    revision: integer('revision').notNull(),
+    mutationId: text('mutation_id').notNull(),
+    data: text('data').notNull(),
+  },
+  (table) => [
+    index('work_items_scope_idx').on(table.season, table.surfaceKind, table.allianceId),
+    check('work_items_revision_check', sql`${table.revision} > 0`),
+    check('work_items_data_check', sql`json_valid(${table.data})`),
+  ],
+)
+
+/** Activity outlives folder and template deletion; its snapshots retain their original IDs. */
+export const workActivity = sqliteTable(
+  'work_activity',
+  {
+    id: text('id').primaryKey(),
+    itemId: text('item_id')
+      .notNull()
+      .references(() => workItems.id),
+    revision: integer('revision').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    data: text('data').notNull(),
+  },
+  (table) => [
+    uniqueIndex('work_activity_revision_idx').on(table.itemId, table.revision),
+    check('work_activity_data_check', sql`json_valid(${table.data})`),
+  ],
+)
+
+/** Operator overrides; null fields fall back to deployment configuration. */
 export const serverSettings = sqliteTable(
   'server_settings',
   {

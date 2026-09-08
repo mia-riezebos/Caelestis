@@ -283,13 +283,12 @@ describe('panel shell', () => {
     expect(panel.style.width).toBe('360px')
   })
 
-  it('matches Wplace panel and header-control geometry', async () => {
+  it('keeps Wplace header-control geometry and circular buttons', async () => {
     const panel = new CaelestisPanel()
     panel.model = model({ view: 'appearance', appearance })
     document.body.append(panel)
     await tick()
 
-    const surface = panel.shadowRoot?.querySelector<HTMLElement>('.panel')
     const header = panel.shadowRoot?.querySelector<HTMLElement>('header')
     const settings = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Settings"]')
     const appearanceButton = panel.shadowRoot?.querySelector<HTMLElement>(
@@ -298,7 +297,7 @@ describe('panel shell', () => {
     const preset = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Full pixel"]')
     const toggle = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Contrast outline"]')
     const range = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Opacity"]')
-    expect(getComputedStyle(surface as Element).borderRadius).toBe('12px')
+    // Shared calc() radii need native browser layout; Happy DOM drops that declaration.
     expect(getComputedStyle(header as Element).padding).toBe('16px 24px')
     expect(getComputedStyle(settings as Element).blockSize).toBe('1.5rem')
     expect(getComputedStyle(settings as Element).borderRadius).toBe('999px')

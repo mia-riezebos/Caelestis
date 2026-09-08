@@ -8,6 +8,7 @@ import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
+import { createWorkRoutes } from './routes/work.js'
 import { type BackendContext, createBackendRuntime } from './runtime/backend-runtime.js'
 import { runBackendHttp } from './runtime/hono.js'
 
@@ -119,6 +120,7 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
   v1Routes.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
 
   v1Routes.route('/admin/tokens', createTokenRoutes(runtime, auth, currentSeason))
+  v1Routes.route('/work', createWorkRoutes(runtime, auth))
   v1Routes.route('/admin/nodes', createNodeRoutes(runtime, auth))
   v1Routes.route('/admin/templates', createTemplateRoutes(runtime, auth))
   v1Routes.route('/chunks', createChunkRoutes(runtime, auth))

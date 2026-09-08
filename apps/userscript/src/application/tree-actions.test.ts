@@ -42,7 +42,7 @@ const transferState = vi.hoisted(() => ({
 vi.mock('../main.js', () => ({ viewportCentre: vi.fn(() => null) }))
 vi.mock('../state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../state.js')>()),
-  getState: copyState.getState,
+  getState: () => ({ localClaims: [], ...copyState.getState() }),
   listServerNodes: copyState.listServerNodes,
   dismissTemplateAlarm: alarmState.dismiss,
 }))
@@ -245,7 +245,7 @@ describe('server template context menu', () => {
     templateId: 'template',
   }
 
-  it('offers only read-only export to an ordinary server member', () => {
+  it('offers Claim and export without template administration to an ordinary member', () => {
     const memberTarget: TreeTarget = {
       server: { ...server, isAdmin: false },
       nodeId: 'root',
@@ -256,7 +256,7 @@ describe('server template context menu', () => {
 
     openContextMenu(memberTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(menuText()).toBe('Export .wplace')
+    expect(menuText()).toBe('ClaimExport .wplace')
   })
 
   it('offers finish and freeze actions for a live template', () => {

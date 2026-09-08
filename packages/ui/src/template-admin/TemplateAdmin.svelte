@@ -42,7 +42,7 @@
     min-block-size: 2.75rem;
     padding-inline: 0.8rem;
     border: 1px solid var(--_border);
-    border-radius: 0.65rem;
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     background: var(--_surface);
     color: inherit;
     font: inherit;

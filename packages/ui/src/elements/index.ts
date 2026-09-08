@@ -6,6 +6,7 @@ import type {
   RailControlModel,
   ShortcutHelpModel,
 } from '../types.js'
+import type { WorkModel } from '../work/model.js'
 import NotificationsElement from './Notifications.element.svelte'
 import OverlayControlsElement from './OverlayControls.element.svelte'
 import PaletteProgressElement from './PaletteProgress.element.svelte'
@@ -14,8 +15,11 @@ import RailControlElement from './RailControl.element.svelte'
 import ShortcutHelpElement from './ShortcutHelp.element.svelte'
 import TemplateAdminElement from './TemplateAdmin.element.svelte'
 import TemplateStateElement from './TemplateState.element.svelte'
+import WorkElement from './Work.element.svelte'
 
 export type * from '../types.js'
+export type { WorkModel } from '../work/model.js'
+export type CaelestisWork = HTMLElement & { model: WorkModel }
 
 export const TEMPLATE_ADMIN_TAG = 'caelestis-template-admin'
 export const TEMPLATE_STATE_TAG = 'caelestis-template-state'
@@ -59,6 +63,7 @@ type ElementConstructor<T extends HTMLElement> = {
 
 export const CaelestisTemplateAdmin =
   TemplateAdminElement.element as ElementConstructor<CaelestisTemplateAdmin>
+export const CaelestisWork = WorkElement.element as ElementConstructor<CaelestisWork>
 export const CaelestisTemplateState =
   TemplateStateElement.element as ElementConstructor<CaelestisTemplateState>
 export const CaelestisNotifications =
@@ -76,6 +81,8 @@ export const CaelestisShortcutHelp =
 /** Browser-only and idempotent, so both hosts can call it whenever their UI mounts. */
 export const registerCaelestisUi = (): void => {
   if (typeof customElements === 'undefined') return
+  if (customElements.get('caelestis-work') === undefined)
+    customElements.define('caelestis-work', CaelestisWork)
   if (customElements.get(TEMPLATE_STATE_TAG) === undefined) {
     customElements.define(TEMPLATE_STATE_TAG, CaelestisTemplateState)
   }

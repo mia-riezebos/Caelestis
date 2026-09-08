@@ -4,6 +4,7 @@
   import Icon from '../foundations/Icon.svelte'
   import AppearanceEditor from '../appearance/AppearanceEditor.svelte'
   import TemplateTree from '../tree/TemplateTree.svelte'
+  import WorkSummary from '../work/WorkSummary.svelte'
   import SettingsPanel from '../settings/SettingsPanel.svelte'
   import type { PanelIntent, PanelProps, PanelView, TemplateTreeIntent } from '../types.js'
 
@@ -28,17 +29,18 @@
     dockedPanel?.querySelector<HTMLButtonElement>('[aria-label="Pop out menu"]')?.focus()
   }
 
-  const treeIntent = (intent: TemplateTreeIntent): void => {
+  const treeIntent = (intent: TemplateTreeIntent, work = false): void => {
+    const tree = work ? model.work?.tree : model.tree
     // Map navigation, file pickers, and placement return to the interactive canvas.
-    const entry = intent.type === 'action' ? model.tree?.entries.find((entry) => entry.key === intent.key) : undefined
+    const entry = intent.type === 'action' ? tree?.entries.find((entry) => entry.key === intent.key) : undefined
     const action = intent.type === 'context-menu-action'
-      ? model.tree?.contextMenu?.items.find((item) => item.id === intent.actionId)
+      ? tree?.contextMenu?.items.find((item) => item.id === intent.actionId)
       : intent.type === 'action' && entry?.type === 'row'
         ? [...(entry.leadingActions ?? []), ...(entry.actions ?? [])].find((action) => action.id === intent.actionId)
         : entry?.type === 'action' ? entry.action
         : undefined
     if (poppedOut && action?.returnToCanvas === true) void dock()
-    emit({ type: 'tree', intent })
+    emit({ type: work ? 'work-tree' : 'tree', intent })
   }
 
   $effect(() => { width = model.width })
@@ -135,6 +137,9 @@
   <div class="body">
     {#if model.view === 'tree' && model.tree !== undefined}
       <TemplateTree model={model.tree} allowGrid={poppedOut} onIntent={treeIntent} />
+      {#if model.work !== undefined}
+        <WorkSummary model={model.work} showOtherClaims={model.showOtherClaims ?? false} onshowothers={(showOtherClaims) => emit({ type: 'work-visibility', showOtherClaims })} onIntent={(intent) => treeIntent(intent, true)} onretry={() => emit({ type: 'work-retry' })} />
+      {/if}
     {:else if model.view === 'appearance' && model.appearance !== undefined}
       <AppearanceEditor model={model.appearance} onIntent={(intent) => emit({ type: 'appearance', intent })} />
     {:else if model.view === 'settings' && model.settings !== undefined}
@@ -156,11 +161,11 @@
 
 <style>
   .docked { block-size: 100%; min-block-size: 0; }
-  dialog { position: fixed; inset: 0; inline-size: 96vw; block-size: 96dvh; max-inline-size: none; max-block-size: none; margin: auto; padding: 0; border: 1px solid var(--caelestis-border); border-radius: 0.75rem; overflow: visible; color: inherit; background: transparent; }
-  dialog .panel { border-radius: calc(0.75rem - 1px); }
+  dialog { position: fixed; inset: 0; inline-size: 96vw; block-size: 96dvh; max-inline-size: none; max-block-size: none; margin: auto; padding: 0; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); overflow: visible; color: inherit; background: transparent; }
+  dialog .panel { border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   dialog::backdrop { background: rgb(0 0 0 / 0.4); }
   .panel { container: panel / inline-size; }
-  .panel { --caelestis-content-inset: 1rem; position: relative; display: flex; flex-direction: column; min-block-size: 0; block-size: 100%; overflow: hidden; border-radius: var(--caelestis-panel-radius, 0.75rem); background: var(--caelestis-surface, oklch(0.97 0.01 264)); color: var(--caelestis-text, oklch(0.26 0.025 264)); box-shadow: var(--caelestis-shadow, 0 24px 80px rgb(0 0 0 / 0.35)); }
+  .panel { --caelestis-content-inset: 1rem; position: relative; display: flex; flex-direction: column; min-block-size: 0; block-size: 100%; overflow: hidden; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface, oklch(0.97 0.01 264)); color: var(--caelestis-text, oklch(0.26 0.025 264)); box-shadow: var(--caelestis-shadow, 0 24px 80px rgb(0 0 0 / 0.35)); }
   header { display: flex; flex: 0 0 auto; align-items: center; gap: 0.5rem; padding: 1rem 1.5rem; border-block-end: 1px solid var(--caelestis-border, oklch(0.78 0.025 264 / 0.7)); }
   h2 { flex: 1; margin: 0; font: 600 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .body { display: flex; flex: 1; flex-direction: column; min-block-size: 0; }

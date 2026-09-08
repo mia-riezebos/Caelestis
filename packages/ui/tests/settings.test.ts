@@ -43,7 +43,7 @@ describe('settings panel', () => {
     void unmount(component)
   })
 
-  it('uses the Wplace field and section geometry', () => {
+  it('keeps the field and section geometry', () => {
     const component = mount(SettingsPanel, { target: document.body, props: { model } })
     flushSync()
 
@@ -53,7 +53,6 @@ describe('settings panel', () => {
     )
     const connect = address?.closest<HTMLElement>('.connect')
     expect(getComputedStyle(address as Element).blockSize).toBe('2rem')
-    expect(getComputedStyle(address as Element).borderRadius).toBe('8px')
     expect(getComputedStyle(sectionIcon as Element).blockSize).toBe('1.75rem')
     expect(getComputedStyle(connect as Element).padding).toBe('0px 16px')
     void unmount(component)

@@ -280,6 +280,7 @@ const renderLevel = (
   budget: RenderBudget,
   onError: (message: string) => void,
   siblingLevels: Map<string, SiblingLevel>,
+  includeCollapsed = false,
 ): void => {
   const allSiblings = source.children(parentId)
   const matching = allSiblings.filter(matches)
@@ -343,7 +344,7 @@ const renderLevel = (
     })
     budget.remaining--
     if (item.childrenOf === null) continue
-    if (needle === '' && !isExpanded(key)) {
+    if (!includeCollapsed && needle === '' && !isExpanded(key)) {
       const childSiblings = source.children(item.childrenOf)
       const visibleChildren = orderedItems(childSiblings.filter(matches), rank).map(
         (child) => child.key,
@@ -368,6 +369,7 @@ const renderLevel = (
       budget,
       onError,
       siblingLevels,
+      includeCollapsed,
     )
   }
 
@@ -384,6 +386,8 @@ const buildTree = <Result>(
   rerender: () => void,
   query = '',
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  includeCollapsed = false,
+  templateKeys?: ReadonlySet<string>,
 ): Result => {
   const dropInLocal = async (
     draggedKey: string,
@@ -413,14 +417,16 @@ const buildTree = <Result>(
     return null
   }
   const servers = getState().servers
-  const drawnTemplates = localTemplates().filter((template) =>
-    sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+  const drawnTemplates = localTemplates().filter(
+    (template) =>
+      sameTemplateSurface(template.surface ?? WORLD_TEMPLATE_SURFACE, surface) &&
+      (templateKeys === undefined || templateKeys.has(templateTreeKeyFor(template, servers) ?? '')),
   )
   const allianceProgress = new Map<
     string,
     { progress: TemplateProgress; colours: readonly TemplateColourProgress[] }
   >()
-  if (surface.kind !== 'world') {
+  if (surface.kind !== 'world' && drawnTemplates.length > 0) {
     const active = activeAllianceSurface()
     const bounds = active === null ? null : allianceBounds(active)
     const regions =
@@ -447,8 +453,19 @@ const buildTree = <Result>(
     surface.kind === 'world'
       ? pixelAccounting.read(template).colours
       : (allianceProgress.get(template.id)?.colours ?? [])
-  const scopedRowsFor = (server: ConnectedServer) =>
-    surface.kind === 'world' ? rowsFor(server) : (allianceManifestFor(server, surface) ?? undefined)
+  const scopedRowsFor = (server: ConnectedServer) => {
+    const rows =
+      surface.kind === 'world'
+        ? rowsFor(server)
+        : (allianceManifestFor(server, surface) ?? undefined)
+    if (rows === undefined || templateKeys === undefined) return rows
+    return {
+      nodes: [],
+      templates: rows.templates.filter((template) =>
+        templateKeys.has(serverTemplateTreeKey(server, template.id)),
+      ),
+    }
+  }
   const localOnly = drawnTemplates.filter((template) => !isServerTemplate(template))
   const drawnByServer = new Map<string, Map<string, PlacedTemplate>>()
   for (const template of drawnTemplates) {
@@ -649,7 +666,10 @@ const buildTree = <Result>(
         }
         rerender()
       },
-      onContextMenu: canRearrange ? (event) => callbacks.onContextMenu(target, event) : undefined,
+      onContextMenu:
+        canRearrange || server !== undefined
+          ? (event) => callbacks.onContextMenu(target, event)
+          : undefined,
       onRename: canRearrange
         ? (value) => void renameTarget(target, value, rerender, surface)
         : undefined,
@@ -669,7 +689,7 @@ const buildTree = <Result>(
           ]
         : undefined,
     })
-    if (!isExpanded(key) && needle === '') continue
+    if (!includeCollapsed && !isExpanded(key) && needle === '') continue
 
     if (server !== undefined) {
       const rows = serverRows
@@ -746,12 +766,7 @@ const buildTree = <Result>(
               setVisible: (on) => setScopeVisible(nodeScopeKey(server.url, node.id), on),
               canReparent: canRearrange,
               ...(canRearrange ? { onDropAt: intoServer } : {}),
-              ...(canRearrange
-                ? {
-                    onContextMenu: (event: MouseEvent) =>
-                      callbacks.onContextMenu(nodeTarget, event),
-                  }
-                : {}),
+              onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(nodeTarget, event),
               ...(canCreate
                 ? {
                     onRename: (value: string) =>
@@ -797,7 +812,8 @@ const buildTree = <Result>(
             templateUpdatedAt: template.updatedAt,
           }
           entries.push({
-            parentId: renderedParent(templateKey, template.nodeId),
+            parentId:
+              templateKeys === undefined ? renderedParent(templateKey, template.nodeId) : null,
             item: {
               key: templateKey,
               name: template.name,
@@ -884,6 +900,7 @@ const buildTree = <Result>(
           budget,
           reportTreeError,
           siblingLevels,
+          includeCollapsed,
         )
         if (needle !== '' && !hasMatches) output.notice('No matches.', 1)
         else if (known.length === 0 && published.length === 0)
@@ -910,8 +927,10 @@ const buildTree = <Result>(
       // listed under the server publishing them, not here.
       const mine = localOnly
       const entries: Array<{ parentId: string | null; item: TreeItem }> = []
-      for (const folder of getState().localFolders.filter((candidate) =>
-        sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+      for (const folder of getState().localFolders.filter(
+        (candidate) =>
+          templateKeys === undefined &&
+          sameTemplateSurface(candidate.surface ?? WORLD_TEMPLATE_SURFACE, surface),
       )) {
         const folderTarget: TreeTarget = {
           server: null,
@@ -959,7 +978,7 @@ const buildTree = <Result>(
           name: template.name,
         }
         entries.push({
-          parentId: template.folderId ?? null,
+          parentId: templateKeys === undefined ? (template.folderId ?? null) : null,
           item: {
             key: `local:${template.id}`,
             name: template.name,
@@ -1020,6 +1039,7 @@ const buildTree = <Result>(
         budget,
         reportTreeError,
         siblingLevels,
+        includeCollapsed,
       )
       if (needle !== '' && !hasMatches) output.notice('No matches.', 1)
       else if (mine.length === 0) output.notice('No local templates yet.', 1)
@@ -1102,6 +1122,8 @@ export const templateTreeAdapter = (
   rerender: () => void,
   query = '',
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  includeCollapsed = false,
+  templateKeys?: ReadonlySet<string>,
 ): TemplateTreeAdapter => {
   const entries: TreeEntryModel[] = []
   const rows = new Map<string, TreeRowOptions>()
@@ -1207,7 +1229,7 @@ export const templateTreeAdapter = (
     finish: () => undefined,
   }
 
-  buildTree(output, callbacks, rerender, query, surface)
+  buildTree(output, callbacks, rerender, query, surface, includeCollapsed, templateKeys)
 
   const siblingRows = new Map<string, TreeRowModel[]>()
   for (const entry of entries) {
@@ -1224,7 +1246,7 @@ export const templateTreeAdapter = (
     })
   }
   const renderedRename = currentRenamingKey()
-  if (renderedRename !== null && !rows.has(renderedRename)) finishRenaming()
+  if (!includeCollapsed && renderedRename !== null && !rows.has(renderedRename)) finishRenaming()
 
   const renamingKey = currentRenamingKey()
   const model: TemplateTreeModel = {

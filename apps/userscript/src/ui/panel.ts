@@ -130,6 +130,12 @@ import {
   templateTreeAdapter,
   templateTreeKeyFor,
 } from './tree.js'
+import {
+  changeTemplateClaim,
+  retryTemplateClaims,
+  withTemplateClaims,
+  workSectionModel,
+} from './work.js'
 import { findWplaceRail } from './wplace-rail.js'
 
 /**
@@ -193,6 +199,7 @@ const BUTTON_TOOLTIP = `${APP_NAME} — shared templates (C)`
 const panelSessions = new PanelSessions()
 let alarmBadge = 0
 let searchQuery = ''
+let showOtherClaims = false
 let panelSurface: TemplateSurface = WORLD_TEMPLATE_SURFACE
 let panelHost: HTMLElement | null = null
 let allianceStage: HTMLElement | null = null
@@ -507,6 +514,9 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
 }
 
 let activeTreeAdapter: TemplateTreeAdapter | null = null
+let claimedTreeAdapter: TemplateTreeAdapter | null = null
+let claimedTreeSource: TemplateTreeAdapter | null = null
+let claimedTreeKeys: readonly string[] = []
 
 const settingsMessages = new Map<string, string>()
 const pendingServers = new Set<string>()
@@ -964,11 +974,7 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
   maxWidth: maximumPanelWidth(),
   ...(currentView() === 'tree' && activeTreeAdapter !== null
     ? {
-        tree: {
-          ...activeTreeAdapter.model,
-          ...focusedTreeModel(),
-          ...treeActionPresentation(),
-        },
+        ...claimTreeModels(activeTreeAdapter),
       }
     : {}),
   ...(currentView() === 'appearance' ? { appearance: appearanceModel() } : {}),
@@ -976,6 +982,50 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
     ? { settings: settingsModel() }
     : {}),
 })
+
+const claimTreeModels = (
+  adapter: TemplateTreeAdapter,
+): Pick<PanelModel, 'tree' | 'work' | 'showOtherClaims'> => {
+  const claims = workSectionModel(panelSurface, rerenderTree)
+  const keys = [...claims.templates]
+    .filter(
+      ([, claim]) => claim.mine || (showOtherClaims && claim.canAssign && claim.people.length > 0),
+    )
+    .map(([key]) => key)
+  if (
+    claimedTreeAdapter === null ||
+    claimedTreeSource !== adapter ||
+    keys.length !== claimedTreeKeys.length ||
+    keys.some((key, index) => key !== claimedTreeKeys[index])
+  ) {
+    claimedTreeAdapter = templateTreeAdapter(
+      treeCallbacks(),
+      rerenderTree,
+      '',
+      panelSurface,
+      true,
+      new Set(keys),
+    )
+    claimedTreeSource = adapter
+    claimedTreeKeys = keys
+  }
+  return {
+    showOtherClaims,
+    tree: {
+      ...withTemplateClaims(adapter.model, claims),
+      ...focusedTreeModel(),
+      ...treeActionPresentation(),
+    },
+    work: {
+      tree: {
+        ...withTemplateClaims(claimedTreeAdapter.model, claims, showOtherClaims),
+        ...focusedTreeModel(),
+      },
+      canShowOthers: claims.canShowOthers,
+      error: claims.error,
+    },
+  }
+}
 
 const currentPanelWidth = (panel: CaelestisPanel): number =>
   panelWidthAfterMount(panel.getBoundingClientRect().width, panel.model.width)
@@ -1002,6 +1052,26 @@ const buildSveltePanel = (): CaelestisPanel => {
   panel.addEventListener('caelestis-panel-intent', (event) => {
     const intent = (event as CustomEvent<PanelIntent>).detail
     switch (intent.type) {
+      case 'work-retry':
+        retryTemplateClaims(panelSurface, rerenderTree)
+        break
+      case 'work-tree':
+        if (intent.intent.type === 'template-claim') {
+          changeTemplateClaim(
+            intent.intent.key,
+            panelSurface,
+            rerenderTree,
+            intent.intent.release,
+            intent.intent.person,
+          )
+        } else if (!handleTreeActionPresentationIntent(intent.intent)) {
+          claimedTreeAdapter?.handle(intent.intent)
+        }
+        break
+      case 'work-visibility':
+        showOtherClaims = intent.showOtherClaims
+        rerenderTree()
+        break
       case 'navigate':
         if (panelSurface.kind !== 'world' && intent.view === 'settings') break
         showView(intent.view)
@@ -1026,6 +1096,16 @@ const buildSveltePanel = (): CaelestisPanel => {
         }
         break
       case 'tree':
+        if (intent.intent.type === 'template-claim') {
+          changeTemplateClaim(
+            intent.intent.key,
+            panelSurface,
+            rerenderTree,
+            intent.intent.release,
+            intent.intent.person,
+          )
+          break
+        }
         if (handleTreeActionPresentationIntent(intent.intent)) {
           break
         }
@@ -1130,6 +1210,7 @@ const showView = (view: PanelView): void => {
     void primeFromCache(rerenderTree)
   } else {
     activeTreeAdapter = null
+    claimedTreeAdapter = null
     if (view === 'appearance') refreshAccount(refreshView)
   }
   panel.model = panelModel(currentPanelWidth(panel))
@@ -1188,6 +1269,7 @@ const unmountSelectedPanel = (): void => {
   document.getElementById(currentPanelId())?.remove()
   if (panelSessions.scope() === 'alliance') allianceDrawerInset.clear()
   activeTreeAdapter = null
+  claimedTreeAdapter = null
   syncProfileTimer()
 }
 

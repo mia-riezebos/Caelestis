@@ -13,6 +13,8 @@ export interface Manifest {
   /** Opaque, changes whenever anything below changes. Surfaced to the user as a "what changed" diff. */
   readonly version: string
   readonly season: number
+  /** Changes when coordination changes, so the existing live manifest channel refreshes work. */
+  readonly workRevision?: number
   /** Absent means the world canvas, preserving the v1 manifest representation. */
   readonly surface?: TemplateSurface
   readonly server: ServerInfo

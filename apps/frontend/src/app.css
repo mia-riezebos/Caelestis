@@ -46,10 +46,9 @@
   --color-error: oklch(59.5% 0.225 27);
   --color-error-content: oklch(98% 0.02 27);
 
-  /* wplace chrome rhythm: soft-rounded panels, pill-ish controls, a visible chunky border. */
-  --radius-box: 1rem;
-  --radius-field: 0.625rem;
-  --radius-selector: 2rem;
+  --radius-box: var(--caelestis-radius);
+  --radius-field: var(--caelestis-radius);
+  --radius-selector: var(--caelestis-radius);
   --size-field: 0.25rem;
   --size-selector: 0.25rem;
   --border: 1.5px;
@@ -86,9 +85,9 @@
   --color-error: oklch(66% 0.185 27);
   --color-error-content: oklch(16% 0.05 27);
 
-  --radius-box: 1rem;
-  --radius-field: 0.625rem;
-  --radius-selector: 2rem;
+  --radius-box: var(--caelestis-radius);
+  --radius-field: var(--caelestis-radius);
+  --radius-selector: var(--caelestis-radius);
   --size-field: 0.25rem;
   --size-selector: 0.25rem;
   --border: 1.5px;
@@ -102,6 +101,14 @@
  * at once and a third theme stays a value-set, never a refactor.
  */
 @theme inline {
+  --radius-xs: var(--caelestis-radius);
+  --radius-sm: var(--caelestis-radius);
+  --radius-md: var(--caelestis-radius);
+  --radius-lg: var(--caelestis-radius);
+  --radius-xl: var(--caelestis-radius);
+  --radius-2xl: var(--caelestis-radius);
+  --radius-3xl: var(--caelestis-radius);
+  --radius-4xl: var(--caelestis-radius);
   --font-sans: 'Nunito Variable', ui-rounded, system-ui, -apple-system, sans-serif;
   --font-pixel: 'Silkscreen', monospace;
 
@@ -220,6 +227,7 @@
  * window and give it a hairline so it still reads on the dark theme's whisper-quiet surfaces.
  */
 :root {
+  --caelestis-radius: calc(0.7rem + 1px);
   --tabs-dur: 250ms;
   --tabs-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --tabs-text-muted: color-mix(in oklab, var(--color-base-content) 70%, transparent);
@@ -237,7 +245,7 @@
   align-items: center;
   gap: 3px;
   padding: 3px;
-  border-radius: 48px;
+  border-radius: var(--caelestis-radius);
   background: var(--tabs-bar-bg);
 }
 .t-tab {
@@ -249,7 +257,7 @@
   padding: 2px 10px;
   color: var(--tabs-text-muted);
   cursor: pointer;
-  border-radius: 48px;
+  border-radius: var(--caelestis-radius);
   z-index: 1;
   transition: color var(--tabs-dur) var(--tabs-ease);
 }
@@ -268,7 +276,7 @@
   height: 24px;
   width: 0;
   background: var(--tabs-pill-bg);
-  border-radius: 48px;
+  border-radius: var(--caelestis-radius);
   transform: translateX(0);
   transition:
     transform var(--tabs-dur) var(--tabs-ease),

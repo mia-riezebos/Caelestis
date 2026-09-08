@@ -56,12 +56,13 @@ const toggleTheme = (): void => {
       </a>
 
       <div class="flex-1"></div>
+      <a href="/work" class="btn btn-sm btn-ghost">Work</a>
 
       <a
         href={REPO_URL}
         target="_blank"
         rel="noreferrer"
-        class="btn btn-sm btn-outline gap-1.5 rounded-full"
+        class="btn btn-sm btn-outline gap-1.5 rounded-lg"
         title="Get the userscript from the Caelestis GitHub repository"
       >
         <!-- Lucide dropped brand icons; this is the Simple Icons GitHub mark. -->

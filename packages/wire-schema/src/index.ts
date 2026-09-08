@@ -314,6 +314,9 @@ const SurfaceTemplate = Schema.Struct({
 const ManifestStruct = Schema.Struct({
   version: VersionToken,
   season: Season,
+  workRevision: Schema.optionalKey(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  ),
   surface: Schema.optionalKey(TemplateSurface),
   server: ServerInfo,
   nodes: boundedArray(Node, MAX_MANIFEST_NODES),

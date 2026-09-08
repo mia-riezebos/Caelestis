@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
 
   interface Props {
+    type?: 'button' | 'submit'
     label: string
     title?: string
     kind?: 'default' | 'primary' | 'danger' | 'danger-ghost' | 'ghost'
@@ -17,6 +18,7 @@
   }
 
   let {
+    type = 'button',
     label,
     title,
     kind = 'default',
@@ -33,7 +35,7 @@
 </script>
 
 <button
-  type="button"
+  {type}
   class:icon-only={iconOnly}
   class:compact={size === 'compact'}
   class:small={size === 'small'}
@@ -70,7 +72,7 @@
     min-block-size: 0;
     padding-inline: var(--button-padding);
     border: var(--border, 1px) solid color-mix(in oklab, var(--button-colour), #000 calc(var(--depth, 1) * 5%));
-    border-radius: var(--caelestis-field-radius, 0.65rem);
+    border-radius: var(--caelestis-radius, calc(0.7rem + 1px));
     outline-color: var(--button-colour);
     background: var(--button-colour);
     color: var(--button-foreground);

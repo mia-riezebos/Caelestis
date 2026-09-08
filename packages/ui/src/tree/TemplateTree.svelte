@@ -3,6 +3,7 @@
   import Button from '../foundations/Button.svelte'
   import SortMenu from './SortMenu.svelte'
   import TemplatePreview from './TemplatePreview.svelte'
+  import TemplateClaims from './TemplateClaims.svelte'
   import ProgressDetails from './ProgressDetails.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
@@ -19,7 +20,7 @@
     TreeRowModel,
   } from '../types.js'
 
-  let { model, allowGrid = false, onIntent }: { model: TemplateTreeModel; allowGrid?: boolean; onIntent?: (intent: TemplateTreeIntent) => void } = $props()
+  let { model, allowGrid = false, toolbar = true, onIntent }: { model: TemplateTreeModel; allowGrid?: boolean; toolbar?: boolean; onIntent?: (intent: TemplateTreeIntent) => void } = $props()
   let query = $state('')
   let activeKey = $state<string | null>(null)
   let renameDraft = $state('')
@@ -280,6 +281,7 @@
 
 <svelte:window onpointerdown={dismissContextMenu} onkeydown={dismissTransient} />
 
+{#if toolbar}
 <div class="toolbar">
   <label class="search">
     <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.search} /></svg>
@@ -297,6 +299,7 @@
   </div>
   {/if}
 </div>
+{/if}
 
 {#if model.operation !== undefined}
   <section class="operation" aria-live="polite" aria-busy={model.operation.pending === true}>
@@ -347,7 +350,7 @@
         {@const canShowExpandedProgress = entry.progress !== undefined && (!entry.container || entry.expanded)}
         {@const disclosure = grid || !canShowExpandedProgress || requestedDisclosure === undefined ? undefined : requestedDisclosure === 'colours' && (entry.colourProgress?.length ?? 0) === 0 ? 'expanded' : requestedDisclosure}
         {@const tallHeading = entry.progress !== undefined || (entry.actions?.length ?? 0) > 0 || (entry.leadingActions?.length ?? 0) > 0}
-        {@const connectorWidth = (entry.branches?.length ?? 0) * branchIndent + (entry.container ? 0 : leafHeadingIndent)}
+        {@const connectorWidth = entry.depth === 0 ? 0 : (entry.branches?.length ?? 0) * branchIndent + (entry.container ? 0 : leafHeadingIndent)}
         {@const progressDetailOffset = entry.container ? leafHeadingIndent : 0}
         {@const alarmKind = entry.descendantAlarmKind ?? entry.lifecycle?.alarmKind ?? (entry.lifecycle?.griefed ? 'sustained-griefing' : undefined)}
         {@const card = grid && !entry.container}
@@ -407,7 +410,13 @@
           <div class="row-heading">
             {#if entry.container}<span class:open={entry.expanded} class="caret" aria-hidden="true">›</span>{/if}
             <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
+              {#if entry.claims !== undefined && (entry.claims.people.length > 0 || entry.claims.canAssign)}
+                <TemplateClaims name={entry.name} model={entry.claims} onChange={(release, person) => emit({ type: 'template-claim', key: entry.key, release, ...(person === undefined ? {} : { person }) })}>
+                  <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+                </TemplateClaims>
+              {:else}
               <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+              {/if}
             </TemplateLifecycle>
             {#if alarmKind !== undefined}
               <TemplateState compact showLifecycle={false} {...(entry.descendantAlarmKind === undefined ? {} : { descendantAlarmKind: entry.descendantAlarmKind })} {...entry.lifecycle} />
@@ -530,22 +539,22 @@
 <style>
   :global(*) { box-sizing: border-box; }
   .toolbar { position: relative; z-index: 2; display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; margin: 0.75rem var(--caelestis-content-inset, 1rem); }
-  .view-switcher { display: flex; flex: 0 0 auto; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); overflow: hidden; }
+  .view-switcher { display: flex; flex: 0 0 auto; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); overflow: hidden; }
   .view-switcher button { display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; border: 0; background: var(--caelestis-surface); color: var(--caelestis-muted-text); cursor: pointer; }
   .view-switcher button[aria-pressed='true'] { background: var(--caelestis-raised-surface); color: var(--caelestis-primary); box-shadow: inset 0 -2px var(--caelestis-primary); }
   .view-switcher button:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .view-switcher svg { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
-  .search { display: flex; flex: 1; align-items: center; gap: 0.5rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.75rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
+  .search { display: flex; flex: 1; align-items: center; gap: 0.5rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.75rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   .search svg { inline-size: 1rem; block-size: 1rem; opacity: 0.55; fill: currentColor; }
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
-  select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
+  select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   select { padding-inline: 0.75rem 2rem; }
   .browser { position: relative; display: flex; flex: 1; min-block-size: 0; min-inline-size: 0; overflow: hidden; }
   .scroller { flex: 1; min-block-size: 0; min-inline-size: 0; overflow: auto; container-type: inline-size; }
   .progress-pane { flex: 0 0 20rem; min-block-size: 0; border-inline-start: 1px solid var(--caelestis-border); background: var(--caelestis-surface); }
   .progress-pane.overlaid { position: absolute; inset: 0; z-index: 3; border-inline-start: 0; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
-  .row { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
+  .row { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); outline: none; }
   .row-heading { display: flex; flex-wrap: nowrap; align-items: center; gap: 0.25rem; min-inline-size: 0; white-space: nowrap; }
   .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; opacity: 0.28; pointer-events: none; }
   .connector-vertical, .connector-current { position: absolute; inset-block-start: 0; border-inline-start: 1px solid currentColor; }
@@ -585,7 +594,7 @@
   .visibility :global(svg) { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
   .progress { inline-size: 100%; min-inline-size: 0; transition: opacity 100ms ease-out; }
-  .progress-detail { display: flex; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 2.25rem 0.35rem; padding-inline-start: calc(2.25rem + var(--progress-detail-offset)); color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .progress-detail { display: flex; min-inline-size: 0; flex-direction: column; gap: 0.25rem; padding: 0.2rem 0 0.35rem; padding-inline-start: var(--progress-detail-offset); color: var(--caelestis-muted-text); font-size: 0.68rem; }
   .progress-disclosure { position: relative; display: flex; min-inline-size: 0; padding-inline-end: 1.625rem; }
   .progress-summary { container-type: inline-size; display: flex; flex: 1; min-inline-size: 0; flex-direction: column; gap: 0.2rem; }
   .progress-summary :global(.meter-wrap) { inline-size: 100%; }
@@ -616,16 +625,16 @@
   .standalone.compact { justify-content: flex-start; padding: 0 0.75rem 0.5rem 2.25rem; }
   .standalone.ghost { justify-content: center; padding: 0.5rem 0.75rem 0; }
   .standalone-icon { inline-size: 1rem; block-size: 1rem; flex: 0 0 auto; fill: currentColor; opacity: 0.6; }
-  .notice button { border: 0; border-radius: 0.45rem; background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
-  .operation { display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; margin: 0 0.5rem 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-raised-surface); font: 500 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
-  .operation select { min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; }
+  .notice button { border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
+  .operation { display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; margin: 0 0.5rem 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); font: 500 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
+  .operation select { min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; }
   .operation small { color: var(--caelestis-muted-text); }
   .operation-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
-  .operation button, .context-menu button { min-block-size: 2rem; border: 0; border-radius: 0.45rem; background: transparent; color: inherit; cursor: pointer; }
+  .operation button, .context-menu button { min-block-size: 2rem; border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: transparent; color: inherit; cursor: pointer; }
   .operation button.primary { padding-inline: 0.75rem; background: var(--caelestis-primary); color: var(--caelestis-primary-text, white); }
   .operation button:disabled { cursor: wait; opacity: 0.55; }
-  .context-menu { --context-item-radius: 0.45rem; --context-menu-padding: 0.25rem; position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; padding: var(--context-menu-padding); border: 1px solid var(--caelestis-border); border-radius: calc(var(--context-item-radius) + var(--context-menu-padding) + 1px); background: var(--caelestis-surface); box-shadow: var(--caelestis-shadow); }
-  .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; border-radius: var(--context-item-radius); text-align: start; }
+  .context-menu { --context-menu-padding: 0.25rem; position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; padding: var(--context-menu-padding); border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); box-shadow: var(--caelestis-popover-shadow, 0 1px 2px rgb(0 0 0 / 0.12), 0 10px 24px -6px rgb(0 0 0 / 0.28)); }
+  .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); text-align: start; }
   .context-menu button:hover, .context-menu button:focus-visible { background: var(--caelestis-raised-surface); }
   .context-menu button.danger { color: var(--caelestis-danger); }
   .context-menu svg { flex: 0 0 1rem; inline-size: 1rem; block-size: 1rem; fill: currentColor; }
@@ -638,11 +647,11 @@
   .tree.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); align-content: start; align-items: start; gap: 0.5rem; padding: 0.5rem; }
   .preview-grid > :not(.preview-card) { grid-column: 1 / -1; min-inline-size: 0; margin-inline: 0; }
   .preview-grid .folder-heading { border-block-end: 1px solid var(--caelestis-border); border-radius: 0; }
-  .row.preview-card { --preview-radius: 0.5rem; min-inline-size: 0; margin: 0; padding: 0.5rem; gap: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--preview-radius); background: var(--caelestis-surface); }
+  .row.preview-card { min-inline-size: 0; margin: 0; padding: 0.5rem; gap: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); }
   .preview-card.focused-template { border-color: color-mix(in oklab, var(--caelestis-primary) 65%, var(--caelestis-border)); background: color-mix(in oklab, var(--caelestis-primary) 8%, var(--caelestis-surface)); }
   .preview-card.focused-template::before { display: none; }
   .preview-card.regression-alarm, .preview-card.grief-alarm { background: color-mix(in oklab, var(--row-alarm-color) 14%, var(--caelestis-surface)); }
-  .artwork { display: block; inline-size: 100%; padding: 0; border: 0; border-radius: 0.25rem; overflow: hidden; color: inherit; cursor: pointer; }
+  .artwork { display: block; inline-size: 100%; padding: 0; border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); overflow: hidden; color: inherit; cursor: pointer; }
   .artwork:disabled { cursor: default; }
   .artwork:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
   .card-caption { display: flex; justify-content: space-between; gap: 0.5rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }
@@ -654,7 +663,7 @@
   .preview-card .rename { inline-size: 100%; }
   .preview-grid .actions { opacity: 1; pointer-events: auto; }
   .preview-card .progress-detail { padding: 0; }
-  .card-progress { display: flex; align-items: center; gap: 0.375rem; inline-size: 100%; min-block-size: 1.5rem; padding: 0; border: 0; border-radius: 0.25rem; background: transparent; color: inherit; cursor: pointer; }
+  .card-progress { display: flex; align-items: center; gap: 0.375rem; inline-size: 100%; min-block-size: 1.5rem; padding: 0; border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: transparent; color: inherit; cursor: pointer; }
   .card-progress:hover { background: var(--caelestis-raised-surface); }
   .card-progress:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   .card-progress :global(.meter-wrap) { flex: 1; }

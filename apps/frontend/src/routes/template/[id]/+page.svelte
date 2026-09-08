@@ -12,6 +12,7 @@
   import ColourProgress from '$lib/components/ColourProgress.svelte'
   import StatsPanel from '$lib/components/StatsPanel.svelte'
   import TemplateViewer from '$lib/components/TemplateViewer.svelte'
+  import WorkSection from '$lib/components/WorkSection.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
   import { Slider } from '$lib/components/ui/slider'
   import { tilesInRect } from '$lib/render'
@@ -203,13 +204,14 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
         at ({template.bbox.minX}, {template.bbox.minY})
       </span>
       {#if wplaceUrl !== null}
-        <a href={wplaceUrl} target="_blank" rel="noreferrer" class="btn btn-xs btn-outline gap-1 rounded-full">
+        <a href={wplaceUrl} target="_blank" rel="noreferrer" class="btn btn-xs btn-outline gap-1 rounded-lg">
           <ExternalLink class="size-3" /> View on wplace
         </a>
       {/if}
     </header>
 
     <ProgressMeter {progress} griefWatch={alarm !== undefined} />
+    <WorkSection label="Linked work" templateId={template.id} />
     {#if progress.known < progress.total}
       <p class="-mt-2 text-xs text-base-content/50">
         {Math.round((progress.known / Math.max(1, progress.total)) * 100)}% of pixels scanned.

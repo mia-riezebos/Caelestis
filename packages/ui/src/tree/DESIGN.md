@@ -1,5 +1,11 @@
 # Template display modes
 
+Template claims keep the original template icon with a fixed-size count badge over its corner. The badge occupies no layout space, including when the count changes or disappears. Clicking the icon opens a compact native popover with claimants and permitted actions. Opening, assigning, and dismissing claims never change tree layout. Progress totals and colour rows share the template icon column without an extra inset.
+
+The claim popover reads top to bottom: a header with the template name and claim count, the claimant list, then actions. Claimants and the empty state share one row height. Actions are full-width menu rows below a hairline, in the same idiom as the template context menu, so switching Claim and Release claim changes only the label and icon. The assignment form opens below the actions without moving them.
+
+Popovers and menus use `--caelestis-popover-shadow`, a short shadow sized for small floating surfaces. The large `--caelestis-shadow` belongs to the panel and dialogs.
+
 The grid helps people recognize artwork without knowing template names. Tree remains the default working view.
 
 Use the existing panel typography, colors, progress meter, lifecycle markers, and actions. The sidebar stays in tree mode. Its header opens the same menu in a native modal, where a compact view switcher sits beside sorting. Closing or docking restores the sidebar; the saved grid preference applies only inside the modal.

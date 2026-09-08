@@ -5,6 +5,7 @@ import ColourProgress from '$lib/components/ColourProgress.svelte'
 import FolderSection from '$lib/components/FolderSection.svelte'
 import StatsPanel from '$lib/components/StatsPanel.svelte'
 import TemplateCard from '$lib/components/TemplateCard.svelte'
+import WorkSection from '$lib/components/WorkSection.svelte'
 import { Skeleton } from '$lib/components/ui/skeleton'
 import { useApp } from '$lib/state/app.svelte'
 import { folderColourStatuses, folderTemplates, type TreeFolder } from '$lib/tree'
@@ -79,6 +80,8 @@ const ancestors = $derived.by(() => {
     {#if folder.node.description}
       <p class="-mt-2 text-sm text-base-content/70">{folder.node.description}</p>
     {/if}
+
+    <WorkSection label="Work in this folder" nodeId={folder.node.id} />
 
     {#if folder.progress.total > 0}
       <ProgressMeter progress={folder.progress} />

@@ -31,7 +31,7 @@
 
 <style>
   .section { display: flex; align-items: center; gap: 0.5rem; padding: 1.25rem var(--caelestis-content-inset, 1rem) 0.5rem; color: var(--caelestis-text, inherit); }
-  .chip { display: grid; flex: 0 0 auto; place-items: center; inline-size: 1.75rem; block-size: 1.75rem; border-radius: 0.5rem; background: var(--caelestis-raised-surface, oklch(0.92 0.01 264)); }
+  .chip { display: grid; flex: 0 0 auto; place-items: center; inline-size: 1.75rem; block-size: 1.75rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface, oklch(0.92 0.01 264)); }
   h2 { margin: 0; color: inherit; font: 600 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .actions { display: flex; margin-inline-start: auto; align-items: center; }
   .compact { gap: 0.5rem; padding: 0.5rem 0 0.25rem; }
@@ -39,5 +39,5 @@
   .compact h2 { color: color-mix(in srgb, currentColor 60%, transparent); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.025em; text-transform: uppercase; }
   .caret { display: grid; flex: 0 0 auto; place-items: center; opacity: 0.6; transition: transform 120ms ease-out; }
   .caret.open { transform: rotate(90deg); }
-  .compact button:focus-visible { border-radius: var(--caelestis-field-radius, 0.5rem); outline: 2px solid var(--caelestis-focus, currentColor); outline-offset: 2px; }
+  .compact button:focus-visible { border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); outline: 2px solid var(--caelestis-focus, currentColor); outline-offset: 2px; }
 </style>
