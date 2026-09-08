@@ -1,3 +1,10 @@
+import {
+  EMPTY_TEMPLATE_FILTERS,
+  matchesTemplateFilters,
+  type TemplateFilterFacts,
+  type TemplateFilters,
+  templateFilterCount,
+} from '@caelestis/shared'
 import type { TreeIcon, TreeRowModel } from '@caelestis/ui/elements'
 import {
   pixelAccounting,
@@ -14,6 +21,7 @@ export interface TreeItem {
   readonly kind: Extract<TreeIcon, 'folder' | 'image' | 'server'>
   /** Its id as a container, so the renderer can ask for its children. Null for a leaf. */
   readonly childrenOf: string | null
+  readonly filterFacts?: TemplateFilterFacts
   readonly createdAt?: number
   readonly updatedAt?: number | undefined
   readonly totalPixels?: number | undefined
@@ -236,16 +244,28 @@ export const groupedTreeSource = (
   }
 }
 
-export const treeMatcher = (source: TreeSource, needle: string): ((item: TreeItem) => boolean) => {
-  if (needle === '') return () => true
+/** Match leaves against search and filters, retaining the ancestor paths that contain them. */
+export const treeMatcher = (
+  source: TreeSource,
+  needle: string,
+  filters: TemplateFilters = EMPTY_TEMPLATE_FILTERS,
+): ((item: TreeItem) => boolean) => {
+  const filtering = templateFilterCount(filters) > 0
+  if (needle === '' && !filtering) return () => true
   const matches = new Map<string, boolean>()
   const visiting = new Set<string>()
   const visit = (item: TreeItem): boolean => {
     const cached = matches.get(item.key)
     if (cached !== undefined) return cached
-    if (item.name.toLocaleLowerCase().includes(needle)) {
-      matches.set(item.key, true)
-      return true
+    if (
+      (!filtering || item.childrenOf === null) &&
+      item.name.toLocaleLowerCase().includes(needle)
+    ) {
+      const result =
+        !filtering ||
+        (item.filterFacts !== undefined && matchesTemplateFilters(item.filterFacts, filters))
+      matches.set(item.key, result)
+      return result
     }
     if (item.childrenOf === null || visiting.has(item.key)) {
       matches.set(item.key, false)

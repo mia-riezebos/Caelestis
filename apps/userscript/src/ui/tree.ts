@@ -2,6 +2,7 @@ import {
   type AlarmKind,
   sameTemplateSurface,
   type TemplateSurface,
+  templateFilterCount,
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
   WPLACE_PALETTE,
@@ -14,7 +15,7 @@ import type {
   TreeRowModel,
 } from '@caelestis/ui/elements'
 import { allianceBounds } from '../alliance-coordinates.js'
-import { allianceManifestFor, refreshAllianceManifest } from '../alliance-server-sync.js'
+import { refreshAllianceManifest } from '../alliance-server-sync.js'
 import { activeAllianceSurface } from '../alliance-surface.js'
 import { goToLocalTemplate, goToServerTemplate } from '../application/tree-navigation.js'
 import {
@@ -24,7 +25,7 @@ import {
   nodeTreeKey,
   refreshServerSnapshot,
   renderedParent,
-  rowsFor,
+  rowsForSurface,
   serverSnapshotError,
   serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
@@ -42,9 +43,15 @@ import {
   setScopeVisible,
   setState,
 } from '../state.js'
-import { serverAlarmFor, serverColourProgressFor, serverProgressFor } from '../telemetry.js'
+import {
+  serverAlarmFor,
+  serverAlarmKindFor,
+  serverColourProgressFor,
+  serverProgressFor,
+} from '../telemetry.js'
 import {
   isServerTemplate,
+  isTemplateVisible,
   localTemplates,
   type PlacedTemplate,
   renameLocalTemplate,
@@ -56,7 +63,7 @@ import {
   type TemplateColourProgress,
   type TemplateProgress,
 } from '../templates/mismatch.js'
-import { nodeScopeKey } from '../templates/server-nodes.js'
+import { nodeChainVisible, nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { templateDisplayMode } from './display-mode.js'
 import {
@@ -274,7 +281,7 @@ const renderLevel = (
   parentKey: string,
   ancestorBranches: readonly boolean[],
   rerender: () => void,
-  needle: string,
+  reveal: boolean,
   rank: ReadonlyMap<string, number>,
   matches: (item: TreeItem) => boolean,
   budget: RenderBudget,
@@ -312,7 +319,7 @@ const renderLevel = (
         destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
       parentKey,
       canReparent: item.canReparent,
-      forceExpanded: needle !== '',
+      forceExpanded: reveal,
       rerender,
       onError,
       checked: item.visible,
@@ -344,7 +351,7 @@ const renderLevel = (
     })
     budget.remaining--
     if (item.childrenOf === null) continue
-    if (!includeCollapsed && needle === '' && !isExpanded(key)) {
+    if (!includeCollapsed && !reveal && !isExpanded(key)) {
       const childSiblings = source.children(item.childrenOf)
       const visibleChildren = orderedItems(childSiblings.filter(matches), rank).map(
         (child) => child.key,
@@ -363,7 +370,7 @@ const renderLevel = (
       key,
       branches,
       rerender,
-      needle,
+      reveal,
       rank,
       matches,
       budget,
@@ -454,10 +461,7 @@ const buildTree = <Result>(
       ? pixelAccounting.read(template).colours
       : (allianceProgress.get(template.id)?.colours ?? [])
   const scopedRowsFor = (server: ConnectedServer) => {
-    const rows =
-      surface.kind === 'world'
-        ? rowsFor(server)
-        : (allianceManifestFor(server, surface) ?? undefined)
+    const rows = rowsForSurface(server, surface)
     if (rows === undefined || templateKeys === undefined) return rows
     return {
       nodes: [],
@@ -537,6 +541,10 @@ const buildTree = <Result>(
     ).map((item) => item.key),
   ]
   const needle = query.trim().toLocaleLowerCase()
+  const filters = getState().filters
+  const filtering = templateFilterCount(filters) > 0
+  const reveal = needle !== '' || filtering
+  let hasFilteredMatches = false
   const budget: RenderBudget = {
     remaining: MAX_RENDERED_ROWS,
     truncated: false,
@@ -547,6 +555,8 @@ const buildTree = <Result>(
     const server = servers.find((candidate) => `server:${candidate.url}` === key)
     const isLocal = key === 'local'
     if (!isLocal && server === undefined) continue
+    if (filters.source.length > 0 && !filters.source.includes(isLocal ? 'local' : 'server'))
+      continue
 
     const target: TreeTarget = {
       server: server ?? null,
@@ -613,7 +623,7 @@ const buildTree = <Result>(
                 }),
               )
 
-    output.row({
+    const rootRow: TreeRowOptions = {
       key,
       name: target.name,
       // A rack and a folder are different things and read differently at a glance.
@@ -621,7 +631,7 @@ const buildTree = <Result>(
       descendantAlarmKind: nodeAlarms.get(null),
       depth: 0,
       container: true,
-      forceExpanded: needle !== '',
+      forceExpanded: reveal,
       siblings: isLocal ? [] : ordered.filter((key) => key !== 'local'),
       orderingSiblings: () => ordered.filter((key) => key !== 'local'),
       destinationSiblings: (destinationParentKey) =>
@@ -688,12 +698,15 @@ const buildTree = <Result>(
             },
           ]
         : undefined,
-    })
-    if (!includeCollapsed && !isExpanded(key) && needle === '') continue
+    }
+    const renderRoot = (): void => output.row(rootRow)
+    if (!filtering) renderRoot()
+    if (!includeCollapsed && !isExpanded(key) && !reveal) continue
 
     if (server !== undefined) {
       const rows = serverRows
       if (rows === undefined && server.status === 'connected') {
+        if (filtering) renderRoot()
         if (!hasRefreshedServer(server)) {
           // Exactly one automatic attempt per verified connection. A failed request records an
           // error and waits for the explicit Retry button instead of scheduling itself forever.
@@ -801,6 +814,8 @@ const buildTree = <Result>(
           const progress = serverTemplateProgress(server, template)
           const visibilityKey = serverTemplateKey(server.url, template.id, surface)
           const alarm = serverAlarmFor(server, template)
+          const alarmKind =
+            surface.kind === 'world' ? serverAlarmKindFor(server, template) : undefined
           const templateTarget: TreeTarget = {
             server,
             surface,
@@ -849,6 +864,20 @@ const buildTree = <Result>(
                 griefed: alarm?.kind === 'sustained-griefing',
                 ...(alarm === null ? {} : { alarmKind: alarm.kind, pixelsLost: alarm.pixelsLost }),
               },
+              filterFacts: {
+                source: 'server',
+                visible:
+                  drawn === undefined
+                    ? isScopeVisible(`server:${server.url}`) &&
+                      isScopeVisible(visibilityKey) &&
+                      nodeChainVisible(server.url, template.nodeId, surface)
+                    : isTemplateVisible(drawn),
+                lifecycle: {
+                  finished: template.finished === true,
+                  frozen: template.timelapseFrozen === true,
+                },
+                ...(alarmKind === undefined ? {} : { alarm: alarmKind }),
+              },
               ...(colourProgress === undefined
                 ? {}
                 : {
@@ -884,8 +913,13 @@ const buildTree = <Result>(
           })
         }
         const source = groupedSource(entries)
-        const matches = matcherFor(source, needle)
+        const matches = matcherFor(source, needle, filters)
         const hasMatches = source.children(null).some(matches)
+        if (filtering && !hasMatches) continue
+        if (filtering) {
+          renderRoot()
+          hasFilteredMatches = true
+        }
         renderLevel(
           output,
           source,
@@ -894,7 +928,7 @@ const buildTree = <Result>(
           key,
           [],
           rerender,
-          needle,
+          reveal,
           rank,
           matches,
           budget,
@@ -991,6 +1025,7 @@ const buildTree = <Result>(
               indices: template.indices,
               ownership: 'Local',
             },
+            filterFacts: { source: 'local', visible: isTemplateVisible(template) },
             updatedAt: template.updatedAt,
             totalPixels: template.opaque,
             mismatched: drawnProgress(template).mismatched,
@@ -1023,8 +1058,13 @@ const buildTree = <Result>(
         })
       }
       const source = groupedSource(entries)
-      const matches = matcherFor(source, needle)
+      const matches = matcherFor(source, needle, filters)
       const hasMatches = source.children(null).some(matches)
+      if (filtering && !hasMatches) continue
+      if (filtering) {
+        renderRoot()
+        hasFilteredMatches = true
+      }
       renderLevel(
         output,
         source,
@@ -1033,7 +1073,7 @@ const buildTree = <Result>(
         'local',
         [],
         rerender,
-        needle,
+        reveal,
         rank,
         matches,
         budget,
@@ -1061,6 +1101,7 @@ const buildTree = <Result>(
       continue
     }
     if (server === undefined) continue
+    if (filtering) renderRoot()
     // No badge for a healthy server: if it is in the list at all, it is connected. Only trouble
     // needs saying, and it says it in words where there is room for them.
     if (server.status === 'connected') {
@@ -1072,6 +1113,8 @@ const buildTree = <Result>(
     }
   }
 
+  if (filtering && !hasFilteredMatches)
+    output.notice('No templates match your search and filters.', 0)
   if (budget.truncated) {
     output.notice(
       `Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} rows. Refine the search to see others.`,
@@ -1253,6 +1296,10 @@ export const templateTreeAdapter = (
     query,
     sort: getState().sort,
     displayMode: templateDisplayMode(),
+    filters: getState().filters,
+    serverFiltersAvailable: getState().servers.some(
+      (server) => (rowsForSurface(server, surface)?.templates.length ?? 0) > 0,
+    ),
     entries,
     ...(renamingKey === null ? {} : { renamingKey }),
   }
@@ -1404,6 +1451,7 @@ export const templateTreeAdapter = (
         }
         case 'search':
         case 'sort':
+        case 'filter':
           break
       }
     },

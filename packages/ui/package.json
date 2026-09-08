@@ -27,7 +27,9 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@caelestis/shared": "workspace:*"
+    "@caelestis/shared": "workspace:*",
+    "@iconify-icons/material-symbols": "2.0.2",
+    "@iconify-icons/simple-icons": "^2.0.2"
   },
   "peerDependencies": {
     "svelte": "^5.56.1"

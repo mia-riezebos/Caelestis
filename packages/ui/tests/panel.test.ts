@@ -3,10 +3,15 @@
 import { tick } from 'svelte'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaelestisPanel, registerCaelestisUi } from '../src/elements/index.js'
+import { ICONS, type IconName } from '../src/foundations/icons.js'
 import type { AppearanceEditorModel, PanelModel, TemplateTreeModel } from '../src/index.js'
 
 beforeAll(() => registerCaelestisUi())
 beforeEach(() => document.body.replaceChildren())
+
+/** The path Material Symbols ships for a glyph, so the assertion follows the library rather than a pasted copy. */
+const materialGlyph = (name: IconName): string | undefined =>
+  ICONS[name].body.match(/ d="([^"]+)"/)?.[1]
 
 const model = (overrides: Partial<PanelModel> = {}): PanelModel => ({
   view: 'tree',
@@ -306,7 +311,9 @@ describe('panel shell', () => {
     expect(getComputedStyle(toggle as Element).blockSize).toBe('1.25rem')
     expect(getComputedStyle(range as Element).appearance).toBe('none')
     expect(getComputedStyle(range as Element).blockSize).toBe('1rem')
-    expect(appearanceButton?.querySelector('path')?.getAttribute('d')).toContain('Zm-220-440')
+    expect(appearanceButton?.querySelector('path')?.getAttribute('d')).toBe(
+      materialGlyph('palette'),
+    )
   })
 
   it('emits one composed intent event for navigation and closing', async () => {

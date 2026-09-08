@@ -5,6 +5,7 @@
   import TemplatePreview from './TemplatePreview.svelte'
   import TemplateClaims from './TemplateClaims.svelte'
   import ProgressDetails from './ProgressDetails.svelte'
+  import FilterMenu from './FilterMenu.svelte'
   import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import TemplateLifecycle from '../template-state/TemplateLifecycle.svelte'
@@ -15,7 +16,6 @@
     TemplateTreeIntent,
     TemplateTreeModel,
     TreeActionModel,
-    TreeIcon,
     TreeProgressModel,
     TreeRowModel,
   } from '../types.js'
@@ -123,28 +123,6 @@
     )
       .find((candidate) => candidate.dataset.caelestisTreeKey === key)
     row?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.focus()
-  }
-
-  const paths: Record<TreeIcon, string> = {
-    folder: 'M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Z',
-    image: 'M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm40-160h480L570-480 450-320l-90-120-120 160Z',
-    server: 'M160-160q-33 0-56.5-23.5T80-240v-120q0-33 23.5-56.5T160-440h640q33 0 56.5 23.5T880-360v120q0 33-23.5 56.5T800-160H160Zm0-360q-33 0-56.5-23.5T80-600v-120q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v120q0 33-23.5 56.5T800-520H160Zm100-80q17 0 28.5-11.5T300-640q0-17-11.5-28.5T260-680q-17 0-28.5 11.5T220-640q0 17 11.5 28.5T260-600Zm0 360q17 0 28.5-11.5T300-280q0-17-11.5-28.5T260-320q-17 0-28.5 11.5T220-280q0 17 11.5 28.5T260-240Z',
-    search: 'M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-420q67 0 113.5-46.5T540-580q0-67-46.5-113.5T380-740q-67 0-113.5 46.5T220-580q0 67 46.5 113.5T380-420Z',
-    createFolder: 'M480-200h80v-80h80v-80h-80v-80h-80v80h-80v80h80v80ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Z',
-    uploadFile: 'M440-320h80v-168l64 64 56-56-160-160-160 160 56 56 64-64v168ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T760-80H240Zm280-520v-200H240v640h520v-440H520Z',
-    extension: 'M352-120H200q-33 0-56.5-23.5T120-200v-152q48 0 84-30.5t36-77.5q0-47-36-77.5T120-568v-152q0-33 23.5-56.5T200-800h160q0-42 29-71t71-29q42 0 71 29t29 71h160q33 0 56.5 23.5T800-720v160q42 0 71 29t29 71q0 42-29 71t-71 29v160q0 33-23.5 56.5T760-120H608q0-50-31.5-85T500-240q-45 0-76.5 35T392-120Z',
-    kebab: 'M480-160q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm0-240q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm0-240q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Z',
-    palette: 'M480-80q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 32.5-156t88-127Q256-817 331-848.5T488-880q80 0 151 27.5t124.5 76q53.5 48.5 85 115T880-518q0 115-70 176.5T640-280h-74q-9 0-12.5 5t-3.5 11q0 12 15 34.5t15 51.5q0 50-27.5 74T480-80Zm-220-440q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Zm120-160q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Zm200 0q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Zm120 160q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Z',
-    check: 'M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z',
-    rename: 'M200-200h57l391-391-57-57-391 391v57Zm-80 80v-170l528-527q12-11 26.5-17t30.5-6q16 0 31 6t26 18l55 56q12 11 17.5 26t5.5 30q0 16-5.5 30.5T817-647L290-120H120Zm640-584-56-56 56 56Zm-141 85-28-29 57 57-29-28Z',
-    move: 'M480-80 340-220l57-57 43 43v-127h80v127l43-43 57 57L480-80ZM220-340 80-480l140-140 57 57-43 43h127v80H234l43 43-57 57Zm520 0-57-57 43-43H599v-80h127l-43-43 57-57 140 140-140 140ZM440-599v-127l-43 43-57-57 140-140 140 140-57 57-43-43v127h-80Z',
-    trash: 'M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360Z',
-    eye: 'M480-320q75 0 127.5-52.5T660-500q0-75-52.5-127.5T480-680q-75 0-127.5 52.5T300-500q0 75 52.5 127.5T480-320Zm0-72q-45 0-76.5-31.5T372-500q0-45 31.5-76.5T480-608q45 0 76.5 31.5T588-500q0 45-31.5 76.5T480-392Zm0 192q-146 0-266-81.5T40-500q54-137 174-218.5T480-800q146 0 266 81.5T920-500q-54 137-174 218.5T480-200Z',
-    eyeOff: 'm637-425-62-62q4-38-23-65.5T487-576l-62-62q13-5 26-7.5t29-2.5q75 0 127.5 52.5T660-468q0 16-2.5 29t-7.5 26ZM792-270l-58-58q38-29 67.5-63.5T851-468q-50-101-143.5-160.5T500-688q-29 0-57 4t-55 12l-62-62q41-17 84.5-25.5T500-768q152 0 275.5 82T956-468q-23 59-61 109.5T792-270Zm14 208L648-220q-35 11-71.5 16.5T500-198q-152 0-275.5-82T44-468q22-57 58-104.5t84-83.5L64-778l51-51 742 742-51 25ZM238-604q-35 28-65 62t-49 74q50 101 143.5 160.5T500-248q26 0 51-3t50-10l-53-53q-13 5-26 7.5t-28 2.5q-75 0-127.5-52.5T314-484q0-15 2.5-28t7.5-26l-86-66Z',
-    expandMore: 'M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z',
-    expandLess: 'M296-320l-56-56 240-240 240 240-56 56-184-184-184 184Z',
-    reset: 'M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z',
-    download: 'M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z',
   }
 
   const search = (event: Event): void => {
@@ -284,17 +262,20 @@
 {#if toolbar}
 <div class="toolbar">
   <label class="search">
-    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.search} /></svg>
+    <Icon name="search" />
     <input type="search" placeholder="Search templates" aria-label="Search templates" value={query} oninput={search} />
   </label>
+  {#if model.filters !== undefined}
+    <FilterMenu filters={model.filters} serverFiltersAvailable={model.serverFiltersAvailable ?? false} onFilter={(filters) => emit({ type: 'filter', filters })} />
+  {/if}
   <SortMenu sort={model.sort} onSort={(sort) => emit({ type: 'sort', sort })} />
   {#if allowGrid}
   <div class="view-switcher" role="group" aria-label="Template display">
     <button type="button" aria-label="Tree view" title="Tree view" aria-pressed={!grid} onclick={() => emit({ type: 'display-mode', mode: 'tree' })}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h6v4H3zm8 0h10v4H11zM5 9h2v4h3v2H5zm7 2h9v4h-9zM5 17h2v2h3v2H5zm7 0h9v4h-9z" /></svg>
+      <Icon name="treeView" />
     </button>
     <button type="button" aria-label="Preview grid view" title="Preview grid view" aria-pressed={grid} onclick={() => emit({ type: 'display-mode', mode: 'grid' })}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z" /></svg>
+      <Icon name="gridView" />
     </button>
   </div>
   {/if}
@@ -334,7 +315,7 @@
   >
     {#each model.contextMenu.items as item (item.id)}
       <button class:danger={item.danger === true} type="button" role="menuitem" onclick={() => emit({ type: 'context-menu-action', menuId: model.contextMenu?.id ?? '', actionId: item.id })}>
-        <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+        <Icon name={item.icon} />
         <span>{item.label}</span>
       </button>
     {/each}
@@ -412,10 +393,10 @@
             <TemplateLifecycle finished={entry.lifecycle?.finished ?? false} frozen={entry.lifecycle?.frozen ?? false}>
               {#if entry.claims !== undefined && (entry.claims.people.length > 0 || entry.claims.canAssign)}
                 <TemplateClaims name={entry.name} model={entry.claims} onChange={(release, person) => emit({ type: 'template-claim', key: entry.key, release, ...(person === undefined ? {} : { person }) })}>
-                  <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+                  <span class="kind"><Icon name={entry.icon} /></span>
                 </TemplateClaims>
               {:else}
-              <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
+              <span class="kind"><Icon name={entry.icon} /></span>
               {/if}
             </TemplateLifecycle>
             {#if alarmKind !== undefined}
@@ -423,7 +404,7 @@
             {/if}
             {#each entry.leadingActions ?? [] as item (item.id)}
               <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-                <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+                <Icon name={item.icon} />
               </button>
             {/each}
             {#if model.renamingKey === entry.key}
@@ -440,11 +421,11 @@
                 <span class="actions">
                   {#each entry.actions ?? [] as item (item.id)}
                     <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-                      <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+                      <Icon name={item.icon} />
                     </button>
                   {/each}
                   <button class="icon-action" type="button" title={grid ? `View progress for ${entry.name}` : 'Expand progress'} aria-label={grid ? `View progress for ${entry.name}` : 'Expand progress'} aria-expanded={grid ? progressKey === entry.key : undefined} onclick={(event) => { event.stopPropagation(); if (grid) { void showProgress(entry); return }; if (entry.container && !entry.expanded) emit({ type: 'toggle-expanded', key: entry.key }); disclosures.set(entry.key, 'expanded'); void focusRowAction(entry.key, 'Collapse progress') }}>
-                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandMore} /></svg>
+                    <Icon name="expandMore" />
                   </button>
                 </span>
               </span>
@@ -452,19 +433,19 @@
               <span class="actions">
                 {#each entry.actions ?? [] as item (item.id)}
                   <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+                    <Icon name={item.icon} />
                   </button>
                 {/each}
                 {#if entry.progress !== undefined && disclosure !== undefined}
                   <button class="icon-action" type="button" title="Collapse progress" aria-label="Collapse progress" onclick={(event) => { event.stopPropagation(); disclosures.delete(entry.key); void focusRowAction(entry.key, 'Expand progress') }}>
-                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.expandLess} /></svg>
+                    <Icon name="expandLess" />
                   </button>
                 {/if}
               </span>
             {/if}
             {#if grid && entry.contextMenu}
               <button class="icon-action" type="button" title={`Actions for ${entry.name}`} aria-label={`Actions for ${entry.name}`} aria-haspopup="menu" aria-expanded={model.contextMenu?.rowKey === entry.key} onclick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); emit({ type: 'context-menu', key: entry.key, x: box.left, y: box.bottom }) }}>
-                <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.kebab} /></svg>
+                <Icon name="kebab" />
               </button>
             {/if}
             <label class="visibility" title={entry.visible ? `Hide ${entry.name}` : `Show ${entry.name}`}>
@@ -491,7 +472,7 @@
                 </div>
                 {#if entry.colourProgress !== undefined}
                   <button class="icon-action progress-detail-action" type="button" title={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} aria-label={disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress'} onclick={(event) => { event.stopPropagation(); const next = disclosure === 'colours' ? 'expanded' : 'colours'; disclosures.set(entry.key, next); void focusRowAction(entry.key, next === 'colours' ? 'Hide colour progress' : 'Show colour progress') }}>
-                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths.palette} /></svg>
+                    <Icon name="palette" />
                   </button>
                 {/if}
               </div>
@@ -518,7 +499,7 @@
         <div class:compact={entry.variant === 'compact'} class:ghost={entry.variant === 'ghost'} class="standalone" role="treeitem" aria-selected="false" aria-level={entry.depth + 1}>
           {#if entry.showIcon === true}
             <Button label={entry.action.label} title={entry.title} kind={entry.variant === 'ghost' ? 'ghost' : 'default'} size={entry.variant === 'compact' ? 'compact' : 'small'} onclick={() => emit({ type: 'action', key: entry.key, actionId: entry.action.id })}>
-              <svg class="standalone-icon" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.action.icon]} /></svg>
+              <span class="standalone-icon"><Icon name={entry.action.icon} /></span>
               <span>{entry.action.label}</span>
             </Button>
           {:else}
@@ -543,9 +524,8 @@
   .view-switcher button { display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; border: 0; background: var(--caelestis-surface); color: var(--caelestis-muted-text); cursor: pointer; }
   .view-switcher button[aria-pressed='true'] { background: var(--caelestis-raised-surface); color: var(--caelestis-primary); box-shadow: inset 0 -2px var(--caelestis-primary); }
   .view-switcher button:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }
-  .view-switcher svg { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .search { display: flex; flex: 1; align-items: center; gap: 0.5rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.75rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
-  .search svg { inline-size: 1rem; block-size: 1rem; opacity: 0.55; fill: currentColor; }
+  .search :global(svg) { opacity: 0.55; }
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
   select { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   select { padding-inline: 0.75rem 2rem; }
@@ -578,7 +558,7 @@
   .row.drop-inside { outline: 2px dashed var(--caelestis-primary); }
   .caret { flex: 0 0 1rem; inline-size: 1rem; font-size: 1.25rem; text-align: center; transition: transform 120ms; }
   .caret.open { transform: rotate(90deg); }
-  .kind, .icon-action svg { inline-size: 1rem; block-size: 1rem; flex: 0 0 auto; fill: currentColor; }
+  .kind { display: inline-flex; flex: 0 0 auto; }
   .name { min-inline-size: 2rem; overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
   .rename { min-inline-size: 4rem; flex: 1; }
   .meta { color: var(--caelestis-muted-text); font-size: 0.75rem; }
@@ -624,7 +604,7 @@
   .standalone { display: flex; }
   .standalone.compact { justify-content: flex-start; padding: 0 0.75rem 0.5rem 2.25rem; }
   .standalone.ghost { justify-content: center; padding: 0.5rem 0.75rem 0; }
-  .standalone-icon { inline-size: 1rem; block-size: 1rem; flex: 0 0 auto; fill: currentColor; opacity: 0.6; }
+  .standalone-icon { display: inline-flex; flex: 0 0 auto; opacity: 0.6; }
   .notice button { border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
   .operation { display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; margin: 0 0.5rem 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); font: 500 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
   .operation select { min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-surface); color: inherit; }
@@ -637,7 +617,6 @@
   .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); text-align: start; }
   .context-menu button:hover, .context-menu button:focus-visible { background: var(--caelestis-raised-surface); }
   .context-menu button.danger { color: var(--caelestis-danger); }
-  .context-menu svg { flex: 0 0 1rem; inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   @media (hover: hover) {
     .actions { opacity: 0; pointer-events: none; }
     .row:hover .actions, .row:focus-within .actions { opacity: 1; pointer-events: auto; }

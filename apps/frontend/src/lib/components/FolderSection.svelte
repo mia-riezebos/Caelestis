@@ -1,7 +1,6 @@
 <script lang="ts">
 import type { CanvasTileSummary, TileKey } from '@caelestis/shared'
-import { ProgressMeter } from '@caelestis/ui'
-import { ChevronRight, Folder } from '@lucide/svelte'
+import { Icon, ProgressMeter } from '@caelestis/ui'
 import FolderSection from '$lib/components/FolderSection.svelte'
 import TemplateCard from '$lib/components/TemplateCard.svelte'
 import * as Collapsible from '$lib/components/ui/collapsible'
@@ -29,14 +28,14 @@ let open = $state(depth < 2)
         class="flex size-6 shrink-0 items-center justify-center rounded-lg hover:bg-base-200 focus-visible:outline-2 focus-visible:outline-primary"
         aria-label="{open ? 'collapse' : 'expand'} {folder.node.name}"
       >
-        <ChevronRight class="size-4 text-base-content/50 transition-transform {open ? 'rotate-90' : ''}" />
+        <Icon name="chevronRight" class="size-4 text-base-content/50 transition-transform {open ? 'rotate-90' : ''}" />
       </Collapsible.Trigger>
       <a
         href="/folder/{folder.node.id}"
         class="flex min-w-0 flex-1 items-center gap-2 rounded-lg focus-visible:outline-2 focus-visible:outline-primary"
         title="Stats and charts for {folder.node.name}"
       >
-        <Folder class="size-4 shrink-0 text-accent" />
+        <Icon name="folder" class="size-4 shrink-0 text-accent" />
         <span class="truncate font-semibold hover:text-primary">{folder.node.name}</span>
         <span class="shrink-0 text-xs tabular-nums text-base-content/50">
           {folder.templateCount}

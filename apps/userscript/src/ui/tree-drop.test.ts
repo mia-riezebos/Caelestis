@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { type Alarm, millis } from '@caelestis/shared'
+import { type Alarm, EMPTY_TEMPLATE_FILTERS, millis, parseTemplateFilters } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   acceptServerSnapshot,
@@ -10,6 +10,8 @@ import {
   serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
 import { getState, setState } from '../state.js'
+import * as localStore from '../templates/local-store.js'
+import { nodeScopeKey } from '../templates/server-nodes.js'
 import { startRenaming, type TreeCallbacks, templateTreeAdapter } from './tree.js'
 
 const navigationHarness = vi.hoisted(() => ({ navigateTo: vi.fn() }))
@@ -31,6 +33,8 @@ vi.mock('../telemetry.js', async (importOriginal) => {
     ...original,
     serverAlarmFor: (_server: unknown, template: { id: string }) =>
       telemetryHarness.alarms.get(template.id) ?? null,
+    serverAlarmKindFor: (_server: unknown, template: { id: string }) =>
+      telemetryHarness.alarms.get(template.id)?.kind,
     serverProgressFor: (
       server: Parameters<typeof original.serverProgressFor>[0],
       template: Parameters<typeof original.serverProgressFor>[1],
@@ -70,6 +74,7 @@ const TEMPLATE_A_ID = '019fed50-87a1-7523-a88c-bdeafad49684'
 const TEMPLATE_B_ID = '019fed50-87a1-7523-a88c-bdeafad49685'
 
 afterEach(() => {
+  vi.restoreAllMocks()
   telemetryHarness.progress.clear()
   telemetryHarness.alarms.clear()
   forgetServerRows(SERVER_URL)
@@ -78,6 +83,8 @@ afterEach(() => {
     localFolders: [],
     customOrder: [],
     collapsed: [],
+    filters: EMPTY_TEMPLATE_FILTERS,
+    hiddenScopes: [],
     sort: { field: 'custom', direction: 'asc' },
   })
 })
@@ -219,6 +226,133 @@ const treeRows = (callbacks: TreeCallbacks, query = '') =>
   templateTreeAdapter(callbacks, vi.fn(), query).model.entries.filter(
     (entry) => entry.type === 'row',
   )
+
+describe('template filtering', () => {
+  it('excludes unknown telemetry from the no-active-alarm filter', () => {
+    const server = connectedServer()
+    setState({ servers: [server], filters: parseTemplateFilters({ alarm: ['none'] }) })
+    acceptServerSnapshot(server, {
+      nodes: [],
+      templates: [serverTemplate(TEMPLATE_A_ID, null, 'Awaiting telemetry', 1)],
+    })
+    expect(treeRows(callbacks)).toEqual([])
+  })
+
+  const callbacks: TreeCallbacks = {
+    onAddServer: vi.fn(),
+    onCreateFolder: vi.fn(),
+    onImportTemplate: vi.fn(),
+    onContextMenu: vi.fn(),
+    onCopyToServer: vi.fn(),
+    onDropInLocal: vi.fn(),
+    onDropInServer: vi.fn(),
+  }
+
+  it('reveals only matching descendant paths and restores collapsed folders after clearing', () => {
+    const server = connectedServer()
+    const root = `server:${SERVER_URL}`
+    const parent = nodeTreeKey(server, SOURCE_NODE_ID)
+    const child = nodeTreeKey(server, DESTINATION_NODE_ID)
+    const selected = serverTemplateTreeKey(server, TEMPLATE_A_ID)
+    const collapsed = [root, parent, child]
+    const customOrder = [selected, parent]
+    setState({
+      servers: [server],
+      collapsed,
+      customOrder,
+      filters: parseTemplateFilters({ lifecycle: ['finished'] }),
+    })
+    acceptServerSnapshot(server, {
+      nodes: [
+        serverNode(SOURCE_NODE_ID, 'Parent'),
+        { ...serverNode(DESTINATION_NODE_ID, 'Child'), parentId: SOURCE_NODE_ID },
+        serverNode('empty', 'Artwork'),
+      ],
+      templates: [
+        { ...serverTemplate(TEMPLATE_A_ID, DESTINATION_NODE_ID, 'Artwork', 1), finished: true },
+        serverTemplate(TEMPLATE_B_ID, SOURCE_NODE_ID, 'Artwork active', 2),
+      ],
+    })
+    expect(treeRows(callbacks, 'artwork').map((row) => row.key)).toEqual([
+      root,
+      parent,
+      child,
+      selected,
+    ])
+    expect(
+      treeRows(callbacks, 'artwork')
+        .filter((row) => row.container)
+        .every((row) => row.forceExpanded),
+    ).toBe(true)
+    expect(treeRows(callbacks, 'absent')).toEqual([])
+    expect(templateTreeAdapter(callbacks, vi.fn(), 'absent').model.entries).toContainEqual(
+      expect.objectContaining({ text: 'No templates match your search and filters.' }),
+    )
+    setState({ filters: EMPTY_TEMPLATE_FILTERS })
+    expect(getState()).toMatchObject({ collapsed, customOrder })
+    expect(treeRows(callbacks).map((row) => row.key)).toEqual(['local', root])
+  })
+
+  it('filters effective visibility before downloaded pixels exist and updates with ancestor switches', () => {
+    vi.spyOn(localStore, 'localTemplates').mockReturnValue([])
+    const server = connectedServer()
+    setState({
+      servers: [server],
+      filters: parseTemplateFilters({ source: ['server'], visibility: ['hidden'] }),
+      hiddenScopes: [nodeScopeKey(SERVER_URL, SOURCE_NODE_ID)],
+    })
+    acceptServerSnapshot(server, {
+      nodes: [
+        serverNode(SOURCE_NODE_ID, 'Hidden parent'),
+        { ...serverNode(DESTINATION_NODE_ID, 'Child'), parentId: SOURCE_NODE_ID },
+      ],
+      templates: [
+        serverTemplate(TEMPLATE_A_ID, DESTINATION_NODE_ID, 'Hidden through parent', 1),
+        serverTemplate(TEMPLATE_B_ID, null, 'Visible', 2),
+      ],
+    })
+    expect(
+      treeRows(callbacks)
+        .filter((row) => !row.container)
+        .map((row) => row.name),
+    ).toEqual(['Hidden through parent'])
+    setState({ hiddenScopes: [`server:${SERVER_URL}`] })
+    expect(treeRows(callbacks).filter((row) => !row.container)).toHaveLength(2)
+    setState({ hiddenScopes: [] })
+    expect(treeRows(callbacks)).toEqual([])
+  })
+
+  it('uses current alarms independently of lifecycle and composes source choices', () => {
+    const server = connectedServer()
+    setState({ servers: [server], filters: parseTemplateFilters({ alarm: ['regression'] }) })
+    acceptServerSnapshot(server, {
+      nodes: [],
+      templates: [serverTemplate(TEMPLATE_A_ID, null, 'Regressed', 1)],
+    })
+    expect(treeRows(callbacks)).toEqual([])
+    telemetryHarness.alarms.set(TEMPLATE_A_ID, {
+      id: 'episode',
+      templateId: TEMPLATE_A_ID,
+      kind: 'regression',
+      pixelsLost: 10,
+      firstSeen: millis(1),
+      lastSeen: millis(1),
+    })
+    expect(
+      treeRows(callbacks)
+        .filter((row) => !row.container)
+        .map((row) => row.name),
+    ).toEqual(['Regressed'])
+    setState({ filters: parseTemplateFilters({ source: ['local'], alarm: ['regression'] }) })
+    expect(treeRows(callbacks)).toEqual([])
+    setState({
+      filters: parseTemplateFilters({ source: ['local', 'server'], alarm: ['regression'] }),
+    })
+    expect(treeRows(callbacks).filter((row) => !row.container)).toHaveLength(1)
+    telemetryHarness.alarms.clear()
+    expect(treeRows(callbacks)).toEqual([])
+  })
+})
 
 describe('tree drag and drop', () => {
   it.each([true, false])('rolls observed grief through ancestors (published: %s)', (published) => {

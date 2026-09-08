@@ -6,7 +6,7 @@
     type TileKey,
   } from '@caelestis/shared'
   import { ProgressMeter, TemplateAdmin, TemplateState } from '@caelestis/ui'
-  import { ExternalLink, Pause, Play } from '@lucide/svelte'
+  import { Icon } from '@caelestis/ui'
   import { page } from '$app/state'
   import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
   import ColourProgress from '$lib/components/ColourProgress.svelte'
@@ -205,7 +205,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       </span>
       {#if wplaceUrl !== null}
         <a href={wplaceUrl} target="_blank" rel="noreferrer" class="btn btn-xs btn-outline gap-1 rounded-lg">
-          <ExternalLink class="size-3" /> View on wplace
+          <Icon name="popout" class="size-3" /> View on wplace
         </a>
       {/if}
     </header>
@@ -273,7 +273,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
             }}
             aria-label={playing ? 'pause timelapse' : 'play timelapse'}
           >
-            {#if playing}<Pause class="size-4" />{:else}<Play class="size-4" />{/if}
+            {#if playing}<Icon name="pause" class="size-4" />{:else}<Icon name="play" class="size-4" />{/if}
           </button>
           <div class="dropdown dropdown-top group">
             <button

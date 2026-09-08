@@ -83,6 +83,7 @@ interface ServerCoverage {
   readonly server: ConnectedServer
   readonly tiles: ReadonlySet<string>
   readonly contents: ServerContents
+  alarmsKnown: boolean
 }
 
 interface ServerQueue {
@@ -1033,7 +1034,7 @@ const rememberContents = (server: ConnectedServer, contents: ServerContents): vo
   // identity to reject genuinely superseded coverage; replacing it with an equivalent object
   // would turn an unchanged manifest into a false race and force a repair read.
   if (coverageChanged || held === undefined)
-    coverage.set(server.url, { server, tiles: next, contents })
+    coverage.set(server.url, { server, tiles: next, contents, alarmsKnown: false })
   const unsettled = unsettledOffers.get(server.url)
   if (unsettled !== undefined) {
     if (unsettled.owner !== serverConnectionIdentity(server) || unsettled.season !== server.season)
@@ -1365,7 +1366,8 @@ const refreshAlarms = async (
       if (!isCurrentServerConnection(server) || coverage.get(server.url) !== snapshot) {
         return { status: 'failed' }
       }
-      let changed = false
+      let changed = !snapshot.alarmsKnown
+      snapshot.alarmsKnown = true
       const present = new Set<string>()
       for (const alarm of parsed) {
         const key = statusKey(server.url, alarm.templateId)
@@ -1422,7 +1424,8 @@ const applyLiveAlarmsSnapshot = (server: ConnectedServer, value: unknown): boole
     templateIds.add(alarm.templateId)
     parsed.push(alarm)
   }
-  let changed = false
+  let changed = !snapshot.alarmsKnown
+  snapshot.alarmsKnown = true
   const present = new Set<string>()
   for (const alarm of parsed) {
     const key = statusKey(server.url, alarm.templateId)
@@ -1491,6 +1494,22 @@ export const serverAlarmFor = (
   )
     return null
   return known.value
+}
+
+/** Current alarm kind, confirmed absence, or undefined while telemetry is unknown. */
+export const serverAlarmKindFor = (
+  server: ConnectedServer,
+  template: Pick<ServerTemplate, 'id' | 'nodeId' | 'published'>,
+): Alarm['kind'] | 'none' | undefined => {
+  const snapshot = coverage.get(server.url)
+  if (
+    snapshot?.alarmsKnown !== true ||
+    !isCurrentServerConnection(server) ||
+    !isCurrentServerConnection(snapshot.server) ||
+    !snapshot.contents.templates.some((current) => current.id === template.id)
+  )
+    return undefined
+  return serverAlarmFor(server, template)?.kind ?? 'none'
 }
 
 export const activeServerAlarms = (): readonly {

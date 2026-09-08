@@ -1,11 +1,14 @@
 import {
   defaultTemplateSort,
+  EMPTY_TEMPLATE_FILTERS,
   isTemplateSortField,
   isWorkIdentity,
   PALETTE_SIZE,
   type PainterIdentity,
+  parseTemplateFilters,
   type ReconciliationReason,
   type SyncTransport,
+  type TemplateFilters,
   type TemplateSurface,
   templateSurface,
   templateSurfaceKey,
@@ -201,6 +204,7 @@ export interface State {
   /** Panel width in pixels, dragged by the handle on its left edge. */
   readonly panelWidth: number
   readonly sort: SortOrder
+  readonly filters: TemplateFilters
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
   /** World-canvas selected-colour mode. Alliance canvases keep their own value. */
@@ -228,6 +232,7 @@ const DEFAULT_STATE: State = {
   collapsed: [],
   panelWidth: 320,
   sort: DEFAULT_SORT,
+  filters: EMPTY_TEMPLATE_FILTERS,
   hiddenColours: [],
   onlySelectedColour: false,
   colourNavigationOrder: 'unpainted-first',
@@ -535,6 +540,7 @@ export const loadState = (): State => {
       collapsed,
       panelWidth,
       sort,
+      filters: parseTemplateFilters(stored.filters),
       hiddenColours,
       onlySelectedColour: stored.onlySelectedColour === true,
       colourNavigationOrder:

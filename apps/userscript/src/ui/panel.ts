@@ -50,6 +50,7 @@ import {
   forgetServerRows,
   onServerSnapshot,
   primeFromCache,
+  serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
 import { onCanvasWrite } from '../canvas-write.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
@@ -1119,6 +1120,9 @@ const buildSveltePanel = (): CaelestisPanel => {
           if (!setTemplateDisplayMode(intent.intent.mode))
             toast('Could not save the template view.')
           rerenderTree()
+        } else if (intent.intent.type === 'filter') {
+          setState({ filters: intent.intent.filters })
+          rerenderTree()
         } else {
           activeTreeAdapter?.handle(intent.intent)
         }
@@ -1174,6 +1178,9 @@ const rerenderTree = (): void => {
   if (panel === null) return
   activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery, panelSurface)
   panel.model = panelModel(currentPanelWidth(panel))
+  if (panelSessions.isWorldTreeVisible()) {
+    for (const listener of worldTreeVisibleListeners) listener()
+  }
 }
 
 /** Move the focused-row marker without rebuilding the full template tree. */
@@ -1312,6 +1319,14 @@ const selectAlliancePanelSurface = (active: ActiveAllianceSurface | null): void 
 export const isPanelOpen = (): boolean => panelOpen()
 
 export const isWorldTemplateTreeVisible = (): boolean => panelSessions.isWorldTreeVisible()
+
+/** Whether the open world tree presents this template after search, filters, and collapse. */
+export const isWorldTemplatePresented = (server: ConnectedServer, templateId: string): boolean =>
+  isWorldTemplateTreeVisible() &&
+  (activeTreeAdapter?.model.entries.some(
+    (entry) => entry.type === 'row' && entry.key === serverTemplateTreeKey(server, templateId),
+  ) ??
+    false)
 
 export const onPanelOpen = (listener: () => void): (() => void) => {
   panelOpenListeners.add(listener)

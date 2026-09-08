@@ -41,6 +41,32 @@ describe('server state boundaries', () => {
     expect(commitState({ localClaims: [] })).toBe(true)
     expect(loadState().localClaims).toEqual([])
   })
+  it('persists filters alongside sorting and collapsed folders', async () => {
+    let stored = JSON.stringify({
+      sort: { field: 'name', direction: 'asc' },
+      collapsed: ['local'],
+      customOrder: ['local:b'],
+    })
+    vi.stubGlobal('GM_getValue', () => stored)
+    vi.stubGlobal('GM_setValue', (_key: string, value: string) => {
+      stored = value
+    })
+    const { loadState, setState } = await import('./state.js')
+    expect(loadState().filters).toEqual({ source: [], visibility: [], lifecycle: [], alarm: [] })
+    const filters = {
+      source: ['server'],
+      visibility: ['hidden'],
+      lifecycle: ['finished'],
+      alarm: [],
+    } as const
+    setState({ filters })
+    expect(loadState()).toMatchObject({
+      filters,
+      sort: { field: 'name', direction: 'asc' },
+      collapsed: ['local'],
+      customOrder: ['local:b'],
+    })
+  })
   it('persists creation times for empty Local folders and restores Recent ordering', async () => {
     let stored = '{}'
     vi.stubGlobal('GM_getValue', () => stored)

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Toggle from '../foundations/Toggle.svelte'
   import Button from '../foundations/Button.svelte'
+  import Icon from '../foundations/Icon.svelte'
   import SettingRow from '../foundations/SettingRow.svelte'
   import TemplateTree from '../tree/TemplateTree.svelte'
   import type { PanelModel, TemplateTreeIntent } from '../types.js'
@@ -61,16 +62,7 @@
     }}
   >
     <span>In progress <span class="count">{count}</span></span>
-    <span class="t-acc-chevron" aria-hidden="true">
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"><path d="M4 9.5L8 5.5L12 9.5" /></svg
-      >
-    </span>
+    <span class="t-acc-chevron" aria-hidden="true"><Icon name="expandLess" /></span>
   </button>
 </section>
 
@@ -181,9 +173,6 @@
     transform: scaleY(1);
     transform-origin: center;
     transition: transform var(--acc-chevron) var(--acc-ease);
-  }
-  .t-acc-chevron path {
-    vector-effect: non-scaling-stroke;
   }
   .t-acc[data-open='true'] .t-acc-chevron {
     transform: scaleY(-1);
