@@ -75,6 +75,25 @@ describe('rolling pace retention', () => {
       expect(document.querySelectorAll('[data-pace-window]')).toHaveLength(0)
       expect(document.body.textContent).toContain('No coverage')
       expect(document.body.textContent).not.toContain('No paint activity')
+      const chart = document.querySelector('svg[role="img"]')
+      if (!(chart instanceof SVGSVGElement)) throw new Error('missing chart')
+      chart.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+      flushSync()
+      expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain(
+        'Eralyon snapshot',
+      )
+      expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain(
+        allGaps ? 'No coverage' : '10',
+      )
+      chart.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      flushSync()
+      expect(document.querySelector('[data-archive-hover]')?.textContent ?? '').toContain(
+        allGaps ? '' : '-0.21 px/h',
+      )
+      chart.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+      flushSync()
+      expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain('No coverage')
+      expect(document.querySelector('[data-archive-hover]')).toBeNull()
     },
   )
   it('uses Standard axis suffixes and exact pixel labels', () => {

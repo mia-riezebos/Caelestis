@@ -14,6 +14,8 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - [x] Connect durable background execution, authenticated routes and retained archive storage.
 - [x] Add the userscript context-menu action and accessible modal.
 - [x] Integrate sparse history into existing views, add Changeset and complete validation.
+- [x] Include sparse observations in hover cards and keyboard value navigation.
+- [ ] Compact pace controls into a dropdown and clarify legend colours and painter metrics.
 
 ## Notes
 - Preserve the supplied clean branch and worktree.
@@ -28,3 +30,4 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - Verified the actual built userscript on Wplace in isolated Chromium, against local Wrangler D1/R2/DO storage and real Eralyon responses. Two snapshots produce four tile observations and completion counts of 1/16 at both timestamps. Retry reuses successful observations; cancellation retains one completed observation and stops the remaining work. The form fits at 375px.
 - Verified imported frames and completion/net-pace values in the actual local frontend template page. Missing coverage has an explicit notice; live telemetry keeps its original query bounds.
 - Browser verification caught and fixed the Worker fetch binding and modal focus-return handling. No standalone mock page is used as validation evidence.
+- Follow-up hover tests cover sparse-only data, negative interval pace, all-gap observations and keyboard navigation. Existing reported and painter hover tests remain green.

@@ -351,6 +351,13 @@
   /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */
   const hoverSnapTimes = $derived.by(() => {
     const times = new Set(visiblePoints.map((point) => point.t))
+    for (const sample of archiveSamples) {
+      if (sample.at >= shownView.from && sample.at <= shownView.to) times.add(sample.at)
+    }
+    for (const interval of visibleArchivePaces) {
+      times.add(Math.max(interval.from, shownView.from))
+      times.add(Math.min(interval.to, shownView.to))
+    }
     for (const pace of activePaces) {
       for (const point of pace.series) times.add(point.t)
     }
@@ -543,8 +550,9 @@
   // ── Hover ────────────────────────────────────────────────────────────────────────────────────
   interface HoverPoint {
     t: number
-    cumCorrect: number
-    cumMismatched: number
+    cumCorrect: number | null
+    cumMismatched: number | null
+    archive: boolean
   }
 
   const interpolateValue = <T extends { t: number }>(
@@ -576,11 +584,24 @@
       return
     }
     if (hover?.t === t) return
-    const cumCorrect = interpolateValue(visiblePoints, t, (point) => point.cumCorrect, true)
-    const cumMismatched = interpolateValue(visiblePoints, t, (point) => point.cumMismatched, true)
-    if (cumCorrect === null || cumMismatched === null) return
-    hover = { t, cumCorrect: Math.round(cumCorrect), cumMismatched: Math.round(cumMismatched) }
+    const sample = archiveSamples.find((sample) => sample.at === t)
+    const cumCorrect = sample === undefined
+      ? interpolateValue(visiblePoints, t, (point) => point.cumCorrect)
+      : sample.correct
+    const cumMismatched = sample === undefined
+      ? interpolateValue(visiblePoints, t, (point) => point.cumMismatched)
+      : sample.mismatched
+    hover = {
+      t,
+      cumCorrect: cumCorrect === null ? null : Math.round(cumCorrect),
+      cumMismatched: cumMismatched === null ? null : Math.round(cumMismatched),
+      archive: sample !== undefined,
+    }
   }
+
+  const hoverArchivePace = $derived(hover === null ? undefined :
+    visibleArchivePaces.find((interval) => hover !== null && hover.t > interval.from && hover.t <= interval.to) ??
+    visibleArchivePaces.find((interval) => interval.from === hover?.t))
 
   const hoverPointer = (clientX: number, left: number): void =>
     hoverAt(nearestSorted(hoverSnapTimes, timeAt(clientX, left)))
@@ -655,8 +676,10 @@
     })
     return [
       `${formatTime(point.t)}${liveEdge !== null && point.t === liveEdge.t ? ' (now)' : ''}`,
-      `${point.cumCorrect.toLocaleString()} correct`,
-      `${point.cumMismatched.toLocaleString()} mismatched`,
+      ...(point.archive ? ['Eralyon snapshot'] : []),
+      point.cumCorrect === null ? 'No completion coverage' : `${point.cumCorrect.toLocaleString()} correct`,
+      point.cumMismatched === null ? 'No mismatch coverage' : `${point.cumMismatched.toLocaleString()} mismatched`,
+      ...(hoverArchivePace === undefined ? [] : [`Net progress ${formatCount(hoverArchivePace.rate)} px/h from ${formatTime(hoverArchivePace.from)} to ${formatTime(hoverArchivePace.to)}`]),
       ...paces,
       ...painterPaces,
     ].join(', ')
@@ -1310,14 +1333,17 @@
               y2={height - pad.bottom}
               class="stroke-base-content/25"
             />
-            <circle
+            {#if hover.cumCorrect !== null}<circle
               cx={x(hover.t)}
               cy={yLeft(hover.cumCorrect)}
               r="3"
               fill="var(--chart-correct)"
               class="stroke-base-100"
               stroke-width="1.5"
-            />
+            />{/if}
+            {#if hoverArchivePace !== undefined}
+              <circle cx={x(hover.t)} cy={yRight(hoverArchivePace.rate)} r="3" fill="var(--chart-placed)" class="stroke-base-100" stroke-width="1.5" />
+            {/if}
             {#each activePaces as pace (pace.key)}
               {@const value = hoverPace(pace.series, hover.t)}
               {#if value !== null}
@@ -1363,18 +1389,25 @@
             {formatTime(hover.t)}{#if liveEdge !== null && hover.t === liveEdge.t}
               <span class="ms-1 text-base-content/50">now</span>{/if}
           </div>
+          {#if hover.archive}<div class="text-base-content/60">Eralyon snapshot</div>{/if}
           <div class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums">
             <span class="inline-flex items-center gap-1.5">
               <span class="size-2 rounded-xs" style:background="var(--chart-correct)"></span>
               <span class="text-base-content/70">correct</span>
-              <span>{hover.cumCorrect.toLocaleString()}</span>
+              <span>{hover.cumCorrect?.toLocaleString() ?? 'No coverage'}</span>
             </span>
             <span class="inline-flex items-center gap-1.5">
               <span class="size-2 rounded-xs bg-error/70"></span>
               <span class="text-base-content/70">mismatched</span>
-              <span>{hover.cumMismatched.toLocaleString()}</span>
+              <span>{hover.cumMismatched?.toLocaleString() ?? 'No coverage'}</span>
             </span>
           </div>
+          {#if hoverArchivePace !== undefined}
+            <div data-archive-hover class="mt-2 border-t border-base-300 pt-1.5">
+              <div class="flex justify-between gap-3"><span>Net progress</span><span>{formatExactCount(Math.round(hoverArchivePace.rate * 100) / 100)} px/h</span></div>
+              <div class="mt-0.5 text-base-content/60">{formatTime(hoverArchivePace.from)} → {formatTime(hoverArchivePace.to)}</div>
+            </div>
+          {/if}
           {#if hoverPaceRows.length > 0}
             <div class="mt-2 flex items-center justify-between border-t border-base-300 pt-1.5 text-base-content/60">
               <span>Pace</span><span>px/h</span>
