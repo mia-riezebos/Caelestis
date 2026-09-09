@@ -38,3 +38,9 @@ non-draft PR closing #320, followed by the requested babysit run.
 PR #321 review: reproduced 200 responses for valid weak, wildcard and list `If-None-Match`
 headers. Reuse the manifest route's weak candidate matching before returning 304; cover GET and
 HEAD. This is a refinement of the new preview endpoint, so its existing Changeset stays immutable.
+
+Dev tunnel follow-up: frontend and backend share the existing readiness and shutdown handling.
+Created the named frontend tunnel and DNS route for `caelestis-dev-frontend.mia.cx`.
+Public Discordbot requests return the site metadata with HTTPS image URLs; the image returns 200.
+Ctrl+C stops both Vite and its tunnel. Full build, check, tests and lint pass again.
+This checkout has no frontend read-token configuration or generated local template GIFs yet.

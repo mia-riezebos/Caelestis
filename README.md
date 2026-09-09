@@ -74,6 +74,16 @@ pnpm dev
 local D1 migrations before Wrangler starts. The userscript task rebuilds and reinjects changes into
 the configured debug Chromium session.
 
+Both servers start named Cloudflare tunnels after their local health checks pass:
+
+- Frontend: https://caelestis-dev-frontend.mia.cx (local port 5173).
+- Backend: https://caelestis-dev.mia.cx (local port 8787).
+
+Install and authenticate `cloudflared` with credentials for these named tunnels. Without them,
+the servers still run locally. Stopping a dev task stops its server and tunnel together.
+Use `pnpm --filter @caelestis/frontend dev` to start only the frontend and its tunnel.
+`CAELESTIS_FRONTEND_TUNNEL` and `CAELESTIS_TUNNEL` override the respective tunnel names.
+
 Run the complete local checks with:
 
 ```sh
