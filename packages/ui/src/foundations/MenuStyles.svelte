@@ -69,6 +69,7 @@
     white-space: normal;
     cursor: pointer;
   }
+  :global(.caelestis-menu-separator) { flex: 0 0 auto; block-size: 1px; margin: var(--menu-padding) 0.375rem; border: 0; background: var(--menu-border); }
   :global(.caelestis-menu-item:is(:hover, :focus-visible, [data-selected])),
   :global(select.caelestis-select option:is(:hover, :focus-visible)) { background: var(--menu-hover); }
   :global(.caelestis-menu-item:focus-visible) { outline: 2px solid var(--caelestis-focus, var(--color-primary, currentColor)); outline-offset: -2px; }

@@ -873,6 +873,110 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('separates menu groups and opens a submenu by keyboard, tap, and hover', async () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          contextMenu: {
+            id: 'menu-2',
+            rowKey: 'local:city',
+            x: 20,
+            y: 30,
+            items: [
+              { id: 'go', label: 'Go to', icon: 'search', group: 'navigate' },
+              { id: 'export', label: 'Export .wplace', icon: 'download', group: 'organise' },
+              { id: 'move', label: 'Move', icon: 'move', group: 'organise' },
+              {
+                id: 'mark',
+                label: 'Mark as…',
+                icon: 'taskAlt',
+                group: 'state',
+                children: [
+                  { id: 'finished', label: 'Finished', icon: 'flag', checked: true },
+                  { id: 'frozen', label: 'Frozen', icon: 'snowflake', checked: false },
+                ],
+              },
+              { id: 'delete', label: 'Delete', icon: 'trash', group: 'danger', danger: true },
+            ],
+          },
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    const key = (target: Element | null, key: string): void => {
+      target?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+      flushSync()
+    }
+    const hover = (target: Element | null, pointerType: string): void => {
+      target?.dispatchEvent(new PointerEvent('pointerenter', { pointerType }))
+      flushSync()
+    }
+    const rows = (): string[] =>
+      Array.from(
+        document.querySelectorAll('.context-menu [role^="menuitem"]'),
+        (row) => row.textContent?.trim() ?? '',
+      )
+
+    expect(document.querySelectorAll('.context-menu [role="separator"]')).toHaveLength(3)
+    const trigger = document.querySelector<HTMLButtonElement>(
+      '.context-menu [aria-haspopup="menu"]',
+    )
+    if (trigger === null) throw new Error('missing submenu trigger')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(rows()).toEqual(['Go to', 'Export .wplace', 'Move', 'Mark as…', 'Delete'])
+
+    trigger.focus()
+    key(trigger, 'ArrowRight')
+    await tick()
+    await tick()
+    const finished = document.querySelector<HTMLButtonElement>(
+      '.context-menu [role="menuitemcheckbox"]',
+    )
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(finished?.getAttribute('aria-checked')).toBe('true')
+    expect(document.activeElement).toBe(finished)
+    key(finished, 'ArrowDown')
+    expect(document.activeElement?.textContent).toContain('Frozen')
+    expect(document.activeElement?.getAttribute('aria-checked')).toBe('false')
+    key(document.activeElement, 'ArrowDown')
+    expect(document.activeElement).toBe(finished)
+    key(finished, 'Escape')
+    expect(document.querySelector('.context-menu [role="menuitemcheckbox"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(onIntent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'dismiss-context-menu' }),
+    )
+
+    hover(trigger, 'touch')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    trigger.click()
+    flushSync()
+    await tick()
+    await tick()
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement?.textContent).toContain('Finished')
+    key(trigger, 'ArrowDown')
+    expect(document.activeElement?.textContent).toContain('Delete')
+    document.querySelector<HTMLButtonElement>('.context-menu [role="menuitemcheckbox"]')?.click()
+    expect(onIntent).toHaveBeenCalledWith({
+      type: 'context-menu-action',
+      menuId: 'menu-2',
+      actionId: 'finished',
+    })
+
+    hover(document.querySelector('.context-menu [role="menuitem"]'), 'mouse')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    hover(trigger, 'mouse')
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    hover(document.querySelector('.context-menu [role="menuitemcheckbox"]'), 'mouse')
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    void unmount(component)
+  })
+
   it('shows drag feedback and emits the resolved drop position', () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, { target: document.body, props: { model, onIntent } })

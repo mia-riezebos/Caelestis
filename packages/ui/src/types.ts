@@ -307,6 +307,9 @@ export type TreeIcon = Extract<
   | 'expandLess'
   | 'reset'
   | 'download'
+  | 'flag'
+  | 'snowflake'
+  | 'taskAlt'
 >
 
 export interface TreeProgressModel {
@@ -439,8 +442,14 @@ export interface TreeContextMenuItemModel {
   readonly id: string
   readonly label: string
   readonly icon: TreeIcon
+  /** Consecutive items sharing a group sit together; a hairline separates one group from the next. */
+  readonly group?: string
   readonly danger?: boolean
   readonly returnToCanvas?: boolean
+  /** Present on a `menuitemcheckbox` row, carrying the state the action toggles. */
+  readonly checked?: boolean
+  /** A submenu the row opens on hover, tap, Enter, or ArrowRight instead of running an action. */
+  readonly children?: readonly TreeContextMenuItemModel[]
 }
 
 export interface TreeContextMenuModel {

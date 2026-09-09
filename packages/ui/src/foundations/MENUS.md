@@ -8,6 +8,12 @@ MenuStyles owns borders, 0.5rem outer corners, 0.25rem option corners, padding, 
 hover/focus states, and shadows. Component styles own placement and width. Menu corners remain
 compact regardless of Wplace's field and card radius settings.
 
+Use `caelestis-menu-separator` for the hairline between groups of related actions. Render one only
+between two non-empty groups, never at either end of a menu. A submenu is another `caelestis-menu`
+opened from a `menuitem` that carries `aria-haspopup="menu"` and a trailing chevron. It opens on
+mouse hover, tap, Enter, Space, and ArrowRight; ArrowLeft and Escape close it and return focus to
+its trigger. Checkable rows use `menuitemcheckbox` with a trailing check when set.
+
 Keep native select, popover, and existing keyboard behavior. Selected marks and action icons
 occupy the leading icon column; searchable multi-select lists may retain their trailing checks.
 
