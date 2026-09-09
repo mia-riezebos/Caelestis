@@ -1,5 +1,16 @@
 # @caelestis/backend
 
+## 0.4.0
+
+### Minor Changes
+
+- 0e5d506: Backfill sparse template timelapse and progress history from Eralyon archives through a userscript admin form.
+
+### Patch Changes
+
+- d6a978d: Attribute backfill D1 queries to their originating requests, including failed operations.
+- 10ae980: Keep backfill starts retryable after alarm scheduling failures.
+
 ## 0.3.0
 
 ### Minor Changes
