@@ -17,6 +17,7 @@ interface SourceTemplate {
 const harness = vi.hoisted(() => ({
   alliance: null as ActiveAllianceSurface | null,
   nativePoint: null as { x: number; y: number } | null,
+  nativeProjection: null as ((point: [number, number]) => { x: number; y: number }) | null,
   templates: [] as SourceTemplate[],
   paintOpen: true,
   moving: false,
@@ -35,6 +36,9 @@ vi.mock('./main.js', () => ({ canvasPixelAt: (x: number, y: number) => ({ x, y }
 vi.mock('./map-handle.js', () => ({
   getMap: () => {
     const point = harness.nativePoint
+    const project = harness.nativeProjection
+    if (project !== null)
+      return { unproject: (screen: [number, number]) => canvasPixelToLatLng(project(screen)) }
     return point === null ? null : { unproject: () => canvasPixelToLatLng(point) }
   },
 }))
@@ -75,6 +79,7 @@ let listeners: MockInstance<typeof window.addEventListener>
 beforeEach(async () => {
   harness.alliance = null
   harness.nativePoint = null
+  harness.nativeProjection = null
   harness.templates = [source()]
   harness.paintOpen = true
   harness.moving = false
@@ -106,6 +111,7 @@ afterEach(() => {
   }
   document.body.replaceChildren()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const pointer = (type: string, x = 0, options: PointerEventInit = {}, target: Element = map) => {
@@ -233,6 +239,60 @@ it('samples intermediate colours when held-Space movement skips several pixels',
     [2, 7],
   ])
 })
+
+it.each(['x', 'y'] as const)(
+  'preserves fractional %s coordinates when painting and retracing a colour boundary',
+  (axis) => {
+    // Chromium MouseEvent truncates coordinates; PointerEvent preserves them. Happy DOM does not.
+    const NativeMouseEvent = MouseEvent
+    vi.stubGlobal(
+      'MouseEvent',
+      class extends NativeMouseEvent {
+        constructor(type: string, init: MouseEventInit = {}) {
+          super(type, {
+            ...init,
+            clientX: Math.trunc(init.clientX ?? 0),
+            clientY: Math.trunc(init.clientY ?? 0),
+          })
+        }
+      },
+    )
+    const template = source([12, 23])
+    if (axis === 'y') {
+      template.width = 1
+      template.height = 2
+    }
+    harness.templates = [template]
+    harness.nativeProjection = ([x, y]) => ({ x: x - 0.5, y: y - 0.5 })
+    const draft = new Map<number, number>()
+    let previous = 0
+    map.addEventListener('mousemove', (event) => {
+      const current = Math.floor((axis === 'x' ? event.clientX : event.clientY) - 0.5)
+      for (let cell = Math.min(previous, current); cell <= Math.max(previous, current); cell++) {
+        draft.set(cell, harness.selected)
+      }
+      previous = current
+    })
+    pointer('pointerdown', 0.9, { clientY: 1 })
+    draft.set(0, harness.selected)
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }))
+    const move = (position: number) =>
+      pointer('pointermove', axis === 'x' ? position - 0.1 : 0.9, {
+        clientY: axis === 'y' ? position : 1,
+      })
+    move(1.51)
+    expect([...draft]).toEqual([
+      [0, 12],
+      [1, 23],
+    ])
+    move(1)
+    move(1.51)
+    expect([...draft]).toEqual([
+      [0, 12],
+      [1, 23],
+    ])
+  },
+)
 
 it('resolves overlaps, transparent cells and hidden colours in the existing drawing order', () => {
   const top = source([23, TRANSPARENT_INDEX, 7, 23])

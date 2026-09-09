@@ -7,7 +7,7 @@ const forwardedMoves = new WeakSet<Event>()
 /** Whether this is movement forwarded by Caelestis rather than a compatibility mouse event. */
 export const isForwardedPaintMove = (event: Event): boolean => forwardedMoves.has(event)
 
-/** Feed the world's mouse or alliance pointer movement path without starting a gesture. */
+/** Feed native movement with exact pointer coordinates without starting a gesture. */
 export const forwardPaintMove = (
   target: Element,
   position: PointerEvent,
@@ -30,7 +30,9 @@ export const forwardPaintMove = (
     isPrimary: position.isPrimary,
     button: -1,
   }
-  const event = type === 'pointermove' ? new PointerEvent(type, init) : new MouseEvent(type, init)
+  // MouseEvent truncates fractional coordinates in Chromium, moving a boundary pick into the
+  // previous paint cell. PointerEvent extends MouseEvent and preserves coordinates for either type.
+  const event = new PointerEvent(type, init)
   forwardedMoves.add(event)
   target.dispatchEvent(event)
 }
