@@ -191,17 +191,6 @@ export const probeAdminScope = async (season: number): Promise<boolean> => {
   }
 }
 
-export const patchTemplateLifecycle = async (
-  templateId: string,
-  patch: { readonly finished?: boolean; readonly timelapseFrozen?: boolean },
-): Promise<void> => {
-  await request(`/admin/templates/${templateId}`, {
-    method: 'PATCH',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
-  })
-}
-
 export const getHistory = (
   templateIds: readonly string[],
   from: number,
