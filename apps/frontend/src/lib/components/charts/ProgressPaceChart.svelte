@@ -13,8 +13,6 @@
   import { fade, type TransitionConfig } from 'svelte/transition'
   import { type Persisted, persisted } from '$lib/persisted.svelte'
   import {
-    PAINTER_METRICS,
-    type PainterMetric,
     type PainterOption,
     painterColour,
     painterLabel,
@@ -38,7 +36,6 @@
     type TimeWindow,
     windowKeyStep,
   } from '$lib/components/charts/progress-pace'
-  import SlidingTabs from '$lib/components/charts/SlidingTabs.svelte'
   import { archiveIntervals } from '$lib/archive-history'
 
   let {
@@ -54,6 +51,7 @@
     painters = [],
     selectedPainters = new Set<number>(),
     onTogglePainter = () => {},
+    onSetAllPainters = () => {},
     painterHistories = [],
     windows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h']),
   }: {
@@ -66,6 +64,7 @@
     /** The painters being drawn; whoever fetches `painterHistories` owns this. */
     selectedPainters?: ReadonlySet<number>
     onTogglePainter?: (wplaceUserId: number) => void
+    onSetAllPainters?: (shown: boolean) => void
     /** The selected painters' retained sources for the enabled rolling windows. */
     painterHistories?: readonly PainterHistorySource[]
     /** The enabled rolling windows, shared with whoever fetches the painter sources. */
@@ -268,15 +267,7 @@
   // ── Painters ─────────────────────────────────────────────────────────────────────────────────
   // Painter lines are the same rolling windows over the same ladder, one line per painter per
   // enabled window. Colour says who, width says which window, exactly as for the template lines.
-  const storedMetric = persisted<PainterMetric>('caelestis:painter-metric', 'placed')
-  const painterMetric = $derived<PainterMetric>(
-    PAINTER_METRICS.some((candidate) => candidate.key === storedMetric.value)
-      ? storedMetric.value
-      : 'placed',
-  )
-  const painterMetricNoun = $derived(
-    PAINTER_METRICS.find((candidate) => candidate.key === painterMetric)?.noun ?? painterMetric,
-  )
+  const painterMetricNoun = 'placed pixels'
   /** The painter under the picker's pointer or keyboard, drawn on top with the others dimmed. */
   let spotlightPainter = $state<number | null>(null)
 
@@ -292,7 +283,7 @@
       if (bucket.wplaceUserId !== wplaceUserId) continue
       byStart.set(
         bucket.bucketStart,
-        (byStart.get(bucket.bucketStart) ?? 0) + bucket[painterMetric],
+        (byStart.get(bucket.bucketStart) ?? 0) + bucket.placed,
       )
     }
     const firstBucket = Math.ceil(coverageStart / resolution) * resolution
@@ -1114,6 +1105,7 @@
           options={painters}
           selected={selectedPainters}
           onToggle={onTogglePainter}
+          onSetAll={onSetAllPainters}
           {allUsersShown}
           onToggleAllUsers={() => {
             storedAllUsers.value = !allUsersShown
@@ -1122,22 +1114,6 @@
             spotlightPainter = wplaceUserId
           }}
         />
-        {#if painterLines.length > 0}
-        <span class="text-base-content/65">painter metric</span>
-        <SlidingTabs
-          options={PAINTER_METRICS.map((candidate) => ({
-            key: candidate.key,
-            label: candidate.label,
-            title: `Draw painter lines from ${candidate.noun}`,
-          }))}
-          value={painterMetric}
-          label="painter metric"
-          name="painter-metric"
-          onselect={(key) => {
-            storedMetric.value = key as PainterMetric
-          }}
-        />
-        {/if}
       </div>
     {/if}
 

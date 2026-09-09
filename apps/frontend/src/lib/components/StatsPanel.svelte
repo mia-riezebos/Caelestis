@@ -23,6 +23,7 @@
     MAX_PAINTER_OPTIONS,
     MAX_SELECTED_PAINTERS,
     togglePainterSelection,
+    selectAllPainters,
   } from '$lib/components/charts/painter-pace'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
@@ -355,6 +356,7 @@
         {painters}
         {selectedPainters}
         onTogglePainter={togglePainter}
+        onSetAllPainters={(shown) => { painterOverrides = selectAllPainters(painters, shown) }}
         {painterHistories}
         windows={storedWindows}
       />

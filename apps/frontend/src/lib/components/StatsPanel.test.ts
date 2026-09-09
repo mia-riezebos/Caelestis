@@ -367,6 +367,14 @@ describe('painter pace', () => {
     expect(
       document.querySelector('[data-painter-option="10"] [data-painter-state]')?.textContent,
     ).toBe('drawn')
+
+    document.querySelector<HTMLButtonElement>('[data-painters-hide-all]')?.click()
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(0))
+    document.querySelector<HTMLButtonElement>('[data-painters-show-all]')?.click()
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(14))
+    expect(api.getPainterHistory.mock.calls.at(-1)?.[1]).toEqual([5, 6, 7, 8, 9, 10, 11])
   })
 
   it('draws the template lines alone when the server has no painter buckets', async () => {
