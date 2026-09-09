@@ -70,7 +70,10 @@ describe('rolling pace retention', () => {
         },
       })
       flushSync()
-      expect(document.querySelectorAll('[data-archive-sample]')).toHaveLength(allGaps ? 0 : 2)
+      expect(document.querySelectorAll('[data-archive-progress]')).toHaveLength(allGaps ? 0 : 1)
+      expect(document.querySelectorAll('[data-archive-progress-area]')).toHaveLength(
+        allGaps ? 0 : 1,
+      )
       expect(document.querySelectorAll('[data-archive-pace]')).toHaveLength(allGaps ? 0 : 1)
       if (!allGaps)
         expect(
@@ -111,6 +114,37 @@ describe('rolling pace retention', () => {
       }
     },
   )
+  it('breaks archived lines and fills at missing snapshots and clips sparse intervals to the view', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [],
+        resolution: 900,
+        from: 43200,
+        to: 302400,
+        anchorCorrect: 0,
+        anchorMismatched: 0,
+        archiveSamples: [10, 5, null, 6, 9].map((correct, index) => ({
+          at: index * 86400,
+          snapshotId: index,
+          correct,
+          mismatched: correct === null ? null : 0,
+          total: 20,
+        })),
+      },
+    })
+    flushSync()
+    const lines = [...document.querySelectorAll('[data-archive-progress]')]
+    const areas = [...document.querySelectorAll('[data-archive-progress-area]')]
+    expect(lines).toHaveLength(2)
+    expect(areas).toHaveLength(2)
+    expect(lines[0]?.getAttribute('d')).toMatch(/^M48\.0,.*L138\.7,/)
+    expect(lines[1]?.getAttribute('d')).toMatch(/^M501\.3,.*L592\.0,/)
+    for (const [index, line] of lines.entries()) {
+      expect(line.getAttribute('stroke-dasharray')).toBe('5 4')
+      expect(areas[index]?.getAttribute('d')).toMatch(new RegExp(`^${line.getAttribute('d')}.*Z$`))
+    }
+  })
   it('uses Standard axis suffixes and exact pixel labels', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,

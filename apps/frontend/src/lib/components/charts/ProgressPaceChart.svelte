@@ -387,7 +387,22 @@
 
   // The axis tops come from the target window, so a zoom re-fits to where it is going.
   const targetPoints = $derived(windowPoints(view))
-  const archivePoints = $derived(archiveSamples.filter((sample): sample is ArchiveProgressSample & { correct: number } => sample.correct !== null))
+  const archiveSegments = $derived.by(() => {
+    const segments: PaceRatePoint[][] = []
+    let segment: PaceRatePoint[] | null = null
+    for (const sample of archiveSamples) {
+      if (sample.correct === null) {
+        segment = null
+        continue
+      }
+      if (segment === null) {
+        segment = []
+        segments.push(segment)
+      }
+      segment.push({ t: sample.at, v: sample.correct })
+    }
+    return segments
+  })
   const archivePaces = $derived(archiveIntervals(archiveSamples))
   const storedArchivePace = persisted<boolean>('caelestis:archive-net-pace', true)
   const drawnArchivePaces = $derived(storedArchivePace.value !== false ? archivePaces : [])
@@ -406,11 +421,11 @@
       description: 'Between Eralyon snapshots',
     }]),
   ])
-  const visibleArchivePoints = $derived(archivePoints.filter((sample) => sample.at >= shownView.from && sample.at <= shownView.to))
+  const visibleArchiveSegments = $derived(archiveSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpRate)).filter((segment) => segment.length > 1))
   const visibleArchivePaces = $derived(drawnArchivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
   const rightMin = $derived(Math.min(0, ...drawnArchivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate)))
   const leftScale = $derived(
-    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archivePoints.filter((sample) => sample.at >= view.from && sample.at <= view.to).map((sample) => sample.correct)), 4, 1),
+    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archiveSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate).map((point) => point.v))), 4, 1),
   )
   const rightScale = $derived(
     axisScale(
@@ -1124,7 +1139,7 @@
   {#if hasActivity}
     {#if archiveSamples.length > 0}
       <details class="text-xs text-base-content/65">
-        <summary class="cursor-pointer">Eralyon: completion samples (dots) and interval net pace (dashed). View values</summary>
+        <summary class="cursor-pointer">Eralyon: dashed progress and interval net pace. View snapshot values</summary>
         <div class="max-h-60 overflow-auto mt-2">
           <table class="w-full text-start tabular-nums">
             <caption class="text-start mb-2">Compared with the imported artwork version. Gaps have no completion or pace value.</caption>
@@ -1268,10 +1283,13 @@
             />
           {/each}
 
-          {#each visibleArchivePoints as sample (sample.at)}
-            <circle data-archive-sample={sample.at} cx={x(sample.at)} cy={yLeft(sample.correct)} r="3.5" fill="var(--chart-correct)" stroke="var(--color-base-100)" stroke-width="1">
-              <title>Eralyon · {formatTime(sample.at)} · {sample.correct.toLocaleString()} / {sample.total.toLocaleString()} correct pixels</title>
-            </circle>
+          {#each visibleArchiveSegments as segment (segment[0].t)}
+            {@const line = segment.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.t).toFixed(1)},${yLeft(point.v).toFixed(1)}`).join('')}
+            <path data-archive-progress-area
+              d={`${line}L${x(segment[segment.length - 1].t).toFixed(1)},${yLeft(0).toFixed(1)}L${x(segment[0].t).toFixed(1)},${yLeft(0).toFixed(1)}Z`}
+              fill="var(--chart-correct)" opacity="0.3" />
+            <path data-archive-progress d={line} fill="none" stroke="var(--chart-correct)"
+              stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" />
           {/each}
 
           {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
