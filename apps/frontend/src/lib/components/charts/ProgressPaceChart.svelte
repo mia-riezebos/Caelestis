@@ -576,6 +576,47 @@
   const hoverPace = (series: readonly { t: number; v: number }[], t: number): number | null =>
     interpolateValue(series, t, (point) => point.v)
 
+  /** Each painter appears once, with their available rolling windows in chart order. */
+  const hoverPaceRows = $derived.by(() => {
+    if (hover === null) return []
+    const { t } = hover
+    const rows = new Map<
+      string,
+      { name: string; rates: { window: string; value: number; colour: string }[] }
+    >()
+    const add = (
+      id: string,
+      name: string,
+      window: string,
+      colour: string,
+      series: readonly PaceRatePoint[],
+    ): void => {
+      const value = hoverPace(series, t)
+      if (value === null) return
+      const row = rows.get(id) ?? { name, rates: [] }
+      row.rates.push({ window, value, colour })
+      rows.set(id, row)
+    }
+    for (const pace of activePaces)
+      add('all', 'All users', pace.key, paceColor(pace.rank), pace.series)
+    for (const line of activePainterLines) {
+      add(
+        String(line.painter.wplaceUserId),
+        painterLabel(line.painter),
+        line.window,
+        painterColour(line.painter.wplaceUserId),
+        line.series,
+      )
+    }
+    return [...rows].map(([id, row]) => ({ id, ...row }))
+  })
+  const hoverWindowCount = $derived(
+    new Set([...activePaces.map(pace => pace.key), ...activePainterLines.map(line => line.window)]).size,
+  )
+  const hoverCardWidth = $derived(
+    Math.min(Math.max(0, width - 16), Math.max(260, 140 + 112 * hoverWindowCount)),
+  )
+
   /** The hover card pops from its anchored corner, on the transitions.dev tooltip timings. */
   const pop = (_node: Element, { duration }: { duration: number }): TransitionConfig => ({
     duration,
@@ -1265,51 +1306,51 @@
       {#if hover !== null}
         <div
           class="pointer-events-none absolute z-10 rounded-lg border border-base-300 bg-base-100 px-2.5 py-1.5 text-xs shadow-sm"
+          data-pace-tooltip
           in:pop={{ duration: motion(150) }}
           out:pop={{ duration: motion(100) }}
           style:transform-origin={x(hover.t) > width * 0.55 ? '100% 0' : '0 0'}
           style:top="{pad.top}px"
-          style:left={x(hover.t) > width * 0.55 ? null : `${x(hover.t) + 12}px`}
-          style:right={x(hover.t) > width * 0.55 ? `${width - x(hover.t) + 12}px` : null}
+          style:width="{hoverCardWidth}px"
+          style:left="{Math.max(8, Math.min(width - hoverCardWidth - 8, x(hover.t) > width * 0.55 ? x(hover.t) - hoverCardWidth - 12 : x(hover.t) + 12))}px"
         >
           <div class="font-medium tabular-nums">
             {formatTime(hover.t)}{#if liveEdge !== null && hover.t === liveEdge.t}
               <span class="ms-1 text-base-content/50">now</span>{/if}
           </div>
-          <div class="mt-1 grid grid-cols-[auto_1fr_auto] items-center gap-x-2 gap-y-0.5 tabular-nums">
-            <span class="size-2 rounded-xs" style:background="var(--chart-correct)"></span>
-            <span class="text-base-content/70">correct</span>
-            <span class="text-end">{hover.cumCorrect.toLocaleString()}</span>
-            <span class="size-2 rounded-xs bg-error/70"></span>
-            <span class="text-base-content/70">mismatched</span>
-            <span class="text-end">{hover.cumMismatched.toLocaleString()}</span>
-            {#each activePaces as pace (pace.key)}
-              {@const value = hoverPace(pace.series, hover.t)}
-              {#if value !== null}
-                <span
-                  class="h-0.5 w-2 rounded-full"
-                  style:height="{paceWidth(pace.rank)}px"
-                  style:background={paceColor(pace.rank)}
-                ></span>
-                <span class="text-base-content/70">pace {pace.key}</span>
-                <span class="text-end">{formatExactCount(Math.round(value * 10) / 10)} px/h</span>
-              {/if}
-            {/each}
-            {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
-              {@const value = hoverPace(line.series, hover.t)}
-              {#if value !== null}
-                <span
-                  class="w-2 rounded-full"
-                  style:height="{paceWidth(line.rank)}px"
-                  style:background={painterColour(line.painter.wplaceUserId)}
-                ></span>
-                <span class="truncate text-base-content/70"
-                  >{painterLabel(line.painter)} {line.window}</span
-                >
-                <span class="text-end">{formatExactCount(Math.round(value * 10) / 10)} px/h</span>
-              {/if}
-            {/each}
+          <div class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums">
+            <span class="inline-flex items-center gap-1.5">
+              <span class="size-2 rounded-xs" style:background="var(--chart-correct)"></span>
+              <span class="text-base-content/70">correct</span>
+              <span>{hover.cumCorrect.toLocaleString()}</span>
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+              <span class="size-2 rounded-xs bg-error/70"></span>
+              <span class="text-base-content/70">mismatched</span>
+              <span>{hover.cumMismatched.toLocaleString()}</span>
+            </span>
           </div>
+          {#if hoverPaceRows.length > 0}
+            <div class="mt-2 flex items-center justify-between border-t border-base-300 pt-1.5 text-base-content/60">
+              <span>Pace</span><span>px/h</span>
+            </div>
+            <div class="divide-y divide-base-300/60 tabular-nums">
+              {#each hoverPaceRows as row (row.id)}
+                <div data-pace-row={row.id} class="grid items-start gap-x-3 gap-y-1 py-1.5 {hoverCardWidth < 480 && hoverWindowCount > 2 ? 'grid-cols-1' : 'grid-cols-[6rem_minmax(0,1fr)]'}">
+                  <span class="break-words font-medium">{row.name}</span>
+                  <div class="grid gap-x-3 gap-y-1" style:grid-template-columns="repeat(auto-fit, minmax(5.5rem, 1fr))">
+                    {#each row.rates as rate (rate.window)}
+                      <span data-pace-rate={rate.window} class="flex items-center gap-1 whitespace-nowrap">
+                        <span class="size-1.5 shrink-0 rounded-full" style:background={rate.colour} aria-hidden="true"></span>
+                        <span class="text-base-content/70">{rate.window}</span>
+                        <span class="ms-auto">{formatExactCount(Math.round(rate.value * 10) / 10)}</span>
+                      </span>
+                    {/each}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
       <div class="sr-only" aria-live="polite">{announce}</div>
@@ -1318,7 +1359,7 @@
     <!-- The strip is a pointer gesture surface; its keyboard equivalent is the two grips inside. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
-      class="relative touch-none select-none {brushDrag === 'move'
+      class="relative isolate touch-none select-none {brushDrag === 'move'
         ? 'cursor-grabbing'
         : brushDrag === 'head' || brushDrag === 'tail'
           ? 'cursor-ew-resize'

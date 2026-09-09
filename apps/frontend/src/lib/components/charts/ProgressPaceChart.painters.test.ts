@@ -159,19 +159,30 @@ describe('painter lines', () => {
   })
 
   it('announces each painter’s pace on the keyboard walk and lists it in the tooltip', () => {
-    stored.set('caelestis:pace-windows', JSON.stringify(['1h']))
+    stored.set('caelestis:pace-windows', JSON.stringify(['1h', '6h']))
     mountChart({
       painters: [painter(1, 'Ada')],
       selectedPainters: new Set([1]),
       painterHistories: sources(
-        ['1h'],
+        ['1h', '6h'],
         [painterBucket(1, 6 * HOUR, { placed: 60, correct: 60 }, 'Ada')],
       ),
     })
     key({ key: 'ArrowLeft' })
     expect(announced()).toContain('Ada 1h placed pixels')
-    expect(document.body.textContent).toContain('Ada 1h')
-    expect(document.body.textContent).toContain('px/h')
+    const tooltip = document.querySelector('[data-pace-tooltip]')
+    const rows = tooltip?.querySelectorAll('[data-pace-row]')
+    expect(rows).toHaveLength(2)
+    expect(rows?.[0]?.textContent).toContain('All users')
+    expect(rows?.[1]?.textContent?.match(/Ada/g)).toHaveLength(1)
+    for (const row of rows ?? []) {
+      expect(
+        [...row.querySelectorAll('[data-pace-rate]')].map((rate) =>
+          rate.getAttribute('data-pace-rate'),
+        ),
+      ).toEqual(['1h', '6h'])
+    }
+    expect(tooltip?.textContent).toContain('px/h')
   })
 
   it('keeps a painter’s colour when the scope reorders them', async () => {
