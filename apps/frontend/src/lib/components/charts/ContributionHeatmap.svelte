@@ -3,7 +3,7 @@ import type { ContributionDay } from '@caelestis/shared'
 
 let {
   days,
-  weeks = 26,
+  weeks = 53,
 }: {
   days: readonly ContributionDay[]
   /** How many weeks of history to keep; narrower cards drop the oldest columns, never the newest. */
@@ -86,7 +86,7 @@ const label = (day: number, placed: number): string =>
 
 <div
   bind:clientWidth={width}
-  class="flex flex-col gap-1 text-[10px] leading-none text-base-content/50"
+  class="flex flex-col items-end gap-1 text-[10px] leading-none text-base-content/50"
   style:--cell="{CELL}px"
   style:--gap="{GAP}px"
 >
@@ -126,7 +126,7 @@ const label = (day: number, placed: number): string =>
       {/each}
     </div>
   </div>
-  <div class="flex items-center gap-1 self-end pt-1">
+  <div class="flex items-center gap-1 pt-1">
     less
     <span class="rounded-[2px]" style:width="var(--cell)" style:height="var(--cell)" style:background="color-mix(in oklab, var(--color-base-content) 8%, transparent)"></span>
     {#each [1, 2, 3, 4, 5] as step (step)}
