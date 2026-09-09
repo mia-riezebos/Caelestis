@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import sharp from 'sharp'
+import { renderTemplateHistory } from '../apps/frontend/src/lib/social-render.ts'
 import { TILE_SIZE, WORLD_PIXELS } from '../packages/shared/dist/index.js'
 import {
   buildSocialImages,
@@ -73,7 +74,7 @@ test('GIF starts with current pixels, then plays history without leaking future 
     width: 16,
     height: 9,
   })
-  assert.equal(gif.subarray(0, 6).toString(), 'GIF89a')
+  assert.equal(new TextDecoder().decode(gif.subarray(0, 6)), 'GIF89a')
   const metadata = await sharp(gif, { animated: true }).metadata()
   assert.equal(metadata.width, 16)
   assert.equal(metadata.pageHeight, 9)
@@ -133,6 +134,43 @@ test('tiles first observed later stay neutral in earlier frames', async () => {
   assert.deepEqual([...past.subarray(8 * 3, 9 * 3)], [27, 27, 32])
 })
 
+test('imported observations before creation enter the GIF, gaps stay neutral, and native buckets win', async () => {
+  const red = await tile('#ff0000')
+  const blue = await tile('#0000ff')
+  const read = async (path) => {
+    if (path.startsWith('telemetry/tiles/'))
+      return Response.json({ resolution: 10, frames: [{ bucketStart: 20, hash: 'blue' }] })
+    if (path.startsWith('archive/templates/'))
+      return Response.json({
+        frames: [
+          { at: 1, hash: 'red' },
+          { at: 5, hash: null },
+          { at: 21, hash: 'must-not-read' },
+        ],
+      })
+    if (path === 'archive/tiles/red') return new Response(red)
+    if (path === 'tiles/blue') return new Response(blue)
+    throw new Error(`Unexpected read: ${path}`)
+  }
+  const gif = await renderTemplateHistory(
+    { ...template, createdAt: 10000 },
+    0,
+    new Map([['0/0', 'blue']]),
+    read,
+  )
+  const pixels = await Promise.all(
+    [0, 1, 2, 3].map(async (page) => [
+      ...(await sharp(gif, { page }).removeAlpha().raw().toBuffer()).subarray(0, 3),
+    ]),
+  )
+  assert.deepEqual(pixels, [
+    [0, 0, 255],
+    [255, 0, 0],
+    [27, 27, 32],
+    [0, 0, 255],
+  ])
+})
+
 test('a failed template does not stop other outputs, and unpublished templates are skipped', async (t) => {
   const png = await tile('#4093e4')
   const output = await mkdtemp(join(tmpdir(), 'caelestis-social-'))
@@ -155,6 +193,8 @@ test('a failed template does not stop other outputs, and unpublished templates a
       response.end(JSON.stringify({ tiles: [{ tile: '0/0', hash: 'blue' }] }))
     } else if (url.pathname === '/api/v1/telemetry/tiles/0/0/history') {
       response.end(JSON.stringify({ frames: [{ bucketStart: 10, hash: 'blue' }] }))
+    } else if (url.pathname.startsWith('/api/v1/archive/templates/')) {
+      response.end(JSON.stringify({ frames: [] }))
     } else if (url.pathname === '/api/v1/tiles/blue') {
       response.setHeader('content-type', 'image/png')
       response.end(png)
