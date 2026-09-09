@@ -128,7 +128,7 @@
       <Icon name={poppedOut ? 'dock' : 'popout'} />
     </Button>
     <Button label="Appearance" title="Appearance" kind="ghost" size="compact" iconOnly pressed={model.view === 'appearance'} onclick={() => navigate('appearance')}>
-      <Icon name="palette" />
+      <Icon name="tune" />
     </Button>
     {#if model.showSettings !== false}
       <Button label="Settings" title="Settings" kind="ghost" size="compact" iconOnly pressed={model.view === 'settings'} onclick={() => navigate('settings')}>
