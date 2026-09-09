@@ -92,7 +92,7 @@ const label = (day: number, placed: number): string =>
 >
   <div class="flex" style:gap="{AXIS - CELL * 2}px">
     <span class="shrink-0" style:width="{CELL * 2}px"></span>
-    <div class="relative h-3 flex-1">
+    <div class="relative h-3" style:width="calc({shown} * (var(--cell) + var(--gap)) - var(--gap))">
       {#each months as month (month.column)}
         <span class="absolute top-0" style:left="calc({month.column} * (var(--cell) + var(--gap)))">{month.text}</span>
       {/each}
