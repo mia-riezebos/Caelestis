@@ -378,7 +378,7 @@
     role="menu"
     tabindex="-1"
     onkeydown={navigateContextMenu}
-    style:left={`max(0.5rem, min(${model.contextMenu.x}px, calc(100vw - 11.5rem)))`}
+    style:left={`max(0.5rem, min(${model.contextMenu.x}px, calc(100vw - 13rem)))`}
     style:top={`max(0.5rem, min(${model.contextMenu.y}px, calc(100vh - 18rem)))`}
   >
     {#each model.contextMenu.items as item, index (item.id)}
@@ -704,7 +704,8 @@
   .operation button { min-block-size: 2rem; border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: transparent; color: inherit; cursor: pointer; }
   .operation button.primary { padding-inline: 0.75rem; background: var(--caelestis-primary); color: var(--caelestis-primary-text, white); }
   .operation button:disabled { cursor: wait; opacity: 0.55; }
-  .context-menu { position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; }
+  /* 12.5rem seats every current label on one line at 14px; wrapping stays as the fallback for long translations. */
+  .context-menu { position: fixed; z-index: 60; display: flex; inline-size: 12.5rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; }
   .context-menu button { inline-size: 100%; }
   .context-menu button.danger { color: var(--caelestis-danger); }
   .context-menu :global(.menu-trailing) { margin-inline-start: auto; opacity: 0.7; }

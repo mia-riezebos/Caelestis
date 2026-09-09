@@ -13,7 +13,7 @@ The tree context menu lists every action in one run. Group related actions with 
 ## TODOs
 - [x] Extend the shared menu model with item groups, checkable items, and a submenu; render separators and a hover/keyboard/touch submenu in TemplateTree with tests.
 - [x] Rebuild the userscript menu entries as ordered groups shared by template, folder, and server rows, with the lifecycle rows replaced by a "Mark as…" submenu carrying Finished and Frozen with checked state; update tests.
-- [ ] Shorten the backfill and canvas artwork labels, size the menu so rows stay on one line, and add the Changeset.
+- [x] Shorten the backfill and canvas artwork labels, size the menu so rows stay on one line, and add the Changeset.
 - [ ] Run project checks and verify the built userscript in the existing Chromium over CDP.
 - [ ] Audit the frontend and userscript UI in the browser and report what most needs work.
 
@@ -23,4 +23,4 @@ The tree context menu lists every action in one run. Group related actions with 
 - Group order: navigate (Go to), organise (New folder, Import, Move, Copy, Export), publish (Claim, Publish, Publish folder, Dismiss grief alert), state (Mark as…), artwork (Replace artwork, Use canvas artwork, Backfill), edit (Rename), danger (Delete).
 - Submenu items are `menuitemcheckbox` rows. Choosing Finished while finished reopens the template; Frozen while frozen thaws it, so the reopen and thaw verbs go away.
 - The Backfill dialog keeps its long heading; the menu row reads "Backfill history".
-- The overlay menu keeps "Use canvas artwork" per `packages/ui/src/overlay/DESIGN.md`. Measure the tree row in the browser before deciding whether the tree label also changes.
+- The overlay menu keeps "Use canvas artwork" per `packages/ui/src/overlay/DESIGN.md`. Measured in the real panel at 14px: the 11rem menu wrapped "Use canvas artwork" to two lines and the backfill row to three. At 12.5rem every row, including "Use canvas artwork" and "Dismiss grief alert", is one 32px line, so only the backfill label changed and the tree keeps the overlay's wording.

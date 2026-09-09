@@ -256,7 +256,7 @@ describe('server template context menu', () => {
     openContextMenu(current, new MouseEvent('contextmenu'), vi.fn())
     const menu = treeActionPresentation().contextMenu
     const action = menu?.items.find(
-      (item) => item.label === 'Backfill template tiles and progress data',
+      (item) => item.label === 'Backfill history',
     )
     if (!menu || !action) throw new Error('Missing backfill action')
     handleTreeActionPresentationIntent({
@@ -272,7 +272,7 @@ describe('server template context menu', () => {
       { ...current, server: null },
     ]) {
       openContextMenu(denied, new MouseEvent('contextmenu'), vi.fn())
-      expect(menuText()).not.toContain('Backfill template tiles and progress data')
+      expect(menuText()).not.toContain('Backfill history')
     }
   })
   const templateTarget: TreeTarget = {

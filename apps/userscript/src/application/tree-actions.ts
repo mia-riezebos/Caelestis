@@ -1169,7 +1169,7 @@ export const openContextMenu = (
               surfaceOf(target).kind === 'world' && target.server.season === 0
                 ? {
                     icon: 'download',
-                    label: 'Backfill template tiles and progress data',
+                    label: 'Backfill history',
                     run: () => openTemplateBackfill(target),
                   }
                 : null,
