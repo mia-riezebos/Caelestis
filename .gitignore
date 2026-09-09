@@ -20,3 +20,6 @@ dist/
 # Local secrets for wrangler dev
 .dev.vars
 .dev.vars.*
+
+# Locally rendered share previews
+/.scratch/social-images/

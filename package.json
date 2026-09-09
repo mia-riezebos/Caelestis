@@ -10,7 +10,8 @@
     "build": "turbo build",
     "dev": "turbo run dev",
     "check": "turbo check",
-    "test": "pnpm test:fixtures && pnpm test:capacity && turbo test",
+    "test": "pnpm test:fixtures && pnpm test:capacity && pnpm test:social && turbo test",
+    "test:social": "pnpm --filter @caelestis/shared build && node --test scripts/social-images.test.mjs",
     "capacity:report": "node scripts/sync-capacity.mjs",
     "test:capacity": "node --test scripts/sync-capacity.test.mjs",
     "test:fixtures": "node --test fixtures/berrycamp/fixtures.test.mjs",
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",
     "@changesets/cli": "3.0.1",
+    "sharp": "^0.35.4",
     "turbo": "^2.5.0",
     "typescript": "^5.7.0"
   }
