@@ -4,6 +4,7 @@
     formatExactCount,
     formatPixels,
     type HistoryBucket,
+    type ArchiveProgressSample,
     type PainterHistoryBucket,
   } from '@caelestis/shared'
   import { untrack } from 'svelte'
@@ -19,6 +20,7 @@
     painterLabel,
   } from '$lib/components/charts/painter-pace'
   import PainterPicker from '$lib/components/charts/PainterPicker.svelte'
+  import PacePicker from '$lib/components/charts/PacePicker.svelte'
   import {
     availableRangePresets,
     axisScale,
@@ -37,9 +39,11 @@
     windowKeyStep,
   } from '$lib/components/charts/progress-pace'
   import SlidingTabs from '$lib/components/charts/SlidingTabs.svelte'
+  import { archiveIntervals } from '$lib/archive-history'
 
   let {
     buckets,
+    archiveSamples = [],
     paceHistories = [],
     resolution,
     from,
@@ -54,6 +58,7 @@
     windows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h']),
   }: {
     buckets: readonly HistoryBucket[]
+    archiveSamples?: readonly ArchiveProgressSample[]
     /** One server-selected retained source for each rolling window. */
     paceHistories?: readonly PaceHistorySource[]
     /** Who painted in the range, leading first: the picker's list. */
@@ -120,7 +125,8 @@
     let cumCorrect = 0
     let cumPlaced = 0
     let cumMismatched = 0
-    const first = Math.ceil(from / resolution) * resolution
+    const reportStart = archiveSamples.length === 0 ? from : Math.max(from, Math.min(...buckets.map((bucket) => bucket.bucketStart)))
+    const first = Math.ceil(reportStart / resolution) * resolution
     for (let t = first; t < to; t += resolution) {
       const delta = byStart.get(t) ?? { placed: 0, correct: 0, repairs: 0 }
       cumCorrect += delta.correct
@@ -155,6 +161,7 @@
   // Painter buckets are written per report while template buckets wait for the counter flush, so
   // the plot also opens when only painters have reported yet.
   const hasActivity = $derived(
+    archiveSamples.length > 0 ||
     points.some((p) => p.placed > 0) ||
       painterHistories.some((source) => source.history.buckets.length > 0),
   )
@@ -342,9 +349,18 @@
     return lines
   })
 
+  /** Reported history owns the chart from its first point, even when archive imports overlap it. */
+  const chartArchiveSamples = $derived(archiveSamples.filter((sample) => points[0] === undefined || sample.at < points[0].t))
   /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */
   const hoverSnapTimes = $derived.by(() => {
     const times = new Set(visiblePoints.map((point) => point.t))
+    for (const sample of chartArchiveSamples) {
+      if (sample.at >= shownView.from && sample.at <= shownView.to) times.add(sample.at)
+    }
+    for (const interval of visibleArchivePaces) {
+      times.add(Math.max(interval.from, shownView.from))
+      times.add(Math.min(interval.to, shownView.to))
+    }
     for (const pace of activePaces) {
       for (const point of pace.series) times.add(point.t)
     }
@@ -373,13 +389,86 @@
 
   // The axis tops come from the target window, so a zoom re-fits to where it is going.
   const targetPoints = $derived(windowPoints(view))
+  const archiveConnection = $derived.by(() => {
+    const last = chartArchiveSamples.at(-1)
+    const firstLive = points[0]
+    if (last?.correct == null || firstLive === undefined || firstLive.t <= last.at) return null
+    return {
+      from: last.at, to: firstLive.t,
+      startCorrect: last.correct, endCorrect: firstLive.cumCorrect,
+      endMismatched: firstLive.cumMismatched,
+      rate: (firstLive.cumCorrect - last.correct) / (firstLive.t - last.at) * 3600,
+    }
+  })
+  interface ArchivePoint extends PaceRatePoint { mismatched: number }
+  const lerpArchive = (a: ArchivePoint, b: ArchivePoint, fraction: number): ArchivePoint => ({
+    ...lerpRate(a, b, fraction), mismatched: a.mismatched + (b.mismatched - a.mismatched) * fraction,
+  })
+  const archiveSegments = $derived.by(() => {
+    const segments: ArchivePoint[][] = []
+    let segment: ArchivePoint[] | null = null
+    for (const sample of chartArchiveSamples) {
+      if (sample.correct === null || sample.mismatched === null) {
+        segment = null
+        continue
+      }
+      if (segment === null) {
+        segment = []
+        segments.push(segment)
+      }
+      segment.push({ t: sample.at, v: sample.correct, mismatched: sample.mismatched })
+    }
+    if (archiveConnection !== null) segment?.push({ t: archiveConnection.to, v: archiveConnection.endCorrect, mismatched: archiveConnection.endMismatched })
+    return segments
+  })
+  const archiveSnapshotPaces = $derived(archiveIntervals(archiveSamples))
+  const archivePaces = $derived([
+    ...archiveSnapshotPaces.filter((interval) => points[0] === undefined || interval.to < points[0].t),
+    ...(archiveConnection === null ? [] : [archiveConnection]),
+  ])
+  const storedArchivePace = persisted<boolean>('caelestis:archive-net-pace', true)
+  const drawnArchivePaces = $derived(storedArchivePace.value !== false ? archivePaces : [])
+  const archivePaceSegments = $derived.by(() => {
+    const segments: PaceRatePoint[][] = []
+    let segment: PaceRatePoint[] | undefined
+    for (const interval of drawnArchivePaces) {
+      if (segment?.at(-1)?.t !== interval.from) {
+        segment = [{ t: interval.from, v: interval.rate }]
+        segments.push(segment)
+      }
+      segment?.push({ t: interval.to, v: interval.rate })
+    }
+    return segments
+  })
+  const paceOptions = $derived([
+    ...paceWindows.map((pace, index) => ({
+      key: pace.key,
+      label: pace.key,
+      colour: paceColor(index / (PACE_WINDOWS.length - 1)),
+      selected: enabledWindows.has(pace.key),
+      available: pace.usable || painterHistories.some((source) => source.window === pace.key && source.history.resolution !== undefined && windowUsable(pace.seconds, source.history.resolution) && source.history.buckets.length > 0),
+      description: 'Rolling average',
+    })),
+    ...(archiveSamples.length === 0 ? [] : [{
+      key: 'archive', label: 'Net progress', colour: 'var(--chart-placed)',
+      selected: storedArchivePace.value !== false, available: archivePaces.length > 0,
+      description: 'Between Eralyon snapshots',
+    }]),
+  ])
+  const visibleArchiveSegments = $derived(archiveSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpArchive)).filter((segment) => segment.length > 1))
+  const isolatedArchivePoints = $derived(archiveSegments.filter((segment) => segment.length === 1).flat().filter((point) => point.t >= shownView.from && point.t <= shownView.to))
+  const visibleArchivePaces = $derived(drawnArchivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
+  const visibleArchivePaceSegments = $derived(archivePaceSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpRate)).filter((segment) => segment.length > 1))
+  const targetArchivePaces = $derived(archivePaceSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate)))
+  const rightMin = $derived(Math.min(0, ...targetArchivePaces.map((point) => point.v)))
   const leftScale = $derived(
-    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched)), 4, 1),
+    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archiveSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpArchive).map((point) => point.v + point.mismatched))), 4, 1),
   )
   const rightScale = $derived(
     axisScale(
       Math.max(
         0,
+        ...targetArchivePaces.map((point) => point.v),
         ...enabledPaces.flatMap((pace) =>
           clipSeries(pace.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
         ),
@@ -458,7 +547,7 @@
     (v: number) => height - pad.bottom - (v / shownAxes.current.leftMax) * plotHeight,
   )
   const yRight = $derived(
-    (v: number) => height - pad.bottom - (v / shownAxes.current.rightMax) * plotHeight,
+    (v: number) => height - pad.bottom - ((v - rightMin) / (shownAxes.current.rightMax - rightMin)) * plotHeight,
   )
   /** The time under a pointer, given the plot's left edge and displayed domain. */
   const timeIn = (range: TimeWindow, clientX: number, left: number): number =>
@@ -531,8 +620,9 @@
   // ── Hover ────────────────────────────────────────────────────────────────────────────────────
   interface HoverPoint {
     t: number
-    cumCorrect: number
-    cumMismatched: number
+    cumCorrect: number | null
+    cumMismatched: number | null
+    archive: boolean
   }
 
   const interpolateValue = <T extends { t: number }>(
@@ -564,11 +654,30 @@
       return
     }
     if (hover?.t === t) return
-    const cumCorrect = interpolateValue(visiblePoints, t, (point) => point.cumCorrect, true)
-    const cumMismatched = interpolateValue(visiblePoints, t, (point) => point.cumMismatched, true)
-    if (cumCorrect === null || cumMismatched === null) return
-    hover = { t, cumCorrect: Math.round(cumCorrect), cumMismatched: Math.round(cumMismatched) }
+    const sample = chartArchiveSamples.find((sample) => sample.at === t)
+    const cumCorrect = sample === undefined
+      ? interpolateValue(visiblePoints, t, (point) => point.cumCorrect)
+      : sample.correct
+    const cumMismatched = sample === undefined
+      ? interpolateValue(visiblePoints, t, (point) => point.cumMismatched)
+      : sample.mismatched
+    hover = {
+      t,
+      cumCorrect: cumCorrect === null ? null : Math.round(cumCorrect),
+      cumMismatched: cumMismatched === null ? null : Math.round(cumMismatched),
+      archive: sample !== undefined,
+    }
   }
+
+  const hoverArchivePace = $derived(hover === null ? undefined :
+    visibleArchivePaces.find((interval) => hover !== null && hover.t > interval.from && hover.t <= interval.to) ??
+    visibleArchivePaces.find((interval) => interval.from === hover?.t))
+  const hoverArchiveRate = $derived.by(() => {
+    if (hover === null) return null
+    const t = hover.t
+    return visibleArchivePaceSegments.map((segment) => interpolateValue(segment, t, (point) => point.v))
+      .find((value) => value !== null) ?? null
+  })
 
   const hoverPointer = (clientX: number, left: number): void =>
     hoverAt(nearestSorted(hoverSnapTimes, timeAt(clientX, left)))
@@ -643,8 +752,10 @@
     })
     return [
       `${formatTime(point.t)}${liveEdge !== null && point.t === liveEdge.t ? ' (now)' : ''}`,
-      `${point.cumCorrect.toLocaleString()} correct`,
-      `${point.cumMismatched.toLocaleString()} mismatched`,
+      ...(point.archive ? ['Eralyon snapshot'] : []),
+      point.cumCorrect === null ? 'No completion coverage' : `${point.cumCorrect.toLocaleString()} correct`,
+      point.cumMismatched === null ? 'No mismatch coverage' : `${point.cumMismatched.toLocaleString()} mismatched`,
+      ...(hoverArchiveRate === null ? [] : [`Net progress ${formatCount(hoverArchiveRate)} px/h`]),
       ...paces,
       ...painterPaces,
     ].join(', ')
@@ -977,46 +1088,26 @@
     <div class="flex items-center gap-4 text-base-content/70">
       <span class="inline-flex items-center gap-2">
         <span
-          class="size-3 rounded-xs border-t-2"
-          style:background="color-mix(in oklab, var(--chart-correct) 35%, transparent)"
-          style:border-color="var(--chart-correct)"
+          class="size-3 rounded-xs"
+          style:background="var(--chart-correct)"
         ></span>
         correct
       </span>
       <span class="inline-flex items-center gap-2">
-        <span class="size-3 rounded-xs bg-error/30"></span>
-        painted, mismatched
+        <span class="size-3 rounded-xs bg-error"></span>
+        mismatched
       </span>
     </div>
 
-    <div class="flex flex-wrap items-center gap-1" role="group" aria-label="rolling pace lines">
-      <span class="me-1 text-base-content/65">pace</span>
-      {#each paceWindows as pace, index (pace.key)}
-        {@const enabled = enabledWindows.has(pace.key)}
-        <button
-          type="button"
-          class="btn btn-xs {enabled && pace.usable ? 'btn-soft' : 'btn-ghost'} gap-1.5 tabular-nums"
-          aria-pressed={enabled && pace.usable}
-          disabled={!pace.usable}
-          data-pace-toggle={pace.key}
-          title={pace.usable
-            ? `Toggle the ${pace.key} rolling pace line`
-            : `No retained data is fine enough for the ${pace.key} pace line`}
-          onclick={() => toggleWindow(pace.key)}
-        >
-          <span
-            class="rounded-full"
-            style:width="10px"
-            style:height="{paceWidth(index / (PACE_WINDOWS.length - 1)) + 1}px"
-            style:background={paceColor(index / (PACE_WINDOWS.length - 1))}
-            aria-hidden="true"
-          ></span>
-          {pace.key}
-        </button>
-      {/each}
+    <div class="flex items-center gap-2" role="group" aria-label="pace lines">
+      <span class="text-base-content/65">pace</span>
+      <PacePicker options={paceOptions} onToggle={(key) => {
+        if (key === 'archive') storedArchivePace.value = !storedArchivePace.value
+        else toggleWindow(key)
+      }} />
     </div>
 
-    {#if hasActivity}
+    {#if painters.length > 0 || paceWindows.some((pace) => pace.usable)}
       <div class="flex flex-wrap items-center gap-2" role="group" aria-label="whose pace lines">
         <span class="text-base-content/65">who</span>
         <PainterPicker
@@ -1031,6 +1122,8 @@
             spotlightPainter = wplaceUserId
           }}
         />
+        {#if painterLines.length > 0}
+        <span class="text-base-content/65">painter metric</span>
         <SlidingTabs
           options={PAINTER_METRICS.map((candidate) => ({
             key: candidate.key,
@@ -1044,6 +1137,7 @@
             storedMetric.value = key as PainterMetric
           }}
         />
+        {/if}
       </div>
     {/if}
 
@@ -1086,6 +1180,22 @@
   </div>
 
   {#if hasActivity}
+    {#if archiveSamples.length > 0}
+      <details class="text-xs text-base-content/65">
+        <summary class="cursor-pointer">Eralyon: dashed progress and interval net pace. View snapshot values</summary>
+        <div class="max-h-60 overflow-auto mt-2">
+          <table class="w-full text-start tabular-nums">
+            <caption class="text-start mb-2">Compared with the imported artwork version. Gaps have no completion or pace value.</caption>
+            <thead><tr><th scope="col" class="text-start">Snapshot</th><th scope="col">Correct pixels</th><th scope="col">Net px/h since previous snapshot</th></tr></thead>
+            <tbody>
+              {#each archiveSamples as sample (sample.at)}
+                <tr><th scope="row" class="text-start font-normal">{formatTime(sample.at)}</th><td class="text-center">{sample.correct === null ? 'No coverage' : sample.correct.toLocaleString()}</td><td class="text-center">{archiveSnapshotPaces.find((interval) => interval.to === sample.at)?.rate.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    {/if}
     <div class="relative">
       <!-- The image is focusable so keyboard users can walk the data points; the live region below
            reads each one out. -->
@@ -1127,7 +1237,10 @@
             >
           {/if}
         {/each}
-        {#if activePaces.length > 0}
+        {#if activePaces.length > 0 || archivePaces.length > 0}
+          {#if rightMin < 0}
+            <text x={width - pad.right + 8} y={yRight(rightMin) + 3} class="fill-base-content/50 text-[10px] tabular-nums">{formatCount(rightMin)}</text>
+          {/if}
           {#each rightScale.ticks as tick (tick)}
             {#if yRight(tick) >= pad.top}
               <text
@@ -1142,7 +1255,7 @@
           {/each}
         {/if}
         <text x={pad.left - 8} y={9} text-anchor="end" class="fill-base-content/40 text-[9px]">px</text>
-        {#if activePaces.length > 0}
+        {#if activePaces.length > 0 || archivePaces.length > 0}
           <text x={width - pad.right + 8} y={9} text-anchor="start" class="fill-base-content/40 text-[9px]"
             >px/h</text
           >
@@ -1205,6 +1318,37 @@
             />
           {/each}
 
+          {#each visibleArchiveSegments as segment (segment[0].t)}
+            {@const line = segment.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.t).toFixed(1)},${yLeft(point.v).toFixed(1)}`).join('')}
+            {@const mismatchedLine = segment.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.t).toFixed(1)},${yLeft(point.v + point.mismatched).toFixed(1)}`).join('')}
+            <path data-archive-progress-area
+              d={`${line}L${x(segment[segment.length - 1].t).toFixed(1)},${yLeft(0).toFixed(1)}L${x(segment[0].t).toFixed(1)},${yLeft(0).toFixed(1)}Z`}
+              fill="var(--chart-correct)" opacity="0.3" />
+            <path data-archive-mismatched-area
+              d={`${mismatchedLine}${[...segment].reverse().map((point) => `L${x(point.t).toFixed(1)},${yLeft(point.v).toFixed(1)}`).join('')}Z`}
+              class="fill-error" opacity="0.25" />
+            {#if segment.some((point) => point.mismatched > 0)}
+              <path data-archive-mismatched d={mismatchedLine} fill="none" class="stroke-error"
+                stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" />
+            {/if}
+            <path data-archive-progress d={line} fill="none" stroke="var(--chart-correct)"
+              stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" />
+          {/each}
+
+          {#each visibleArchivePaceSegments as segment (segment[0].t)}
+            <path data-archive-pace d={linePath(segment)} fill="none"
+              stroke="var(--chart-placed)" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" />
+          {/each}
+
+          {#each isolatedArchivePoints as point (point.t)}
+            <g data-archive-singleton>
+              <path d={`M${Math.max(pad.left, x(point.t) - 3)},${yLeft(point.v)}H${Math.min(width - pad.right, x(point.t) + 3)}`}
+                stroke="var(--chart-correct)" stroke-width="2" />
+              {#if point.mismatched > 0}<path d={`M${Math.max(pad.left, x(point.t) - 3)},${yLeft(point.v + point.mismatched)}H${Math.min(width - pad.right, x(point.t) + 3)}`}
+                class="stroke-error" stroke-width="2" />{/if}
+            </g>
+          {/each}
+
           {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
             <path
               in:fade={{ duration: motion(250) }}
@@ -1265,14 +1409,17 @@
               y2={height - pad.bottom}
               class="stroke-base-content/25"
             />
-            <circle
+            {#if hover.cumCorrect !== null}<circle
               cx={x(hover.t)}
               cy={yLeft(hover.cumCorrect)}
               r="3"
               fill="var(--chart-correct)"
               class="stroke-base-100"
               stroke-width="1.5"
-            />
+            />{/if}
+            {#if hoverArchiveRate !== null}
+              <circle cx={x(hover.t)} cy={yRight(hoverArchiveRate)} r="3" fill="var(--chart-placed)" class="stroke-base-100" stroke-width="1.5" />
+            {/if}
             {#each activePaces as pace (pace.key)}
               {@const value = hoverPace(pace.series, hover.t)}
               {#if value !== null}
@@ -1318,18 +1465,26 @@
             {formatTime(hover.t)}{#if liveEdge !== null && hover.t === liveEdge.t}
               <span class="ms-1 text-base-content/50">now</span>{/if}
           </div>
+          {#if hover.archive}<div class="text-base-content/60">Eralyon snapshot</div>{/if}
           <div class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums">
             <span class="inline-flex items-center gap-1.5">
               <span class="size-2 rounded-xs" style:background="var(--chart-correct)"></span>
               <span class="text-base-content/70">correct</span>
-              <span>{hover.cumCorrect.toLocaleString()}</span>
+              <span>{hover.cumCorrect?.toLocaleString() ?? 'No coverage'}</span>
             </span>
             <span class="inline-flex items-center gap-1.5">
-              <span class="size-2 rounded-xs bg-error/70"></span>
+              <span class="size-2 rounded-xs bg-error"></span>
               <span class="text-base-content/70">mismatched</span>
-              <span>{hover.cumMismatched.toLocaleString()}</span>
+              <span>{hover.cumMismatched?.toLocaleString() ?? 'No coverage'}</span>
             </span>
           </div>
+          {#if hoverArchivePace !== undefined && hoverArchiveRate !== null}
+            <div data-archive-hover class="mt-2 border-t border-base-300 pt-1.5">
+              <div class="flex justify-between gap-3"><span>Net progress</span><span>{formatExactCount(Math.round(hoverArchiveRate * 100) / 100)} px/h</span></div>
+              <div class="mt-0.5 text-base-content/60">{#if hoverArchiveRate !== hoverArchivePace.rate}Interpolated between pace samples{:else}{formatTime(hoverArchivePace.from)} → {formatTime(hoverArchivePace.to)}{/if}</div>
+              {#if hoverArchivePace === archiveConnection}<div class="text-base-content/60">Eralyon → reported history</div>{/if}
+            </div>
+          {/if}
           {#if hoverPaceRows.length > 0}
             <div class="mt-2 flex items-center justify-between border-t border-base-300 pt-1.5 text-base-content/60">
               <span>Pace</span><span>px/h</span>

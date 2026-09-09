@@ -56,6 +56,7 @@ import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templa
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { templateAsWplace, wplaceFilename } from '../templates/wplace-export.js'
+import { openTemplateBackfill } from '../ui/backfill.js'
 import { confirmDestructive } from '../ui/confirm.js'
 import { toast } from '../ui/toast.js'
 import type { TreeTarget } from '../ui/tree.js'
@@ -1116,6 +1117,15 @@ export const openContextMenu = (
                 ],
             ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
             ['reset', 'Use canvas artwork', updateArtwork],
+            ...(surfaceOf(target).kind === 'world' && target.server.season === 0
+              ? [
+                  [
+                    'download',
+                    'Backfill template tiles and progress data',
+                    () => openTemplateBackfill(target),
+                  ] as const,
+                ]
+              : []),
             rename,
             remove,
           ]

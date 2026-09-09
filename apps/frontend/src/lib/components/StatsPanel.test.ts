@@ -4,6 +4,7 @@ import { flushSync, mount, unmount } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
+  getArchiveHistory: vi.fn(),
   getContributions: vi.fn(),
   getHistory: vi.fn(),
   getLeaderboard: vi.fn(),
@@ -50,6 +51,9 @@ beforeEach(() => {
   api.getHistory.mockReset().mockResolvedValue({ buckets: [] })
   api.getContributions.mockReset().mockResolvedValue({ days: [] })
   api.getLeaderboard.mockReset().mockResolvedValue({ entries: [] })
+  api.getArchiveHistory
+    .mockReset()
+    .mockResolvedValue({ source: 'eralyon', basis: null, samples: [], frames: [] })
   api.getPainterHistory.mockReset().mockResolvedValue({ buckets: [] })
   api.getPainterTotals.mockReset().mockResolvedValue({ painters: [] })
   live.subscribe.mockReset().mockReturnValue(() => undefined)

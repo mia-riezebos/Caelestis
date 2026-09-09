@@ -1,5 +1,6 @@
 import {
   type AlarmsResponse,
+  type ArchiveHistory,
   type CanvasTilesResponse,
   type ContributionsResponse,
   type HistoryResponse,
@@ -307,4 +308,29 @@ export const loadImageUrl = (path: string): Promise<string> => {
 }
 
 export const chunkImageUrl = (hash: string): Promise<string> => loadImageUrl(`/chunks/${hash}`)
-export const tileImageUrl = (hash: string): Promise<string> => loadImageUrl(`/tiles/${hash}`)
+export const tileImageUrl = (hash: string): Promise<string> =>
+  loadImageUrl(
+    hash.startsWith('archive:')
+      ? `/archive/tiles/${hash.slice('archive:'.length)}`
+      : `/tiles/${hash}`,
+  )
+
+/** Read sparse observations, treating older backends without this route as no archive. */
+export const getArchiveHistory = async (
+  templateId: string,
+  version: string,
+  tile?: { x: number; y: number },
+): Promise<ArchiveHistory> => {
+  const query = new URLSearchParams({ version })
+  if (tile !== undefined) {
+    query.set('x', String(tile.x))
+    query.set('y', String(tile.y))
+  }
+  try {
+    return await json(`/archive/templates/${templateId}?${query}`)
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404)
+      return { source: 'eralyon', basis: null, samples: [], frames: [] }
+    throw error
+  }
+}

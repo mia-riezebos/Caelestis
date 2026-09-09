@@ -1097,6 +1097,7 @@ export const TileHistoryFrame = TileHistoryFrameStruct.pipe(
 )
 
 const TileHistoryResponseStruct = Schema.Struct({
+  resolution: Schema.optionalKey(NonNegativeInteger),
   frames: boundedArray(TileHistoryFrame, MAX_TILE_HISTORY_FRAMES),
 })
 

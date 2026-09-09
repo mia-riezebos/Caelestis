@@ -48,6 +48,14 @@ new_sqlite_classes = ["AlarmWatcher"]
 tag = "v3"
 new_sqlite_classes = ["StatusReadModelObject"]
 
+[[durable_objects.bindings]]
+name = "TEMPLATE_BACKFILL"
+class_name = "TemplateBackfillObject"
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["TemplateBackfillObject"]
+
 [vars]
 SHARD_STRATEGY = "single"
 SERVER_ID = "01a03930-4f7d-7e72-aa07-666380bf60f7"

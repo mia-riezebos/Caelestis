@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getAlarms,
+  getArchiveHistory,
   getHistory,
   getServer,
   openLiveSocket,
@@ -25,6 +26,20 @@ afterEach(() => {
 })
 
 describe('API request recovery', () => {
+  it('treats an absent archive endpoint as no archive while preserving service errors', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(async () => new Response('Not found', { status: 404 }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(getArchiveHistory('template', 'version')).resolves.toEqual({
+      source: 'eralyon',
+      basis: null,
+      samples: [],
+      frames: [],
+    })
+    fetch.mockImplementation(async () => new Response('Unavailable', { status: 502 }))
+    await expect(getArchiveHistory('template', 'version')).rejects.toMatchObject({ status: 502 })
+  })
   it('opens proxied live reads without putting the Worker token in the browser', () => {
     const sockets: Array<{ url: string; protocols: readonly string[] }> = []
     vi.stubGlobal(

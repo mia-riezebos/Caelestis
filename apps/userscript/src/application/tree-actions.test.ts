@@ -27,6 +27,8 @@ const alarmState = vi.hoisted(() => ({
   refresh: vi.fn(),
 }))
 const artworkUpdate = vi.hoisted(() => vi.fn())
+const backfill = vi.hoisted(() => vi.fn())
+vi.mock('../ui/backfill.js', () => ({ openTemplateBackfill: backfill }))
 vi.mock('./update-template-artwork.js', () => ({ requestTemplateArtworkUpdate: artworkUpdate }))
 vi.mock('../telemetry.js', () => ({ serverAlarmFor: () => alarmState.current }))
 vi.mock('../server-sync-coordinator.js', async (importOriginal) => ({
@@ -237,6 +239,35 @@ describe('server folder context menu', () => {
 })
 
 describe('server template context menu', () => {
+  it('opens backfill only for an administered season-zero world template', () => {
+    const current = {
+      ...target,
+      server: { ...server, season: 0 },
+      templateId: 'template',
+      key: 'st:template',
+    }
+    openContextMenu(current, new MouseEvent('contextmenu'), vi.fn())
+    const menu = treeActionPresentation().contextMenu
+    const action = menu?.items.find(
+      (item) => item.label === 'Backfill template tiles and progress data',
+    )
+    if (!menu || !action) throw new Error('Missing backfill action')
+    handleTreeActionPresentationIntent({
+      type: 'context-menu-action',
+      menuId: menu.id,
+      actionId: action.id,
+    })
+    expect(backfill).toHaveBeenCalledWith(current)
+    for (const denied of [
+      { ...current, server: { ...current.server, isAdmin: false } },
+      { ...current, server: { ...current.server, season: 1 } },
+      { ...current, surface: { kind: 'alliance-headquarters', allianceId: 1 } as const },
+      { ...current, server: null },
+    ]) {
+      openContextMenu(denied, new MouseEvent('contextmenu'), vi.fn())
+      expect(menuText()).not.toContain('Backfill template tiles and progress data')
+    }
+  })
   const templateTarget: TreeTarget = {
     server,
     nodeId: 'root',

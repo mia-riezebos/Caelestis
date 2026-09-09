@@ -87,6 +87,11 @@ export const CaelestisTagManager =
 /** Browser-only and idempotent, so both hosts can call it whenever their UI mounts. */
 export const registerCaelestisUi = (): void => {
   if (typeof customElements === 'undefined') return
+  if (customElements.get(BACKFILL_TAG) === undefined)
+    customElements.define(
+      BACKFILL_TAG,
+      BackfillElement.element as ElementConstructor<CaelestisBackfill>,
+    )
   if (customElements.get('caelestis-work') === undefined)
     customElements.define('caelestis-work', CaelestisWork)
   if (customElements.get(TAG_MANAGER_TAG) === undefined)
@@ -119,6 +124,7 @@ export const registerCaelestisUi = (): void => {
 
 declare global {
   interface HTMLElementTagNameMap {
+    'caelestis-backfill': CaelestisBackfill
     'caelestis-tag-manager': CaelestisTagManager
     'caelestis-template-admin': CaelestisTemplateAdmin
     'caelestis-template-state': CaelestisTemplateState
@@ -130,3 +136,10 @@ declare global {
     'caelestis-shortcut-help': CaelestisShortcutHelp
   }
 }
+
+import type { BackfillModel } from '../backfill/model.js'
+import BackfillElement from './Backfill.element.svelte'
+
+export type { BackfillIntent, BackfillModel } from '../backfill/model.js'
+export const BACKFILL_TAG = 'caelestis-backfill'
+export type CaelestisBackfill = HTMLElement & { model: BackfillModel }

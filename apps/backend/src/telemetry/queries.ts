@@ -547,6 +547,7 @@ export const readTileHistory = (input: {
       ),
     )
     return {
+      resolution,
       frames:
         input.legacyResolution === undefined
           ? coalesceTileHistory(tiers, resolution, input.range)

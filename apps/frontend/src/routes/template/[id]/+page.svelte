@@ -2,12 +2,12 @@
   import {
     canvasPixelToLatLng,
     timelapseCaptureRect,
-    type TileHistoryFrame,
     type TileKey,
   } from '@caelestis/shared'
   import { Icon, MenuStyles, ProgressMeter, TemplateAdmin, TemplateState } from '@caelestis/ui'
   import { page } from '$app/state'
-  import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
+  import { getArchiveHistory, getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
+  import { mergeArchiveFrames, type PlaybackFrame } from '$lib/archive-history'
   import ColourProgress from '$lib/components/ColourProgress.svelte'
   import StatsPanel from '$lib/components/StatsPanel.svelte'
   import TemplateViewer from '$lib/components/TemplateViewer.svelte'
@@ -48,7 +48,8 @@ const storedOverlay = persisted<number>('caelestis:overlay-alpha', 0)
 const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
 
   // ── Timelapse ────────────────────────────────────────────────────────────────────────────────
-  let frames = $state<ReadonlyMap<TileKey, readonly TileHistoryFrame[]> | null>(null)
+  let frames = $state<ReadonlyMap<TileKey, readonly PlaybackFrame[]> | null>(null)
+  let archiveError = $state<string | null>(null)
   // The scrub position: 0..timeline.length, where the last stop is "live".
   let scrub = $state(0)
   let playing = $state(false)
@@ -80,13 +81,22 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     const from = Math.floor(target.createdAt / 1_000)
     const to = Math.floor((target.finishedAt ?? Date.now()) / 1_000) + 1
     frames = null
+    archiveError = null
     playing = false
     Promise.all(
       tilesInRect(timelapseCaptureRect(target.bbox)).map(async (placement) => {
         const [x, y] = placement.key.split('/').map(Number)
         try {
-          const response = await getTileHistory(x ?? 0, y ?? 0, season, from, to)
-          return [placement.key, response.frames] as const
+          const tile = { x: x ?? 0, y: y ?? 0 }
+          const archive = await getArchiveHistory(target.id, target.version, tile).catch(() => {
+            if (!generation.cancelled) archiveError = 'Imported timelapse history could not load.'
+            return null
+          })
+          const response = await getTileHistory(tile.x, tile.y, season, from, to).catch(() => {
+            if (!generation.cancelled) archiveError = 'Some timelapse history could not load.'
+            return { frames: [] }
+          })
+          return [placement.key, mergeArchiveFrames(response, (archive?.frames ?? []).filter((frame) => frame.at < to))] as const
         } catch {
           return [placement.key, []] as const
         }
@@ -101,7 +111,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     }
   })
 
-  const timelineOf = (map: ReadonlyMap<TileKey, readonly TileHistoryFrame[]>): number[] => {
+  const timelineOf = (map: ReadonlyMap<TileKey, readonly PlaybackFrame[]>): number[] => {
     const starts = new Set<number>()
     for (const tileFrames of map.values()) {
       for (const frame of tileFrames) starts.add(frame.bucketStart)
@@ -128,10 +138,20 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       let hash: string | undefined
       for (const frame of tileFrames) {
         if (frame.bucketStart > t) break
-        hash = frame.hash
+        if (!frame.missing) hash = frame.hash
       }
       return hash
     }
+  })
+
+  const missingTiles = $derived.by(() => {
+    if (scrubTime == null || frames === null) return 0
+    let missing = 0
+    for (const history of frames.values()) {
+      const latest = history.findLast((frame) => frame.bucketStart <= scrubTime)
+      if (latest === undefined || latest.missing) missing++
+    }
+    return missing
   })
 
   /** Playback rate: 1× preserves the original 350 ms cadence; the popout scales that. */
@@ -211,6 +231,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     </header>
 
     <ProgressMeter {progress} griefWatch={alarm !== undefined} />
+    {#if archiveError}<p class="text-sm text-error" role="alert">{archiveError}</p>{/if}
     {#if progress.known < progress.total}
       <p class="-mt-2 text-xs text-base-content/50">
         {Math.round((progress.known / Math.max(1, progress.total)) * 100)}% of pixels scanned.
@@ -238,6 +259,9 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
 
     <section class="overflow-hidden rounded-2xl border-[1.5px] border-base-300 bg-base-100">
       <TemplateViewer {template} {hashFor} {overlayAlpha} class="h-[28rem] w-full" />
+      {#if missingTiles > 0}
+        <p class="px-4 py-2 text-sm text-base-content/70" role="status">No coverage for {missingTiles} {missingTiles === 1 ? 'tile' : 'tiles'} at this time. Showing earlier images where available.</p>
+      {/if}
 
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t-[1.5px] border-base-300 px-4 py-3">
         <span class="shrink-0 text-sm text-base-content/70">Template overlay</span>

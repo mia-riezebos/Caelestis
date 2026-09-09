@@ -2,12 +2,14 @@
   import { formatCount, formatPixels } from '@caelestis/shared'
   import type {
     ContributionDay,
+    ArchiveHistory,
     HistoryBucket,
     LeaderboardEntry,
     PainterTotal,
     Template,
   } from '@caelestis/shared'
   import {
+    getArchiveHistory,
     getContributions,
     getHistory,
     getLeaderboard,
@@ -15,6 +17,7 @@
     getPainterTotals,
   } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
+  import { combineArchiveSamples } from '$lib/archive-history'
   import {
     defaultVisiblePainters,
     MAX_PAINTER_OPTIONS,
@@ -60,6 +63,25 @@
   const RESOLUTION = 900
   const STATS_REFRESH_MS = 15_000
 
+  let archives = $state<readonly ArchiveHistory[]>([])
+  let archiveError = $state<string | null>(null)
+  const archiveSamples = $derived(combineArchiveSamples(archives))
+  $effect(() => {
+    const scope = templates.map((template) => ({ id: template.id, version: template.version }))
+    let cancelled = false
+    archives = []; archiveError = null
+    // Bound upstream concurrency for large folders; snapshot reads need no painter subscriptions.
+    void (async () => {
+      const results: ArchiveHistory[] = []
+      for (const template of scope) {
+        if (cancelled) return
+        results.push(await getArchiveHistory(template.id, template.version))
+      }
+      if (!cancelled) archives = results
+    })().catch(() => { if (!cancelled) archiveError = 'Imported progress history could not load.' })
+    return () => { cancelled = true }
+  })
+
   let liveTo = $state(Math.floor(Date.now() / 1_000) + 1)
   // Start at a day boundary so every retained tier can return the bucket containing creation.
   const from = $derived.by(
@@ -68,6 +90,7 @@
         Math.min(...templates.map((template) => template.createdAt / 1_000)) / DAY_SECONDS,
       ) * DAY_SECONDS,
   )
+  const displayFrom = $derived(Math.min(from, ...archiveSamples.map((sample) => sample.at)))
   const hasLiveTemplate = $derived(templates.some((template) => template.finishedAt === null))
   const to = $derived.by(() => {
     const finishedAt = templates.map((template) => template.finishedAt)
@@ -320,10 +343,11 @@
       <Skeleton class="h-[240px] w-full" />
     {:else}
       <ProgressPaceChart
+        {archiveSamples}
         buckets={history}
         {paceHistories}
         resolution={history[0]?.resolution ?? RESOLUTION}
-        {from}
+        from={displayFrom}
         {to}
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
@@ -335,6 +359,7 @@
         windows={storedWindows}
       />
     {/if}
+    {#if archiveError}<p class="mt-2 text-sm text-error" role="alert">{archiveError}</p>{/if}
   </section>
 
   <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">

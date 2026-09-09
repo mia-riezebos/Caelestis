@@ -2,6 +2,8 @@ import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import type { BackfillClients } from './backfill/port.js'
+import { createArchiveRoutes, createBackfillAdminRoutes } from './routes/backfill.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
@@ -22,6 +24,7 @@ import { runBackendHttp } from './runtime/hono.js'
  * @see https://github.com/mia-riezebos/wplace-template-server/issues/12
  */
 export interface AppOptions {
+  readonly backfillClients?: BackfillClients
   /**
    * The operator's bootstrap credential. Absent means the server has no bootstrap path, which is
    * the right state once a real admin token has been minted.
@@ -121,6 +124,11 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
   v1Routes.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
 
   v1Routes.route('/admin/tokens', createTokenRoutes(runtime, auth, currentSeason))
+  v1Routes.route(
+    '/admin/backfill',
+    createBackfillAdminRoutes(runtime, auth, options.backfillClients),
+  )
+  v1Routes.route('/archive', createArchiveRoutes(runtime, auth, options.backfillClients))
   v1Routes.route('/work', createWorkRoutes(runtime, auth))
   v1Routes.route('/admin/nodes', createNodeRoutes(runtime, auth))
   v1Routes.route('/admin/templates', createTemplateRoutes(runtime, auth))

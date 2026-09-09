@@ -611,6 +611,7 @@ export interface TemplateRecord {
   readonly published: boolean
   /** Frozen timelapses are exempt from decay through their freeze instant. */
   readonly timelapseFrozen: boolean
+  readonly timelapseFrozenAt?: Millis | null
   readonly finished: boolean
   readonly finishedAt: Millis | null
   readonly createdAt: Millis
