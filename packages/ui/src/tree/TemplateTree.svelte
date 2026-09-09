@@ -142,8 +142,70 @@
 
   const clickRow = (event: MouseEvent, row: TreeRowModel): void => {
     if (event.target instanceof Element && event.target.closest('.visibility') !== null) return
+    if (consumeLongPress()) { event.preventDefault(); return }
     activeKey = row.key
     if (row.container && !row.forceExpanded) emit({ type: 'toggle-expanded', key: row.key })
+  }
+
+  /**
+   * Press-and-hold on touch opens the same menu a right-click does. iOS never fires `contextmenu`
+   * for a touch, Android does after its own delay, so the timer owns the gesture and the click and
+   * `contextmenu` that trail a finished hold are swallowed instead of reopening or acting on the row.
+   */
+  const LONG_PRESS_MS = 450
+  const LONG_PRESS_SLOP = 10
+  let longPress: { timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number } | null = null
+  let longPressFiredAt = 0
+  let touchPointerActive = false
+
+  const consumeLongPress = (): boolean => {
+    if (longPressFiredAt === 0 || performance.now() - longPressFiredAt > 1000) return false
+    longPressFiredAt = 0
+    return true
+  }
+
+  const cancelLongPress = (): void => {
+    if (longPress !== null) clearTimeout(longPress.timer)
+    longPress = null
+  }
+
+  const pressRow = (event: PointerEvent, row: TreeRowModel): void => {
+    touchPointerActive = event.pointerType === 'touch'
+    if (!touchPointerActive || !row.contextMenu || !event.isPrimary) return
+    if (event.target instanceof Element && event.target.closest('button, input, label, a') !== null) return
+    cancelLongPress()
+    const { clientX: x, clientY: y, pointerId } = event
+    const element = event.currentTarget as HTMLElement
+    longPress = {
+      x,
+      y,
+      pointerId,
+      timer: setTimeout(() => {
+        longPress = null
+        longPressFiredAt = performance.now()
+        element.focus()
+        emit({ type: 'context-menu', key: row.key, x, y })
+      }, LONG_PRESS_MS),
+    }
+  }
+
+  const moveRowPointer = (event: PointerEvent): void => {
+    if (longPress === null || longPress.pointerId !== event.pointerId) return
+    if (Math.hypot(event.clientX - longPress.x, event.clientY - longPress.y) > LONG_PRESS_SLOP) cancelLongPress()
+  }
+
+  const releaseRow = (): void => {
+    cancelLongPress()
+    touchPointerActive = false
+  }
+
+  const contextMenuRow = (event: MouseEvent, row: TreeRowModel): void => {
+    if (!row.contextMenu) return
+    event.preventDefault()
+    cancelLongPress()
+    if (consumeLongPress()) return
+    event.currentTarget instanceof HTMLElement && event.currentTarget.focus()
+    emit({ type: 'context-menu', key: row.key, x: event.clientX, y: event.clientY })
   }
 
   const keydown = (event: KeyboardEvent, row: TreeRowModel): void => {
@@ -183,6 +245,8 @@
   }
 
   const startDrag = (event: DragEvent, row: TreeRowModel): void => {
+    // A touch drag begins with the same hold that opens the menu; the menu wins on touch.
+    if (touchPointerActive) { event.preventDefault(); return }
     draggingKey = row.key
     emit({ type: 'drag-state', active: true })
     event.dataTransfer?.setData('text/plain', row.key)
@@ -456,7 +520,11 @@
           style:--progress-detail-offset={`${progressDetailOffset}px`}
           onclick={(event) => clickRow(event, entry)}
           onkeydown={(event) => keydown(event, entry)}
-          oncontextmenu={(event) => { if (entry.contextMenu) { event.preventDefault(); event.currentTarget.focus(); emit({ type: 'context-menu', key: entry.key, x: event.clientX, y: event.clientY }) } }}
+          oncontextmenu={(event) => contextMenuRow(event, entry)}
+          onpointerdown={(event) => pressRow(event, entry)}
+          onpointermove={moveRowPointer}
+          onpointerup={releaseRow}
+          onpointercancel={releaseRow}
           ondragstart={(event) => startDrag(event, entry)}
           ondragover={(event) => dragOver(event, entry)}
         >
@@ -495,11 +563,13 @@
             {#if alarmKind !== undefined}
               <TemplateState compact showLifecycle={false} {...(entry.descendantAlarmKind === undefined ? {} : { descendantAlarmKind: entry.descendantAlarmKind })} {...entry.lifecycle} />
             {/if}
-            {#each entry.leadingActions ?? [] as item (item.id)}
-              <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-                <Icon name={item.icon} />
-              </button>
-            {/each}
+            {#if grid}
+              {#each entry.leadingActions ?? [] as item (item.id)}
+                <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
+                  <Icon name={item.icon} />
+                </button>
+              {/each}
+            {/if}
             {#if model.renamingKey === entry.key}
               <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') { event.preventDefault(); emit({ type: 'cancel-rename', key: entry.key }) } }} />
             {:else}
@@ -512,7 +582,7 @@
                   <ProgressMeter progress={entry.progress} size="sm" />
                 </span>
                 <span class="actions">
-                  {#each entry.actions ?? [] as item (item.id)}
+                  {#each [...(grid ? [] : entry.leadingActions ?? []), ...(entry.actions ?? [])] as item (item.id)}
                     <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
                       <Icon name={item.icon} />
                     </button>
@@ -522,9 +592,9 @@
                   </button>
                 </span>
               </span>
-            {:else if (entry.actions?.length ?? 0) > 0 || (entry.progress !== undefined && disclosure !== undefined) || card}
+            {:else if (entry.actions?.length ?? 0) > 0 || (!grid && (entry.leadingActions?.length ?? 0) > 0) || (entry.progress !== undefined && disclosure !== undefined) || card}
               <span class="actions">
-                {#each entry.actions ?? [] as item (item.id)}
+                {#each [...(grid ? [] : entry.leadingActions ?? []), ...(entry.actions ?? [])] as item (item.id)}
                   <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
                     <Icon name={item.icon} />
                   </button>
@@ -716,7 +786,12 @@
     .row:hover .actions, .row:focus-within .actions { opacity: 1; pointer-events: auto; }
     .row:hover .row-tail > .progress, .row:focus-within .row-tail > .progress { opacity: 0; pointer-events: none; }
   }
-  @media (hover: none) { .row-tail > .progress { visibility: hidden; } }
+  /* Without hover there is no way to reveal row actions, so the context menu (press-and-hold) is the
+     only action surface in tree mode: the meter and the icon buttons go, and the name gets the row. */
+  @media (hover: none) {
+    .tree:not(.preview-grid) .row-tail, .tree:not(.preview-grid) .row-heading > .actions { display: none; }
+    .row { -webkit-touch-callout: none; user-select: none; }
+  }
   .tree.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); align-content: start; align-items: start; gap: 0.5rem; padding: 0.5rem; }
   .preview-grid > :not(.preview-card) { grid-column: 1 / -1; min-inline-size: 0; margin-inline: 0; }
   .preview-grid .folder-heading { border-block-end: 1px solid var(--caelestis-border); border-radius: 0; }

@@ -80,7 +80,7 @@ import {
   type Source,
   transplant,
 } from './transplant.js'
-import { goToLocalTemplate } from './tree-navigation.js'
+import { goToLocalTemplate, goToServerTemplate } from './tree-navigation.js'
 import {
   findServerNode,
   findServerTemplate,
@@ -1234,6 +1234,18 @@ export const openContextMenu = (
           }
   const claimed = hasOwnTemplateClaim(target)
   const groups: MenuGroups = {
+    // Fly-to leads every template menu: on touch the menu is the only way to reach it.
+    navigate:
+      lifecycle === null
+        ? []
+        : [
+            {
+              icon: 'search',
+              label: 'Go to',
+              returnToCanvas: true,
+              run: () => goToServerTemplate(lifecycle.bbox, surfaceOf(target)),
+            },
+          ],
     work:
       (target.templateId !== undefined || templateId !== null) && canClaimTemplate(target)
         ? [

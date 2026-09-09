@@ -292,7 +292,7 @@ describe('server template context menu', () => {
 
     openContextMenu(memberTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(menuText()).toBe('ClaimExport .wplace')
+    expect(menuText()).toBe('Go toClaimExport .wplace')
   })
 
   it('groups admin actions in one order with Delete apart from the rest', () => {
@@ -305,6 +305,7 @@ describe('server template context menu', () => {
 
     const items = treeActionPresentation().contextMenu?.items ?? []
     expect(items.map(({ label, group }) => `${group}:${label}`)).toEqual([
+      'navigate:Go to',
       'work:Claim',
       'organise:Move to folder',
       'organise:Export .wplace',

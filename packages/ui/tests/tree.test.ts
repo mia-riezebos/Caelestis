@@ -873,6 +873,63 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('opens the context menu from a touch press-and-hold and keeps fly-to among hover actions', () => {
+    vi.useFakeTimers()
+    const onIntent = vi.fn()
+    const entries = model.entries.map((entry) =>
+      entry.type === 'row' && !entry.container
+        ? {
+            ...entry,
+            contextMenu: true,
+            leadingActions: [{ id: 'go', label: 'Go to', icon: 'search' as const }],
+          }
+        : entry,
+    )
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: { model: { ...model, entries }, onIntent },
+    })
+    flushSync()
+    const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local:city"]')
+    if (row === null) throw new Error('missing city row')
+    expect(row.querySelector('.row-heading > .icon-action')).toBeNull()
+    expect(row.querySelector('.actions [aria-label="Go to"]')).not.toBeNull()
+
+    const pointer = (type: string, init: PointerEventInit = {}): void => {
+      row.dispatchEvent(
+        new PointerEvent(type, { bubbles: true, pointerType: 'touch', isPrimary: true, ...init }),
+      )
+    }
+    pointer('pointerdown', { clientX: 40, clientY: 50, pointerId: 1 })
+    pointer('pointermove', { clientX: 44, clientY: 52, pointerId: 1 })
+    vi.advanceTimersByTime(300)
+    expect(onIntent).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(200)
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'context-menu',
+      key: 'local:city',
+      x: 40,
+      y: 50,
+    })
+    onIntent.mockClear()
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    row.click()
+    expect(onIntent).not.toHaveBeenCalled()
+
+    pointer('pointerdown', { clientX: 40, clientY: 50, pointerId: 2 })
+    pointer('pointermove', { clientX: 70, clientY: 50, pointerId: 2 })
+    vi.advanceTimersByTime(600)
+    expect(onIntent).not.toHaveBeenCalled()
+    pointer('pointerdown', { clientX: 40, clientY: 50, pointerId: 3, pointerType: 'mouse' })
+    vi.advanceTimersByTime(600)
+    expect(onIntent).not.toHaveBeenCalled()
+    row.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 6 }),
+    )
+    expect(onIntent).toHaveBeenCalledWith({ type: 'context-menu', key: 'local:city', x: 5, y: 6 })
+    void unmount(component)
+  })
+
   it('separates menu groups and opens a submenu by keyboard, tap, and hover', async () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, {
