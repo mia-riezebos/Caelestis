@@ -27,6 +27,10 @@ const alarmState = vi.hoisted(() => ({
   refresh: vi.fn(),
 }))
 const artworkUpdate = vi.hoisted(() => vi.fn())
+const lifecycle = vi.hoisted(() => ({
+  patch: vi.fn(async () => ({ ok: true as const })),
+  refresh: vi.fn(async () => {}),
+}))
 const backfill = vi.hoisted(() => vi.fn())
 vi.mock('../ui/backfill.js', () => ({ openTemplateBackfill: backfill }))
 vi.mock('./update-template-artwork.js', () => ({ requestTemplateArtworkUpdate: artworkUpdate }))
@@ -47,6 +51,7 @@ vi.mock('../state.js', async (importOriginal) => ({
   getState: () => ({ localClaims: [], ...copyState.getState() }),
   listServerNodes: copyState.listServerNodes,
   dismissTemplateAlarm: alarmState.dismiss,
+  patchTemplate: lifecycle.patch,
 }))
 vi.mock('../templates/local-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../templates/local-store.js')>()),
@@ -107,6 +112,8 @@ const menuText = (): string =>
   treeActionPresentation()
     .contextMenu?.items.map(({ label }) => label)
     .join('') ?? ''
+const markAs = () =>
+  treeActionPresentation().contextMenu?.items.find(({ label }) => label === 'Mark as…')
 
 it('lets admins dismiss the exact grief episode from a template menu', async () => {
   serverRows.rowsFor.mockReturnValue({ nodes: [], templates: [template(true)] })
@@ -248,9 +255,7 @@ describe('server template context menu', () => {
     }
     openContextMenu(current, new MouseEvent('contextmenu'), vi.fn())
     const menu = treeActionPresentation().contextMenu
-    const action = menu?.items.find(
-      (item) => item.label === 'Backfill template tiles and progress data',
-    )
+    const action = menu?.items.find((item) => item.label === 'Backfill history')
     if (!menu || !action) throw new Error('Missing backfill action')
     handleTreeActionPresentationIntent({
       type: 'context-menu-action',
@@ -265,7 +270,7 @@ describe('server template context menu', () => {
       { ...current, server: null },
     ]) {
       openContextMenu(denied, new MouseEvent('contextmenu'), vi.fn())
-      expect(menuText()).not.toContain('Backfill template tiles and progress data')
+      expect(menuText()).not.toContain('Backfill history')
     }
   })
   const templateTarget: TreeTarget = {
@@ -287,10 +292,10 @@ describe('server template context menu', () => {
 
     openContextMenu(memberTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(menuText()).toBe('ClaimExport .wplace')
+    expect(menuText()).toBe('Go toClaimExport .wplace')
   })
 
-  it('offers finish and freeze actions for a live template', () => {
+  it('groups admin actions in one order with Delete apart from the rest', () => {
     serverRows.rowsFor.mockReturnValue({
       nodes: [{ id: 'root', parentId: null }],
       templates: [{ ...template(true), finished: false, timelapseFrozen: false }],
@@ -298,20 +303,61 @@ describe('server template context menu', () => {
 
     openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(menuText()).toContain('Mark finished')
-    expect(menuText()).toContain('Freeze timelapse')
+    const items = treeActionPresentation().contextMenu?.items ?? []
+    expect(items.map(({ label, group }) => `${group}:${label}`)).toEqual([
+      'navigate:Go to',
+      'work:Claim',
+      'organise:Move to folder',
+      'organise:Export .wplace',
+      'publish:Unpublish',
+      'state:Mark as…',
+      'artwork:Replace artwork',
+      'artwork:Use canvas artwork',
+      'edit:Rename',
+      'danger:Delete',
+    ])
+    expect(items.at(-1)?.danger).toBe(true)
   })
 
-  it('offers reopen and thaw actions for an archived template', () => {
+  it('offers unchecked Finished and Frozen marks for a live template', () => {
+    serverRows.rowsFor.mockReturnValue({
+      nodes: [{ id: 'root', parentId: null }],
+      templates: [{ ...template(true), finished: false, timelapseFrozen: false }],
+    })
+
+    openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
+
+    expect(markAs()?.children?.map(({ label, icon, checked }) => [label, icon, checked])).toEqual([
+      ['Finished', 'flag', false],
+      ['Frozen', 'snowflake', false],
+    ])
+    expect(menuText()).not.toContain('Reopen')
+    expect(menuText()).not.toContain('Thaw')
+  })
+
+  it('shows checked marks for an archived template and clears them on selection', async () => {
     serverRows.rowsFor.mockReturnValue({
       nodes: [{ id: 'root', parentId: null }],
       templates: [{ ...template(true), finished: true, timelapseFrozen: true }],
     })
 
-    openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
+    copyState.getState.mockReturnValue({ servers: [] })
 
-    expect(menuText()).toContain('Reopen template')
-    expect(menuText()).toContain('Thaw timelapse')
+    for (const [index, patch] of [{ finished: false }, { timelapseFrozen: false }].entries()) {
+      openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
+      const menu = treeActionPresentation().contextMenu
+      const marks = markAs()?.children ?? []
+      expect(marks.map(({ checked }) => checked)).toEqual([true, true])
+      const mark = marks[index]
+      if (menu === undefined || mark === undefined) throw new Error('missing lifecycle mark')
+      handleTreeActionPresentationIntent({
+        type: 'context-menu-action',
+        menuId: menu.id,
+        actionId: mark.id,
+      })
+      await Promise.resolve()
+      expect(lifecycle.patch).toHaveBeenLastCalledWith(server, 'template', patch)
+    }
   })
 
   it('reads lifecycle state from the alliance surface that produced the row', () => {
@@ -325,8 +371,7 @@ describe('server template context menu', () => {
 
     expect(serverRows.serverTemplateAt).toHaveBeenCalledWith(server.url, 'template', surface)
     expect(menuText()).toContain('Unpublish')
-    expect(menuText()).toContain('Reopen template')
-    expect(menuText()).toContain('Thaw timelapse')
+    expect(markAs()?.children?.map(({ checked }) => checked)).toEqual([true, true])
   })
 })
 

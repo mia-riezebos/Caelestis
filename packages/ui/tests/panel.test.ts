@@ -311,9 +311,7 @@ describe('panel shell', () => {
     expect(getComputedStyle(toggle as Element).blockSize).toBe('1.25rem')
     expect(getComputedStyle(range as Element).appearance).toBe('none')
     expect(getComputedStyle(range as Element).blockSize).toBe('1rem')
-    expect(appearanceButton?.querySelector('path')?.getAttribute('d')).toBe(
-      materialGlyph('palette'),
-    )
+    expect(appearanceButton?.querySelector('path')?.getAttribute('d')).toBe(materialGlyph('tune'))
   })
 
   it('emits one composed intent event for navigation and closing', async () => {

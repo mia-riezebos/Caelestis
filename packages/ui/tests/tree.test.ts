@@ -873,6 +873,253 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('opens the context menu from a touch press-and-hold and keeps fly-to among hover actions', () => {
+    vi.useFakeTimers()
+    const onIntent = vi.fn()
+    const entries = model.entries.map((entry) =>
+      entry.type === 'row' && !entry.container
+        ? {
+            ...entry,
+            contextMenu: true,
+            leadingActions: [{ id: 'go', label: 'Go to', icon: 'search' as const }],
+          }
+        : entry,
+    )
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: { model: { ...model, entries }, onIntent },
+    })
+    flushSync()
+    const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local:city"]')
+    if (row === null) throw new Error('missing city row')
+    expect(row.querySelector('.row-heading > .icon-action')).toBeNull()
+    expect(row.querySelector('.actions [aria-label="Go to"]')).not.toBeNull()
+
+    const pointer = (type: string, init: PointerEventInit = {}): void => {
+      row.dispatchEvent(
+        new PointerEvent(type, { bubbles: true, pointerType: 'touch', isPrimary: true, ...init }),
+      )
+    }
+    pointer('pointerdown', { clientX: 40, clientY: 50, pointerId: 1 })
+    pointer('pointermove', { clientX: 44, clientY: 52, pointerId: 1 })
+    vi.advanceTimersByTime(300)
+    expect(onIntent).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(200)
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'context-menu',
+      key: 'local:city',
+      x: 40,
+      y: 50,
+    })
+    onIntent.mockClear()
+    pointer('contextmenu', { pointerId: 1, cancelable: true })
+    row.click()
+    expect(onIntent).not.toHaveBeenCalled()
+
+    pointer('pointerdown', { clientX: 40, clientY: 50, pointerId: 2 })
+    pointer('pointermove', { clientX: 70, clientY: 50, pointerId: 2 })
+    vi.advanceTimersByTime(600)
+    expect(onIntent).not.toHaveBeenCalled()
+    pointer('pointerdown', { clientX: 40, clientY: 50, pointerId: 3, pointerType: 'mouse' })
+    vi.advanceTimersByTime(600)
+    expect(onIntent).not.toHaveBeenCalled()
+    row.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 6 }),
+    )
+    expect(onIntent).toHaveBeenCalledWith({ type: 'context-menu', key: 'local:city', x: 5, y: 6 })
+    void unmount(component)
+  })
+
+  it.each([
+    ['contextmenu', 'click'],
+    ['click', 'contextmenu'],
+  ])("suppresses a held folder's trailing %s then %s until the next gesture", (first, second) => {
+    vi.useFakeTimers()
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          entries: model.entries.map((entry) => ({ ...entry, contextMenu: true })),
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
+    if (row === null) throw new Error('missing folder row')
+    const pointer = (type: string, init: PointerEventInit = {}): void => {
+      row.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          pointerType: 'touch',
+          isPrimary: true,
+          pointerId: 1,
+          ...init,
+        }),
+      )
+    }
+    pointer('pointerdown')
+    vi.advanceTimersByTime(2000)
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'context-menu',
+      key: 'local',
+      x: 0,
+      y: 0,
+    })
+    onIntent.mockClear()
+    // Another device can act while the original finger is still held down.
+    pointer('pointerdown', { pointerId: 2, pointerType: 'mouse' })
+    pointer('pointerup', { pointerId: 2, pointerType: 'mouse' })
+    pointer('click', { pointerId: 2, pointerType: 'mouse' })
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({ type: 'toggle-expanded', key: 'local' })
+    onIntent.mockClear()
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true }))
+    pointer('contextmenu', { pointerId: -1, pointerType: '' })
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'context-menu',
+      key: 'local',
+      x: 0,
+      y: 0,
+    })
+    onIntent.mockClear()
+    pointer('pointerup')
+    for (const type of [first, second]) {
+      const event = new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerType: 'touch',
+        pointerId: 1,
+      })
+      row.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+    }
+    expect(onIntent).not.toHaveBeenCalled()
+
+    pointer('pointerdown')
+    pointer('pointerup')
+    row.click()
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({ type: 'toggle-expanded', key: 'local' })
+    void unmount(component)
+  })
+
+  it('separates menu groups and opens a submenu by keyboard, tap, and hover', async () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          contextMenu: {
+            id: 'menu-2',
+            rowKey: 'local:city',
+            x: 20,
+            y: 30,
+            items: [
+              { id: 'go', label: 'Go to', icon: 'search', group: 'navigate' },
+              { id: 'export', label: 'Export .wplace', icon: 'download', group: 'organise' },
+              { id: 'move', label: 'Move', icon: 'move', group: 'organise' },
+              {
+                id: 'mark',
+                label: 'Mark as…',
+                icon: 'taskAlt',
+                group: 'state',
+                children: [
+                  { id: 'finished', label: 'Finished', icon: 'flag', checked: true },
+                  { id: 'frozen', label: 'Frozen', icon: 'snowflake', checked: false },
+                ],
+              },
+              { id: 'delete', label: 'Delete', icon: 'trash', group: 'danger', danger: true },
+            ],
+          },
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    const key = (target: Element | null, key: string): void => {
+      target?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+      flushSync()
+    }
+    const hover = (target: Element | null, pointerType: string): void => {
+      target?.dispatchEvent(new PointerEvent('pointerenter', { pointerType }))
+      flushSync()
+    }
+    const rows = (): string[] =>
+      Array.from(
+        document.querySelectorAll('.context-menu [role^="menuitem"]'),
+        (row) => row.textContent?.trim() ?? '',
+      )
+
+    expect(document.querySelectorAll('.context-menu [role="separator"]')).toHaveLength(3)
+    const trigger = document.querySelector<HTMLButtonElement>(
+      '.context-menu [aria-haspopup="menu"]',
+    )
+    if (trigger === null) throw new Error('missing submenu trigger')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(rows()).toEqual(['Go to', 'Export .wplace', 'Move', 'Mark as…', 'Delete'])
+
+    trigger.focus()
+    key(trigger, 'ArrowRight')
+    await tick()
+    await tick()
+    const finished = document.querySelector<HTMLButtonElement>(
+      '.context-menu [role="menuitemcheckbox"]',
+    )
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(finished?.getAttribute('aria-checked')).toBe('true')
+    expect(document.activeElement).toBe(finished)
+    key(finished, 'ArrowDown')
+    expect(document.activeElement?.textContent).toContain('Frozen')
+    expect(document.activeElement?.getAttribute('aria-checked')).toBe('false')
+    key(document.activeElement, 'ArrowDown')
+    expect(document.activeElement).toBe(finished)
+    key(finished, 'Escape')
+    expect(document.querySelector('.context-menu [role="menuitemcheckbox"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(onIntent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'dismiss-context-menu' }),
+    )
+
+    hover(trigger, 'touch')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    trigger.click()
+    flushSync()
+    await tick()
+    await tick()
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement?.textContent).toContain('Finished')
+    key(trigger, 'ArrowDown')
+    expect(document.activeElement?.textContent).toContain('Delete')
+    document.querySelector<HTMLButtonElement>('.context-menu [role="menuitemcheckbox"]')?.click()
+    expect(onIntent).toHaveBeenCalledWith({
+      type: 'context-menu-action',
+      menuId: 'menu-2',
+      actionId: 'finished',
+    })
+
+    hover(document.querySelector('.context-menu [role="menuitem"]'), 'mouse')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    hover(trigger, 'mouse')
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    hover(document.querySelector('.context-menu [role="menuitemcheckbox"]'), 'mouse')
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    for (const closeKey of ['ArrowLeft', 'Escape']) {
+      const first = document.querySelector<HTMLButtonElement>('.context-menu [role="menuitem"]')
+      first?.focus()
+      hover(trigger, 'mouse')
+      expect(document.activeElement).toBe(first)
+      key(document.activeElement, closeKey)
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(trigger)
+      expect(onIntent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'dismiss-context-menu' }),
+      )
+    }
+    void unmount(component)
+  })
+
   it('shows drag feedback and emits the resolved drop position', () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, { target: document.body, props: { model, onIntent } })

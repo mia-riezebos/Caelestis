@@ -17,6 +17,7 @@
     TemplateTreeIntent,
     TemplateTreeModel,
     TreeActionModel,
+    TreeContextMenuItemModel,
     TreeProgressModel,
     TreeRowModel,
   } from '../types.js'
@@ -39,6 +40,7 @@
   let admittedOperationId: string | undefined
   let admittedMenuId: string | undefined
   let menuInvoker: HTMLElement | null = null
+  let openSubmenuId = $state<string>()
   let operationSelection = $state('')
   const grid = $derived(allowGrid && model.displayMode === 'grid')
   const progressEntry = $derived(model.entries.find((entry): entry is TreeRowModel => entry.type === 'row' && entry.key === progressKey && entry.progress !== undefined))
@@ -88,6 +90,7 @@
     if (next === admittedMenuId) return
     const previous = admittedMenuId
     admittedMenuId = next
+    openSubmenuId = undefined
     if (next !== undefined) {
       menuInvoker = activeTreeElement()
       void tick().then(() => {
@@ -139,8 +142,69 @@
 
   const clickRow = (event: MouseEvent, row: TreeRowModel): void => {
     if (event.target instanceof Element && event.target.closest('.visibility') !== null) return
+    if (isLongPressEvent(event)) { event.preventDefault(); return }
     activeKey = row.key
     if (row.container && !row.forceExpanded) emit({ type: 'toggle-expanded', key: row.key })
+  }
+
+  /**
+   * Press-and-hold on touch opens the same menu a right-click does. iOS never fires `contextmenu`
+   * for a touch, Android does after its own delay, so the timer owns the gesture and the click and
+   * `contextmenu` that trail a finished hold are swallowed instead of reopening or acting on the row.
+   */
+  const LONG_PRESS_MS = 450
+  const LONG_PRESS_SLOP = 10
+  let longPress: { timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number } | null = null
+  let completedLongPressPointerId: number | undefined
+  let touchPointerActive = false
+
+  /** Native click and contextmenu events retain the pointer ID of their originating gesture. */
+  const isLongPressEvent = (event: MouseEvent): boolean =>
+    event instanceof PointerEvent && event.pointerId === completedLongPressPointerId
+
+  const cancelLongPress = (): void => {
+    if (longPress !== null) clearTimeout(longPress.timer)
+    longPress = null
+  }
+
+  const pressRow = (event: PointerEvent, row: TreeRowModel): void => {
+    if (event.pointerId === completedLongPressPointerId) completedLongPressPointerId = undefined
+    touchPointerActive = event.pointerType === 'touch'
+    if (!touchPointerActive || !row.contextMenu || !event.isPrimary) return
+    if (event.target instanceof Element && event.target.closest('button, input, label, a') !== null) return
+    cancelLongPress()
+    const { clientX: x, clientY: y, pointerId } = event
+    const element = event.currentTarget as HTMLElement
+    longPress = {
+      x,
+      y,
+      pointerId,
+      timer: setTimeout(() => {
+        longPress = null
+        completedLongPressPointerId = pointerId
+        element.focus()
+        emit({ type: 'context-menu', key: row.key, x, y })
+      }, LONG_PRESS_MS),
+    }
+  }
+
+  const moveRowPointer = (event: PointerEvent): void => {
+    if (longPress === null || longPress.pointerId !== event.pointerId) return
+    if (Math.hypot(event.clientX - longPress.x, event.clientY - longPress.y) > LONG_PRESS_SLOP) cancelLongPress()
+  }
+
+  const releaseRow = (): void => {
+    cancelLongPress()
+    touchPointerActive = false
+  }
+
+  const contextMenuRow = (event: MouseEvent, row: TreeRowModel): void => {
+    if (!row.contextMenu) return
+    event.preventDefault()
+    cancelLongPress()
+    if (isLongPressEvent(event)) return
+    event.currentTarget instanceof HTMLElement && event.currentTarget.focus()
+    emit({ type: 'context-menu', key: row.key, x: event.clientX, y: event.clientY })
   }
 
   const keydown = (event: KeyboardEvent, row: TreeRowModel): void => {
@@ -180,6 +244,8 @@
   }
 
   const startDrag = (event: DragEvent, row: TreeRowModel): void => {
+    // A touch drag begins with the same hold that opens the menu; the menu wins on touch.
+    if (touchPointerActive) { event.preventDefault(); return }
     draggingKey = row.key
     emit({ type: 'drag-state', active: true })
     event.dataTransfer?.setData('text/plain', row.key)
@@ -231,9 +297,71 @@
     }
   }
 
+  /** The rows of one menu level, leaving an open submenu's rows to their own list. */
+  const menuRows = (menu: Element): HTMLButtonElement[] =>
+    Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).filter((button) => button.closest('[role="menu"]') === menu)
+
+  const submenuTrigger = (id: string): HTMLButtonElement | null =>
+    contextMenuElement?.querySelector<HTMLButtonElement>(`[data-submenu="${id}"] > button`) ?? null
+
+  const openSubmenu = async (id: string, focusFirst: boolean): Promise<void> => {
+    openSubmenuId = id
+    if (!focusFirst) return
+    await tick()
+    contextMenuElement?.querySelector<HTMLButtonElement>(`[data-submenu="${id}"] [role="menu"] button`)?.focus()
+  }
+
+  const closeSubmenu = (restoreFocus: boolean): void => {
+    const id = openSubmenuId
+    openSubmenuId = undefined
+    if (restoreFocus && id !== undefined) submenuTrigger(id)?.focus()
+  }
+
+  /** Mouse hover opens a submenu and closes any sibling's; touch and pen wait for the tap. */
+  const hoverMenuRow = (event: PointerEvent, item: TreeContextMenuItemModel): void => {
+    if (event.pointerType !== 'mouse') return
+    if (item.children === undefined) openSubmenuId = undefined
+    else void openSubmenu(item.id, false)
+  }
+
+  const toggleSubmenu = (id: string): void => {
+    if (openSubmenuId === id) closeSubmenu(true)
+    else void openSubmenu(id, true)
+  }
+
+  /** Keep a submenu beside its trigger and inside the viewport; fixed placement escapes the menu's scroll clip. */
+  const placeSubmenu = (node: HTMLElement): void => {
+    const trigger = node.parentElement?.querySelector('button')
+    if (!trigger) return
+    const anchor = trigger.getBoundingClientRect()
+    const width = node.offsetWidth
+    const height = node.offsetHeight
+    const padding = 4
+    const left = anchor.right + width > window.innerWidth - 8 ? Math.max(8, anchor.left - width) : anchor.right
+    const top = Math.max(8, Math.min(anchor.top - padding, window.innerHeight - 8 - height))
+    node.style.left = `${left}px`
+    node.style.top = `${top}px`
+  }
+
   const navigateContextMenu = (event: KeyboardEvent): void => {
-    const buttons = Array.from(contextMenuElement?.querySelectorAll<HTMLButtonElement>('button') ?? [])
-    const current = buttons.indexOf(event.target as HTMLButtonElement)
+    const target = event.target instanceof HTMLElement ? event.target : null
+    const menu = target?.closest('[role="menu"]')
+    if (target === null || !menu) return
+    const nested = menu !== contextMenuElement
+    if (openSubmenuId !== undefined && (event.key === 'ArrowLeft' || event.key === 'Escape')) {
+      event.preventDefault()
+      event.stopPropagation()
+      closeSubmenu(true)
+      return
+    }
+    const submenu = target.parentElement?.dataset.submenu
+    if (!nested && event.key === 'ArrowRight' && submenu !== undefined) {
+      event.preventDefault()
+      void openSubmenu(submenu, true)
+      return
+    }
+    const buttons = menuRows(menu)
+    const current = buttons.indexOf(target as HTMLButtonElement)
     let index: number
     if (event.key === 'ArrowDown') index = (current + 1) % buttons.length
     else if (event.key === 'ArrowUp') index = (current - 1 + buttons.length) % buttons.length
@@ -313,17 +441,42 @@
     role="menu"
     tabindex="-1"
     onkeydown={navigateContextMenu}
-    style:left={`max(0.5rem, min(${model.contextMenu.x}px, calc(100vw - 11.5rem)))`}
+    style:left={`max(0.5rem, min(${model.contextMenu.x}px, calc(100vw - 13rem)))`}
     style:top={`max(0.5rem, min(${model.contextMenu.y}px, calc(100vh - 18rem)))`}
   >
-    {#each model.contextMenu.items as item (item.id)}
-      <button class="caelestis-menu-item" class:danger={item.danger === true} type="button" role="menuitem" onclick={() => emit({ type: 'context-menu-action', menuId: model.contextMenu?.id ?? '', actionId: item.id })}>
-        <Icon name={item.icon} />
-        <span>{item.label}</span>
-      </button>
+    {#each model.contextMenu.items as item, index (item.id)}
+      {#if index > 0 && item.group !== model.contextMenu.items[index - 1]?.group}
+        <div class="caelestis-menu-separator" role="separator"></div>
+      {/if}
+      {#if item.children === undefined}
+        {@render menuRow(item, model.contextMenu.id, true)}
+      {:else}
+        <div class="submenu-host" data-submenu={item.id}>
+          <button class="caelestis-menu-item" type="button" role="menuitem" aria-haspopup="menu" aria-expanded={openSubmenuId === item.id} onclick={() => toggleSubmenu(item.id)} onpointerenter={(event) => hoverMenuRow(event, item)}>
+            <Icon name={item.icon} />
+            <span>{item.label}</span>
+            <Icon name="chevronRight" class="menu-trailing" />
+          </button>
+          {#if openSubmenuId === item.id}
+            <div class="submenu caelestis-menu" role="menu" aria-label={item.label} tabindex="-1" use:placeSubmenu>
+              {#each item.children as child (child.id)}
+                {@render menuRow(child, model.contextMenu.id, false)}
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
     {/each}
   </div>
 {/if}
+
+{#snippet menuRow(item: TreeContextMenuItemModel, menuId: string, topLevel: boolean)}
+  <button class="caelestis-menu-item" class:danger={item.danger === true} type="button" role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={item.checked} onclick={() => emit({ type: 'context-menu-action', menuId, actionId: item.id })} onpointerenter={topLevel ? (event) => hoverMenuRow(event, item) : undefined}>
+    <Icon name={item.icon} />
+    <span>{item.label}</span>
+    {#if item.checked === true}<Icon name="check" class="menu-trailing" />{/if}
+  </button>
+{/snippet}
 
 <div class="browser" bind:clientWidth={browserWidth}>
 <div class="scroller" data-caelestis-scroller inert={progressEntry !== undefined && narrowDetails}>
@@ -366,7 +519,11 @@
           style:--progress-detail-offset={`${progressDetailOffset}px`}
           onclick={(event) => clickRow(event, entry)}
           onkeydown={(event) => keydown(event, entry)}
-          oncontextmenu={(event) => { if (entry.contextMenu) { event.preventDefault(); event.currentTarget.focus(); emit({ type: 'context-menu', key: entry.key, x: event.clientX, y: event.clientY }) } }}
+          oncontextmenu={(event) => contextMenuRow(event, entry)}
+          onpointerdown={(event) => pressRow(event, entry)}
+          onpointermove={moveRowPointer}
+          onpointerup={releaseRow}
+          onpointercancel={releaseRow}
           ondragstart={(event) => startDrag(event, entry)}
           ondragover={(event) => dragOver(event, entry)}
         >
@@ -405,11 +562,13 @@
             {#if alarmKind !== undefined}
               <TemplateState compact showLifecycle={false} {...(entry.descendantAlarmKind === undefined ? {} : { descendantAlarmKind: entry.descendantAlarmKind })} {...entry.lifecycle} />
             {/if}
-            {#each entry.leadingActions ?? [] as item (item.id)}
-              <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
-                <Icon name={item.icon} />
-              </button>
-            {/each}
+            {#if grid}
+              {#each entry.leadingActions ?? [] as item (item.id)}
+                <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
+                  <Icon name={item.icon} />
+                </button>
+              {/each}
+            {/if}
             {#if model.renamingKey === entry.key}
               <input use:focusRename class="rename" data-caelestis-rename aria-label={`Rename ${entry.name}`} bind:value={renameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === 'Enter') commitRename(entry); if (event.key === 'Escape') { event.preventDefault(); emit({ type: 'cancel-rename', key: entry.key }) } }} />
             {:else}
@@ -422,7 +581,7 @@
                   <ProgressMeter progress={entry.progress} size="sm" />
                 </span>
                 <span class="actions">
-                  {#each entry.actions ?? [] as item (item.id)}
+                  {#each [...(grid ? [] : entry.leadingActions ?? []), ...(entry.actions ?? [])] as item (item.id)}
                     <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
                       <Icon name={item.icon} />
                     </button>
@@ -432,9 +591,9 @@
                   </button>
                 </span>
               </span>
-            {:else if (entry.actions?.length ?? 0) > 0 || (entry.progress !== undefined && disclosure !== undefined) || card}
+            {:else if (entry.actions?.length ?? 0) > 0 || (!grid && (entry.leadingActions?.length ?? 0) > 0) || (entry.progress !== undefined && disclosure !== undefined) || card}
               <span class="actions">
-                {#each entry.actions ?? [] as item (item.id)}
+                {#each [...(grid ? [] : entry.leadingActions ?? []), ...(entry.actions ?? [])] as item (item.id)}
                   <button class="icon-action" type="button" title={item.label} aria-label={item.label} onclick={(event) => action(entry, item, event)}>
                     <Icon name={item.icon} />
                   </button>
@@ -614,15 +773,24 @@
   .operation button { min-block-size: 2rem; border: 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: transparent; color: inherit; cursor: pointer; }
   .operation button.primary { padding-inline: 0.75rem; background: var(--caelestis-primary); color: var(--caelestis-primary-text, white); }
   .operation button:disabled { cursor: wait; opacity: 0.55; }
-  .context-menu { position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; }
+  /* 12.5rem seats every current label on one line at 14px; wrapping stays as the fallback for long translations. */
+  .context-menu { position: fixed; z-index: 60; display: flex; inline-size: 12.5rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; }
   .context-menu button { inline-size: 100%; }
   .context-menu button.danger { color: var(--caelestis-danger); }
+  .context-menu :global(.menu-trailing) { margin-inline-start: auto; opacity: 0.7; }
+  .submenu-host { display: flex; flex: 0 0 auto; flex-direction: column; }
+  .submenu { position: fixed; z-index: 61; display: flex; min-inline-size: 8rem; max-inline-size: calc(100vw - 1rem); flex-direction: column; }
   @media (hover: hover) {
     .actions { opacity: 0; pointer-events: none; }
     .row:hover .actions, .row:focus-within .actions { opacity: 1; pointer-events: auto; }
     .row:hover .row-tail > .progress, .row:focus-within .row-tail > .progress { opacity: 0; pointer-events: none; }
   }
-  @media (hover: none) { .row-tail > .progress { visibility: hidden; } }
+  /* Without hover there is no way to reveal row actions, so the context menu (press-and-hold) is the
+     only action surface in tree mode: the meter and the icon buttons go, and the name gets the row. */
+  @media (hover: none) {
+    .tree:not(.preview-grid) .row-tail, .tree:not(.preview-grid) .row-heading > .actions { display: none; }
+    .row { -webkit-touch-callout: none; user-select: none; }
+  }
   .tree.preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); align-content: start; align-items: start; gap: 0.5rem; padding: 0.5rem; }
   .preview-grid > :not(.preview-card) { grid-column: 1 / -1; min-inline-size: 0; margin-inline: 0; }
   .preview-grid .folder-heading { border-block-end: 1px solid var(--caelestis-border); border-radius: 0; }

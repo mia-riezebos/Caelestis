@@ -189,9 +189,9 @@
     const ids = [...templateIds]
     contributions = null
     leaderboard = null
-    // The heatmap draws sixteen weeks, and that is all this read is for: painter pace comes from
+    // The heatmap draws up to a year of weeks, and that is all this read is for: painter pace comes from
     // the bucket ladder below, at whatever range the scope has.
-    const contributionsFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 16
+    const contributionsFrom = Math.floor(Date.now() / 1_000) - 86_400 * 7 * 53
     if (liveDashboard)
       return subscribeDashboard(ids, contributionsFrom, (snapshot) => {
         contributions = snapshot.contributions.days
@@ -205,7 +205,7 @@
       refreshPending = true
       const requestedAt = Math.floor(Date.now() / 1_000)
       void Promise.all([
-        getContributions(ids, requestedAt - 86_400 * 7 * 16, requestedAt).then((response) => {
+        getContributions(ids, requestedAt - 86_400 * 7 * 53, requestedAt).then((response) => {
           if (!generation.cancelled) contributions = response.days
         }),
         getLeaderboard(season, { templateIds: ids }).then((response) => {

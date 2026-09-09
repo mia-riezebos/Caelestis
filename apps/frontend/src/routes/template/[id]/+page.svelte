@@ -4,9 +4,9 @@
     timelapseCaptureRect,
     type TileKey,
   } from '@caelestis/shared'
-  import { Icon, MenuStyles, ProgressMeter, TemplateAdmin, TemplateState } from '@caelestis/ui'
+  import { Icon, MenuStyles, ProgressMeter, TemplateState } from '@caelestis/ui'
   import { page } from '$app/state'
-  import { getArchiveHistory, getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
+  import { getArchiveHistory, getTileHistory } from '$lib/api/client'
   import { mergeArchiveFrames, type PlaybackFrame } from '$lib/archive-history'
   import ColourProgress from '$lib/components/ColourProgress.svelte'
   import StatsPanel from '$lib/components/StatsPanel.svelte'
@@ -53,26 +53,6 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
   // The scrub position: 0..timeline.length, where the last stop is "live".
   let scrub = $state(0)
   let playing = $state(false)
-  let lifecycleBusy = $state(false)
-  let lifecycleError = $state<string | null>(null)
-
-  const updateLifecycle = async (
-    patch: { readonly finished?: boolean; readonly timelapseFrozen?: boolean },
-  ): Promise<void> => {
-    const target = template
-    if (target === null || lifecycleBusy) return
-    lifecycleBusy = true
-    lifecycleError = null
-    try {
-      await patchTemplateLifecycle(target.id, patch)
-      await app.load()
-    } catch (error) {
-      lifecycleError = error instanceof Error ? error.message : String(error)
-    } finally {
-      lifecycleBusy = false
-    }
-  }
-
   $effect(() => {
     const target = template
     const season = app.manifest?.season
@@ -236,25 +216,6 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       <p class="-mt-2 text-xs text-base-content/50">
         {Math.round((progress.known / Math.max(1, progress.total)) * 100)}% of pixels scanned.
       </p>
-    {/if}
-
-    {#if app.isAdmin}
-      <section class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-3">
-        <div>
-          <h2 class="font-semibold">Template lifecycle</h2>
-          <p class="text-xs text-base-content/60">Finished templates keep a live grief watch without adding history.</p>
-        </div>
-        <TemplateAdmin
-          finished={template.finished}
-          frozen={template.timelapseFrozen}
-          busy={lifecycleBusy}
-          onFinishedChange={({ value }) => void updateLifecycle({ finished: value })}
-          onFrozenChange={({ value }) => void updateLifecycle({ timelapseFrozen: value })}
-        />
-        {#if lifecycleError !== null}
-          <p class="w-full text-sm text-error" role="alert">{lifecycleError}</p>
-        {/if}
-      </section>
     {/if}
 
     <section class="overflow-hidden rounded-2xl border-[1.5px] border-base-300 bg-base-100">

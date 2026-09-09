@@ -51,13 +51,16 @@
 
   const MAX_ZOOM = 40
 
-  const fitToArt = (): void => {
+  const fitRect = (rect: CanvasRect, margin: number): void => {
     if (viewWidth === 0 || viewHeight === 0) return
-    const margin = 1.15
-    zoom = Math.min(viewWidth / (art.width * margin), viewHeight / (art.height * margin), MAX_ZOOM)
-    originX = art.x + art.width / 2 - viewWidth / 2 / zoom
-    originY = art.y + art.height / 2 - viewHeight / 2 / zoom
+    zoom = Math.min(viewWidth / (rect.width * margin), viewHeight / (rect.height * margin), MAX_ZOOM)
+    originX = rect.x + rect.width / 2 - viewWidth / 2 / zoom
+    originY = rect.y + rect.height / 2 - viewHeight / 2 / zoom
   }
+
+  const fitToArt = (): void => fitRect(art, 1.15)
+  /** The opening view: the artwork inside the surrounding tiles the server mirrors around it. */
+  const fitToSurroundings = (): void => fitRect(world, 1)
 
   const minZoom = $derived(
     viewWidth === 0
@@ -210,7 +213,7 @@
       canvas.height = Math.max(1, Math.round(viewHeight * dpr))
       if (!fitted && viewWidth > 0) {
         fitted = true
-        fitToArt()
+        fitToSurroundings()
       }
       schedulePresent()
     })

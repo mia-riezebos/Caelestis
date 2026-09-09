@@ -1,15 +1,11 @@
 <script lang="ts">
-import type { CanvasTileSummary, Template, TileKey } from '@caelestis/shared'
 import {
-  drawCanvasTiles,
-  drawTemplateChunks,
-  osmImage,
-  osmSpan,
-  osmZoomFor,
-  paddedRect,
-  templateRect,
-  tileUnionRect,
-} from '$lib/render'
+  type CanvasTileSummary,
+  type Template,
+  type TileKey,
+  timelapseCaptureRect,
+} from '@caelestis/shared'
+import { drawCanvasTiles, drawTemplateChunks, osmImage, osmSpan, osmZoomFor } from '$lib/render'
 import { cn } from '$lib/utils'
 
 let {
@@ -26,8 +22,19 @@ let {
   class?: string
 } = $props()
 
-// Include nearby canvas within the template's tiles. This keeps the card preview grounded in place.
-const rect = $derived(paddedRect(templateRect(template), 0.5, tileUnionRect(template)))
+// The same surroundings the viewer opens on and the timelapse captures, so a card shows the artwork
+// in its neighbourhood over the map rather than cropped to its own tiles.
+const rect = $derived.by(() => {
+  const capture = timelapseCaptureRect(template.bbox)
+  const x = Math.floor(capture.x)
+  const y = Math.floor(capture.y)
+  return {
+    x,
+    y,
+    width: Math.ceil(capture.x + capture.width) - x,
+    height: Math.ceil(capture.y + capture.height) - y,
+  }
+})
 
 let osmLayer = $state<HTMLCanvasElement | null>(null)
 let tilesLayer = $state<HTMLCanvasElement | null>(null)

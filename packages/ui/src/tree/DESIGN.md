@@ -14,6 +14,8 @@ Cards keep artwork above their name, dimensions, source, and progress. Compact c
 
 The same ordered entries render in both modes. Folder rows span the grid and retain expansion and visibility controls. Cards show their folder path so mixed folder/template custom order stays understandable. Use one column in narrow panels and additional columns when cards have sufficient space. Keep actions visible in grid mode for touch and keyboard access.
 
+In tree mode, fly-to sits with the other hover actions rather than beside the name, and the context menu opens with Go to first. On devices without hover the tree shows only names and visibility switches: the inline meter and hover actions are hidden, press-and-hold on a row opens the context menu, and touch drags yield to that hold. Grid cards keep their visible actions.
+
 Preview canvases have bounded backing dimensions and draw only near the scroll viewport. Switching mode changes no template data or viewport focus.
 
 Grid progress opens from the card's progress bar into a separate details pane. Totals and per-colour progress appear together, with readable labels and an independently scrolling colour list. Cards never expand into long reports. At narrow widths, the pane covers the grid and temporarily makes the covered controls inert. Closing or Escape returns focus to the progress button. Tree mode retains its inline disclosures.

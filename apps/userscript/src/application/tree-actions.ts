@@ -8,6 +8,7 @@ import {
 } from '@caelestis/shared'
 import type {
   TemplateTreeIntent,
+  TreeContextMenuItemModel,
   TreeContextMenuModel,
   TreeIcon,
   TreeOperationModel,
@@ -79,7 +80,7 @@ import {
   type Source,
   transplant,
 } from './transplant.js'
-import { goToLocalTemplate } from './tree-navigation.js'
+import { goToLocalTemplate, goToServerTemplate } from './tree-navigation.js'
 import {
   findServerNode,
   findServerTemplate,
@@ -96,6 +97,31 @@ import {
 import { requestTemplateArtworkUpdate } from './update-template-artwork.js'
 
 type ContextAction = { readonly id: string; readonly run: () => void }
+type MenuEntry = {
+  readonly icon: TreeIcon
+  readonly label: string
+  readonly run: () => void
+  readonly returnToCanvas?: true
+  readonly danger?: true
+  readonly checked?: boolean
+  readonly children?: readonly MenuEntry[]
+}
+/**
+ * The one group order every row's menu follows, so the eye learns where a verb lives. A group
+ * with nothing to show for this row simply disappears along with its separator.
+ */
+const MENU_GROUPS = [
+  'navigate',
+  'work',
+  'organise',
+  'publish',
+  'state',
+  'artwork',
+  'edit',
+  'danger',
+] as const
+type MenuGroup = (typeof MENU_GROUPS)[number]
+type MenuGroups = Partial<Record<MenuGroup, ReadonlyArray<MenuEntry | null>>>
 type OperationState = {
   model: TreeOperationModel
   readonly onConfirm?: (value: string) => void
@@ -1024,30 +1050,36 @@ export const openContextMenu = (
         : templateId
     if (id !== null) requestTemplateArtworkUpdate(id, rerender)
   }
-  const rename: readonly [TreeIcon, string, () => void] = [
-    'rename',
-    'Rename',
-    () => {
+  const rename: MenuEntry = {
+    icon: 'rename',
+    label: 'Rename',
+    run: () => {
       startRenaming(target.key)
       rerender()
     },
-  ]
-  const remove: readonly [TreeIcon, string, () => void] = [
-    'trash',
-    'Delete',
-    () => void applyDelete(target, rerender),
-  ]
+  }
+  const remove: MenuEntry = {
+    icon: 'trash',
+    label: 'Delete',
+    danger: true,
+    run: () => void applyDelete(target, rerender),
+  }
+  const exportEntry: MenuEntry = {
+    icon: 'download',
+    label: 'Export .wplace',
+    run: () => void exportTemplate(target),
+  }
   const published = publishedStateOf(target)
   const lifecycle = templateStateOf(target)
   const alarm =
     target.server === null || lifecycle === null ? null : serverAlarmFor(target.server, lifecycle)
-  const dismissGrief: readonly [TreeIcon, string, () => void] | null =
+  const dismissGrief: MenuEntry | null =
     alarm === null || target.server === null
       ? null
-      : [
-          'check',
-          'Dismiss grief alert',
-          () => {
+      : {
+          icon: 'check',
+          label: 'Dismiss grief alert',
+          run: () => {
             const server = target.server
             if (server === null) return
             void dismissTemplateAlarm(server, alarm.templateId, alarm.id).then((result) => {
@@ -1056,143 +1088,208 @@ export const openContextMenu = (
               rerender()
             })
           },
-        ]
+        }
   const folderTemplates = folderTemplatesFor(target)
   const folderPublished =
     folderTemplates !== null &&
     folderTemplates.length > 0 &&
     folderTemplates.every((template) => template.published)
-  const folderPublication: readonly [TreeIcon, string, () => void] | null =
+  const folderPublication: MenuEntry | null =
     folderTemplates === null
       ? null
       : folderPublished
-        ? [
-            'eyeOff',
-            'Unpublish folder',
-            () => void setServerFolderPublished(target, false, rerender),
-          ]
-        : ['eye', 'Publish folder', () => void setServerFolderPublished(target, true, rerender)]
-  const existingEntries: ReadonlyArray<
-    readonly [TreeIcon, string, () => void, returnToCanvas?: true]
-  > =
+        ? {
+            icon: 'eyeOff',
+            label: 'Unpublish folder',
+            run: () => void setServerFolderPublished(target, false, rerender),
+          }
+        : {
+            icon: 'eye',
+            label: 'Publish folder',
+            run: () => void setServerFolderPublished(target, true, rerender),
+          }
+  const finished = lifecycle?.finished === true
+  const frozen = lifecycle?.timelapseFrozen === true
+  const markAs: MenuEntry = {
+    icon: 'taskAlt',
+    label: 'Mark as…',
+    run: () => {},
+    children: [
+      {
+        icon: 'flag',
+        label: 'Finished',
+        checked: finished,
+        run: () => void setServerTemplateLifecycle(target, { finished: !finished }, rerender),
+      },
+      {
+        icon: 'snowflake',
+        label: 'Frozen',
+        checked: frozen,
+        run: () => void setServerTemplateLifecycle(target, { timelapseFrozen: !frozen }, rerender),
+      },
+    ],
+  }
+  const existingGroups: MenuGroups =
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
       ? target.server === null || !hasServerAdminToken(target.server)
-        ? [['download', 'Export .wplace', () => void exportTemplate(target)]]
-        : [
-            ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
-            ['download', 'Export .wplace', () => void exportTemplate(target)],
-            ...(dismissGrief === null ? [] : [dismissGrief]),
-            published
-              ? [
-                  'eyeOff',
-                  'Unpublish',
-                  () => void setServerTemplatePublished(target, false, rerender),
-                ]
-              : ['eye', 'Publish', () => void setServerTemplatePublished(target, true, rerender)],
-            lifecycle?.finished === true
-              ? [
-                  'reset',
-                  'Reopen template',
-                  () => void setServerTemplateLifecycle(target, { finished: false }, rerender),
-                ]
-              : [
-                  'check',
-                  'Mark finished',
-                  () => void setServerTemplateLifecycle(target, { finished: true }, rerender),
-                ],
-            lifecycle?.timelapseFrozen === true
-              ? [
-                  'reset',
-                  'Thaw timelapse',
-                  () =>
-                    void setServerTemplateLifecycle(target, { timelapseFrozen: false }, rerender),
-                ]
-              : [
-                  'check',
-                  'Freeze timelapse',
-                  () =>
-                    void setServerTemplateLifecycle(target, { timelapseFrozen: true }, rerender),
-                ],
-            ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
-            ['reset', 'Use canvas artwork', updateArtwork],
-            ...(surfaceOf(target).kind === 'world' && target.server.season === 0
-              ? [
-                  [
-                    'download',
-                    'Backfill template tiles and progress data',
-                    () => openTemplateBackfill(target),
-                  ] as const,
-                ]
-              : []),
-            rename,
-            remove,
-          ]
-      : templateId === null
-        ? [
-            ['createFolder', 'New folder', () => void createFolder(target, rerender, surface)],
-            [
-              'uploadFile',
-              'Import template',
-              () => void importTemplate(target, rerender, surface),
-              true,
-            ],
-            ...(folderPublication === null ? [] : [folderPublication]),
-            rename,
-            remove,
-          ]
-        : [
-            ['search', 'Go to', () => goToLocalTemplate(templateId), true],
-            ['download', 'Export .wplace', () => void exportTemplate(target)],
-            [
-              'move',
-              'Move',
-              () => {
-                // `beginMove` refuses while another placement is running, while the template is
-                // mid-delete, and when it has gone. Dropping that answer made the menu entry do
-                // nothing at all, with no placement and no explanation.
-                if (!beginMove(templateId, rerender))
-                  toast('Finish the placement already in progress, then move this one.', 'warning')
+        ? { organise: [exportEntry] }
+        : {
+            organise: [
+              {
+                icon: 'move',
+                label: 'Move to folder',
+                run: () => void moveServerTemplate(target, rerender),
               },
-              true,
+              exportEntry,
             ],
-            ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
-            ['reset', 'Use canvas artwork', updateArtwork],
-            rename,
-            remove,
-          ]
+            publish: [
+              published
+                ? {
+                    icon: 'eyeOff',
+                    label: 'Unpublish',
+                    run: () => void setServerTemplatePublished(target, false, rerender),
+                  }
+                : {
+                    icon: 'eye',
+                    label: 'Publish',
+                    run: () => void setServerTemplatePublished(target, true, rerender),
+                  },
+              dismissGrief,
+            ],
+            state: [markAs],
+            artwork: [
+              {
+                icon: 'uploadFile',
+                label: 'Replace artwork',
+                run: () => void replaceServerArtwork(target, rerender),
+              },
+              { icon: 'reset', label: 'Use canvas artwork', run: updateArtwork },
+              surfaceOf(target).kind === 'world' && target.server.season === 0
+                ? {
+                    icon: 'download',
+                    label: 'Backfill history',
+                    run: () => openTemplateBackfill(target),
+                  }
+                : null,
+            ],
+            edit: [rename],
+            danger: [remove],
+          }
+      : templateId === null
+        ? {
+            organise: [
+              {
+                icon: 'createFolder',
+                label: 'New folder',
+                run: () => void createFolder(target, rerender, surface),
+              },
+              {
+                icon: 'uploadFile',
+                label: 'Import template',
+                returnToCanvas: true,
+                run: () => void importTemplate(target, rerender, surface),
+              },
+            ],
+            publish: [folderPublication],
+            edit: [rename],
+            danger: [remove],
+          }
+        : {
+            navigate: [
+              {
+                icon: 'search',
+                label: 'Go to',
+                returnToCanvas: true,
+                run: () => goToLocalTemplate(templateId),
+              },
+            ],
+            organise: [
+              {
+                icon: 'move',
+                label: 'Move',
+                returnToCanvas: true,
+                run: () => {
+                  // `beginMove` refuses while another placement is running, while the template is
+                  // mid-delete, and when it has gone. Dropping that answer made the menu entry do
+                  // nothing at all, with no placement and no explanation.
+                  if (!beginMove(templateId, rerender))
+                    toast(
+                      'Finish the placement already in progress, then move this one.',
+                      'warning',
+                    )
+                },
+              },
+              {
+                icon: 'uploadFile',
+                label: 'Copy to a server',
+                run: () => void copyToServer(templateId, rerender),
+              },
+              exportEntry,
+            ],
+            artwork: [{ icon: 'reset', label: 'Use canvas artwork', run: updateArtwork }],
+            edit: [rename],
+            danger: [remove],
+          }
   const claimed = hasOwnTemplateClaim(target)
-  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void, returnToCanvas?: true]> = [
-    ...((target.templateId !== undefined || templateId !== null) && canClaimTemplate(target)
-      ? [
-          [
-            'check',
-            claimed ? 'Release claim' : 'Claim',
-            () => void claimTemplate(target, rerender, claimed),
-          ] as const,
-        ]
-      : []),
+  const groups: MenuGroups = {
+    // Fly-to leads every template menu: on touch the menu is the only way to reach it.
+    navigate:
+      lifecycle === null
+        ? []
+        : [
+            {
+              icon: 'search',
+              label: 'Go to',
+              returnToCanvas: true,
+              run: () => goToServerTemplate(lifecycle.bbox, surfaceOf(target)),
+            },
+          ],
+    work:
+      (target.templateId !== undefined || templateId !== null) && canClaimTemplate(target)
+        ? [
+            {
+              icon: 'check',
+              label: claimed ? 'Release claim' : 'Claim',
+              run: () => void claimTemplate(target, rerender, claimed),
+            },
+          ]
+        : [],
     ...(target.server === null || target.server.isAdmin || target.templateId !== undefined
-      ? existingEntries
-      : []),
-  ]
+      ? existingGroups
+      : {}),
+  }
   closeContextMenu(false)
   const id = `tree-menu-${++presentationId}`
+  const actions: ContextAction[] = []
+  let itemCount = 0
+  const toItem = (entry: MenuEntry, group: MenuGroup): TreeContextMenuItemModel => {
+    const itemId = `${id}-${itemCount++}`
+    if (entry.children === undefined) actions.push({ id: itemId, run: entry.run })
+    return {
+      id: itemId,
+      label: entry.label,
+      icon: entry.icon,
+      group,
+      ...(entry.returnToCanvas === true ? { returnToCanvas: true } : {}),
+      ...(entry.danger === true ? { danger: true } : {}),
+      ...(entry.checked === undefined ? {} : { checked: entry.checked }),
+      ...(entry.children === undefined
+        ? {}
+        : { children: entry.children.map((child) => toItem(child, group)) }),
+    }
+  }
   contextMenu = {
     id,
     rowKey: target.key,
     x: event.clientX,
     y: event.clientY,
-    items: entries.map(([glyph, label, , returnToCanvas], index) => ({
-      id: `${id}-${index}`,
-      label,
-      icon: glyph,
-      ...(returnToCanvas === true ? { returnToCanvas } : {}),
-      ...(label === 'Delete' ? { danger: true } : {}),
-    })),
+    items: MENU_GROUPS.flatMap((group) =>
+      (groups[group] ?? []).flatMap((entry) => (entry === null ? [] : [toItem(entry, group)])),
+    ),
   }
-  contextActions = entries.map(([, , run], index) => ({ id: `${id}-${index}`, run }))
+  contextActions = actions
   contextRerender = rerender
   rerender()
 }

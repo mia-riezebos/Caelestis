@@ -25,6 +25,7 @@ import error from '@iconify-icons/material-symbols/error'
 import extension from '@iconify-icons/material-symbols/extension'
 import filterAltOutline from '@iconify-icons/material-symbols/filter-alt-outline'
 import fitScreen from '@iconify-icons/material-symbols/fit-screen'
+import flag from '@iconify-icons/material-symbols/flag'
 import folder from '@iconify-icons/material-symbols/folder'
 import gridView from '@iconify-icons/material-symbols/grid-view'
 import image from '@iconify-icons/material-symbols/image'
@@ -46,6 +47,7 @@ import search from '@iconify-icons/material-symbols/search'
 import settings from '@iconify-icons/material-symbols/settings'
 import share from '@iconify-icons/material-symbols/share'
 import sortByAlphaRounded from '@iconify-icons/material-symbols/sort-by-alpha-rounded'
+import taskAlt from '@iconify-icons/material-symbols/task-alt'
 import tune from '@iconify-icons/material-symbols/tune'
 import unfoldMore from '@iconify-icons/material-symbols/unfold-more'
 import uploadFileOutline from '@iconify-icons/material-symbols/upload-file-outline'
@@ -89,6 +91,7 @@ export const ICONS = define({
   eyeOff: visibilityOff,
   filter: filterAltOutline,
   fitScreen,
+  flag,
   folder,
   github,
   gridView,
@@ -111,6 +114,7 @@ export const ICONS = define({
   snowflake: acUnit,
   sort: sortByAlphaRounded,
   tag: labelOutline,
+  taskAlt,
   trash: deleteOutline,
   treeView: accountTree,
   tune,

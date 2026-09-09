@@ -6,7 +6,6 @@ import {
   getHistory,
   getServer,
   openLiveSocket,
-  patchTemplateLifecycle,
   probeAdminScope,
 } from './client.js'
 
@@ -94,23 +93,14 @@ describe('API request recovery', () => {
     )
   })
 
-  it('sends lifecycle mutations and history windows without a client tier', async () => {
-    stored.set('caelestis:token', 'browser-admin-token')
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url, init) => {
-      if (String(url).includes('/telemetry/history')) {
-        return new Response(JSON.stringify({ buckets: [] }), { status: 200 })
-      }
-      expect(init).toMatchObject({
-        method: 'PATCH',
-        body: JSON.stringify({ finished: true }),
-      })
-      return new Response('{}', { status: 200 })
-    })
+  it('requests history windows without a client tier', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ buckets: [] }), { status: 200 }))
     vi.stubGlobal('fetch', fetch)
 
-    await patchTemplateLifecycle('template', { finished: true })
     await getHistory(['template'], 10, 20)
-    const historyUrl = String(fetch.mock.calls[1]?.[0])
+    const historyUrl = String(fetch.mock.calls[0]?.[0])
     expect(historyUrl).toContain('/v1/telemetry/history?')
     expect(historyUrl).toContain('from=10&to=20')
     expect(historyUrl).not.toContain('resolution')
