@@ -450,6 +450,7 @@
     }]),
   ])
   const visibleArchiveSegments = $derived(archiveSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpArchive)).filter((segment) => segment.length > 1))
+  const isolatedArchivePoints = $derived(archiveSegments.filter((segment) => segment.length === 1).flat().filter((point) => point.t >= shownView.from && point.t <= shownView.to))
   const visibleArchivePaces = $derived(drawnArchivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
   const visibleArchivePaceSegments = $derived(archivePaceSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpRate)).filter((segment) => segment.length > 1))
   const targetArchivePaces = $derived(archivePaceSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate)))
@@ -1331,6 +1332,15 @@
           {#each visibleArchivePaceSegments as segment (segment[0].t)}
             <path data-archive-pace d={linePath(segment)} fill="none"
               stroke="var(--chart-placed)" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" />
+          {/each}
+
+          {#each isolatedArchivePoints as point (point.t)}
+            <g data-archive-singleton>
+              <path d={`M${Math.max(pad.left, x(point.t) - 3)},${yLeft(point.v)}H${Math.min(width - pad.right, x(point.t) + 3)}`}
+                stroke="var(--chart-correct)" stroke-width="2" />
+              {#if point.mismatched > 0}<path d={`M${Math.max(pad.left, x(point.t) - 3)},${yLeft(point.v + point.mismatched)}H${Math.min(width - pad.right, x(point.t) + 3)}`}
+                class="stroke-error" stroke-width="2" />{/if}
+            </g>
           {/each}
 
           {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}

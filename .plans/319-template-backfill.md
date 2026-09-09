@@ -18,8 +18,12 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - [x] Compact pace controls into a dropdown and clarify legend colours and painter metrics.
 - [x] Render archived progress with dashed lines and filled areas, preserving gaps and zoom clipping.
 - [x] Connect archive pace samples and join stacked correct/mismatched areas to reported history.
+- [x] Address verified review findings for scheduling, older backends, D1 metrics and isolated snapshots.
 
 ## Notes
+- Babysit baseline at c89a90b6: full check/test/lint/build passes. Browser integration is cooperative; archive API inputs cross an untrusted boundary.
+- Review triggers: an admin starts through `TemplateBackfill.start` and a rejected initial alarm leaves a persisted running job; `getArchiveHistory` calls an absent route on older servers; `TemplateBackfillObject.preview/start` read D1 in another isolate; independently missing archive snapshots can isolate a valid chart point. Focused reproductions failed before each fix.
+- Rejected storage limit finding: `TemplateBackfillObject` uses `new_sqlite_classes`, with a 2 MB combined key/value limit. A 1,000-chunk/2,000-snapshot job serializes to about 159 KB. The intermediate-gap assertion comment is coverage-only; `archiveIntervals` already excludes either null endpoint.
 - Preserve the supplied clean branch and worktree.
 - Eralyon dates are integer hours since 2025-01-01 UTC. Weekly tile responses contain dated Zstandard blocks with little-endian dimensions and palette bytes; 254 means unchanged. Archive index 0 maps to Caelestis transparent 63, other colours shift by one.
 - Use a dedicated per-template Durable Object for import scheduling and history; keep archive PNGs outside live tile GC. No production changes or deployment.

@@ -48,6 +48,30 @@ const paceToggle = (label: string): HTMLElement => {
 }
 
 describe('rolling pace retention', () => {
+  it('keeps an isolated snapshot visible as a short dash without filling unknown coverage', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [],
+        resolution: 900,
+        from: 0,
+        to: 172800,
+        anchorCorrect: 0,
+        anchorMismatched: 0,
+        archiveSamples: [null, 10, null].map((correct, index) => ({
+          at: index * 86400,
+          snapshotId: index,
+          correct,
+          mismatched: correct === null ? null : 5,
+          total: 20,
+        })),
+      },
+    })
+    flushSync()
+    expect(document.querySelectorAll('[data-archive-singleton]')).toHaveLength(1)
+    expect(document.querySelector('[data-archive-progress-area]')).toBeNull()
+    expect(document.querySelector('[data-archive-pace]')).toBeNull()
+  })
   it.each([false, true])(
     'shows sparse coverage without fabricated placements (all gaps: %s)',
     (allGaps) => {
