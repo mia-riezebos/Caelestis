@@ -36,3 +36,11 @@ status, placement counters, archive samples and painter credits remain intact.
 
 Deploying the chart without recounting legacy observations leaves gaps until their measurements
 exist. New tile ingests record measurements automatically. The recount does not trigger a GIF build.
+
+Replacing artwork creates a new comparison basis. Run the same recount command after a replacement
+to classify retained images against that new version. Until then, older native counts remain unknown;
+measurements from different artwork versions are never substituted. Automatic historical recounts
+on artwork installation are outside this hotfix.
+
+Blob garbage collection also removes measurements for reclaimed hashes once no retained history or
+current canvas references them. Current and retained measurements survive folding and GC.

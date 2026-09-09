@@ -53,6 +53,7 @@
     to,
     anchorCorrect,
     anchorMismatched,
+    finished = false,
     live = false,
     painters = [],
     selectedPainters = new Set<number>(),
@@ -79,11 +80,13 @@
     from: number
     to: number
     /**
-     * Current canvas counts are drawn only at `to` when live. Historical levels come exclusively
+     * Current or frozen canvas counts are drawn only at `to`. Historical levels come exclusively
      * from saved observations; placement reports are not a net canvas-change ledger.
      */
     anchorCorrect: number
     anchorMismatched: number
+    /** A finished scope has a frozen final observation, even though it has no live pulse. */
+    finished?: boolean
     /** The right edge is now: the canvas is still being painted, so the last point is live. */
     live?: boolean
   } = $props()
@@ -137,7 +140,7 @@
   const hasActivity = $derived(
     archiveSamples.length > 0 ||
     progressSamples.length > 0 ||
-    (live && anchorCorrect + anchorMismatched > 0) ||
+    ((live || finished) && anchorCorrect + anchorMismatched > 0) ||
     points.some((p) => p.placed > 0) ||
       painterHistories.some((source) => source.history.buckets.length > 0),
   )
@@ -309,7 +312,7 @@
     mergeObservedProgress(
       archiveSamples,
       progressSamples,
-      live ? { at: to, correct: anchorCorrect, mismatched: anchorMismatched } : undefined,
+      live || finished ? { at: to, correct: anchorCorrect, mismatched: anchorMismatched } : undefined,
     ),
   )
   /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */

@@ -873,6 +873,7 @@ export const templateTileMeasurements = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.versionId, table.tileX, table.tileY, table.hash] }),
+    index('template_tile_measurements_hash_idx').on(table.hash),
     check(
       'template_tile_measurements_counts_check',
       sql`${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,

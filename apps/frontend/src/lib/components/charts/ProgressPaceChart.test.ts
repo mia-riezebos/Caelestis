@@ -48,6 +48,29 @@ const paceToggle = (label: string): HTMLElement => {
 }
 
 describe('rolling pace retention', () => {
+  it('keeps a finished scope final observation even when its last folded bucket is unavailable', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [],
+        resolution: 3600,
+        from: 0,
+        to: 5401,
+        progressSamples: [{ at: 3600, correct: 10, mismatched: 2, total: 100 }],
+        anchorCorrect: 100,
+        anchorMismatched: 0,
+        live: false,
+        finished: true,
+      },
+    })
+    flushSync()
+    document
+      .querySelector('svg[role="img"]')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    flushSync()
+    expect(document.querySelector('[data-pace-tooltip]')?.textContent).toMatch(/correct\s*100/)
+    expect(document.querySelector('[class*="animate-ping"]')).toBeNull()
+  })
   it.each([9765, 98765])(
     "shows the saved count at an old date regardless of today's total (%s)",
     (anchorCorrect) => {

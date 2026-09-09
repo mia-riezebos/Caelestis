@@ -795,6 +795,15 @@ export interface TileMeasurement {
   readonly blank: number
 }
 
+export interface MeasuredTileFrame {
+  readonly tileX: number
+  readonly tileY: number
+  readonly bucketStart: Seconds
+  readonly hash: string
+  readonly correct: number | null
+  readonly wrong: number | null
+}
+
 export interface TemplateTileStatusChange {
   readonly published: boolean
   readonly totalPixels: number
@@ -1348,6 +1357,14 @@ export interface SqlStore extends TagStore {
     tile: TileCoord,
     hashes: readonly string[],
   ): Promise<readonly TileMeasurement[]>
+
+  /** Read a whole version's winning frames and measurements in one bounded database query. */
+  readTemplateProgressFrames(
+    versionId: string,
+    from: Seconds,
+    to: Seconds,
+    resolution: number,
+  ): Promise<readonly MeasuredTileFrame[]>
 
   /** Insert missing measurements, preserving existing counts and all live/placement records. */
   writeTileMeasurements(

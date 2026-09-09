@@ -126,7 +126,17 @@
       const histories: (readonly ProgressSample[])[] = []
       for (const template of scope) {
         if (cancelled) return
-        histories.push((await getProgressHistory(template.id, template.version, start, end)).samples)
+        const history = await getProgressHistory(template.id, template.version, start, end)
+        // A lifetime read can be daily; retain hourly measurements for recent zoom windows.
+        const recentStart = Math.floor((end - 6 * DAY_SECONDS) / 3600) * 3600
+        const samples = new Map(history.samples.map(sample => [sample.at, sample]))
+        if (start < recentStart) {
+          const recent = await getProgressHistory(template.id, template.version, recentStart, end)
+          for (const sample of recent.samples) {
+            if (sample.correct !== null) samples.set(sample.at, sample)
+          }
+        }
+        histories.push([...samples.values()].sort((a,b) => a.at - b.at))
       }
       if (!cancelled) {
         progressSamples = combineProgressSamples(histories)
@@ -134,7 +144,6 @@
       }
     })().catch(() => {
       if (!cancelled) {
-        progressSamples = []
         progressError = 'Saved progress history could not load.'
       }
     })
@@ -395,6 +404,7 @@
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
         live={templates.some((template) => template.finishedAt === null)}
+        finished={!hasLiveTemplate}
         {painters}
         {selectedPainters}
         onTogglePainter={togglePainter}

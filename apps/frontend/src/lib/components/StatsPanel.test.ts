@@ -71,6 +71,48 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
+  it('keeps successful saved observations after a transient refresh failure and requests recent finer history', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_SECONDS * 1000)
+    api.getProgressHistory.mockResolvedValue({
+      samples: [
+        { at: NOW_SECONDS - 3600, correct: 10, mismatched: 0, total: 100 },
+        { at: NOW_SECONDS - 1800, correct: 20, mismatched: 0, total: 100 },
+      ],
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        liveDashboard: true,
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 30, mismatched: 0, unpainted: 70, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(api.getProgressHistory).toHaveBeenCalledWith(
+      'live',
+      'version',
+      NOW_SECONDS - 6 * DAY_SECONDS,
+      NOW_SECONDS + 1,
+    )
+    const firstValue = () => {
+      const chart = document.querySelector('svg[role="img"]')
+      chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+      chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+      flushSync()
+      return document.querySelector('[data-pace-tooltip]')?.textContent
+    }
+    expect(firstValue()).toMatch(/correct\s*10/)
+    api.getProgressHistory.mockRejectedValue(new Error('Temporary error'))
+    await vi.advanceTimersByTimeAsync(300000)
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(document.body.textContent).toContain('Saved progress history could not load.')
+    expect(firstValue()).toMatch(/correct\s*10/)
+  })
   it('requests an all-history range through a finished scope boundary', async () => {
     const finishedAt = NOW_SECONDS - DAY_SECONDS
     mounted = mount(StatsPanel, {

@@ -141,6 +141,13 @@
       "when": 1788994235176,
       "tag": "0019_silly_iron_lad",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1788996768313,
+      "tag": "0020_tidy_micromacro",
+      "breakpoints": true
     }
   ]
 }

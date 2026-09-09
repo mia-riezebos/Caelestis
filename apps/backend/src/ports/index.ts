@@ -59,6 +59,7 @@ export {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type MeasuredTileFrame,
   type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,

@@ -1,0 +1,1 @@
+CREATE INDEX `template_tile_measurements_hash_idx` ON `template_tile_measurements` (`sha256`);

@@ -85,6 +85,7 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type MeasuredTileFrame,
   type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,
@@ -1450,6 +1451,52 @@ export class D1SqlStore implements SqlStore {
     return rows
   }
 
+  async readTemplateProgressFrames(
+    versionId: string,
+    from: Seconds,
+    to: Seconds,
+    resolution: number,
+  ): Promise<readonly MeasuredTileFrame[]> {
+    const result = await this.client
+      .prepare(`
+      WITH votes AS (
+        SELECT history.tile_x, history.tile_y, history.resolution_s, history.bucket_start_s,
+          history.sha256, COUNT(DISTINCT history.reported_by_user_id) AS reporters
+        FROM version_tiles AS chunk
+        INNER JOIN template_versions AS version ON version.id = chunk.version_id
+        INNER JOIN templates AS template ON template.id = version.template_id
+        INNER JOIN tile_history AS history ON history.season = template.season
+          AND history.tile_x = chunk.tile_x AND history.tile_y = chunk.tile_y
+        WHERE chunk.version_id = ?1 AND history.resolution_s <= ?4
+          AND history.bucket_start_s >= ?2 AND history.bucket_start_s < ?3
+        GROUP BY history.tile_x, history.tile_y, history.resolution_s, history.bucket_start_s, history.sha256
+      ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY tile_x, tile_y, resolution_s, bucket_start_s
+          ORDER BY reporters DESC, sha256 ASC
+        ) AS vote_rank FROM votes
+      ), frames AS (
+        SELECT *, CASE WHEN ?4 = 0 THEN bucket_start_s
+          ELSE CAST(bucket_start_s / ?4 AS INTEGER) * ?4 END AS target_start
+        FROM ranked WHERE vote_rank = 1
+      ), selected AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY tile_x, tile_y, target_start
+          ORDER BY bucket_start_s DESC, resolution_s ASC
+        ) AS frame_rank FROM frames WHERE target_start >= ?2
+      )
+      SELECT frame.tile_x AS tileX, frame.tile_y AS tileY, frame.target_start AS bucketStart,
+        frame.sha256 AS hash, measurement.correct, measurement.wrong
+      FROM selected AS frame LEFT JOIN template_tile_measurements AS measurement
+        ON measurement.version_id = ?1 AND measurement.tile_x = frame.tile_x
+        AND measurement.tile_y = frame.tile_y AND measurement.sha256 = frame.sha256
+      WHERE frame.frame_rank = 1 ORDER BY frame.target_start, frame.tile_x, frame.tile_y
+    `)
+      .bind(versionId, from, to, resolution)
+      .all<MeasuredTileFrame>()
+    return result.results
+  }
+
   async writeTileMeasurements(
     versionId: string,
     tile: TileCoord,
@@ -2296,14 +2343,22 @@ export class D1SqlStore implements SqlStore {
   }
 
   async finishTileBlobDeletion(blobKey: string, reclaimedAt: Millis): Promise<void> {
-    await this.client
-      .prepare(
-        `UPDATE tile_blob_objects
+    await this.client.batch([
+      this.client
+        .prepare(
+          `UPDATE tile_blob_objects
          SET state = 'deleted', reclaimed_at_ms = ?
          WHERE blob_key = ? AND state = 'deleting'`,
-      )
-      .bind(reclaimedAt, blobKey)
-      .run()
+        )
+        .bind(reclaimedAt, blobKey),
+      this.client
+        .prepare(`DELETE FROM template_tile_measurements
+        WHERE sha256 = (SELECT sha256 FROM tile_blob_objects WHERE blob_key = ? AND state = 'deleted')
+          AND NOT EXISTS (SELECT 1 FROM tile_history WHERE tile_history.sha256 = template_tile_measurements.sha256)
+          AND NOT EXISTS (SELECT 1 FROM canvas_tiles WHERE canvas_tiles.sha256 = template_tile_measurements.sha256)
+      `)
+        .bind(blobKey),
+    ])
   }
 
   async readTileBlobScanState(): Promise<TileBlobScanState> {
