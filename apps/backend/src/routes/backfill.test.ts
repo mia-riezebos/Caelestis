@@ -4,7 +4,9 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
+import { BackfillError } from '../backfill/import.js'
 import { backfillReply } from '../backfill/port.js'
+import { measureRequest } from '../metrics/request-metrics.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
 
 const ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
@@ -75,7 +77,7 @@ const harness = async () => {
     openAccess: true,
     backfillClients: () => client,
   })
-  return { app, sql, start }
+  return { app, sql, start, client }
 }
 
 it('gates every backfill operation to admins and validates before dispatch', async () => {
@@ -115,3 +117,31 @@ it('hides unpublished archive history and rejects invalid tile coordinates', asy
   expect((await app.request(`/v1/archive/templates/${ID}?x=2048&y=0`)).status).toBe(400)
   expect((await app.request(`/v1/archive/templates/${ID}?x=1`)).status).toBe(400)
 })
+
+it.each([false, true])(
+  'attributes remote backfill D1 usage to successful and failed HTTP requests (%s)',
+  async (fail) => {
+    const { app, client } = await harness()
+    const reply = fail
+      ? await backfillReply<BackfillPreview>(async () => {
+          throw new BackfillError('Artwork changed', 409)
+        })
+      : await client.preview()
+    client.preview = async () => ({
+      ...reply,
+      usage: { rowsRead: 17, rowsWritten: 0, measuredQueries: 2, unmeasuredQueries: 1 },
+    })
+    const writeDataPoint = vi.fn()
+    const request = new Request(`https://example.com/v1/admin/backfill/${ID}/preview`, {
+      headers: admin,
+    })
+    const response = await measureRequest(
+      { writeDataPoint },
+      request,
+      '/v1/admin/backfill/:templateId/preview',
+      async () => app.fetch(request),
+    )
+    expect(response.status).toBe(fail ? 409 : 200)
+    expect(writeDataPoint.mock.calls[0]?.[0]?.doubles.slice(2, 6)).toEqual([17, 0, 2, 1])
+  },
+)

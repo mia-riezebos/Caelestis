@@ -5,6 +5,7 @@ import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { EralyonArchive } from './backfill/eralyon.js'
 import { TemplateBackfill } from './backfill/import.js'
 import { backfillReply } from './backfill/port.js'
+import { instrumentD1 } from './metrics/request-metrics.js'
 
 /** One template's serialized import commands and durable alarm-driven history. */
 export class TemplateBackfillObject extends DurableObject<Env> {
@@ -13,7 +14,7 @@ export class TemplateBackfillObject extends DurableObject<Env> {
     super(ctx, env)
     this.importer = new TemplateBackfill(
       ctx.storage,
-      new D1SqlStore(env.DB),
+      new D1SqlStore(instrumentD1(env.DB)),
       new R2BlobStore(env.BLOBS),
       new EralyonArchive(),
     )

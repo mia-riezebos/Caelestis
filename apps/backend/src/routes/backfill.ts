@@ -2,6 +2,7 @@ import { Context as Services } from 'effect'
 import { type Context, Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
 import type { BackfillClients, BackfillReply } from '../backfill/port.js'
+import { mergeD1Usage } from '../metrics/request-metrics.js'
 import {
   type BackendRuntime,
   BlobStoreService,
@@ -9,8 +10,10 @@ import {
 } from '../runtime/backend-runtime.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const respond = <T>(c: Context, result: BackfillReply<T>): Response =>
-  result.ok ? Response.json(result.value) : c.json({ error: result.error }, result.status)
+const respond = <T>(c: Context, result: BackfillReply<T>): Response => {
+  mergeD1Usage(result.usage)
+  return result.ok ? Response.json(result.value) : c.json({ error: result.error }, result.status)
+}
 
 /** Admin-only preview/start/status/cancel for one selected server template. */
 export const createBackfillAdminRoutes = (
