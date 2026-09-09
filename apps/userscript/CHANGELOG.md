@@ -1,5 +1,19 @@
 # @caelestis/userscript
 
+## 0.9.0
+
+### Minor Changes
+
+- dcce202: Group template tree context menu actions with separators, fold Finished and Frozen into a "Mark as…" submenu, and keep every row on one line.
+- 0e5d506: Backfill sparse template timelapse and progress history from Eralyon archives through a userscript admin form.
+- 833d8c7: Open tree menus by touch hold, simplify touch rows, move Go to into hover actions and template menus, and use a sliders icon for Appearance.
+
+### Patch Changes
+
+- 68baef8: Keep a held touch from activating its tree row after another pointer or keyboard action.
+- c143f42: Keep touch holds from toggling folders or reopening their menus when trailing browser events arrive.
+- c143f42: Close hover-opened tree submenus with Escape or ArrowLeft and return focus to their trigger.
+
 ## 0.8.1
 
 ### Patch Changes

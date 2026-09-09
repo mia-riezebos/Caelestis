@@ -1,5 +1,30 @@
 # @caelestis/frontend
 
+## 0.5.0
+
+### Minor Changes
+
+- 15c3291: Add rich link previews across the site, with daily timelapse GIFs for template pages.
+- 0e5d506: Backfill sparse template timelapse and progress history from Eralyon archives through a userscript admin form.
+- ad3f350: Open the template viewer and card previews on the surrounding tiles over the map, and shrink the contributions graph to a GitHub-style calendar with weekday and month axes.
+
+### Patch Changes
+
+- f191f01: Speed up share GIF playback as template history grows, capped at 30 fps.
+- 05d62bf: Join overlapping archive history to the first reported point and prefer reported values thereafter.
+- 26c9f3c: Group pace lines in a toggleable dropdown, use solid legend colours, and clarify when painter metrics apply.
+- c89a90b: Connect archived pace samples with dashed lines and join backfilled progress to reported history.
+- 06186ab: Draw backfilled progress as dashed lines with filled areas, preserving missing-coverage gaps.
+- d150463: Prevent cached development scripts from blanking the frontend through its Cloudflare tunnel.
+- 37a07ea: Remove the template lifecycle card from the template page; Finished and Frozen are set from the userscript.
+- d4e3336: Show isolated archive snapshots as short dashes without filling missing coverage.
+- 262c932: Keep template views usable on older backends without archive history support.
+- a16175f: Keep a template GIF in R2 from first access, refresh it daily without removing the previous image, and include backfilled history.
+- 0b58489: Show sparse backfill values and interval net pace in the chart hover legend and keyboard navigation.
+- c89a90b: Stack archived mismatched pixels above correct pixels and connect both areas to reported history.
+- ef877de: Play share timelapses for ten seconds at up to 30 fps, then freeze on the latest state for five seconds.
+- 189143c: Render template share GIFs over OpenStreetMap tiles with visible attribution.
+
 ## 0.4.1
 
 ### Patch Changes
