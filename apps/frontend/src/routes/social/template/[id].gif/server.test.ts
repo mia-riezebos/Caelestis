@@ -57,6 +57,17 @@ describe('public template share images', () => {
     expect(get).not.toHaveBeenCalled()
   })
 
+  it.each(['W/"rev"', '*', '"older", W/"rev"'])(
+    'revalidates GET and HEAD with If-None-Match: %s',
+    async (etag) => {
+      for (const method of ['GET', 'HEAD']) {
+        const response = await GET(eventFor(method, etag).event)
+        expect(response.status).toBe(304)
+        expect(await response.text()).toBe('')
+      }
+    },
+  )
+
   it('redirects missing previews to the site image without caching the fallback', async () => {
     const { get, event } = eventFor()
     get.mockResolvedValue(null)

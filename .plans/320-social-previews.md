@@ -34,3 +34,7 @@ published manifest. Deployment and actual Discord unfurl verification remain rol
 Rebased against current `origin/main`; the branch was already up to date. Full `pnpm build`,
 `pnpm check`, `pnpm test --concurrency=1`, and `pnpm lint` pass. Delivery proceeds through a
 non-draft PR closing #320, followed by the requested babysit run.
+
+PR #321 review: reproduced 200 responses for valid weak, wildcard and list `If-None-Match`
+headers. Reuse the manifest route's weak candidate matching before returning 304; cover GET and
+HEAD. This is a refinement of the new preview endpoint, so its existing Changeset stays immutable.

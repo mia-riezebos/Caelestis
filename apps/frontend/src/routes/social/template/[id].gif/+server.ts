@@ -28,7 +28,10 @@ const serve: RequestHandler = async (event) => {
       'cache-control': 'public, no-cache',
       'x-content-type-options': 'nosniff',
     }
-    if (event.request.headers.get('if-none-match') === object.httpEtag) {
+    const candidates = (event.request.headers.get('if-none-match') ?? '')
+      .split(',')
+      .map((candidate) => candidate.trim().replace(/^W\//, ''))
+    if (candidates.includes(object.httpEtag) || candidates.includes('*')) {
       await object.body.cancel()
       return new Response(null, { status: 304, headers })
     }
