@@ -1,5 +1,12 @@
 # @caelestis/frontend
 
+## 0.4.1
+
+### Patch Changes
+
+- 09eb87a: Keep time-window handles below chart hover cards and other overlays.
+- 99a1b3c: Group chart hover pace values into one row per painter, with rolling windows side by side.
+
 ## 0.4.0
 
 ### Minor Changes

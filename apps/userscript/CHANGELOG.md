@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.8.1
+
+### Patch Changes
+
+- 862f904: Keep middle-mouse colour picking and Space painting aligned at pixel boundaries, including when retracing a stroke.
+
 ## 0.8.0
 
 ### Minor Changes
