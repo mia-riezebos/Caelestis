@@ -1104,6 +1104,7 @@ export class D1SqlStore implements SqlStore {
       currentVersionId: row.currentVersionId,
       published: row.publishedAt !== null,
       timelapseFrozen: row.timelapseFrozenAt !== null,
+      timelapseFrozenAt: row.timelapseFrozenAt,
       finished: row.finishedAt !== null,
       finishedAt: row.finishedAt,
       createdAt: row.createdAt,

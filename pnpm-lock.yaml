@@ -136,6 +136,9 @@ importers:
       effect:
         specifier: 4.0.0-beta.102
         version: 4.0.0-beta.102
+      fzstd:
+        specifier: 0.1.1
+        version: 0.1.1
       hono:
         specifier: ^4.6.0
         version: 4.12.33
@@ -2166,6 +2169,9 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  fzstd@0.1.1:
+    resolution: {integrity: sha512-dkuVSOKKwh3eas5VkJy1AW1vFpet8TA/fGmVA5krThl8YcOVE/8ZIoEA1+U1vEn5ckxxhLirSdY837azmbaNHA==}
+
   get-tsconfig@4.13.7:
     resolution: {integrity: sha512-7tN6rFgBlMgpBML5j8typ92BKFi2sFQvIdpAqLA2beia5avZDrMs0FLZiM5etShWq5irVyGcGMEA1jcDaK7A/Q==}
 
@@ -4139,6 +4145,8 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  fzstd@0.1.1: {}
 
   get-tsconfig@4.13.7:
     dependencies:
