@@ -17,7 +17,6 @@ const template = {
   chunks: [{ tile: '0/0', hash: 'chunk' }],
 } as unknown as Template
 const poster = new TextEncoder().encode('GIF89a-poster')
-const animation = new TextEncoder().encode('GIF89a-animation')
 const object = (version = 'v2') => ({
   etag: 'old',
   uploaded: new Date(),
@@ -43,11 +42,24 @@ beforeEach(() => {
   vi.clearAllMocks()
   fetchBackend.mockImplementation(async () => Response.json({ tiles: [] }))
   renderTimelapse.mockResolvedValue(poster)
-  renderTemplateHistory.mockResolvedValue(animation)
 })
 
 describe('persistent template GIFs', () => {
-  it('stores a first GIF before returning and then replaces it with rendered history', async () => {
+  it('leaves full history rendering for large accepted templates to the scheduled job', async () => {
+    const large = {
+      ...template,
+      bbox: { minX: 0, minY: 0, maxX: 20000, maxY: 20000 },
+      chunks: Array.from({ length: 400 }, (_, i) => ({
+        tile: `${i % 20}/${Math.floor(i / 20)}`,
+        hash: `chunk-${i}`,
+      })),
+    } as unknown as Template
+    const { event, work } = setup(null)
+    await ensureSocialImage(event, 0, large)
+    await Promise.all(work)
+    expect(renderTemplateHistory).not.toHaveBeenCalled()
+  })
+  it('stores a first GIF before returning', async () => {
     const { images, event, work } = setup(null)
     await ensureSocialImage(event, 0, template)
     expect(images.put).toHaveBeenNthCalledWith(
@@ -57,11 +69,7 @@ describe('persistent template GIFs', () => {
       expect.objectContaining({ onlyIf: { etagDoesNotMatch: '*' } }),
     )
     await Promise.all(work)
-    expect(images.put).toHaveBeenLastCalledWith(
-      'social/v2/0/art.gif',
-      animation,
-      expect.objectContaining({ onlyIf: { etagMatches: 'old' } }),
-    )
+    expect(images.put).toHaveBeenCalledTimes(1)
   })
 
   it('returns a fresh stored GIF without decoding or fetching anything', async () => {
@@ -74,39 +82,14 @@ describe('persistent template GIFs', () => {
     expect(work).toHaveLength(0)
   })
 
-  it('keeps the previous artwork version available while its replacement renders', async () => {
-    let finish!: (bytes: Uint8Array) => void
-    renderTemplateHistory.mockReturnValue(
-      new Promise<Uint8Array>((resolve) => {
-        finish = resolve
-      }),
-    )
-    const stored = object('v1')
+  it('keeps an old artwork GIF available until the daily job replaces it', async () => {
+    const stored = { ...object('v1'), uploaded: new Date(0) }
     const { images, event, work } = setup(stored)
     expect(await ensureSocialImage(event, 0, template)).toBe(stored)
     expect(images.put).not.toHaveBeenCalled()
-    finish(animation)
     await Promise.all(work)
-    expect(images.put).toHaveBeenCalledWith(
-      'social/v2/0/art.gif',
-      animation,
-      expect.objectContaining({ onlyIf: { etagMatches: 'old' } }),
-    )
-  })
-
-  it('retains the old GIF if the daily refresh fails', async () => {
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const stored = { ...object(), uploaded: new Date(0) }
-    const { images, event, work } = setup(stored)
-    renderTemplateHistory.mockRejectedValue(new Error('archive unavailable'))
-    expect(await ensureSocialImage(event, 0, template)).toBe(stored)
-    await Promise.all(work)
-    expect(images.put).not.toHaveBeenCalled()
-    expect(logged).toHaveBeenCalledWith(
-      expect.stringContaining('keeping the previous GIF'),
-      expect.any(Error),
-    )
-    logged.mockRestore()
+    expect(renderTemplateHistory).not.toHaveBeenCalled()
+    expect(fetchBackend).not.toHaveBeenCalled()
   })
 
   it('does not overwrite a timelapse that wins the first-image race', async () => {
@@ -122,10 +105,6 @@ describe('persistent template GIFs', () => {
       poster,
       expect.objectContaining({ onlyIf: { etagDoesNotMatch: '*' } }),
     )
-    expect(images.put).toHaveBeenLastCalledWith(
-      'social/v2/0/art.gif',
-      animation,
-      expect.objectContaining({ onlyIf: { etagMatches: 'winner' } }),
-    )
+    expect(images.put).toHaveBeenCalledTimes(1)
   })
 })

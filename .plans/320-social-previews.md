@@ -65,3 +65,9 @@ preserve the viewer's Web Mercator alignment, and cache tiles for seven days. Re
 Final verification: nine renderer tests, 113 frontend tests, and full repository build, check,
 test and lint pass. The public template metadata uses the stored GIF's new ETag. No production
 deployment, production R2 writes, Discord messages, or changes to Mia's running dev processes.
+
+Pullfrog found that an accepted 400-chunk template expands to 720 capture tiles, allowing 25,200
+history and tile reads in one Worker invocation. Reproduced request-time history rendering with
+that template. Keep first-image creation in the Worker and full history rendering in the existing
+daily workflow. Updated tests that asserted the failing background-render behavior; stored GIFs
+remain available until the workflow replaces them.

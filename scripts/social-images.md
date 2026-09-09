@@ -2,8 +2,8 @@
 
 The frontend serves Open Graph and Twitter summary card metadata in the initial HTML.
 Home and folder links use `apps/frontend/static/social/site.png`. On first access, a published
-template gets an artwork GIF stored in R2. Its history renders in the background and replaces that
-object. Later requests keep serving the stored GIF during refreshes, including across artwork updates.
+template gets an artwork GIF stored in R2. The daily workflow renders its history and replaces that
+object. Requests keep serving the stored GIF during refreshes, including across artwork updates.
 The site image remains a fallback if the binding or initial generation is unavailable.
 
 `Refresh share images` runs daily at 07:37 UTC and supports manual dispatch. It reads the public
@@ -27,8 +27,8 @@ To refresh the running development frontend's local R2 binding:
 node scripts/social-images.mjs --site http://127.0.0.1:5173 --template TEMPLATE_ID --publish --local
 ```
 
-The frontend also refreshes GIFs older than 24 hours on access. Failed refreshes retain the previous
-object. Conditional writes prevent a slower refresh or first-image request from replacing a newer GIF.
+Full history renders in the workflow, outside Worker request limits. Failed refreshes retain the previous
+object. Conditional writes prevent a first-image request from replacing an existing GIF.
 
 GIFs use the viewer's 16:9 capture bounds, native pixel sampling, at most 32 historical frames,
 and a latest-snapshot poster. Real OpenStreetMap tiles remain visible through transparent and

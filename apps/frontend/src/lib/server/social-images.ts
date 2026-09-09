@@ -1,15 +1,13 @@
-import type { CanvasTilesResponse, Template } from '@caelestis/shared'
+import type { Template } from '@caelestis/shared'
 import type { RequestEvent } from '@sveltejs/kit'
 import { fetchMapTile, MAP_CACHE_MS, type ReadMapTile } from '$lib/social-basemap.js'
 import { socialImageKey } from '$lib/social-image.js'
-import { renderTemplateHistory, renderTimelapse } from '$lib/social-render.js'
+import { renderTimelapse } from '$lib/social-render.js'
 import { fetchBackend } from './backend.js'
 
-const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000
-const refreshing = new Map<string, Promise<void>>()
 type ImageEvent = Pick<RequestEvent, 'fetch' | 'platform' | 'url'>
 
-/** Persist a first artwork GIF and refresh history while continuing to serve the previous object. */
+/** Persist a first artwork GIF; the scheduled job replaces it with rendered history. */
 export const ensureSocialImage = async (event: ImageEvent, season: number, template: Template) => {
   const images = event.platform?.env.SOCIAL_IMAGES
   if (images === undefined) return null
@@ -32,8 +30,7 @@ export const ensureSocialImage = async (event: ImageEvent, season: number, templ
     return response
   }
   let image = await images.head(key)
-  const missing = image === null
-  if (missing) {
+  if (image === null) {
     const poster = await renderTimelapse({
       template: { ...template, finished: false },
       histories: new Map(),
@@ -52,41 +49,5 @@ export const ensureSocialImage = async (event: ImageEvent, season: number, templ
       })) ?? (await images.head(key))
   }
   if (image === null) throw new Error(`Could not persist preview for ${template.id}`)
-  const stale =
-    Date.now() - image.uploaded.getTime() >= REFRESH_AFTER_MS ||
-    (image.customMetadata?.version !== undefined &&
-      image.customMetadata.version !== template.version)
-  const ctx = event.platform?.ctx
-  if (ctx && (missing || stale)) {
-    const refreshKey = `${event.url.origin}/${key}`
-    let pending = refreshing.get(refreshKey)
-    if (pending === undefined) {
-      const etag = image.etag
-      pending = (async () => {
-        const canvas: CanvasTilesResponse = await (
-          await read(`telemetry/canvas?season=${season}`)
-        ).json()
-        const gif = await renderTemplateHistory(
-          template,
-          season,
-          new Map(canvas.tiles.map((tile) => [tile.tile, tile.hash])),
-          read,
-          readMapTile,
-        )
-        if (gif === null) return
-        await images.put(key, gif, {
-          onlyIf: { etagMatches: etag },
-          httpMetadata: { contentType: 'image/gif' },
-          customMetadata: { version: template.version },
-        })
-      })()
-        .catch((error: unknown) => {
-          console.error('social image refresh failed; keeping the previous GIF', error)
-        })
-        .finally(() => refreshing.delete(refreshKey))
-      refreshing.set(refreshKey, pending)
-    }
-    ctx.waitUntil(pending)
-  }
   return image
 }
