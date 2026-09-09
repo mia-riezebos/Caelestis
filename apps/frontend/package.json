@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
+    "dev": "node dev.mjs",
     "build": "vite build",
     "deploy": "pnpm build && wrangler deploy",
     "preview": "vite preview",
