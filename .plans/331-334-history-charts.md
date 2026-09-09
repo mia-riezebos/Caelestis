@@ -14,7 +14,7 @@ Keep timelapse controls stationary, extend rolling pace and ETA periods, add bul
 ## TODOs
 - [x] Keep missing-coverage feedback inside the fixed viewer and validate the layout change.
 - [x] Add bounded bulk painter selection, remove the metric selector, and validate selection behavior.
-- [ ] Unify imported and live rolling pace, add longer windows and imported contribution days, and test coverage boundaries.
+- [x] Unify imported and live rolling pace, add longer windows and imported contribution days, and test coverage boundaries.
 - [ ] Add persisted ETA periods, validate partial coverage and the frontend, then file the PR.
 
 ## Notes
@@ -23,3 +23,4 @@ Keep timelapse controls stationary, extend rolling pace and ETA periods, add bul
 - No production, live database, or daily-driver server changes.
 - #331: notice now sits inside the fixed-height viewer. Frontend client/SSR build and diff check pass; browser layout check follows with final validation.
 - #334 and legend: 24 focused tests pass, including bulk actions with an active search and request bounds.
+- #332 and imported contributions: all 126 frontend tests pass; Svelte check passes. Complete trailing intervals preserve negative progress, missing coverage, and live precedence.

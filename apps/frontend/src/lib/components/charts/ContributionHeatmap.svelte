@@ -4,8 +4,10 @@ import type { ContributionDay } from '@caelestis/shared'
 let {
   days,
   weeks = 53,
+  imported = new Map<number, number>(),
 }: {
   days: readonly ContributionDay[]
+  imported?: ReadonlyMap<number, number>
   /** How many weeks of history to keep; narrower cards drop the oldest columns, never the newest. */
   weeks?: number
 } = $props()
@@ -34,7 +36,9 @@ const layout = $derived.by(() => {
 // Sum per calendar day across painters and templates. Reporter de-duplication already happened
 // server-side, so summing these rows is safe.
 const byDay = $derived.by(() => {
-  const totals = new Map<number, number>()
+  const totals = new Map(imported)
+  // Reported days replace imported estimates rather than counting both.
+  for (const day of days) totals.set(day.day, 0)
   for (const day of days) totals.set(day.day, (totals.get(day.day) ?? 0) + day.placed)
   return totals
 })
@@ -92,7 +96,7 @@ const level = (placed: number): string => {
 }
 
 const label = (day: number, placed: number): string =>
-  `${new Date(day * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })}: ${placed.toLocaleString()} pixels`
+  `${new Date(day * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })}: ${placed.toLocaleString()} ${imported.has(day) && !days.some((entry) => entry.day === day) ? 'net correct pixels (imported)' : 'pixels'}`
 </script>
 
 <div bind:clientWidth={width} class="flex flex-col gap-1 text-[10px] leading-none text-base-content/50">

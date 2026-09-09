@@ -65,7 +65,7 @@ export const combineArchiveSamples = (
     })
 }
 
-/** Net change belongs to the whole observed interval, not to a placement bucket or rolling window. */
+/** Net changes retain their observed intervals and signed regressions. */
 export const archiveIntervals = (samples: readonly ArchiveProgressSample[]) =>
   samples.flatMap((sample, index) => {
     const before = samples[index - 1]
@@ -80,3 +80,19 @@ export const archiveIntervals = (samples: readonly ArchiveProgressSample[]) =>
       },
     ]
   })
+
+/** Daily imported gains, without guessing activity inside multi-day gaps or live days. */
+export const archiveContributionDays = (
+  samples: readonly ArchiveProgressSample[],
+  liveFrom: number,
+): ReadonlyMap<number, number> => {
+  const daySeconds = 86_400
+  const liveDay = Math.floor(liveFrom / daySeconds) * daySeconds
+  const days = new Map<number, number>()
+  for (const interval of archiveIntervals(samples)) {
+    const day = Math.floor(interval.from / daySeconds) * daySeconds
+    if (interval.to - interval.from > daySeconds || interval.to > liveDay) continue
+    days.set(day, (days.get(day) ?? 0) + Math.max(0, interval.endCorrect - interval.startCorrect))
+  }
+  return days
+}

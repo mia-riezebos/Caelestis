@@ -17,7 +17,7 @@
     getPainterTotals,
   } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
-  import { combineArchiveSamples } from '$lib/archive-history'
+  import { archiveContributionDays, combineArchiveSamples } from '$lib/archive-history'
   import {
     defaultVisiblePainters,
     MAX_PAINTER_OPTIONS,
@@ -92,6 +92,7 @@
       ) * DAY_SECONDS,
   )
   const displayFrom = $derived(Math.min(from, ...archiveSamples.map((sample) => sample.at)))
+  const importedContributions = $derived(archiveContributionDays(archiveSamples, from))
   const hasLiveTemplate = $derived(templates.some((template) => template.finishedAt === null))
   const to = $derived.by(() => {
     const finishedAt = templates.map((template) => template.finishedAt)
@@ -378,7 +379,7 @@
     {#if contributions === null}
       <Skeleton class="h-28 w-full" />
     {:else}
-      <ContributionHeatmap days={contributions} />
+      <ContributionHeatmap days={contributions} imported={importedContributions} />
     {/if}
   </section>
 </div>

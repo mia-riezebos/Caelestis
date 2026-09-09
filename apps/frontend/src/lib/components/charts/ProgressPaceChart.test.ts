@@ -107,6 +107,7 @@ describe('rolling pace retention', () => {
   it.each([false, true])(
     'shows sparse coverage without fabricated placements (all gaps: %s)',
     (allGaps) => {
+      stored.set('caelestis:pace-windows', JSON.stringify(['1d']))
       mounted = mount(ProgressPaceChart, {
         target: document.body,
         props: {
@@ -130,8 +131,7 @@ describe('rolling pace retention', () => {
       expect(document.querySelectorAll('[data-archive-progress-area]')).toHaveLength(
         allGaps ? 0 : 1,
       )
-      expect(document.querySelectorAll('[data-archive-pace]')).toHaveLength(allGaps ? 0 : 1)
-      expect(document.querySelectorAll('[data-pace-window]')).toHaveLength(0)
+      expect(document.querySelectorAll('path[data-pace-window="1d"]')).toHaveLength(allGaps ? 0 : 1)
       expect(document.body.textContent).toContain('No coverage')
       expect(document.body.textContent).not.toContain('No paint activity')
       const chart = document.querySelector('svg[role="img"]')
@@ -146,8 +146,8 @@ describe('rolling pace retention', () => {
       )
       chart.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
       flushSync()
-      expect(document.querySelector('[data-archive-hover]')?.textContent ?? '').toContain(
-        allGaps ? '' : '-0.21 px/h',
+      expect(document.querySelector('[data-pace-row="all"]')?.textContent ?? '').toContain(
+        allGaps ? '' : '-0.2',
       )
       chart.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
       flushSync()
@@ -155,14 +155,14 @@ describe('rolling pace retention', () => {
       expect(document.querySelector('[data-archive-hover]')).toBeNull()
       expect(document.querySelector('[data-painter-metric]')).toBeNull()
       if (!allGaps) {
-        paceToggle('archive').click()
+        paceToggle('1d').click()
         flushSync()
         expect(document.querySelector('[data-archive-pace]')).toBeNull()
-        expect(stored.get('caelestis:archive-net-pace')).toBe('false')
+        expect(stored.get('caelestis:pace-windows')).toBe('[]')
         expect(document.querySelector('[data-pace-trigger]')?.textContent).toContain('None')
-        paceToggle('archive').click()
+        paceToggle('1d').click()
         flushSync()
-        expect(document.querySelector('[data-archive-pace]')).not.toBeNull()
+        expect(document.querySelector('path[data-pace-window="1d"]')).not.toBeNull()
       }
     },
   )
@@ -190,7 +190,6 @@ describe('rolling pace retention', () => {
     const areas = [...document.querySelectorAll('[data-archive-progress-area]')]
     expect(lines).toHaveLength(2)
     expect(areas).toHaveLength(2)
-    expect(document.querySelectorAll('path[data-archive-pace]')).toHaveLength(2)
     expect(lines[0]?.getAttribute('d')).toMatch(/^M48\.0,.*L138\.7,/)
     expect(lines[1]?.getAttribute('d')).toMatch(/^M501\.3,.*L592\.0,/)
     for (const [index, line] of lines.entries()) {
@@ -201,6 +200,7 @@ describe('rolling pace retention', () => {
   it.each([false, true])(
     'connects sparse pace and progress to live history unless coverage is missing (gap: %s)',
     (gap) => {
+      stored.set('caelestis:pace-windows', JSON.stringify(['1d']))
       mounted = mount(ProgressPaceChart, {
         target: document.body,
         props: {
@@ -221,10 +221,9 @@ describe('rolling pace retention', () => {
       })
       flushSync()
       const progress = document.querySelector('[data-archive-progress]')?.getAttribute('d') ?? ''
-      const pace = document.querySelector('path[data-archive-pace]')
+      const pace = document.querySelector('path[data-pace-window="1d"]')
       const pacePath = pace?.getAttribute('d') ?? ''
-      expect(pace?.getAttribute('stroke-dasharray')).toBe('5 4')
-      expect(pacePath.match(/L/g)).toHaveLength(gap ? 1 : 3)
+      expect((pacePath.match(/L/g) ?? []).length).toBe(gap ? 0 : 3)
       expect(progress.match(/L/g)).toHaveLength(gap ? 1 : 3)
       const mismatch = document.querySelector('[data-archive-mismatched]')?.getAttribute('d') ?? ''
       const area = document.querySelector('[data-archive-mismatched-area]')?.getAttribute('d') ?? ''
@@ -236,16 +235,15 @@ describe('rolling pace retention', () => {
       expect(area.endsWith(`L${firstCorrect?.[1]},${firstCorrect?.[2]}Z`)).toBe(true)
       if (!gap) {
         expect(progress).toMatch(/L590\.1,/)
-        expect(pacePath).toMatch(/L590\.1,/)
+        expect(pacePath).toMatch(/L592\.0,/)
         const chart = document.querySelector('svg[role="img"]')
         chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
         for (let index = 0; index < 3; index++) {
           chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
           flushSync()
         }
-        expect(document.querySelector('[data-archive-hover]')?.textContent).toContain('1.04 px/h')
-        expect(document.querySelector('[data-archive-hover]')?.textContent).toContain(
-          'Eralyon → reported history',
+        expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain(
+          'Includes imported net progress',
         )
       }
     },

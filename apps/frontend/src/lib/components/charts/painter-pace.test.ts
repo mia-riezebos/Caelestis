@@ -7,8 +7,8 @@ import {
   painterHue,
   painterLabel,
   rankPainters,
-  togglePainterSelection,
   selectAllPainters,
+  togglePainterSelection,
 } from './painter-pace.js'
 
 const painter = (wplaceUserId: number, displayName = `painter ${wplaceUserId}`): PainterTotal => ({

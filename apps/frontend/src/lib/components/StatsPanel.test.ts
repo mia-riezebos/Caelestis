@@ -85,14 +85,14 @@ describe('retained history range', () => {
       },
     })
     flushSync()
-    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(8))
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(11))
 
     expect(api.getHistory).toHaveBeenCalledWith(['older', 'newer'], 0, finishedAt + 1)
     expect(
       api.getHistory.mock.calls
         .map((call) => call[3]?.maxResolution)
         .filter((resolution) => resolution !== undefined),
-    ).toEqual([900, 1_800, 3_600, 5_400, 10_800, 21_600, 43_200])
+    ).toEqual([900, 1_800, 3_600, 5_400, 10_800, 21_600, 43_200, 129_600, 302_400, 1_296_000])
     expect(document.body.textContent).not.toContain('last 7 days')
   })
 
@@ -111,7 +111,7 @@ describe('retained history range', () => {
       },
     })
     flushSync()
-    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(8))
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(11))
 
     expect(api.getHistory).toHaveBeenCalledWith(['finished', 'live'], 0, NOW_SECONDS + 1)
   })
@@ -145,7 +145,7 @@ describe('retained history range', () => {
       })
       flushSync()
       await vi.advanceTimersByTimeAsync(0)
-      expect(api.getHistory).toHaveBeenCalledTimes(8)
+      expect(api.getHistory).toHaveBeenCalledTimes(11)
       const preset = document.querySelector<HTMLButtonElement>('[data-range-preset="6h"]')
       preset?.click()
       flushSync()
@@ -155,9 +155,9 @@ describe('retained history range', () => {
       flushSync()
       await vi.advanceTimersByTimeAsync(0)
 
-      expect(api.getHistory).toHaveBeenCalledTimes(16)
+      expect(api.getHistory).toHaveBeenCalledTimes(22)
       expect(api.getHistory).toHaveBeenLastCalledWith(['live'], 0, NOW_SECONDS + 16, {
-        maxResolution: 43_200,
+        maxResolution: 1_296_000,
       })
       expect(preset?.getAttribute('aria-pressed')).toBe('true')
       expect(document.querySelector('[data-handle="head"]')?.getAttribute('aria-valuenow')).toBe(
@@ -370,10 +370,14 @@ describe('painter pace', () => {
 
     document.querySelector<HTMLButtonElement>('[data-painters-hide-all]')?.click()
     flushSync()
-    await vi.waitFor(() => expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(0))
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(0),
+    )
     document.querySelector<HTMLButtonElement>('[data-painters-show-all]')?.click()
     flushSync()
-    await vi.waitFor(() => expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(14))
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(14),
+    )
     expect(api.getPainterHistory.mock.calls.at(-1)?.[1]).toEqual([5, 6, 7, 8, 9, 10, 11])
   })
 
