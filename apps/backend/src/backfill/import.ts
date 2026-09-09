@@ -143,6 +143,8 @@ export class TemplateBackfill {
       error: null,
     }
     await this.storage.put(`basis:${versionId}`, preview.basis)
+    // A failed schedule must not leave the form observing an unstartable running job.
+    await this.storage.setAlarm(this.now() + 100)
     await this.storage.put<StoredJob>('job', {
       summary,
       snapshots,
@@ -151,7 +153,6 @@ export class TemplateBackfill {
       mismatched: 0,
       incomplete: false,
     })
-    await this.storage.setAlarm(this.now() + 100)
     return summary
   }
 

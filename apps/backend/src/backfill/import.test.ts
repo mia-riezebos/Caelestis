@@ -5,7 +5,7 @@ import {
   TILE_SIZE,
   TRANSPARENT_INDEX,
 } from '@caelestis/shared'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { type BackfillStorage, TemplateBackfill } from './import.js'
@@ -136,4 +136,14 @@ it('retries failed units and refuses a stale artwork selection', async () => {
   expect((await h.engine.history('version')).samples.map((sample) => sample.correct)).toEqual([
     1, 2,
   ])
+})
+
+it('keeps start retryable when the first alarm cannot be scheduled', async () => {
+  const h = await setup()
+  vi.spyOn(h.storage, 'setAlarm').mockRejectedValueOnce(new Error('Scheduling unavailable'))
+  await expect(h.engine.start('template', 'version', 10)).rejects.toThrow('Scheduling unavailable')
+  expect((await h.engine.preview('template')).job).toBeNull()
+  await h.engine.start('template', 'version', 10)
+  await h.finish()
+  expect((await h.engine.job())?.status).toBe('completed')
 })
