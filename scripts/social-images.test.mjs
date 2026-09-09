@@ -40,10 +40,9 @@ test('samples the entire retained timeline, preserving both endpoints', () => {
   assert.deepEqual(sampleTimeline([9, 1, 5, 1, 3, 7], 3), [1, 5, 9])
 })
 
-test('longer histories play faster, capped at 30 fps after GIF delay rounding', async () => {
+test('history lasts ten seconds at up to 30 fps, followed by five seconds of live state', async () => {
   const png = await tile('#ff0000')
-  const rates = []
-  for (const count of [8, 96, 300]) {
+  for (const count of [1, 8, 96, 300, 450]) {
     const gif = await renderTimelapse({
       template,
       histories: new Map([
@@ -55,17 +54,15 @@ test('longer histories play faster, capped at 30 fps after GIF delay rounding', 
       height: 9,
     })
     const { delay } = await sharp(gif, { animated: true }).metadata()
-    assert.equal(delay[0], 1500)
-    assert.equal(delay.at(-1), 1500)
-    const playback = delay.slice(1, -1)
-    const fps = (playback.length * 1000) / playback.reduce((sum, ms) => sum + ms, 0)
-    assert.ok(fps <= 30, `encoded GIF exceeds 30 fps: ${fps}`)
-    rates.push(fps)
+    assert.equal(delay.at(-1), 5000)
+    const playback = delay.slice(0, -1)
+    assert.equal(playback.length, Math.min(count, 300))
+    assert.equal(
+      playback.reduce((sum, ms) => sum + ms, 0),
+      10000,
+    )
+    assert.ok(playback.length / 10 <= 30)
   }
-  assert.equal(rates[0], 4)
-  assert.ok(rates[1] > rates[0])
-  assert.ok(rates[2] > rates[1])
-  assert.ok(rates[2] > 29)
 })
 
 test('sampling wraps longitude and stays within polar canvas bounds', () => {
@@ -135,7 +132,7 @@ test('transparent canvas pixels reveal the map and attribution remains above eve
   }
 })
 
-test('GIF starts with current pixels, then plays history without leaking future observations', async () => {
+test('GIF plays history without leaking future observations, then holds current pixels', async () => {
   const red = await tile('#ff0000')
   const blue = await tile('#0000ff')
   const reads = []
@@ -164,9 +161,13 @@ test('GIF starts with current pixels, then plays history without leaking future 
   assert.equal(metadata.pageHeight, 9)
   assert.equal(metadata.loop, 0)
   assert.ok(metadata.pages >= 3)
-  const first = await sharp(gif, { page: 0 }).removeAlpha().raw().toBuffer()
-  const past = await sharp(gif, { page: 1 }).removeAlpha().raw().toBuffer()
-  assert.deepEqual([...first.subarray(0, 3)], [0, 0, 255])
+  const latest = await sharp(gif, { page: metadata.pages - 1 })
+    .removeAlpha()
+    .raw()
+    .toBuffer()
+  const past = await sharp(gif, { page: 0 }).removeAlpha().raw().toBuffer()
+  assert.deepEqual([...latest.subarray(0, 3)], [0, 0, 255])
+  assert.equal(metadata.delay.at(-1), 5000)
   assert.deepEqual([...past.subarray(0, 3)], [255, 0, 0])
   assert.deepEqual(reads.sort(), ['blue', 'red'])
 })
@@ -213,7 +214,7 @@ test('tiles first observed later stay neutral in earlier frames', async () => {
     width: 16,
     height: 9,
   })
-  const past = await sharp(gif, { page: 1 }).removeAlpha().raw().toBuffer()
+  const past = await sharp(gif, { page: 0 }).removeAlpha().raw().toBuffer()
   assert.deepEqual([...past.subarray(0, 3)], [255, 0, 0])
   assert.deepEqual([...past.subarray(8 * 3, 9 * 3)], [27, 27, 32])
 })
@@ -248,9 +249,9 @@ test('imported observations before creation enter the GIF, gaps stay neutral, an
     ]),
   )
   assert.deepEqual(pixels, [
-    [0, 0, 255],
     [255, 0, 0],
     [27, 27, 32],
+    [0, 0, 255],
     [0, 0, 255],
   ])
 })

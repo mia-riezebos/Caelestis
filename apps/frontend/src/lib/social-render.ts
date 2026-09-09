@@ -13,12 +13,11 @@ import { stampMapAttribution } from './social-attribution.ts'
 import { type ReadMapTile, renderBasemap } from './social-basemap.ts'
 import { SOCIAL_IMAGE_HEIGHT, SOCIAL_IMAGE_WIDTH } from './social-image.ts'
 
-const MAX_FRAMES = 32
-const MIN_FPS = 4
 const MAX_FPS = 30
-const HISTORY_PLAYBACK_SECONDS = 8
+const HISTORY_PLAYBACK_SECONDS = 10
+const MAX_FRAMES = MAX_FPS * HISTORY_PLAYBACK_SECONDS
 const GIF_TICK_MS = 10
-const POSTER_PAUSE_MS = 1500
+const LIVE_PAUSE_MS = 5000
 const MAX_GIF_BYTES = 4_500_000
 const BACKGROUND = [27, 27, 32, 255]
 const { applyPalette, GIFEncoder, quantize } = gifenc
@@ -58,7 +57,7 @@ export const captureSamples = (
   return tiles
 }
 
-/** Encode observed canvas history, retaining explicit gaps and a latest-view poster. */
+/** Play ten seconds of observed history, retaining gaps, then hold the latest view for five seconds. */
 export const renderTimelapse = async ({
   template,
   histories,
@@ -78,13 +77,10 @@ export const renderTimelapse = async ({
   width?: number
   height?: number
 }): Promise<Uint8Array | null> => {
-  const observations = new Set(
+  const timeline = sampleTimeline(
     [...histories.values()].flatMap((frames) => frames.map((frame) => frame.bucketStart)),
   )
-  const timeline = sampleTimeline([...observations])
-  const fps = Math.min(MAX_FPS, Math.max(MIN_FPS, observations.size / HISTORY_PLAYBACK_SECONDS))
-  const ticksPerFrame = 1000 / fps / GIF_TICK_MS
-  const times = [null, ...timeline]
+  const times = [...timeline, null]
   const background = readMapTile
     ? await renderBasemap(template.bbox, width, height, readMapTile)
     : Uint8Array.from({ length: width * height * 4 }, (_, i) => BACKGROUND[i % 4])
@@ -136,30 +132,31 @@ export const renderTimelapse = async ({
   }
   if (!observed) return null
   if (readMapTile) await stampMapAttribution(frames, width, height)
-  if (timeline.length > 0) frames.push(frames[0])
   let selected = frames
   while (true) {
     const gif = GIFEncoder()
+    const historyFrames = selected.length - 1
+    const historyTicks = (HISTORY_PLAYBACK_SECONDS * 1000) / GIF_TICK_MS
     for (const [index, frame] of selected.entries()) {
       const palette = quantize(frame, 128)
-      // Round cumulative time so GIF's 10 ms ticks do not turn the 30 fps cap into 33 fps.
+      // Divide the full ten seconds again after size reduction, using GIF's 10 ms ticks.
       const delay =
-        (Math.ceil(index * ticksPerFrame) - Math.ceil((index - 1) * ticksPerFrame)) * GIF_TICK_MS
+        index === historyFrames
+          ? LIVE_PAUSE_MS
+          : (Math.ceil(((index + 1) * historyTicks) / historyFrames) -
+              Math.ceil((index * historyTicks) / historyFrames)) *
+            GIF_TICK_MS
       gif.writeFrame(applyPalette(frame, palette), width, height, {
         palette,
         repeat: 0,
-        delay: index === 0 || index === selected.length - 1 ? POSTER_PAUSE_MS : delay,
+        delay,
       })
     }
     gif.finish()
     const bytes = gif.bytes()
     if (bytes.length <= MAX_GIF_BYTES) return bytes
     if (selected.length <= 3) throw new Error('Timelapse exceeds the share image size limit')
-    selected = [
-      selected[0],
-      ...selected.slice(1, -1).filter((_, i) => i % 2 === 0),
-      selected[selected.length - 1],
-    ]
+    selected = [...selected.slice(0, -2).filter((_, i) => i % 2 === 0), ...selected.slice(-2)]
   }
 }
 
