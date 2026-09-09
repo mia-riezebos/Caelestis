@@ -69,6 +69,68 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
+  it('changes and persists the ETA period and fetches annual history only when selected', async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    })
+    api.getHistory.mockResolvedValue({
+      resolution: DAY_SECONDS,
+      coverageStart: seconds(0),
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: DAY_SECONDS,
+          bucketStart: seconds(NOW_SECONDS - DAY_SECONDS),
+          placed: 420,
+          correct: 420,
+          repairs: 0,
+        },
+      ],
+    })
+    const props = {
+      season: 0,
+      liveDashboard: false,
+      templates: [template('live', 0, null)],
+      subscribeDashboard: live.subscribe,
+      progress: { completed: 420, mismatched: 0, unpainted: 2400, known: 2820, total: 2820 },
+    }
+    mounted = mount(StatsPanel, { target: document.body, props })
+    flushSync()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('done in ~40 d'))
+    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')
+    if (select === null) throw new Error('missing estimate period')
+    expect(select.value).toBe('7d')
+    select.value = '1d'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    flushSync()
+    expect(document.body.textContent).toContain('done in ~6 d')
+    expect(storage.get('caelestis:estimate-period')).toBe('"1d"')
+    await unmount(mounted)
+    mounted = mount(StatsPanel, { target: document.body, props })
+    flushSync()
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')?.value,
+      ).toBe('1d'),
+    )
+    const restored = document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')
+    if (restored === null) throw new Error('missing estimate period')
+    restored.value = '1y'
+    restored.dispatchEvent(new Event('change', { bubbles: true }))
+    flushSync()
+    await vi.waitFor(() =>
+      expect(api.getHistory).toHaveBeenCalledWith(['live'], 0, NOW_SECONDS + 1, {
+        maxResolution: (365 * DAY_SECONDS) / 2,
+      }),
+    )
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('over 40 d within the last year'),
+    )
+  })
+
   it('requests an all-history range through a finished scope boundary', async () => {
     const finishedAt = NOW_SECONDS - DAY_SECONDS
     mounted = mount(StatsPanel, {
@@ -93,7 +155,6 @@ describe('retained history range', () => {
         .map((call) => call[3]?.maxResolution)
         .filter((resolution) => resolution !== undefined),
     ).toEqual([900, 1_800, 3_600, 5_400, 10_800, 21_600, 43_200, 129_600, 302_400, 1_296_000])
-    expect(document.body.textContent).not.toContain('last 7 days')
   })
 
   it('ends at the current boundary when any included template is live', async () => {
@@ -173,7 +234,7 @@ describe('retained history range', () => {
   it('formats partial-day coverage without exposing floating-point noise', async () => {
     api.getHistory.mockImplementation((_templateIds, _from, _to, options) =>
       Promise.resolve(
-        options?.maxResolution === 43_200
+        options?.maxResolution === 302_400
           ? {
               resolution: 900,
               coverageStart: seconds(NOW_SECONDS - 10.5 * 3_600),
@@ -195,7 +256,7 @@ describe('retained history range', () => {
     flushSync()
 
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain('over 10.5 h within the last day'),
+      expect(document.body.textContent).toContain('over 10.5 h within the last 7 days'),
     )
   })
 })

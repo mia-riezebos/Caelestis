@@ -4,18 +4,18 @@
 Keep timelapse controls stationary, extend rolling pace and ETA periods, add bulk painter selection, and include imported history in pace and contributions.
 
 ## Acceptance criteria
-- [ ] Missing tile coverage never shifts the viewer controls (#331).
-- [ ] Pace offers 3d, 7d, and 30d; daily and longer windows connect imported and reported data without inventing subdaily archive activity (#332).
-- [ ] ETA uses a selectable longer period and describes partial coverage (#333).
-- [ ] Painter lines have bulk show/hide controls (#334).
-- [ ] Remove the painter metric selector from the legend.
-- [ ] Contributions include imported progress without attributing it to painters or double-counting live days.
+- [x] Missing tile coverage never shifts the viewer controls (#331).
+- [x] Pace offers 3d, 7d, and 30d; daily and longer windows connect imported and reported data without inventing subdaily archive activity (#332).
+- [x] ETA uses a selectable longer period and describes partial coverage (#333).
+- [x] Painter lines have bulk show/hide controls (#334).
+- [x] Remove the painter metric selector from the legend.
+- [x] Contributions include imported progress without attributing it to painters or double-counting live days.
 
 ## TODOs
 - [x] Keep missing-coverage feedback inside the fixed viewer and validate the layout change.
 - [x] Add bounded bulk painter selection, remove the metric selector, and validate selection behavior.
 - [x] Unify imported and live rolling pace, add longer windows and imported contribution days, and test coverage boundaries.
-- [ ] Add persisted ETA periods, validate partial coverage and the frontend, then file the PR.
+- [x] Add persisted ETA periods, validate partial coverage and the frontend, then file the PR.
 
 ## Notes
 - Worktree started clean on t3code/fix-backfilled-pace-graphs. All four issues are open.
@@ -24,3 +24,5 @@ Keep timelapse controls stationary, extend rolling pace and ETA periods, add bul
 - #331: notice now sits inside the fixed-height viewer. Frontend client/SSR build and diff check pass; browser layout check follows with final validation.
 - #334 and legend: 24 focused tests pass, including bulk actions with an active search and request bounds.
 - #332 and imported contributions: all 126 frontend tests pass; Svelte check passes. Complete trailing intervals preserve negative progress, missing coverage, and live precedence.
+- Final implementation: 127 frontend tests pass; focused painter/ETA/window rerun passes 30 tests. Frontend check/build, repository lint, and 32 release checks pass.
+- Browser verification remains in progress with local fixtures. Mia requested filing now; code review belongs to the bots after filing.

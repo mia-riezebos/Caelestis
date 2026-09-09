@@ -100,23 +100,10 @@ export const rollingPaceSeries = (
   source: readonly PacePoint[],
   bucketSeconds: number,
   windowSeconds: number,
-): PaceRatePoint[] => {
-  const series: PaceRatePoint[] = []
-  const steps = Math.round(windowSeconds / bucketSeconds)
-  for (let i = steps - 1; i < source.length; i++) {
-    const current = source[i]
-    if (current === undefined) continue
-    const before = i === steps - 1 ? 0 : source[i - steps]?.cumPlaced
-    if (before === undefined) continue
-    series.push({
-      t: current.t + bucketSeconds,
-      v: ((current.cumPlaced - before) / windowSeconds) * 3_600,
-    })
-  }
-  return series
-}
+): PaceRatePoint[] =>
+  rollingIntervalPace(paceIntervals(source, bucketSeconds), windowSeconds).flat()
 
-/** Average only complete retained buckets inside the requested window. */
+/** Average a trailing window ending at the latest complete retained bucket. */
 export const averagePace = (
   history: HistoryResponse,
   to: number,
@@ -125,8 +112,8 @@ export const averagePace = (
   const { coverageStart, resolution } = history
   if (coverageStart === undefined || resolution === undefined) return null
 
-  const from = Math.ceil(Math.max(to - windowSeconds, coverageStart) / resolution) * resolution
   const until = Math.floor(to / resolution) * resolution
+  const from = Math.ceil(Math.max(until - windowSeconds, coverageStart) / resolution) * resolution
   if (until <= from) return null
 
   let placed = 0

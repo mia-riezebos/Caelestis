@@ -4,6 +4,7 @@
     ContributionDay,
     ArchiveHistory,
     HistoryBucket,
+    HistoryResponse,
     LeaderboardEntry,
     PainterTotal,
     Template,
@@ -119,6 +120,7 @@
     new Set(
       painters
         .filter((painter) => painterShown(painter.wplaceUserId))
+        .slice(0, MAX_SELECTED_PAINTERS)
         .map((painter) => painter.wplaceUserId),
     ),
   )
@@ -299,16 +301,36 @@
     }
   })
 
-  // Show the last 24 hours as pixels per hour.
+  const estimatePeriods = [
+    { key: '1d', seconds: DAY_SECONDS, label: 'day' },
+    { key: '3d', seconds: 3 * DAY_SECONDS, label: '3 days' },
+    { key: '7d', seconds: 7 * DAY_SECONDS, label: '7 days' },
+    { key: '30d', seconds: 30 * DAY_SECONDS, label: '30 days' },
+    { key: '1y', seconds: 365 * DAY_SECONDS, label: 'year' },
+  ] as const
+  const storedEstimatePeriod = persisted<string>('caelestis:estimate-period', '7d')
+  const estimatePeriod = $derived(estimatePeriods.find((period) => period.key === storedEstimatePeriod.value) ?? estimatePeriods[2])
+  let annualHistory = $state<HistoryResponse | null>(null)
+  $effect(() => {
+    if (estimatePeriod.key !== '1y' || templateIds.length === 0) return
+    let cancelled = false
+    annualHistory = null
+    getHistory(templateIds, from, to, { maxResolution: estimatePeriod.seconds / 2 })
+      .then((response) => { if (!cancelled) annualHistory = response })
+      .catch(() => { if (!cancelled) annualHistory = null })
+    return () => { cancelled = true }
+  })
+
+  // Reuse the chart's retained tier; the annual estimate loads only when selected.
   const pace = $derived.by(() => {
-    const source = paceHistories.find((candidate) => candidate.window === '1d')
-    return source === undefined ? null : averagePace(source.history, to, DAY_SECONDS)
+    const history = estimatePeriod.key === '1y' ? annualHistory : paceHistories.find((candidate) => candidate.window === estimatePeriod.key)?.history
+    return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
   })
 
   const pacePeriod = $derived(
-    pace !== null && pace.hours < 23
-      ? `over ${pace.hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h within the last day`
-      : 'over the last day',
+    pace !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
+      ? `over ${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} within the last ${estimatePeriod.label}`
+      : `over the last ${estimatePeriod.label}`,
   )
 
   const eta = $derived.by(() => {
@@ -328,13 +350,25 @@
   <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <h2 class="font-semibold">Progress &amp; pace</h2>
-      <div class="text-xs tabular-nums text-base-content/60">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-base-content/60">
+        <label class="inline-flex items-center gap-2">
+          Estimate over
+          <select class="select select-xs w-auto" aria-label="Estimate over" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
+            {#each estimatePeriods as period (period.key)}
+              <option value={period.key}>{period.key}</option>
+            {/each}
+          </select>
+        </label>
+        <span>
         {#if pace !== null}
           <span class="whitespace-nowrap" title={`${formatPixels(pace.placed)} per hour`} aria-label={`${formatPixels(pace.placed)} per hour`}>{formatCount(pace.placed)} px/h</span> {pacePeriod}
           {#if eta !== null}
             · done in {formatEta(eta)} at this pace
           {/if}
+        {:else}
+          Estimate unavailable
         {/if}
+        </span>
       </div>
     </div>
     {#if failed}
