@@ -69,7 +69,51 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
-  it('changes and persists the ETA period and fetches annual history only when selected', async () => {
+  it('keeps the annual estimate visible while the next live history read is pending', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_SECONDS * 1000)
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => (key === 'caelestis:estimate-period' ? '"1y"' : null),
+      setItem: vi.fn(),
+    })
+    api.getHistory.mockResolvedValue({
+      resolution: 900,
+      coverageStart: seconds(NOW_SECONDS - 3 * DAY_SECONDS),
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: 900,
+          bucketStart: seconds(NOW_SECONDS - 900),
+          placed: 60,
+          correct: 60,
+          repairs: 0,
+        },
+      ],
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 60, mismatched: 0, unpainted: 40, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    flushSync()
+    expect(document.body.textContent).toContain('over 3 d within the last year')
+    expect(api.getHistory).toHaveBeenCalledTimes(11)
+    api.getHistory.mockImplementation(() => new Promise(() => {}))
+    await vi.advanceTimersByTimeAsync(15_000)
+    flushSync()
+    expect(api.getHistory).toHaveBeenCalledTimes(22)
+    expect(document.body.textContent).toContain('over 3 d within the last year')
+    expect(document.body.textContent).not.toContain('Estimate unavailable')
+  })
+
+  it('changes and persists every ETA period using the loaded history', async () => {
     const storage = new Map<string, string>()
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => storage.get(key) ?? null,
@@ -118,14 +162,11 @@ describe('retained history range', () => {
     )
     const restored = document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')
     if (restored === null) throw new Error('missing estimate period')
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(22))
     restored.value = '1y'
     restored.dispatchEvent(new Event('change', { bubbles: true }))
     flushSync()
-    await vi.waitFor(() =>
-      expect(api.getHistory).toHaveBeenCalledWith(['live'], 0, NOW_SECONDS + 1, {
-        maxResolution: (365 * DAY_SECONDS) / 2,
-      }),
-    )
+    expect(api.getHistory).toHaveBeenCalledTimes(22)
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain('over 40 d within the last year'),
     )
@@ -234,7 +275,7 @@ describe('retained history range', () => {
   it('formats partial-day coverage without exposing floating-point noise', async () => {
     api.getHistory.mockImplementation((_templateIds, _from, _to, options) =>
       Promise.resolve(
-        options?.maxResolution === 302_400
+        options?.maxResolution === 43_200
           ? {
               resolution: 900,
               coverageStart: seconds(NOW_SECONDS - 10.5 * 3_600),

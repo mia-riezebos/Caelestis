@@ -4,7 +4,6 @@
     ContributionDay,
     ArchiveHistory,
     HistoryBucket,
-    HistoryResponse,
     LeaderboardEntry,
     PainterTotal,
     Template,
@@ -313,20 +312,9 @@
   ] as const
   const storedEstimatePeriod = persisted<string>('caelestis:estimate-period', '7d')
   const estimatePeriod = $derived(estimatePeriods.find((period) => period.key === storedEstimatePeriod.value) ?? estimatePeriods[2])
-  let annualHistory = $state<HistoryResponse | null>(null)
-  $effect(() => {
-    if (estimatePeriod.key !== '1y' || templateIds.length === 0) return
-    let cancelled = false
-    annualHistory = null
-    getHistory(templateIds, from, to, { maxResolution: estimatePeriod.seconds / 2 })
-      .then((response) => { if (!cancelled) annualHistory = response })
-      .catch(() => { if (!cancelled) annualHistory = null })
-    return () => { cancelled = true }
-  })
-
-  // Reuse the chart's retained tier; the annual estimate loads only when selected.
+  // The 1d source already includes the entire retention ladder, including its permanent tier.
   const pace = $derived.by(() => {
-    const history = estimatePeriod.key === '1y' ? annualHistory : paceHistories.find((candidate) => candidate.window === estimatePeriod.key)?.history
+    const history = paceHistories.find((candidate) => candidate.window === '1d')?.history
     return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
   })
 
