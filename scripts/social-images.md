@@ -31,7 +31,10 @@ Full history renders in the workflow, outside Worker request limits. Failed refr
 object. Conditional writes prevent a first-image request from replacing an existing GIF.
 
 GIFs use the viewer's 16:9 capture bounds, native pixel sampling, at most 32 historical frames,
-and a latest-snapshot poster. Real OpenStreetMap tiles remain visible through transparent and
+and a latest-snapshot poster. Playback scales with the unique history frame count before sampling:
+4 fps through 32 observations, then one eighth of the count, capped at 30 fps at 240 observations.
+The first and last images pause for 1.5 seconds. GIF timing uses alternating 10 ms ticks where needed.
+Real OpenStreetMap tiles remain visible through transparent and
 unobserved canvas pixels. Every frame includes map attribution. The Worker caches map tiles in R2;
 the CLI uses `.scratch/social-images/.osm`, retained between workflow runs. Both cache for seven days
 and identify the renderer in tile requests. Finished templates end at their archived history.

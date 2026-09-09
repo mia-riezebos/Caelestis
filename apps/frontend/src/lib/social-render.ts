@@ -14,6 +14,11 @@ import { type ReadMapTile, renderBasemap } from './social-basemap.ts'
 import { SOCIAL_IMAGE_HEIGHT, SOCIAL_IMAGE_WIDTH } from './social-image.ts'
 
 const MAX_FRAMES = 32
+const MIN_FPS = 4
+const MAX_FPS = 30
+const HISTORY_PLAYBACK_SECONDS = 8
+const GIF_TICK_MS = 10
+const POSTER_PAUSE_MS = 1500
 const MAX_GIF_BYTES = 4_500_000
 const BACKGROUND = [27, 27, 32, 255]
 const { applyPalette, GIFEncoder, quantize } = gifenc
@@ -73,9 +78,12 @@ export const renderTimelapse = async ({
   width?: number
   height?: number
 }): Promise<Uint8Array | null> => {
-  const timeline = sampleTimeline(
+  const observations = new Set(
     [...histories.values()].flatMap((frames) => frames.map((frame) => frame.bucketStart)),
   )
+  const timeline = sampleTimeline([...observations])
+  const fps = Math.min(MAX_FPS, Math.max(MIN_FPS, observations.size / HISTORY_PLAYBACK_SECONDS))
+  const ticksPerFrame = 1000 / fps / GIF_TICK_MS
   const times = [null, ...timeline]
   const background = readMapTile
     ? await renderBasemap(template.bbox, width, height, readMapTile)
@@ -134,10 +142,13 @@ export const renderTimelapse = async ({
     const gif = GIFEncoder()
     for (const [index, frame] of selected.entries()) {
       const palette = quantize(frame, 128)
+      // Round cumulative time so GIF's 10 ms ticks do not turn the 30 fps cap into 33 fps.
+      const delay =
+        (Math.ceil(index * ticksPerFrame) - Math.ceil((index - 1) * ticksPerFrame)) * GIF_TICK_MS
       gif.writeFrame(applyPalette(frame, palette), width, height, {
         palette,
         repeat: 0,
-        delay: index === 0 || index === selected.length - 1 ? 1500 : 250,
+        delay: index === 0 || index === selected.length - 1 ? POSTER_PAUSE_MS : delay,
       })
     }
     gif.finish()

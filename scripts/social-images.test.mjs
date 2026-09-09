@@ -40,6 +40,34 @@ test('samples the entire retained timeline, preserving both endpoints', () => {
   assert.deepEqual(sampleTimeline([9, 1, 5, 1, 3, 7], 3), [1, 5, 9])
 })
 
+test('longer histories play faster, capped at 30 fps after GIF delay rounding', async () => {
+  const png = await tile('#ff0000')
+  const rates = []
+  for (const count of [8, 96, 300]) {
+    const gif = await renderTimelapse({
+      template,
+      histories: new Map([
+        ['0/0', Array.from({ length: count }, (_, i) => ({ bucketStart: i * 600, hash: 'red' }))],
+      ]),
+      canvas: new Map([['0/0', 'red']]),
+      readTile: async () => png,
+      width: 16,
+      height: 9,
+    })
+    const { delay } = await sharp(gif, { animated: true }).metadata()
+    assert.equal(delay[0], 1500)
+    assert.equal(delay.at(-1), 1500)
+    const playback = delay.slice(1, -1)
+    const fps = (playback.length * 1000) / playback.reduce((sum, ms) => sum + ms, 0)
+    assert.ok(fps <= 30, `encoded GIF exceeds 30 fps: ${fps}`)
+    rates.push(fps)
+  }
+  assert.equal(rates[0], 4)
+  assert.ok(rates[1] > rates[0])
+  assert.ok(rates[2] > rates[1])
+  assert.ok(rates[2] > 29)
+})
+
 test('sampling wraps longitude and stays within polar canvas bounds', () => {
   const seam = captureSamples({ minX: WORLD_PIXELS - 8, minY: 0, maxX: 8, maxY: 9 }, 16, 9)
   assert.deepEqual([...seam.keys()], ['2047/0', '0/0'])
