@@ -93,7 +93,6 @@
       ) * DAY_SECONDS,
   )
   const displayFrom = $derived(Math.min(from, ...archiveSamples.map((sample) => sample.at)))
-  const importedContributions = $derived(archiveContributionDays(archiveSamples, from))
   const hasLiveTemplate = $derived(templates.some((template) => template.finishedAt === null))
   const to = $derived.by(() => {
     const finishedAt = templates.map((template) => template.finishedAt)
@@ -103,6 +102,10 @@
   })
 
   let history = $state<HistoryBucket[] | null>(null)
+  const importedContributions = $derived(archiveContributionDays(
+    archiveSamples,
+    Math.min(...(history ?? []).map((bucket) => bucket.bucketStart)),
+  ))
   let paceHistories = $state<readonly PaceHistorySource[]>([])
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)

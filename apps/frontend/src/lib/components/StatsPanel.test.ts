@@ -262,6 +262,59 @@ describe('retained history range', () => {
 })
 
 describe('live counts', () => {
+  it('includes imported contributions after template creation but before the first report', async () => {
+    api.getArchiveHistory.mockResolvedValue({
+      source: 'eralyon',
+      basis: {
+        templateId: 'live',
+        versionId: 'version',
+        name: 'live',
+        season: 0,
+        bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+        total: 100,
+        chunks: [],
+      },
+      samples: [10, 22].map((correct, index) => ({
+        at: NOW_SECONDS - (3 - index) * DAY_SECONDS,
+        snapshotId: index,
+        correct,
+        mismatched: 0,
+        total: 100,
+      })),
+      frames: [],
+    })
+    api.getHistory.mockResolvedValue({
+      resolution: 900,
+      coverageStart: seconds(NOW_SECONDS - DAY_SECONDS),
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: 900,
+          bucketStart: seconds(NOW_SECONDS - DAY_SECONDS),
+          placed: 7,
+          correct: 7,
+          repairs: 0,
+        },
+      ],
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 29, mismatched: 0, unpainted: 71, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('[aria-label$="12 net correct pixels (imported)"]'),
+      ).not.toBeNull(),
+    )
+  })
+
   it('applies contributions and leaderboard snapshots from one live subscription', async () => {
     mounted = mount(StatsPanel, {
       target: document.body,
