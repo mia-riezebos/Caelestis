@@ -32,6 +32,8 @@ object. Conditional writes prevent a first-image request from replacing an exist
 
 GIFs use the viewer's 16:9 capture bounds and native pixel sampling. History plays for ten seconds,
 followed by five seconds on the latest state. Up to 300 historical frames keep playback within 30 fps.
+Large captures use fewer frames to keep source image reads and decodes within 4,096 per template,
+including the final state. Both history endpoints remain present.
 GIF timing distributes 10 ms ticks across the history, preserving its duration even if size limits
 require fewer frames. Without history, the GIF holds only the latest state.
 Real OpenStreetMap tiles remain visible through transparent and

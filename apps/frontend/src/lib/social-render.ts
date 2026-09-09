@@ -16,6 +16,7 @@ import { SOCIAL_IMAGE_HEIGHT, SOCIAL_IMAGE_WIDTH } from './social-image.ts'
 const MAX_FPS = 30
 const HISTORY_PLAYBACK_SECONDS = 10
 const MAX_FRAMES = MAX_FPS * HISTORY_PLAYBACK_SECONDS
+const MAX_SOURCE_IMAGES = 4096
 const GIF_TICK_MS = 10
 const LIVE_PAUSE_MS = 5000
 const MAX_GIF_BYTES = 4_500_000
@@ -77,8 +78,15 @@ export const renderTimelapse = async ({
   width?: number
   height?: number
 }): Promise<Uint8Array | null> => {
+  const samplesByTile = captureSamples(template.bbox, width, height)
+  // Reserve one source image per tile for the live hold, retaining both history endpoints.
+  const frameLimit = Math.min(
+    MAX_FRAMES,
+    Math.max(2, Math.floor(MAX_SOURCE_IMAGES / samplesByTile.size) - 1),
+  )
   const timeline = sampleTimeline(
     [...histories.values()].flatMap((frames) => frames.map((frame) => frame.bucketStart)),
+    frameLimit,
   )
   const times = [...timeline, null]
   const background = readMapTile
@@ -86,7 +94,7 @@ export const renderTimelapse = async ({
     : Uint8Array.from({ length: width * height * 4 }, (_, i) => BACKGROUND[i % 4])
   const frames = times.map(() => background.slice())
   let observed = false
-  for (const [key, samples] of captureSamples(template.bbox, width, height)) {
+  for (const [key, samples] of samplesByTile) {
     const history = [...(histories.get(key) ?? [])].sort((a, b) => a.bucketStart - b.bucketStart)
     const latest = template.finished
       ? history.at(-1)?.hash
