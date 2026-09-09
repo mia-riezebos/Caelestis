@@ -132,6 +132,7 @@ describe('rolling pace retention', () => {
         allGaps ? 0 : 1,
       )
       expect(document.querySelectorAll('path[data-pace-window="1d"]')).toHaveLength(allGaps ? 0 : 1)
+      expect(document.querySelectorAll('circle[data-pace-singleton="1d"]')).toHaveLength(allGaps ? 0 : 1)
       expect(document.body.textContent).toContain('No coverage')
       expect(document.body.textContent).not.toContain('No paint activity')
       const chart = document.querySelector('svg[role="img"]')

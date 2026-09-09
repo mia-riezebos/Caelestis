@@ -294,6 +294,8 @@ describe('painter lines', () => {
     await vi.waitFor(() => expect(paceLines()).toBe(0))
     expect(lines()).toEqual(['1:1h'])
     expect(stored.get('caelestis:pace-all-users')).toBe('false')
+    expect(chart().querySelector('text[aria-label$="per hour"]')).not.toBeNull()
+    expect(chart().textContent).toContain('px/h')
     expect(document.querySelector('[data-all-users] [data-painter-state]')?.textContent).toBe(
       'not drawn',
     )

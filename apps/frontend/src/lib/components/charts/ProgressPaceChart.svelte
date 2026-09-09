@@ -1181,7 +1181,7 @@
             >
           {/if}
         {/each}
-        {#if activePaces.length > 0}
+        {#if activePaces.length > 0 || activePainterLines.length > 0}
           {#if rightMin < 0}
             <text x={width - pad.right + 8} y={yRight(rightMin) + 3} class="fill-base-content/50 text-[10px] tabular-nums">{formatCount(rightMin)}</text>
           {/if}
@@ -1199,7 +1199,7 @@
           {/each}
         {/if}
         <text x={pad.left - 8} y={9} text-anchor="end" class="fill-base-content/40 text-[9px]">px</text>
-        {#if activePaces.length > 0}
+        {#if activePaces.length > 0 || activePainterLines.length > 0}
           <text x={width - pad.right + 8} y={9} text-anchor="start" class="fill-base-content/40 text-[9px]"
             >px/h</text
           >
@@ -1260,6 +1260,9 @@
               stroke-width={paceWidth(pace.rank)}
               stroke-linejoin="round"
             />
+            {#if pace.series.length === 1}
+              <circle data-pace-singleton={pace.key} cx={x(pace.series[0].t)} cy={yRight(pace.series[0].v)} r="3" fill={paceColor(pace.rank)} />
+            {/if}
           {/each}
 
           {#each visibleArchiveSegments as segment (segment[0].t)}
