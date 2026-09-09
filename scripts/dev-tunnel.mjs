@@ -109,8 +109,8 @@ export async function runDevWithTunnel({
     )
   }
 
-  process.once('SIGINT', () => shutDown('SIGINT', 130))
-  process.once('SIGTERM', () => shutDown('SIGTERM', 143))
+  process.on('SIGINT', () => shutDown('SIGINT', 130))
+  process.on('SIGTERM', () => shutDown('SIGTERM', 143))
 
   worker = startChild(label, command, args)
   worker.on('error', (error) => {
