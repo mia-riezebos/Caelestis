@@ -7,6 +7,7 @@ import type {
 } from '@caelestis/shared'
 import { readBackendJson } from '$lib/server/backend.js'
 import { socialMetadata } from '$lib/server/social.js'
+import { ensureSocialImage } from '$lib/server/social-images.js'
 import type { AppBootstrap } from '$lib/state/app.svelte.js'
 import type { LayoutServerLoad } from './$types'
 
@@ -24,10 +25,16 @@ const emptyBootstrap = (error: unknown): AppBootstrap => ({
 
 export const load: LayoutServerLoad = async (event) => {
   const withSocial = async (bootstrap: AppBootstrap) => {
+    const manifest = bootstrap.manifest
     // A missing preview must not prevent the dashboard from loading.
     let social: Awaited<ReturnType<typeof socialMetadata>>
     try {
-      social = await socialMetadata(event.url, bootstrap, event.platform?.env.SOCIAL_IMAGES)
+      social = await socialMetadata(
+        event.url,
+        bootstrap,
+        event.platform?.env.SOCIAL_IMAGES,
+        manifest ? (template) => ensureSocialImage(event, manifest.season, template) : undefined,
+      )
     } catch (error) {
       console.error('social image lookup failed', error)
       social = await socialMetadata(event.url, bootstrap)

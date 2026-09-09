@@ -51,6 +51,23 @@ test('sampling wraps longitude and stays within polar canvas bounds', () => {
   )
 })
 
+test('the initial artwork GIF places cropped chunks at their bbox offsets', async () => {
+  const png = await sharp({ create: { width: 16, height: 9, channels: 4, background: '#ff0000' } })
+    .png()
+    .toBuffer()
+  const gif = await renderTimelapse({
+    template,
+    artwork: true,
+    histories: new Map(),
+    canvas: new Map([['0/0', 'art']]),
+    readTile: async () => png,
+    width: 16,
+    height: 9,
+  })
+  const pixel = await sharp(gif).removeAlpha().raw().toBuffer()
+  assert.deepEqual([...pixel.subarray(0, 3)], [255, 0, 0])
+})
+
 test('GIF starts with current pixels, then plays history without leaking future observations', async () => {
   const red = await tile('#ff0000')
   const blue = await tile('#0000ff')

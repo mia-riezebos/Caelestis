@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const readBackendJson = vi.hoisted(() => vi.fn())
 vi.mock('$lib/server/backend.js', () => ({ readBackendJson }))
+vi.mock('$lib/server/social-images.js', () => ({ ensureSocialImage: vi.fn() }))
 
 import { GET, HEAD } from './+server.js'
 
@@ -36,7 +37,7 @@ describe('public template share images', () => {
   it('serves GIF bytes with the current artwork key and revalidation headers', async () => {
     const { get, event } = eventFor()
     const response = await GET(event)
-    expect(get).toHaveBeenCalledWith('social/v1/3/art/v1.gif')
+    expect(get).toHaveBeenCalledWith('social/v2/3/art.gif')
     expect(response.headers.get('content-type')).toBe('image/gif')
     expect(response.headers.get('cache-control')).toBe('public, no-cache')
     expect(await response.text()).toBe('GIF89a')

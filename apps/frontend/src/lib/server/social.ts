@@ -1,4 +1,4 @@
-import type { Manifest, ServerInfo, TemplateStatus } from '@caelestis/shared'
+import type { Manifest, ServerInfo, Template, TemplateStatus } from '@caelestis/shared'
 import {
   DEFAULT_SOCIAL_IMAGE,
   SOCIAL_IMAGE_HEIGHT,
@@ -16,7 +16,10 @@ interface SocialContext {
 export const socialMetadata = async (
   url: URL,
   context: SocialContext,
-  images?: App.Platform['env']['SOCIAL_IMAGES'],
+  images?: Pick<NonNullable<App.Platform['env']['SOCIAL_IMAGES']>, 'head'>,
+  ensureImage?: (
+    template: Template,
+  ) => ReturnType<NonNullable<App.Platform['env']['SOCIAL_IMAGES']>['head']>,
 ) => {
   const { server, manifest, statuses } = context
   const siteName = server?.name ?? 'Caelestis'
@@ -57,7 +60,9 @@ export const socialMetadata = async (
       ? ''
       : ` ${Math.round((status.correct / status.total) * 100)}% painted correctly.`
   metadata.description = `${template.totalPixels.toLocaleString('en-US')} pixels on Wplace.${progress} Watch the timelapse and follow its progress.`
-  const image = await images?.head(socialImageKey(manifest.season, template))
+  const image = ensureImage
+    ? await ensureImage(template)
+    : await images?.head(socialImageKey(manifest.season, template))
   if (image != null) {
     const imageUrl = new URL(`/social/template/${encodeURIComponent(template.id)}.gif`, url.origin)
     imageUrl.searchParams.set('v', image.etag)

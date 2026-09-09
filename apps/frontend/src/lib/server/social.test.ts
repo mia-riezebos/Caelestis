@@ -76,7 +76,7 @@ describe('share metadata', () => {
       },
       images,
     )
-    expect(head).toHaveBeenCalledWith('social/v1/3/art/v1.gif')
+    expect(head).toHaveBeenCalledWith('social/v2/3/art.gif')
     expect(result.image).toBe('https://example.com/social/template/art.gif?v=gif-revision')
     expect(result.imageType).toBe('image/gif')
     expect(result.imageWidth).toBe(640)

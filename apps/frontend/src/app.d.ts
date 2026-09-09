@@ -9,11 +9,12 @@ declare global {
     // interface PageData {}
     // interface PageState {}
     interface Platform {
+      ctx?: { waitUntil(promise: Promise<unknown>): void }
       env: {
         CAELESTIS_BACKEND?: { fetch(request: Request): Promise<Response> }
         CAELESTIS_READ_TOKEN?: string
         CAELESTIS_SERVER?: string
-        SOCIAL_IMAGES?: Pick<R2Bucket, 'head' | 'get'>
+        SOCIAL_IMAGES?: Pick<R2Bucket, 'head' | 'get' | 'put'>
       }
     }
   }

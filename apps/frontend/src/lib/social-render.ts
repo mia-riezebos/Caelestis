@@ -57,6 +57,7 @@ export const renderTimelapse = async ({
   histories,
   canvas,
   readTile,
+  artwork = false,
   width = SOCIAL_IMAGE_WIDTH,
   height = SOCIAL_IMAGE_HEIGHT,
 }: {
@@ -64,6 +65,7 @@ export const renderTimelapse = async ({
   histories: ReadonlyMap<string, readonly PlaybackFrame[]>
   canvas: ReadonlyMap<string, string>
   readTile: (hash: string) => Promise<Uint8Array>
+  artwork?: boolean
   width?: number
   height?: number
 }): Promise<Uint8Array | null> => {
@@ -91,15 +93,28 @@ export const renderTimelapse = async ({
     }
     for (const [hash, destinations] of byHash) {
       const image = await decodePng(await readTile(hash))
-      if (image.width !== TILE_SIZE || image.height !== TILE_SIZE)
+      if (!artwork && (image.width !== TILE_SIZE || image.height !== TILE_SIZE))
         throw new Error(`Unexpected tile dimensions for ${hash}`)
+      const [tileX, tileY] = key.split('/').map(Number)
+      const offsetX =
+        artwork && tileX === Math.floor(template.bbox.minX / TILE_SIZE)
+          ? template.bbox.minX % TILE_SIZE
+          : 0
+      const offsetY =
+        artwork && tileY === Math.floor(template.bbox.minY / TILE_SIZE)
+          ? template.bbox.minY % TILE_SIZE
+          : 0
       observed = true
       for (const destination of destinations) {
         for (const [target, source] of samples) {
-          const alpha = image.pixels[source + 3] / 255
+          const x = ((source / 4) % TILE_SIZE) - offsetX
+          const y = Math.floor(source / 4 / TILE_SIZE) - offsetY
+          if (x < 0 || y < 0 || x >= image.width || y >= image.height) continue
+          const pixel = (y * image.width + x) * 4
+          const alpha = image.pixels[pixel + 3] / 255
           for (let channel = 0; channel < 3; channel++) {
             destination[target + channel] = Math.round(
-              image.pixels[source + channel] * alpha + BACKGROUND[channel] * (1 - alpha),
+              image.pixels[pixel + channel] * alpha + BACKGROUND[channel] * (1 - alpha),
             )
           }
         }
