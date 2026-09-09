@@ -255,9 +255,7 @@ describe('server template context menu', () => {
     }
     openContextMenu(current, new MouseEvent('contextmenu'), vi.fn())
     const menu = treeActionPresentation().contextMenu
-    const action = menu?.items.find(
-      (item) => item.label === 'Backfill history',
-    )
+    const action = menu?.items.find((item) => item.label === 'Backfill history')
     if (!menu || !action) throw new Error('Missing backfill action')
     handleTreeActionPresentationIntent({
       type: 'context-menu-action',
