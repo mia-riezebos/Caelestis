@@ -19,6 +19,7 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - [x] Render archived progress with dashed lines and filled areas, preserving gaps and zoom clipping.
 - [x] Connect archive pace samples and join stacked correct/mismatched areas to reported history.
 - [x] Address verified review findings for scheduling, older backends, D1 metrics and isolated snapshots.
+- [x] Join archive/live overlap at the first reported point and use reported hover values thereafter.
 
 ## Notes
 - Babysit baseline at c89a90b6: full check/test/lint/build passes. Browser integration is cooperative; archive API inputs cross an untrusted boundary.

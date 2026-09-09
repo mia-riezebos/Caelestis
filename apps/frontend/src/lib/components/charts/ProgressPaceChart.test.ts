@@ -48,6 +48,38 @@ const paceToggle = (label: string): HTMLElement => {
 }
 
 describe('rolling pace retention', () => {
+  it('gives live history precedence when archive snapshots extend past the first reported point', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [bucket(900, 129600)],
+        resolution: 900,
+        from: 0,
+        to: 173700,
+        anchorCorrect: 40,
+        anchorMismatched: 3,
+        archiveSamples: [10, 20, 999].map((correct, index) => ({
+          at: index * 86400,
+          snapshotId: index,
+          correct,
+          mismatched: 5,
+          total: 1000,
+        })),
+      },
+    })
+    flushSync()
+    const progress = document.querySelector('[data-archive-progress]')?.getAttribute('d') ?? ''
+    expect(progress).toMatch(/L453\.9,/)
+    expect(progress).not.toMatch(/L589\.2,/)
+    const chart = document.querySelector('svg[role="img"]')
+    chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    flushSync()
+    expect(document.querySelector('[data-pace-tooltip]')?.textContent).not.toContain(
+      'Eralyon snapshot',
+    )
+    expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain('40')
+  })
   it('keeps an isolated snapshot visible as a short dash without filling unknown coverage', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,

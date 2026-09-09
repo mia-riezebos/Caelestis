@@ -349,10 +349,12 @@
     return lines
   })
 
+  /** Reported history owns the chart from its first point, even when archive imports overlap it. */
+  const chartArchiveSamples = $derived(archiveSamples.filter((sample) => points[0] === undefined || sample.at < points[0].t))
   /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */
   const hoverSnapTimes = $derived.by(() => {
     const times = new Set(visiblePoints.map((point) => point.t))
-    for (const sample of archiveSamples) {
+    for (const sample of chartArchiveSamples) {
       if (sample.at >= shownView.from && sample.at <= shownView.to) times.add(sample.at)
     }
     for (const interval of visibleArchivePaces) {
@@ -388,7 +390,7 @@
   // The axis tops come from the target window, so a zoom re-fits to where it is going.
   const targetPoints = $derived(windowPoints(view))
   const archiveConnection = $derived.by(() => {
-    const last = archiveSamples.at(-1)
+    const last = chartArchiveSamples.at(-1)
     const firstLive = points[0]
     if (last?.correct == null || firstLive === undefined || firstLive.t <= last.at) return null
     return {
@@ -405,7 +407,7 @@
   const archiveSegments = $derived.by(() => {
     const segments: ArchivePoint[][] = []
     let segment: ArchivePoint[] | null = null
-    for (const sample of archiveSamples) {
+    for (const sample of chartArchiveSamples) {
       if (sample.correct === null || sample.mismatched === null) {
         segment = null
         continue
@@ -419,7 +421,11 @@
     if (archiveConnection !== null) segment?.push({ t: archiveConnection.to, v: archiveConnection.endCorrect, mismatched: archiveConnection.endMismatched })
     return segments
   })
-  const archivePaces = $derived([...archiveIntervals(archiveSamples), ...(archiveConnection === null ? [] : [archiveConnection])])
+  const archiveSnapshotPaces = $derived(archiveIntervals(archiveSamples))
+  const archivePaces = $derived([
+    ...archiveSnapshotPaces.filter((interval) => points[0] === undefined || interval.to < points[0].t),
+    ...(archiveConnection === null ? [] : [archiveConnection]),
+  ])
   const storedArchivePace = persisted<boolean>('caelestis:archive-net-pace', true)
   const drawnArchivePaces = $derived(storedArchivePace.value !== false ? archivePaces : [])
   const archivePaceSegments = $derived.by(() => {
@@ -648,7 +654,7 @@
       return
     }
     if (hover?.t === t) return
-    const sample = archiveSamples.find((sample) => sample.at === t)
+    const sample = chartArchiveSamples.find((sample) => sample.at === t)
     const cumCorrect = sample === undefined
       ? interpolateValue(visiblePoints, t, (point) => point.cumCorrect)
       : sample.correct
@@ -1183,7 +1189,7 @@
             <thead><tr><th scope="col" class="text-start">Snapshot</th><th scope="col">Correct pixels</th><th scope="col">Net px/h since previous snapshot</th></tr></thead>
             <tbody>
               {#each archiveSamples as sample (sample.at)}
-                <tr><th scope="row" class="text-start font-normal">{formatTime(sample.at)}</th><td class="text-center">{sample.correct === null ? 'No coverage' : sample.correct.toLocaleString()}</td><td class="text-center">{archivePaces.find((interval) => interval.to === sample.at)?.rate.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td></tr>
+                <tr><th scope="row" class="text-start font-normal">{formatTime(sample.at)}</th><td class="text-center">{sample.correct === null ? 'No coverage' : sample.correct.toLocaleString()}</td><td class="text-center">{archiveSnapshotPaces.find((interval) => interval.to === sample.at)?.rate.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td></tr>
               {/each}
             </tbody>
           </table>
