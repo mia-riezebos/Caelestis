@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <title>Caelestis · Wplace templates, progress and timelapses</title>
+  <rect width="1200" height="630" fill="#1b1b20"/>
+  <g fill="#4093e4">
+    <path d="M100 170h100v25H100zM75 195h25v100H75zM100 295h100v25H100zM175 195h25v25h-25zM175 270h25v25h-25z"/>
+    <path d="M935 100h25v25h-25zM1010 150h25v25h-25zM1035 200h25v25h-25zM1010 250h25v25h-25zM1060 300h25v25h-25zM960 350h25v25h-25zM1035 400h25v25h-25zM985 475h25v25h-25z" opacity=".5"/>
+  </g>
+  <g fill="#aa38b9"><path d="M985 125h25v25h-25zM1060 225h25v25h-25zM985 300h25v25h-25zM1085 375h25v25h-25zM935 450h25v25h-25z"/></g>
+  <g fill="#f6aa09"><path d="M1060 125h25v25h-25zM960 225h25v25h-25zM1035 350h25v25h-25zM1085 475h25v25h-25z"/></g>
+  <text x="245" y="282" fill="#f7f7fa" font-family="monospace" font-weight="bold" font-size="78" letter-spacing="-3">Caelestis</text>
+  <text x="78" y="399" fill="#d4d4df" font-family="sans-serif" font-size="32">Wplace templates, progress and timelapses.</text>
+  <rect x="78" y="461" width="370" height="8" fill="#32323b" rx="4"/>
+  <rect x="78" y="461" width="278" height="8" fill="#4093e4" rx="4"/>
+</svg>

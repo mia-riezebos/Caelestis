@@ -17,6 +17,9 @@ export default defineConfig(({ command }) => {
   return {
     // Vite must forward upgrades itself; its HTTP middleware cannot run the Worker socket proxy.
     server: {
+      allowedHosts: ['caelestis-dev-frontend.mia.cx'],
+      // A cached dev module can import an older Svelte runtime and break hydration.
+      headers: { 'Cache-Control': 'no-store' },
       proxy:
         devVars.CAELESTIS_SERVER && devVars.CAELESTIS_READ_TOKEN
           ? {

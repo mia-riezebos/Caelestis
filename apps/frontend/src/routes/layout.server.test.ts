@@ -29,7 +29,9 @@ describe('root SSR bootstrap', () => {
       }
     })
 
-    const result = await load({} as Parameters<typeof load>[0])
+    const result = await load({ url: new URL('https://example.com/') } as Parameters<
+      typeof load
+    >[0])
 
     expect(result).toMatchObject({
       bootstrap: {
