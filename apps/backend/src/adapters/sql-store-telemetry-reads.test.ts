@@ -88,6 +88,80 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
 
   afterEach(() => harness.close())
 
+  it('keeps historical pixel counts tied to their tile hash when live progress changes', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const tile = { x: 0, y: 0 }
+    const first = observation({ tile, hash: 'd'.repeat(64) })
+    const status = {
+      templateId: 'template-1',
+      versionId: 'template-1-version',
+      tile,
+      correct: 0,
+      wrong: 0,
+      blank: 1,
+      observedAt: first.observedAt,
+    }
+    await store.recordTileObservation(first, [status])
+    await store.recordTileObservation(
+      {
+        ...first,
+        hash: 'e'.repeat(64),
+        observedAt: millis(first.observedAt + 1000),
+        reportedAt: seconds(first.reportedAt + 1),
+      },
+      [{ ...status, correct: 1, blank: 0, observedAt: millis(first.observedAt + 1000) }],
+    )
+    expect(await store.readTileMeasurements(status.versionId, tile, [first.hash])).toEqual([
+      { hash: first.hash, correct: 0, wrong: 0, blank: 1 },
+    ])
+    expect(await store.readTileMeasurements('other-version', tile, [first.hash])).toEqual([])
+  })
+
+  it('atomically records classifications for a reserved upload, including an older observation', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const tile = { x: 0, y: 0 }
+    const first = observation({ tile, hash: 'd'.repeat(64) })
+    const now = first.observedAt
+    await store.setTemplatePublishedAt('template-1', now, now)
+    const status = {
+      templateId: 'template-1',
+      versionId: 'template-1-version',
+      tile,
+      correct: 1,
+      wrong: 0,
+      blank: 0,
+      observedAt: now,
+    }
+    await store.reserveTileBlobUpload(first.hash, first.hash, 'first', now, millis(now + 10000))
+    expect(
+      await store.commitTileBlobReservation('first', now, first, [status], true),
+    ).not.toBeNull()
+    const older = { ...first, hash: 'e'.repeat(64), observedAt: millis(now - 1000) }
+    await store.reserveTileBlobUpload(older.hash, older.hash, 'older', now, millis(now + 10000))
+    expect(
+      await store.commitTileBlobReservation(
+        'older',
+        now,
+        older,
+        [{ ...status, correct: 0, blank: 1, observedAt: older.observedAt }],
+        true,
+      ),
+    ).not.toBeNull()
+    expect(
+      await store.readTileMeasurements(status.versionId, tile, [first.hash, older.hash]),
+    ).toEqual(
+      expect.arrayContaining([
+        { hash: first.hash, correct: 1, wrong: 0, blank: 0 },
+        { hash: older.hash, correct: 0, wrong: 0, blank: 1 },
+      ]),
+    )
+    const refused = { ...first, hash: 'f'.repeat(64) }
+    expect(
+      await store.commitTileBlobReservation('missing', now, refused, [status], true),
+    ).toBeNull()
+    expect(await store.readTileMeasurements(status.versionId, tile, [refused.hash])).toEqual([])
+  })
+
   it('keeps a finished template frozen until it is reopened', async () => {
     await store.insertTemplateVersion(version('template-1'))
     await expect(

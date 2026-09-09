@@ -48,7 +48,36 @@ const paceToggle = (label: string): HTMLElement => {
 }
 
 describe('rolling pace retention', () => {
-  it('gives live history precedence when archive snapshots extend past the first reported point', () => {
+  it.each([9765, 98765])(
+    "shows the saved count at an old date regardless of today's total (%s)",
+    (anchorCorrect) => {
+      const props = {
+        buckets: [bucket(900, 0), bucket(900, 1800)],
+        resolution: 900,
+        from: 0,
+        to: 3600,
+        anchorCorrect,
+        anchorMismatched: 0,
+        live: true,
+        progressSamples: [
+          { at: 0, correct: 10, mismatched: 0, total: 100000 },
+          { at: 1800, correct: 20, mismatched: 0, total: 100000 },
+        ],
+      }
+      mounted = mount(ProgressPaceChart, { target: document.body, props })
+      flushSync()
+      document
+        .querySelector('svg[role="img"]')
+        ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+      flushSync()
+      expect(
+        document
+          .querySelector('[data-pace-tooltip]')
+          ?.textContent?.match(/correct\s*([\d,]+)/)?.[1],
+      ).toBe('10')
+    },
+  )
+  it('keeps measured archive values when placement reports overlap them', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,
       props: {
@@ -69,16 +98,13 @@ describe('rolling pace retention', () => {
     })
     flushSync()
     const progress = document.querySelector('[data-archive-progress]')?.getAttribute('d') ?? ''
-    expect(progress).toMatch(/L453\.9,/)
-    expect(progress).not.toMatch(/L589\.2,/)
+    expect(progress).toMatch(/L589\.2,/)
     const chart = document.querySelector('svg[role="img"]')
     chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
     chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
     flushSync()
-    expect(document.querySelector('[data-pace-tooltip]')?.textContent).not.toContain(
-      'Eralyon snapshot',
-    )
-    expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain('40')
+    expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain('Eralyon snapshot')
+    expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain('999')
   })
   it('keeps an isolated snapshot visible as a short dash without filling unknown coverage', () => {
     mounted = mount(ProgressPaceChart, {
@@ -199,7 +225,7 @@ describe('rolling pace retention', () => {
     }
   })
   it.each([false, true])(
-    'connects sparse pace and progress to live history unless coverage is missing (gap: %s)',
+    'keeps archive coverage separate from reported placements (gap: %s)',
     (gap) => {
       mounted = mount(ProgressPaceChart, {
         target: document.body,
@@ -224,30 +250,18 @@ describe('rolling pace retention', () => {
       const pace = document.querySelector('path[data-archive-pace]')
       const pacePath = pace?.getAttribute('d') ?? ''
       expect(pace?.getAttribute('stroke-dasharray')).toBe('5 4')
-      expect(pacePath.match(/L/g)).toHaveLength(gap ? 1 : 3)
-      expect(progress.match(/L/g)).toHaveLength(gap ? 1 : 3)
+      expect(pacePath.match(/L/g)).toHaveLength(gap ? 1 : 2)
+      expect(progress.match(/L/g)).toHaveLength(gap ? 1 : 2)
       const mismatch = document.querySelector('[data-archive-mismatched]')?.getAttribute('d') ?? ''
       const area = document.querySelector('[data-archive-mismatched-area]')?.getAttribute('d') ?? ''
-      expect(mismatch.match(/L/g)).toHaveLength(gap ? 1 : 3)
+      expect(mismatch.match(/L/g)).toHaveLength(gap ? 1 : 2)
       expect(area.startsWith(mismatch)).toBe(true)
       const firstCorrect = progress.match(/^M([\d.]+),([\d.]+)/)
       const firstMismatched = mismatch.match(/^M([\d.]+),([\d.]+)/)
       expect(Number(firstMismatched?.[2])).toBeLessThan(Number(firstCorrect?.[2]))
       expect(area.endsWith(`L${firstCorrect?.[1]},${firstCorrect?.[2]}Z`)).toBe(true)
-      if (!gap) {
-        expect(progress).toMatch(/L590\.1,/)
-        expect(pacePath).toMatch(/L590\.1,/)
-        const chart = document.querySelector('svg[role="img"]')
-        chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
-        for (let index = 0; index < 3; index++) {
-          chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
-          flushSync()
-        }
-        expect(document.querySelector('[data-archive-hover]')?.textContent).toContain('1.04 px/h')
-        expect(document.querySelector('[data-archive-hover]')?.textContent).toContain(
-          'Eralyon → reported history',
-        )
-      }
+      expect(progress).not.toMatch(/L590\.1,/)
+      expect(pacePath).not.toMatch(/L590\.1,/)
     },
   )
   it('uses Standard axis suffixes and exact pixel labels', () => {
@@ -260,6 +274,12 @@ describe('rolling pace retention', () => {
         to: 7200,
         anchorCorrect: 3_000_000,
         anchorMismatched: 0,
+        progressSamples: [0, 7200].map((at) => ({
+          at,
+          correct: 3_000_000,
+          mismatched: 0,
+          total: 4_000_000,
+        })),
       },
     })
     flushSync()
@@ -574,6 +594,12 @@ describe('time window', () => {
         to: THREE_DAYS,
         anchorCorrect: 72,
         anchorMismatched: 0,
+        progressSamples: Array.from({ length: 73 }, (_, hour) => ({
+          at: hour * 3600,
+          correct: Math.min(hour + 1, 72),
+          mismatched: 0,
+          total: 100,
+        })),
       },
     })
     flushSync()
@@ -835,6 +861,12 @@ describe('motion', () => {
         to: THREE_DAYS,
         anchorCorrect: 72,
         anchorMismatched: 0,
+        progressSamples: Array.from({ length: 73 }, (_, hour) => ({
+          at: hour * 3600,
+          correct: Math.min(hour + 1, 72),
+          mismatched: 0,
+          total: 100,
+        })),
       },
     })
     flushSync()

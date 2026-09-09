@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   getArchiveHistory: vi.fn(),
   getContributions: vi.fn(),
   getHistory: vi.fn(),
+  getProgressHistory: vi.fn(),
   getLeaderboard: vi.fn(),
   getPainterHistory: vi.fn(),
   getPainterTotals: vi.fn(),
@@ -49,6 +50,7 @@ beforeEach(() => {
     removeItem: vi.fn(),
   })
   api.getHistory.mockReset().mockResolvedValue({ buckets: [] })
+  api.getProgressHistory.mockReset().mockResolvedValue({ samples: [] })
   api.getContributions.mockReset().mockResolvedValue({ days: [] })
   api.getLeaderboard.mockReset().mockResolvedValue({ entries: [] })
   api.getArchiveHistory
