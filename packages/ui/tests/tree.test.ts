@@ -912,7 +912,7 @@ describe('template tree', () => {
       y: 50,
     })
     onIntent.mockClear()
-    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    pointer('contextmenu', { pointerId: 1, cancelable: true })
     row.click()
     expect(onIntent).not.toHaveBeenCalled()
 
@@ -949,13 +949,14 @@ describe('template tree', () => {
     flushSync()
     const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
     if (row === null) throw new Error('missing folder row')
-    const pointer = (type: string): void => {
+    const pointer = (type: string, init: PointerEventInit = {}): void => {
       row.dispatchEvent(
         new PointerEvent(type, {
           bubbles: true,
           pointerType: 'touch',
           isPrimary: true,
           pointerId: 1,
+          ...init,
         }),
       )
     }
@@ -967,10 +968,30 @@ describe('template tree', () => {
       x: 0,
       y: 0,
     })
-    pointer('pointerup')
     onIntent.mockClear()
+    // Another device can act while the original finger is still held down.
+    pointer('pointerdown', { pointerId: 2, pointerType: 'mouse' })
+    pointer('pointerup', { pointerId: 2, pointerType: 'mouse' })
+    pointer('click', { pointerId: 2, pointerType: 'mouse' })
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({ type: 'toggle-expanded', key: 'local' })
+    onIntent.mockClear()
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true }))
+    pointer('contextmenu', { pointerId: -1, pointerType: '' })
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'context-menu',
+      key: 'local',
+      x: 0,
+      y: 0,
+    })
+    onIntent.mockClear()
+    pointer('pointerup')
     for (const type of [first, second]) {
-      const event = new MouseEvent(type, { bubbles: true, cancelable: true })
+      const event = new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerType: 'touch',
+        pointerId: 1,
+      })
       row.dispatchEvent(event)
       expect(event.defaultPrevented).toBe(true)
     }
