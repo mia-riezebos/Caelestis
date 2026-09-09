@@ -16,7 +16,7 @@ template URLs and matching Twitter summary-card metadata.
 ## TODOs
 
 - [x] Commit the daily renderer, dependencies, workflow and rendering tests.
-- [ ] Commit frontend metadata, image serving, fallback artwork and route tests.
+- [x] Commit frontend metadata, image serving, fallback artwork and route tests.
 - [ ] Commit documentation, rebase onto main, validate and file the PR.
 
 ## Notes

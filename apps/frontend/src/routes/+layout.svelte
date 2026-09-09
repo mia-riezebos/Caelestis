@@ -3,6 +3,7 @@ import { Icon } from '@caelestis/ui'
 import { onMount, untrack } from 'svelte'
 import { readToken, serverUrlIsConfigured, usesServerReadProxy } from '$lib/api/client'
 import ConnectDialog from '$lib/components/ConnectDialog.svelte'
+import SocialMetadata from '$lib/components/SocialMetadata.svelte'
 import { provideApp } from '$lib/state/app.svelte'
 import '../app.css'
 import type { LayoutProps } from './$types'
@@ -44,8 +45,10 @@ const toggleTheme = (): void => {
 }
 </script>
 
+<SocialMetadata metadata={data.social} />
+
 <svelte:head>
-  <title>{app.server === null ? 'Caelestis' : `${app.server.name} · Caelestis`}</title>
+  <title>{app.server === null || app.server.name === 'Caelestis' ? 'Caelestis' : `${app.server.name} · Caelestis`}</title>
 </svelte:head>
 
 <div class="flex min-h-dvh flex-col">

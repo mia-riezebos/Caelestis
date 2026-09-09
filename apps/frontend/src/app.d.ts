@@ -1,3 +1,5 @@
+import type { R2Bucket } from '@cloudflare/workers-types'
+
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 declare global {
@@ -11,9 +13,8 @@ declare global {
         CAELESTIS_BACKEND?: { fetch(request: Request): Promise<Response> }
         CAELESTIS_READ_TOKEN?: string
         CAELESTIS_SERVER?: string
+        SOCIAL_IMAGES?: Pick<R2Bucket, 'head' | 'get'>
       }
     }
   }
 }
-
-export {}
