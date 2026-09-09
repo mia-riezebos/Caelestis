@@ -86,7 +86,7 @@ const months = $derived.by(() => {
 
 const weekdays = ['Mon', '', 'Wed', '', 'Fri', '', '']
 
-const max = $derived(Math.max(1, ...byDay.values()))
+const max = $derived(Math.max(1, ...grid.flatMap((column) => column.map((cell) => cell.placed ?? 0))))
 
 // Split the observed range into five levels. Keep zero at the base colour.
 const level = (placed: number): string => {

@@ -12,6 +12,7 @@ it('shows imported gains and lets reported placements replace an overlapping day
     props: {
       weeks: 2,
       imported: new Map([
+        [-400 * day, 1_000_000],
         [8 * day, 12],
         [9 * day, 99],
       ]),
@@ -35,6 +36,10 @@ it('shows imported gains and lets reported placements replace an overlapping day
   expect(labels.some((label) => label?.endsWith('12 net correct pixels (imported)'))).toBe(true)
   expect(labels.some((label) => label?.endsWith('7 pixels'))).toBe(true)
   expect(labels.some((label) => label?.includes('99'))).toBe(false)
+  expect(
+    document.querySelector<HTMLElement>('[aria-label$="12 net correct pixels (imported)"]')?.style
+      .background,
+  ).toBe('var(--heat-5)')
   await unmount(component)
   now.mockRestore()
 })

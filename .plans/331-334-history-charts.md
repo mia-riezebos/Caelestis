@@ -25,4 +25,8 @@ Keep timelapse controls stationary, extend rolling pace and ETA periods, add bul
 - #334 and legend: 24 focused tests pass, including bulk actions with an active search and request bounds.
 - #332 and imported contributions: all 126 frontend tests pass; Svelte check passes. Complete trailing intervals preserve negative progress, missing coverage, and live precedence.
 - Final implementation: 127 frontend tests pass; focused painter/ETA/window rerun passes 30 tests. Frontend check/build, repository lint, and 32 release checks pass.
-- Browser verification remains in progress with local fixtures. Mia requested filing now; code review belongs to the bots after filing.
+- Browser verification passed with local fixtures on template/folder routes, desktop/phone, both themes, keyboard controls, persistence, and reduced motion. Missing notices cause zero slider movement.
+- PR #335 is open. Code review belongs to the bots; babysitting reacts to their findings.
+- Runtime QA found and fixed imported contribution days being cut off at creation instead of the first reported bucket.
+- First bot reviews raised six threads: singleton pace visibility, painter-only axis visibility, two annual ETA refresh/read findings, heatmap scaling, and daily capture drift. Fixes preserve observed daily averages, assign gains to the newer UTC capture date, and reuse the permanent retained tier for all ETAs.
+- Review-fix validation: 131 frontend tests, Svelte check, build, lint, and release checks.

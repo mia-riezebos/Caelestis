@@ -44,3 +44,9 @@ it('starts a new line after a coverage gap and waits for a full window again', (
   expect(rollingIntervalPace(gapped, DAY)).toEqual([[{ t: DAY, v: 1 }], [{ t: 3 * DAY, v: -1 }]])
   expect(rollingIntervalPace(gapped, 2 * DAY)).toEqual([])
 })
+
+it('keeps daily pace for a 25-hour daily capture without inventing subdaily pace', () => {
+  const daily = [{ from: 21 * 3600, to: 46 * 3600, pixels: 25, dailyObservation: true }]
+  expect(rollingIntervalPace(daily, DAY)).toEqual([[{ t: 46 * 3600, v: 1 }]])
+  expect(rollingIntervalPace(daily, 12 * 3600)).toEqual([])
+})

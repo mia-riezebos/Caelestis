@@ -38,7 +38,7 @@
     type TimeWindow,
     windowKeyStep,
   } from '$lib/components/charts/progress-pace'
-  import { archiveIntervals } from '$lib/archive-history'
+  import { archiveIntervals, isDailyArchiveInterval } from '$lib/archive-history'
 
   let {
     buckets,
@@ -255,7 +255,7 @@
       const reportStart = reported[0]?.from ?? Infinity
       const imported = pace.seconds < 86_400 ? [] : archivePaces
         .filter((interval) => interval.to <= reportStart && interval.to <= to)
-        .map((interval) => ({ from: interval.from, to: interval.to, pixels: interval.endCorrect - interval.startCorrect }))
+        .map((interval) => ({ from: interval.from, to: interval.to, pixels: interval.endCorrect - interval.startCorrect, dailyObservation: isDailyArchiveInterval(interval) }))
       const segments = rollingIntervalPace([...imported, ...reported], pace.seconds)
       return { ...pace, usable: segments.length > 0, segments }
     }),

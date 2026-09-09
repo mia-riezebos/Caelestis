@@ -49,6 +49,8 @@ export interface PaceInterval {
   readonly from: number
   readonly to: number
   readonly pixels: number
+  /** Daily capture times may drift; day-or-longer windows use the observed interval's average. */
+  readonly dailyObservation?: boolean
 }
 
 /** Roll complete windows over observed intervals, keeping coverage gaps as separate lines. */
@@ -62,7 +64,7 @@ export const rollingIntervalPace = (
   let left = 0
   for (const interval of intervals) {
     const duration = interval.to - interval.from
-    if (duration > windowSeconds) {
+    if (duration > windowSeconds && !(interval.dailyObservation && windowSeconds >= 86_400)) {
       run = []
       continue
     }
