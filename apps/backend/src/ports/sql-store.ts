@@ -787,6 +787,14 @@ export interface TemplateTileStatusRecord {
   readonly observedAt: Millis
 }
 
+/** Counts for immutable artwork and canvas bytes, independent of current status. */
+export interface TileMeasurement {
+  readonly hash: string
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+}
+
 export interface TemplateTileStatusChange {
   readonly published: boolean
   readonly totalPixels: number
@@ -1333,6 +1341,20 @@ export interface SqlStore extends TagStore {
    * smaller hash — and returned in bucket order.
    */
   readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]>
+
+  /** Read classifications of these exact historical hashes against one artwork version. */
+  readTileMeasurements(
+    versionId: string,
+    tile: TileCoord,
+    hashes: readonly string[],
+  ): Promise<readonly TileMeasurement[]>
+
+  /** Insert missing measurements, preserving existing counts and all live/placement records. */
+  writeTileMeasurements(
+    versionId: string,
+    tile: TileCoord,
+    measurements: readonly TileMeasurement[],
+  ): Promise<void>
 }
 
 /** Exact drawing surface selected by one manifest request. */

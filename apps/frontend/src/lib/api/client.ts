@@ -10,6 +10,7 @@ import {
   type Manifest,
   type PainterHistoryResponse,
   type PainterTotalsResponse,
+  type ProgressHistoryResponse,
   type ServerInfo,
   type StatusResponse,
   type TileHistoryResponse,
@@ -190,6 +191,17 @@ export const probeAdminScope = async (season: number): Promise<boolean> => {
     throw error
   }
 }
+
+/** Read canvas observations for one immutable artwork version, independently of placement pace. */
+export const getProgressHistory = (
+  templateId: string,
+  versionId: string,
+  from: number,
+  to: number,
+): Promise<ProgressHistoryResponse> =>
+  json(
+    `/telemetry/progress/${encodeURIComponent(templateId)}?version=${encodeURIComponent(versionId)}&from=${from}&to=${to}`,
+  )
 
 export const getHistory = (
   templateIds: readonly string[],

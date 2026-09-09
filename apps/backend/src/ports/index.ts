@@ -99,6 +99,7 @@ export {
   type TileFrameCandidate,
   type TileHistoryQuery,
   type TileHistoryReporterRow,
+  type TileMeasurement,
   type TileObservation,
   type TileObservationCommit,
   tooManyTemplateIds,

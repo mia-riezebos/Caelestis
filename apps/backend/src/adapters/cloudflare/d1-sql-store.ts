@@ -8,6 +8,7 @@ import {
   seconds,
   type TemplateSurface,
   type TemplateTag,
+  type TileCoord,
   type TileHistoryFrame,
   tagNameKey,
   templateSurface,
@@ -46,6 +47,7 @@ import {
   templateAlarmStates,
   templateAlarmTileStatuses,
   templates,
+  templateTileMeasurements,
   templateTileStatuses,
   templateVersions,
   tileBlobGcState,
@@ -119,6 +121,7 @@ import {
   type TileBlobScanState,
   type TileHistoryQuery,
   type TileHistoryReporterRow,
+  type TileMeasurement,
   type TileObservation,
   type TileObservationCommit,
   tooManyTemplateIds,
@@ -1422,6 +1425,46 @@ export class D1SqlStore implements SqlStore {
         }
   }
 
+  async readTileMeasurements(versionId: string, tile: TileCoord, hashes: readonly string[]) {
+    const rows: { hash: string; correct: number; wrong: number; blank: number }[] = []
+    for (const group of chunkRows([...new Set(hashes)], 90)) {
+      rows.push(
+        ...(await this.database
+          .select({
+            hash: templateTileMeasurements.hash,
+            correct: templateTileMeasurements.correct,
+            wrong: templateTileMeasurements.wrong,
+            blank: templateTileMeasurements.blank,
+          })
+          .from(templateTileMeasurements)
+          .where(
+            and(
+              eq(templateTileMeasurements.versionId, versionId),
+              eq(templateTileMeasurements.tileX, tile.x),
+              eq(templateTileMeasurements.tileY, tile.y),
+              inArray(templateTileMeasurements.hash, group),
+            ),
+          )),
+      )
+    }
+    return rows
+  }
+
+  async writeTileMeasurements(
+    versionId: string,
+    tile: TileCoord,
+    measurements: readonly TileMeasurement[],
+  ): Promise<void> {
+    for (const group of chunkRows(measurements, 10)) {
+      await this.database
+        .insert(templateTileMeasurements)
+        .values(
+          group.map((measurement) => ({ versionId, tileX: tile.x, tileY: tile.y, ...measurement })),
+        )
+        .onConflictDoNothing()
+    }
+  }
+
   async recordTileObservation(
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
@@ -1470,6 +1513,15 @@ export class D1SqlStore implements SqlStore {
     if (recordHistory) await this.database.batch([history, current])
     else await current
     await this.writeTileStatuses(statuses, forceCurrent)
+    for (const status of statuses)
+      await this.writeTileMeasurements(status.versionId, status.tile, [
+        {
+          hash: observation.hash,
+          correct: status.correct,
+          wrong: status.wrong,
+          blank: status.blank,
+        },
+      ])
   }
 
   private async writeTileStatuses(
@@ -1892,6 +1944,22 @@ export class D1SqlStore implements SqlStore {
           })()
     if (statuses.length > 0) {
       statements.push(
+        this.client
+          .prepare(`WITH incoming AS (${incomingStatuses})
+          INSERT INTO template_tile_measurements (version_id, tile_x, tile_y, sha256, correct, wrong, blank)
+          SELECT incoming.version_id, incoming.tile_x, incoming.tile_y, ?, incoming.correct, incoming.wrong, incoming.blank
+          FROM incoming INNER JOIN templates AS template ON template.id = incoming.template_id AND template.current_version_id = incoming.version_id
+          WHERE (? = 1 OR template.published_at IS NOT NULL) AND EXISTS (
+            SELECT 1 FROM tile_blob_reservations AS reservation INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
+            WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
+          ) ON CONFLICT DO NOTHING`)
+          .bind(
+            statusesJson,
+            observation.hash,
+            includeUnpublished ? 1 : 0,
+            reservationId,
+            observation.hash,
+          ),
         this.client
           .prepare(
             `WITH incoming AS (${incomingStatuses})
