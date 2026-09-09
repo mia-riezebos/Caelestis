@@ -315,8 +315,8 @@ export const tileImageUrl = (hash: string): Promise<string> =>
       : `/tiles/${hash}`,
   )
 
-/** Read sparse imported observations for one immutable template version. */
-export const getArchiveHistory = (
+/** Read sparse observations, treating older backends without this route as no archive. */
+export const getArchiveHistory = async (
   templateId: string,
   version: string,
   tile?: { x: number; y: number },
@@ -326,5 +326,11 @@ export const getArchiveHistory = (
     query.set('x', String(tile.x))
     query.set('y', String(tile.y))
   }
-  return json(`/archive/templates/${templateId}?${query}`)
+  try {
+    return await json(`/archive/templates/${templateId}?${query}`)
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404)
+      return { source: 'eralyon', basis: null, samples: [], frames: [] }
+    throw error
+  }
 }
