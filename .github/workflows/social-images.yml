@@ -28,4 +28,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:social
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .scratch/social-images/.osm
+          key: social-osm-${{ github.run_id }}
+          restore-keys: social-osm-
       - run: node scripts/social-images.mjs --site https://caelestis.mia.cx --publish

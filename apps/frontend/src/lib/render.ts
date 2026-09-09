@@ -8,6 +8,8 @@ import {
 } from '@caelestis/shared'
 import { chunkImageUrl, tileImageUrl } from '$lib/api/client'
 
+export { OSM_TILE_SIZE, osmSpan, osmZoomFor } from './osm-geometry.js'
+
 /**
  * A template's bounding box as a drawable rectangle.
  *
@@ -133,27 +135,6 @@ export const tileImage = (hash: string): Promise<HTMLImageElement> =>
 
 export const chunkImage = (hash: string): Promise<HTMLImageElement> =>
   cachedImage(`chunk:${hash}`, () => chunkImageUrl(hash))
-
-/**
- * The OpenStreetMap basemap under the canvas, which is what wplace itself draws pixels over.
- *
- * The wplace canvas is a web-mercator overlay at zoom `CANVAS_ZOOM`, so slippy-map tiles line up
- * exactly: an OSM tile at zoom `z` covers `WORLD_PIXELS / 2^z` canvas pixels, and picking `z` is
- * matching that to the screen's pixels-per-canvas-pixel.
- */
-export const OSM_TILE_SIZE = 256
-
-export const osmZoomFor = (screenPxPerCanvasPx: number): number =>
-  Math.min(
-    16,
-    Math.max(
-      6,
-      Math.round(Math.log2(screenPxPerCanvasPx) + Math.log2(WORLD_PIXELS / OSM_TILE_SIZE)),
-    ),
-  )
-
-/** Canvas pixels one OSM tile covers at zoom `z`. */
-export const osmSpan = (z: number): number => WORLD_PIXELS / 2 ** z
 
 /** Destination rectangle for one slippy-map tile in canvas-pixel coordinates. */
 export const osmTileDrawRect = (

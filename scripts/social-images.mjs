@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { socialImageKey } from '../apps/frontend/src/lib/social-image.ts'
 import { renderTemplateHistory } from '../apps/frontend/src/lib/social-render.ts'
+import { cachedMapTiles } from './osm-tiles.mjs'
 
 export {
   captureSamples,
@@ -21,6 +22,7 @@ export const buildSocialImages = async ({
   local = false,
   bucket = 'caelestis-blobs',
   templateId,
+  readMapTile = cachedMapTiles(resolve(output, '.osm')),
 }) => {
   const api = new URL('/api/v1/', site)
   const read = async (path, init) => {
@@ -40,7 +42,7 @@ export const buildSocialImages = async ({
     (entry) => entry.published && (!templateId || entry.id === templateId),
   )) {
     try {
-      const gif = await renderTemplateHistory(template, manifest.season, canvas, read)
+      const gif = await renderTemplateHistory(template, manifest.season, canvas, read, readMapTile)
       if (gif === null) {
         console.log(`${template.id}: no snapshots yet`)
         continue

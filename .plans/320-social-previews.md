@@ -49,7 +49,7 @@ This checkout has no frontend read-token configuration or generated local templa
 
 - [x] Share a Worker-compatible GIF renderer and include imported archive observations.
 - [x] Persist an initial template GIF on first access and refresh it without deleting the previous image.
-- [ ] Composite real OpenStreetMap tiles beneath every GIF frame, with visible attribution and cached tile reads.
+- [x] Composite real OpenStreetMap tiles beneath every GIF frame, with visible attribution and cached tile reads.
 - [ ] Verify the real dev template GIF in local R2, run checks, commit and update PR #321.
 
 Keep dev processes under Mia's control. R2 validation targets the local frontend binding only.
@@ -57,3 +57,7 @@ Keep dev processes under Mia's control. R2 validation targets the local frontend
 Verified Box art's real 640x360, 34-frame GIF (390,184 bytes) in local R2 and public HTTPS metadata.
 An isolated first-image probe persisted its cropped-artwork GIF through the real local R2 binding.
 Eight renderer tests and 113 frontend tests pass, along with frontend typecheck and production build.
+
+OSM follow-up: the real tile provider returns packed 1-bit PNGs here. Decode those with fast-png,
+preserve the viewer's Web Mercator alignment, and cache tiles for seven days. Regenerated Box art's
+34-frame GIF at 437,437 bytes and inspected its map-backed poster and attribution.

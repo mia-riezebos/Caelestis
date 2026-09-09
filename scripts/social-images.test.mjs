@@ -68,6 +68,45 @@ test('the initial artwork GIF places cropped chunks at their bbox offsets', asyn
   assert.deepEqual([...pixel.subarray(0, 3)], [255, 0, 0])
 })
 
+test('transparent canvas pixels reveal the map and attribution remains above every frame', async () => {
+  const map = await sharp({
+    create: { width: 256, height: 256, channels: 4, background: '#00ff00' },
+  })
+    .png({ palette: true, colours: 2 })
+    .toBuffer()
+  const artwork = await sharp({
+    create: { width: TILE_SIZE, height: TILE_SIZE, channels: 4, background: '#00000000' },
+  })
+    .composite([
+      {
+        input: await sharp({ create: { width: 8, height: 9, channels: 4, background: '#ff0000' } })
+          .png()
+          .toBuffer(),
+        left: 100,
+        top: 100,
+      },
+    ])
+    .png()
+    .toBuffer()
+  const gif = await renderTimelapse({
+    template,
+    histories: new Map([['0/0', [{ bucketStart: 1, hash: 'art' }]]]),
+    canvas: new Map([['0/0', 'art']]),
+    readTile: async () => artwork,
+    readMapTile: async () => map,
+  })
+  const metadata = await sharp(gif, { animated: true }).metadata()
+  for (let page = 0; page < metadata.pages; page++) {
+    const pixels = await sharp(gif, { page }).removeAlpha().raw().toBuffer()
+    assert.deepEqual([...pixels.subarray(0, 3)], [255, 0, 0])
+    assert.deepEqual([...pixels.subarray(639 * 3, 640 * 3)], [0, 255, 0])
+    assert.ok(
+      pixels[(359 * 640 + 639) * 3] > 200,
+      'the attribution panel covers the map in every frame',
+    )
+  }
+})
+
 test('GIF starts with current pixels, then plays history without leaking future observations', async () => {
   const red = await tile('#ff0000')
   const blue = await tile('#0000ff')
@@ -225,7 +264,11 @@ test('a failed template does not stop other outputs, and unpublished templates a
     server.close()
   })
   await assert.rejects(
-    buildSocialImages({ site: `http://127.0.0.1:${server.address().port}`, output }),
+    buildSocialImages({
+      site: `http://127.0.0.1:${server.address().port}`,
+      output,
+      readMapTile: async () => sharp(png).resize(256, 256).png().toBuffer(),
+    }),
     /failed for broken/,
   )
   assert.deepEqual(await readdir(output), ['test-template.gif'])

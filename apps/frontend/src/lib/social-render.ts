@@ -9,6 +9,8 @@ import {
 } from '@caelestis/shared'
 import gifenc from 'gifenc/dist/gifenc.js'
 import { mergeArchiveFrames, type PlaybackFrame } from './archive-history.ts'
+import { stampMapAttribution } from './social-attribution.ts'
+import { type ReadMapTile, renderBasemap } from './social-basemap.ts'
 import { SOCIAL_IMAGE_HEIGHT, SOCIAL_IMAGE_WIDTH } from './social-image.ts'
 
 const MAX_FRAMES = 32
@@ -58,6 +60,7 @@ export const renderTimelapse = async ({
   canvas,
   readTile,
   artwork = false,
+  readMapTile,
   width = SOCIAL_IMAGE_WIDTH,
   height = SOCIAL_IMAGE_HEIGHT,
 }: {
@@ -66,6 +69,7 @@ export const renderTimelapse = async ({
   canvas: ReadonlyMap<string, string>
   readTile: (hash: string) => Promise<Uint8Array>
   artwork?: boolean
+  readMapTile?: ReadMapTile
   width?: number
   height?: number
 }): Promise<Uint8Array | null> => {
@@ -73,9 +77,10 @@ export const renderTimelapse = async ({
     [...histories.values()].flatMap((frames) => frames.map((frame) => frame.bucketStart)),
   )
   const times = [null, ...timeline]
-  const frames = times.map(() =>
-    Uint8Array.from({ length: width * height * 4 }, (_, i) => BACKGROUND[i % 4]),
-  )
+  const background = readMapTile
+    ? await renderBasemap(template.bbox, width, height, readMapTile)
+    : Uint8Array.from({ length: width * height * 4 }, (_, i) => BACKGROUND[i % 4])
+  const frames = times.map(() => background.slice())
   let observed = false
   for (const [key, samples] of captureSamples(template.bbox, width, height)) {
     const history = [...(histories.get(key) ?? [])].sort((a, b) => a.bucketStart - b.bucketStart)
@@ -114,7 +119,7 @@ export const renderTimelapse = async ({
           const alpha = image.pixels[pixel + 3] / 255
           for (let channel = 0; channel < 3; channel++) {
             destination[target + channel] = Math.round(
-              image.pixels[pixel + channel] * alpha + BACKGROUND[channel] * (1 - alpha),
+              image.pixels[pixel + channel] * alpha + destination[target + channel] * (1 - alpha),
             )
           }
         }
@@ -122,6 +127,7 @@ export const renderTimelapse = async ({
     }
   }
   if (!observed) return null
+  if (readMapTile) await stampMapAttribution(frames, width, height)
   if (timeline.length > 0) frames.push(frames[0])
   let selected = frames
   while (true) {
@@ -152,6 +158,7 @@ export const renderTemplateHistory = async (
   season: number,
   canvas: ReadonlyMap<string, string>,
   read: (path: string) => Promise<Response>,
+  readMapTile?: ReadMapTile,
 ) => {
   const from = Math.floor(template.createdAt / 1000)
   const to = Math.floor((template.finishedAt ?? Date.now()) / 1000) + 1
@@ -178,6 +185,7 @@ export const renderTemplateHistory = async (
     template,
     histories,
     canvas,
+    readMapTile,
     readTile: async (hash) =>
       new Uint8Array(
         await (

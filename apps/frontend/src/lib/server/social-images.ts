@@ -1,5 +1,6 @@
 import type { CanvasTilesResponse, Template } from '@caelestis/shared'
 import type { RequestEvent } from '@sveltejs/kit'
+import { fetchMapTile, MAP_CACHE_MS, type ReadMapTile } from '$lib/social-basemap.js'
 import { socialImageKey } from '$lib/social-image.js'
 import { renderTemplateHistory, renderTimelapse } from '$lib/social-render.js'
 import { fetchBackend } from './backend.js'
@@ -13,6 +14,16 @@ export const ensureSocialImage = async (event: ImageEvent, season: number, templ
   const images = event.platform?.env.SOCIAL_IMAGES
   if (images === undefined) return null
   const key = socialImageKey(season, template)
+  const readMapTile: ReadMapTile = async (z, x, y) => {
+    const mapKey = `social/osm/${z}/${x}/${y}.png`
+    const cached = await images.get(mapKey)
+    if (cached && Date.now() - cached.uploaded.getTime() < MAP_CACHE_MS)
+      return new Uint8Array(await cached.arrayBuffer())
+    if (cached) await cached.body.cancel()
+    const bytes = await fetchMapTile(z, x, y)
+    await images.put(mapKey, bytes, { httpMetadata: { contentType: 'image/png' } })
+    return bytes
+  }
   const read = async (path: string) => {
     const response = await fetchBackend(event, `/v1/${path}`, {
       signal: AbortSignal.timeout(20_000),
@@ -27,6 +38,7 @@ export const ensureSocialImage = async (event: ImageEvent, season: number, templ
       template: { ...template, finished: false },
       histories: new Map(),
       artwork: true,
+      readMapTile,
       canvas: new Map(template.chunks.map((chunk) => [chunk.tile, chunk.hash])),
       readTile: async (hash) => new Uint8Array(await (await read(`chunks/${hash}`)).arrayBuffer()),
     })
@@ -59,6 +71,7 @@ export const ensureSocialImage = async (event: ImageEvent, season: number, templ
           season,
           new Map(canvas.tiles.map((tile) => [tile.tile, tile.hash])),
           read,
+          readMapTile,
         )
         if (gif === null) return
         await images.put(key, gif, {
