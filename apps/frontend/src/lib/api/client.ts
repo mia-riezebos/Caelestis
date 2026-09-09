@@ -1,5 +1,6 @@
 import {
   type AlarmsResponse,
+  type ArchiveHistory,
   type CanvasTilesResponse,
   type ContributionsResponse,
   type HistoryResponse,
@@ -307,4 +308,23 @@ export const loadImageUrl = (path: string): Promise<string> => {
 }
 
 export const chunkImageUrl = (hash: string): Promise<string> => loadImageUrl(`/chunks/${hash}`)
-export const tileImageUrl = (hash: string): Promise<string> => loadImageUrl(`/tiles/${hash}`)
+export const tileImageUrl = (hash: string): Promise<string> =>
+  loadImageUrl(
+    hash.startsWith('archive:')
+      ? `/archive/tiles/${hash.slice('archive:'.length)}`
+      : `/tiles/${hash}`,
+  )
+
+/** Read sparse imported observations for one immutable template version. */
+export const getArchiveHistory = (
+  templateId: string,
+  version: string,
+  tile?: { x: number; y: number },
+): Promise<ArchiveHistory> => {
+  const query = new URLSearchParams({ version })
+  if (tile !== undefined) {
+    query.set('x', String(tile.x))
+    query.set('y', String(tile.y))
+  }
+  return json(`/archive/templates/${templateId}?${query}`)
+}

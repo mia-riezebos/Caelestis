@@ -861,6 +861,7 @@ describe('telemetry read routes', () => {
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({
       frames: [{ bucketStart: from, hash, reporters: 1 }],
+      resolution: expect.any(Number),
     })
   })
 

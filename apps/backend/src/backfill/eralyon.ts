@@ -142,7 +142,7 @@ export const decodeArchiveTile = (bytes: Uint8Array, snapshotId: number): Uint8A
 /** One bounded upstream client; keep the last week of a few tiles warm across alarm batches. */
 export class EralyonArchive {
   private readonly cache = new Map<string, Uint8Array | null>()
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {}
 
   async snapshots(): Promise<readonly ArchiveSnapshot[]> {
     const response = await this.fetchImpl(`${ORIGIN}/en/`, { signal: AbortSignal.timeout(15_000) })

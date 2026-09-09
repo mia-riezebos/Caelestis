@@ -4,16 +4,16 @@
 Import Eralyon snapshots from the userscript template context menu. Retain sparse observations separately from paint telemetry and display them in existing history views.
 
 ## Acceptance criteria
-- [ ] Admin modal selects a real snapshot and shows coverage, progress, cancellation and retry.
-- [ ] Durable bounded imports preserve timestamps, artwork basis and existing observations.
-- [ ] Timelapse and progress display imported history without fabricated placements or attribution.
-- [ ] Focused tests, project checks, UI verification and a PR are complete.
+- [x] Admin modal selects a real snapshot and shows coverage, progress, cancellation and retry.
+- [x] Durable bounded imports preserve timestamps, artwork basis and existing observations.
+- [x] Timelapse and progress display imported history without fabricated placements or attribution.
+- [x] Focused tests, project checks and real UI verification are complete.
 
 ## TODOs
 - [x] Implement the archive decoder and resumable import model with focused tests.
 - [x] Connect durable background execution, authenticated routes and retained archive storage.
 - [x] Add the userscript context-menu action and accessible modal.
-- [~] Integrate sparse history into existing views, add Changeset and complete validation.
+- [x] Integrate sparse history into existing views, add Changeset and complete validation.
 
 ## Notes
 - Preserve the supplied clean branch and worktree.
@@ -23,3 +23,8 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - Decoder/import validation: 7 focused tests pass; backend typecheck passes after installing the workspace and building shared/wire-schema outputs.
 - Runtime/routes validation: backend typecheck and 21 focused import, auth, visibility and worker tests pass. Generated binding types using the existing no-runtime convention. Archive imports are limited to season 0 because Eralyon supplies no season selector.
 - Modal validation: shared UI check/build, two interaction tests, and userscript typecheck pass. Native select, dialog and shared buttons preserve keyboard behavior; real browser checks remain in final validation.
+- Final gate: `pnpm check && pnpm test && pnpm lint && pnpm build` passes after review fixes.
+- Independent Codex review found cropped-chunk comparison, unknown-coverage display and live-tier selection bugs. Fixed all five findings; cropped-offset import and all-gap chart tests pass.
+- Verified the actual built userscript on Wplace in isolated Chromium, against local Wrangler D1/R2/DO storage and real Eralyon responses. Two snapshots produce four tile observations and completion counts of 1/16 at both timestamps. Retry reuses successful observations; cancellation retains one completed observation and stops the remaining work. The form fits at 375px.
+- Verified imported frames and completion/net-pace values in the actual local frontend template page. Missing coverage has an explicit notice; live telemetry keeps its original query bounds.
+- Browser verification caught and fixed the Worker fetch binding and modal focus-return handling. No standalone mock page is used as validation evidence.

@@ -4,6 +4,7 @@
     formatExactCount,
     formatPixels,
     type HistoryBucket,
+    type ArchiveProgressSample,
     type PainterHistoryBucket,
   } from '@caelestis/shared'
   import { untrack } from 'svelte'
@@ -37,9 +38,11 @@
     windowKeyStep,
   } from '$lib/components/charts/progress-pace'
   import SlidingTabs from '$lib/components/charts/SlidingTabs.svelte'
+  import { archiveIntervals } from '$lib/archive-history'
 
   let {
     buckets,
+    archiveSamples = [],
     paceHistories = [],
     resolution,
     from,
@@ -54,6 +57,7 @@
     windows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h']),
   }: {
     buckets: readonly HistoryBucket[]
+    archiveSamples?: readonly ArchiveProgressSample[]
     /** One server-selected retained source for each rolling window. */
     paceHistories?: readonly PaceHistorySource[]
     /** Who painted in the range, leading first: the picker's list. */
@@ -120,7 +124,8 @@
     let cumCorrect = 0
     let cumPlaced = 0
     let cumMismatched = 0
-    const first = Math.ceil(from / resolution) * resolution
+    const reportStart = archiveSamples.length === 0 ? from : Math.max(from, Math.min(...buckets.map((bucket) => bucket.bucketStart)))
+    const first = Math.ceil(reportStart / resolution) * resolution
     for (let t = first; t < to; t += resolution) {
       const delta = byStart.get(t) ?? { placed: 0, correct: 0, repairs: 0 }
       cumCorrect += delta.correct
@@ -155,6 +160,7 @@
   // Painter buckets are written per report while template buckets wait for the counter flush, so
   // the plot also opens when only painters have reported yet.
   const hasActivity = $derived(
+    archiveSamples.length > 0 ||
     points.some((p) => p.placed > 0) ||
       painterHistories.some((source) => source.history.buckets.length > 0),
   )
@@ -373,13 +379,19 @@
 
   // The axis tops come from the target window, so a zoom re-fits to where it is going.
   const targetPoints = $derived(windowPoints(view))
+  const archivePoints = $derived(archiveSamples.filter((sample): sample is ArchiveProgressSample & { correct: number } => sample.correct !== null))
+  const archivePaces = $derived(archiveIntervals(archiveSamples))
+  const visibleArchivePoints = $derived(archivePoints.filter((sample) => sample.at >= shownView.from && sample.at <= shownView.to))
+  const visibleArchivePaces = $derived(archivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
+  const rightMin = $derived(Math.min(0, ...archivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate)))
   const leftScale = $derived(
-    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched)), 4, 1),
+    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archivePoints.filter((sample) => sample.at >= view.from && sample.at <= view.to).map((sample) => sample.correct)), 4, 1),
   )
   const rightScale = $derived(
     axisScale(
       Math.max(
         0,
+        ...archivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate),
         ...enabledPaces.flatMap((pace) =>
           clipSeries(pace.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
         ),
@@ -458,7 +470,7 @@
     (v: number) => height - pad.bottom - (v / shownAxes.current.leftMax) * plotHeight,
   )
   const yRight = $derived(
-    (v: number) => height - pad.bottom - (v / shownAxes.current.rightMax) * plotHeight,
+    (v: number) => height - pad.bottom - ((v - rightMin) / (shownAxes.current.rightMax - rightMin)) * plotHeight,
   )
   /** The time under a pointer, given the plot's left edge and displayed domain. */
   const timeIn = (range: TimeWindow, clientX: number, left: number): number =>
@@ -1086,6 +1098,22 @@
   </div>
 
   {#if hasActivity}
+    {#if archiveSamples.length > 0}
+      <details class="text-xs text-base-content/65">
+        <summary class="cursor-pointer">Eralyon: completion samples (dots) and interval net pace (dashed). View values</summary>
+        <div class="max-h-60 overflow-auto mt-2">
+          <table class="w-full text-start tabular-nums">
+            <caption class="text-start mb-2">Compared with the imported artwork version. Gaps have no completion or pace value.</caption>
+            <thead><tr><th scope="col" class="text-start">Snapshot</th><th scope="col">Correct pixels</th><th scope="col">Net px/h since previous snapshot</th></tr></thead>
+            <tbody>
+              {#each archiveSamples as sample (sample.at)}
+                <tr><th scope="row" class="text-start font-normal">{formatTime(sample.at)}</th><td class="text-center">{sample.correct === null ? 'No coverage' : sample.correct.toLocaleString()}</td><td class="text-center">{archivePaces.find((interval) => interval.to === sample.at)?.rate.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    {/if}
     <div class="relative">
       <!-- The image is focusable so keyboard users can walk the data points; the live region below
            reads each one out. -->
@@ -1127,7 +1155,10 @@
             >
           {/if}
         {/each}
-        {#if activePaces.length > 0}
+        {#if activePaces.length > 0 || archivePaces.length > 0}
+          {#if rightMin < 0}
+            <text x={width - pad.right + 8} y={yRight(rightMin) + 3} class="fill-base-content/50 text-[10px] tabular-nums">{formatCount(rightMin)}</text>
+          {/if}
           {#each rightScale.ticks as tick (tick)}
             {#if yRight(tick) >= pad.top}
               <text
@@ -1142,7 +1173,7 @@
           {/each}
         {/if}
         <text x={pad.left - 8} y={9} text-anchor="end" class="fill-base-content/40 text-[9px]">px</text>
-        {#if activePaces.length > 0}
+        {#if activePaces.length > 0 || archivePaces.length > 0}
           <text x={width - pad.right + 8} y={9} text-anchor="start" class="fill-base-content/40 text-[9px]"
             >px/h</text
           >
@@ -1174,6 +1205,14 @@
         {/each}
 
         <g class="chart-reveal">
+          {#each visibleArchivePaces as interval (interval.to)}
+            <line data-archive-pace={interval.rate}
+              x1={x(Math.max(interval.from, shownView.from))} x2={x(Math.min(interval.to, shownView.to))}
+              y1={yRight(interval.rate)} y2={yRight(interval.rate)}
+              stroke="var(--chart-placed)" stroke-width="2" stroke-dasharray="5 4">
+              <title>Eralyon net progress: {formatCount(interval.rate)} px/h, averaged from {formatTime(interval.from)} to {formatTime(interval.to)}</title>
+            </line>
+          {/each}
           <path d={bandPath(() => 0, (p) => p.cumCorrect)} fill="var(--chart-correct)" opacity="0.3" />
           <path
             d={bandPath((p) => p.cumCorrect, (p) => p.cumCorrect + p.cumMismatched)}
@@ -1203,6 +1242,12 @@
               stroke-width={paceWidth(pace.rank)}
               stroke-linejoin="round"
             />
+          {/each}
+
+          {#each visibleArchivePoints as sample (sample.at)}
+            <circle data-archive-sample={sample.at} cx={x(sample.at)} cy={yLeft(sample.correct)} r="3.5" fill="var(--chart-correct)" stroke="var(--color-base-100)" stroke-width="1">
+              <title>Eralyon · {formatTime(sample.at)} · {sample.correct.toLocaleString()} / {sample.total.toLocaleString()} correct pixels</title>
+            </circle>
           {/each}
 
           {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}

@@ -39,10 +39,10 @@ const setup = async () => {
   const storage = new Storage(),
     sql = new MemorySqlStore(),
     blobs = new MemoryBlobStore()
-  const target = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+  const target = new Uint8Array(2)
   target[0] = 0
   target[1] = 1
-  await blobs.put('chunks', 'b'.repeat(64), await encodeIndexedPng(TILE_SIZE, TILE_SIZE, target))
+  await blobs.put('chunks', 'b'.repeat(64), await encodeIndexedPng(2, 1, target))
   await sql.insertTemplateVersion({
     templateId: 'template',
     versionId: 'version',
@@ -53,7 +53,7 @@ const setup = async () => {
     createdAt: millis(300_000),
     createdWithToken: 'a'.repeat(64),
     createdByUserId: null,
-    bbox: { minX: 0, minY: 0, maxX: 2, maxY: 1 },
+    bbox: { minX: 20, minY: 30, maxX: 22, maxY: 31 },
     totalPixels: 2,
     chunks: [{ tileX: 0, tileY: 0, hash: 'b'.repeat(64) }],
   })
@@ -67,8 +67,8 @@ const setup = async () => {
       if (failure) throw new Error('Archive offline')
       if (missing) return null
       const pixels = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
-      pixels[0] = 0
-      if (id === 20) pixels[1] = 1
+      pixels[30 * TILE_SIZE + 20] = 0
+      if (id === 20) pixels[30 * TILE_SIZE + 21] = 1
       return pixels
     },
   }

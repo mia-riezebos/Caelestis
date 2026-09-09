@@ -189,6 +189,8 @@ export class TemplateBackfill {
     const held = await this.storage.get<StoredJob>('job')
     if (held === undefined || held.summary.status !== 'running') return
     const { summary, tiles, snapshots } = held
+    // Rearm before external storage reads too, so a transient D1 failure cannot strand the job.
+    await this.storage.setAlarm(this.now() + 60_000)
     const template = await this.sql.readTemplate(summary.basis.templateId)
     if (template === null) {
       await this.cancel()
@@ -201,8 +203,6 @@ export class TemplateBackfill {
       await this.cancel()
       return
     }
-    // Install the next wakeup before upstream work. A crash cannot strand the durable job.
-    await this.storage.setAlarm(this.now() + 60_000)
     const chunk = summary.basis.chunks.find(
       (entry) => entry.tileX === tile.x && entry.tileY === tile.y,
     )
@@ -222,13 +222,23 @@ export class TemplateBackfill {
           if (chunk !== undefined) {
             const bytes = await this.blobs.get('chunks', chunk.hash)
             const target = bytes === null ? null : await decodeWplaceIndexedPng(bytes)
-            if (target === null || target.width !== TILE_SIZE || target.height !== TILE_SIZE)
+            const { bbox } = summary.basis
+            const wraps = bbox.minX > bbox.maxX
+            const tileLeft = tile.x * TILE_SIZE
+            const highSpan = tileLeft + TILE_SIZE > bbox.minX
+            const left = wraps && !highSpan ? 0 : Math.max(0, bbox.minX - tileLeft)
+            const right = wraps && highSpan ? TILE_SIZE : Math.min(TILE_SIZE, bbox.maxX - tileLeft)
+            const top = Math.max(0, bbox.minY - tile.y * TILE_SIZE)
+            const bottom = Math.min(TILE_SIZE, bbox.maxY - tile.y * TILE_SIZE)
+            if (target === null || target.width !== right - left || target.height !== bottom - top)
               throw new Error('Template chunk is unavailable or invalid.')
             for (let i = 0; i < target.indices.length; i++) {
               const colour = target.indices[i]
               if (colour === TRANSPARENT_INDEX) continue
-              if (colour === pixels[i]) correct++
-              else if (pixels[i] !== TRANSPARENT_INDEX) mismatched++
+              const actual =
+                pixels[(top + Math.floor(i / target.width)) * TILE_SIZE + left + (i % target.width)]
+              if (colour === actual) correct++
+              else if (actual !== TRANSPARENT_INDEX) mismatched++
             }
           }
           const png = await encodeIndexedPng(TILE_SIZE, TILE_SIZE, pixels)

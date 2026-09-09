@@ -44,6 +44,39 @@ const paceToggle = (label: string): HTMLButtonElement => {
 }
 
 describe('rolling pace retention', () => {
+  it.each([false, true])(
+    'shows sparse coverage without fabricated placements (all gaps: %s)',
+    (allGaps) => {
+      mounted = mount(ProgressPaceChart, {
+        target: document.body,
+        props: {
+          buckets: [],
+          resolution: 900,
+          from: 0,
+          to: 172800,
+          anchorCorrect: 5,
+          anchorMismatched: 0,
+          archiveSamples: (allGaps ? [null, null, null] : [10, 5, null]).map((correct, index) => ({
+            at: index * 86400,
+            snapshotId: index,
+            correct,
+            mismatched: correct === null ? null : 0,
+            total: 20,
+          })),
+        },
+      })
+      flushSync()
+      expect(document.querySelectorAll('[data-archive-sample]')).toHaveLength(allGaps ? 0 : 2)
+      expect(document.querySelectorAll('[data-archive-pace]')).toHaveLength(allGaps ? 0 : 1)
+      if (!allGaps)
+        expect(
+          Number(document.querySelector('[data-archive-pace]')?.getAttribute('data-archive-pace')),
+        ).toBeCloseTo(-5 / 24)
+      expect(document.querySelectorAll('[data-pace-window]')).toHaveLength(0)
+      expect(document.body.textContent).toContain('No coverage')
+      expect(document.body.textContent).not.toContain('No paint activity')
+    },
+  )
   it('uses Standard axis suffixes and exact pixel labels', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,
