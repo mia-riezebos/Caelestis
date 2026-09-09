@@ -17,6 +17,7 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - [x] Include sparse observations in hover cards and keyboard value navigation.
 - [x] Compact pace controls into a dropdown and clarify legend colours and painter metrics.
 - [x] Render archived progress with dashed lines and filled areas, preserving gaps and zoom clipping.
+- [x] Connect archive pace samples and join stacked correct/mismatched areas to reported history.
 
 ## Notes
 - Preserve the supplied clean branch and worktree.

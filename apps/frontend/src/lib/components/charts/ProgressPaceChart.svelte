@@ -387,11 +387,26 @@
 
   // The axis tops come from the target window, so a zoom re-fits to where it is going.
   const targetPoints = $derived(windowPoints(view))
+  const archiveConnection = $derived.by(() => {
+    const last = archiveSamples.at(-1)
+    const firstLive = points[0]
+    if (last?.correct == null || firstLive === undefined || firstLive.t <= last.at) return null
+    return {
+      from: last.at, to: firstLive.t,
+      startCorrect: last.correct, endCorrect: firstLive.cumCorrect,
+      endMismatched: firstLive.cumMismatched,
+      rate: (firstLive.cumCorrect - last.correct) / (firstLive.t - last.at) * 3600,
+    }
+  })
+  interface ArchivePoint extends PaceRatePoint { mismatched: number }
+  const lerpArchive = (a: ArchivePoint, b: ArchivePoint, fraction: number): ArchivePoint => ({
+    ...lerpRate(a, b, fraction), mismatched: a.mismatched + (b.mismatched - a.mismatched) * fraction,
+  })
   const archiveSegments = $derived.by(() => {
-    const segments: PaceRatePoint[][] = []
-    let segment: PaceRatePoint[] | null = null
+    const segments: ArchivePoint[][] = []
+    let segment: ArchivePoint[] | null = null
     for (const sample of archiveSamples) {
-      if (sample.correct === null) {
+      if (sample.correct === null || sample.mismatched === null) {
         segment = null
         continue
       }
@@ -399,13 +414,26 @@
         segment = []
         segments.push(segment)
       }
-      segment.push({ t: sample.at, v: sample.correct })
+      segment.push({ t: sample.at, v: sample.correct, mismatched: sample.mismatched })
+    }
+    if (archiveConnection !== null) segment?.push({ t: archiveConnection.to, v: archiveConnection.endCorrect, mismatched: archiveConnection.endMismatched })
+    return segments
+  })
+  const archivePaces = $derived([...archiveIntervals(archiveSamples), ...(archiveConnection === null ? [] : [archiveConnection])])
+  const storedArchivePace = persisted<boolean>('caelestis:archive-net-pace', true)
+  const drawnArchivePaces = $derived(storedArchivePace.value !== false ? archivePaces : [])
+  const archivePaceSegments = $derived.by(() => {
+    const segments: PaceRatePoint[][] = []
+    let segment: PaceRatePoint[] | undefined
+    for (const interval of drawnArchivePaces) {
+      if (segment?.at(-1)?.t !== interval.from) {
+        segment = [{ t: interval.from, v: interval.rate }]
+        segments.push(segment)
+      }
+      segment?.push({ t: interval.to, v: interval.rate })
     }
     return segments
   })
-  const archivePaces = $derived(archiveIntervals(archiveSamples))
-  const storedArchivePace = persisted<boolean>('caelestis:archive-net-pace', true)
-  const drawnArchivePaces = $derived(storedArchivePace.value !== false ? archivePaces : [])
   const paceOptions = $derived([
     ...paceWindows.map((pace, index) => ({
       key: pace.key,
@@ -421,17 +449,19 @@
       description: 'Between Eralyon snapshots',
     }]),
   ])
-  const visibleArchiveSegments = $derived(archiveSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpRate)).filter((segment) => segment.length > 1))
+  const visibleArchiveSegments = $derived(archiveSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpArchive)).filter((segment) => segment.length > 1))
   const visibleArchivePaces = $derived(drawnArchivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
-  const rightMin = $derived(Math.min(0, ...drawnArchivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate)))
+  const visibleArchivePaceSegments = $derived(archivePaceSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpRate)).filter((segment) => segment.length > 1))
+  const targetArchivePaces = $derived(archivePaceSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate)))
+  const rightMin = $derived(Math.min(0, ...targetArchivePaces.map((point) => point.v)))
   const leftScale = $derived(
-    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archiveSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate).map((point) => point.v))), 4, 1),
+    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archiveSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpArchive).map((point) => point.v + point.mismatched))), 4, 1),
   )
   const rightScale = $derived(
     axisScale(
       Math.max(
         0,
-        ...drawnArchivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate),
+        ...targetArchivePaces.map((point) => point.v),
         ...enabledPaces.flatMap((pace) =>
           clipSeries(pace.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
         ),
@@ -635,6 +665,12 @@
   const hoverArchivePace = $derived(hover === null ? undefined :
     visibleArchivePaces.find((interval) => hover !== null && hover.t > interval.from && hover.t <= interval.to) ??
     visibleArchivePaces.find((interval) => interval.from === hover?.t))
+  const hoverArchiveRate = $derived.by(() => {
+    if (hover === null) return null
+    const t = hover.t
+    return visibleArchivePaceSegments.map((segment) => interpolateValue(segment, t, (point) => point.v))
+      .find((value) => value !== null) ?? null
+  })
 
   const hoverPointer = (clientX: number, left: number): void =>
     hoverAt(nearestSorted(hoverSnapTimes, timeAt(clientX, left)))
@@ -712,7 +748,7 @@
       ...(point.archive ? ['Eralyon snapshot'] : []),
       point.cumCorrect === null ? 'No completion coverage' : `${point.cumCorrect.toLocaleString()} correct`,
       point.cumMismatched === null ? 'No mismatch coverage' : `${point.cumMismatched.toLocaleString()} mismatched`,
-      ...(hoverArchivePace === undefined ? [] : [`Net progress ${formatCount(hoverArchivePace.rate)} px/h from ${formatTime(hoverArchivePace.from)} to ${formatTime(hoverArchivePace.to)}`]),
+      ...(hoverArchiveRate === null ? [] : [`Net progress ${formatCount(hoverArchiveRate)} px/h`]),
       ...paces,
       ...painterPaces,
     ].join(', ')
@@ -1244,14 +1280,6 @@
         {/each}
 
         <g class="chart-reveal">
-          {#each visibleArchivePaces as interval (interval.to)}
-            <line data-archive-pace={interval.rate}
-              x1={x(Math.max(interval.from, shownView.from))} x2={x(Math.min(interval.to, shownView.to))}
-              y1={yRight(interval.rate)} y2={yRight(interval.rate)}
-              stroke="var(--chart-placed)" stroke-width="2" stroke-dasharray="5 4">
-              <title>Eralyon net progress: {formatCount(interval.rate)} px/h, averaged from {formatTime(interval.from)} to {formatTime(interval.to)}</title>
-            </line>
-          {/each}
           <path d={bandPath(() => 0, (p) => p.cumCorrect)} fill="var(--chart-correct)" opacity="0.3" />
           <path
             d={bandPath((p) => p.cumCorrect, (p) => p.cumCorrect + p.cumMismatched)}
@@ -1285,11 +1313,24 @@
 
           {#each visibleArchiveSegments as segment (segment[0].t)}
             {@const line = segment.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.t).toFixed(1)},${yLeft(point.v).toFixed(1)}`).join('')}
+            {@const mismatchedLine = segment.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.t).toFixed(1)},${yLeft(point.v + point.mismatched).toFixed(1)}`).join('')}
             <path data-archive-progress-area
               d={`${line}L${x(segment[segment.length - 1].t).toFixed(1)},${yLeft(0).toFixed(1)}L${x(segment[0].t).toFixed(1)},${yLeft(0).toFixed(1)}Z`}
               fill="var(--chart-correct)" opacity="0.3" />
+            <path data-archive-mismatched-area
+              d={`${mismatchedLine}${[...segment].reverse().map((point) => `L${x(point.t).toFixed(1)},${yLeft(point.v).toFixed(1)}`).join('')}Z`}
+              class="fill-error" opacity="0.25" />
+            {#if segment.some((point) => point.mismatched > 0)}
+              <path data-archive-mismatched d={mismatchedLine} fill="none" class="stroke-error"
+                stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" />
+            {/if}
             <path data-archive-progress d={line} fill="none" stroke="var(--chart-correct)"
               stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" />
+          {/each}
+
+          {#each visibleArchivePaceSegments as segment (segment[0].t)}
+            <path data-archive-pace d={linePath(segment)} fill="none"
+              stroke="var(--chart-placed)" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" />
           {/each}
 
           {#each activePainterLines as line (`${line.painter.wplaceUserId}:${line.window}`)}
@@ -1360,8 +1401,8 @@
               class="stroke-base-100"
               stroke-width="1.5"
             />{/if}
-            {#if hoverArchivePace !== undefined}
-              <circle cx={x(hover.t)} cy={yRight(hoverArchivePace.rate)} r="3" fill="var(--chart-placed)" class="stroke-base-100" stroke-width="1.5" />
+            {#if hoverArchiveRate !== null}
+              <circle cx={x(hover.t)} cy={yRight(hoverArchiveRate)} r="3" fill="var(--chart-placed)" class="stroke-base-100" stroke-width="1.5" />
             {/if}
             {#each activePaces as pace (pace.key)}
               {@const value = hoverPace(pace.series, hover.t)}
@@ -1421,10 +1462,11 @@
               <span>{hover.cumMismatched?.toLocaleString() ?? 'No coverage'}</span>
             </span>
           </div>
-          {#if hoverArchivePace !== undefined}
+          {#if hoverArchivePace !== undefined && hoverArchiveRate !== null}
             <div data-archive-hover class="mt-2 border-t border-base-300 pt-1.5">
-              <div class="flex justify-between gap-3"><span>Net progress</span><span>{formatExactCount(Math.round(hoverArchivePace.rate * 100) / 100)} px/h</span></div>
-              <div class="mt-0.5 text-base-content/60">{formatTime(hoverArchivePace.from)} → {formatTime(hoverArchivePace.to)}</div>
+              <div class="flex justify-between gap-3"><span>Net progress</span><span>{formatExactCount(Math.round(hoverArchiveRate * 100) / 100)} px/h</span></div>
+              <div class="mt-0.5 text-base-content/60">{#if hoverArchiveRate !== hoverArchivePace.rate}Interpolated between pace samples{:else}{formatTime(hoverArchivePace.from)} → {formatTime(hoverArchivePace.to)}{/if}</div>
+              {#if hoverArchivePace === archiveConnection}<div class="text-base-content/60">Eralyon → reported history</div>{/if}
             </div>
           {/if}
           {#if hoverPaceRows.length > 0}
