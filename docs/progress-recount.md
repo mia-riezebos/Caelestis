@@ -33,6 +33,7 @@ Review those files before applying the SQL. The backend migration creating
 `template_tile_measurements` must already be applied. Each statement checks the saved version's
 chunk hash and can be run repeatedly. It changes only derived measurements; source images, live
 status, placement counters, archive samples and painter credits remain intact.
+Hashes that lost their final history or canvas reference after plan generation are skipped.
 
 Deploying the chart without recounting legacy observations leaves gaps until their measurements
 exist. New tile ingests record measurements automatically. The recount does not trigger a GIF build.

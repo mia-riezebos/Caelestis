@@ -107,6 +107,12 @@ test('reads all retained tiers and generates repeatable, version-guarded SQL usi
   ).run(version, chunkHash)
   db.exec(sql)
   db.exec(sql)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM template_tile_measurements').get().n, 0)
+  db.prepare(
+    'INSERT INTO canvas_tiles (season, tile_x, tile_y, sha256, observed_at_ms) VALUES (1, 0, 0, ?, 0)',
+  ).run(tileHash)
+  db.exec(sql)
+  db.exec(sql)
   assert.deepEqual(
     { ...db.prepare('SELECT correct, wrong, blank FROM template_tile_measurements').get() },
     { correct: 1, wrong: 0, blank: 0 },

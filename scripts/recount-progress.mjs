@@ -116,6 +116,8 @@ export const prepareProgressRecount = async ({ site, templateId, output }) => {
     ) => `INSERT INTO template_tile_measurements (version_id, tile_x, tile_y, sha256, correct, wrong, blank)
 SELECT '${row.versionId}', ${row.tileX}, ${row.tileY}, '${row.hash}', ${row.correct}, ${row.wrong}, ${row.blank}
 WHERE EXISTS (SELECT 1 FROM version_tiles WHERE version_id = '${row.versionId}' AND tile_x = ${row.tileX} AND tile_y = ${row.tileY} AND hash = '${row.chunkHash}')
+  AND (EXISTS (SELECT 1 FROM tile_history WHERE sha256 = '${row.hash}')
+    OR EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = '${row.hash}'))
 ON CONFLICT(version_id, tile_x, tile_y, sha256) DO UPDATE SET correct = excluded.correct, wrong = excluded.wrong, blank = excluded.blank;`,
   )
   await writeFile(
