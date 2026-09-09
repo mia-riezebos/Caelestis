@@ -44,3 +44,11 @@ Created the named frontend tunnel and DNS route for `caelestis-dev-frontend.mia.
 Public Discordbot requests return the site metadata with HTTPS image URLs; the image returns 200.
 Ctrl+C stops both Vite and its tunnel. Full build, check, tests and lint pass again.
 This checkout has no frontend read-token configuration or generated local template GIFs yet.
+
+## Persistent GIF follow-up
+
+- [ ] Share a Worker-compatible GIF renderer and include imported archive observations.
+- [ ] Persist an initial template GIF on first access and refresh it without deleting the previous image.
+- [ ] Verify the real dev template GIF in local R2, run checks, commit and update PR #321.
+
+Keep dev processes under Mia's control. R2 validation targets the local frontend binding only.
