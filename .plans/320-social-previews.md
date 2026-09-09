@@ -17,7 +17,7 @@ template URLs and matching Twitter summary-card metadata.
 
 - [x] Commit the daily renderer, dependencies, workflow and rendering tests.
 - [x] Commit frontend metadata, image serving, fallback artwork and route tests.
-- [ ] Commit documentation, rebase onto main, validate and file the PR.
+- [x] Commit documentation and validate the branch after rebasing onto main.
 
 ## Notes
 
@@ -30,3 +30,7 @@ routes. A 640×360 fixture GIF rendered to 29,940 bytes. No production deploymen
 
 Public routes are an adversarial input boundary. The scheduled renderer reads the configured site's
 published manifest. Deployment and actual Discord unfurl verification remain rollout tasks.
+
+Rebased against current `origin/main`; the branch was already up to date. Full `pnpm build`,
+`pnpm check`, `pnpm test --concurrency=1`, and `pnpm lint` pass. Delivery proceeds through a
+non-draft PR closing #320, followed by the requested babysit run.
