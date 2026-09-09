@@ -11,8 +11,8 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 
 ## TODOs
 - [x] Implement the archive decoder and resumable import model with focused tests.
-- [~] Connect durable background execution, authenticated routes and retained archive storage.
-- [ ] Add the userscript context-menu action and accessible modal.
+- [x] Connect durable background execution, authenticated routes and retained archive storage.
+- [~] Add the userscript context-menu action and accessible modal.
 - [ ] Integrate sparse history into existing views, add Changeset and complete validation.
 
 ## Notes
@@ -21,3 +21,4 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - Use a dedicated per-template Durable Object for import scheduling and history; keep archive PNGs outside live tile GC. No production changes or deployment.
 - Reference format: Hugi-R/wplace-image at 3bcdd0759b306be7ea000dfd38aa8978e5a60943, wimage/src/{tilehistory,image,palette}.rs.
 - Decoder/import validation: 7 focused tests pass; backend typecheck passes after installing the workspace and building shared/wire-schema outputs.
+- Runtime/routes validation: backend typecheck and 21 focused import, auth, visibility and worker tests pass. Generated binding types using the existing no-runtime convention. Archive imports are limited to season 0 because Eralyon supplies no season selector.

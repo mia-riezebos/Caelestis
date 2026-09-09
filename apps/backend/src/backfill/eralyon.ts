@@ -145,7 +145,7 @@ export class EralyonArchive {
   constructor(private readonly fetchImpl: typeof fetch = fetch) {}
 
   async snapshots(): Promise<readonly ArchiveSnapshot[]> {
-    const response = await this.fetchImpl(`${ORIGIN}/en/`, { signal: AbortSignal.timeout(30_000) })
+    const response = await this.fetchImpl(`${ORIGIN}/en/`, { signal: AbortSignal.timeout(15_000) })
     if (!response.ok)
       throw new Error(`Eralyon catalogue returned HTTP ${response.status}. Try again.`)
     return parseSnapshots(new TextDecoder().decode(await readBytes(response)))
@@ -156,7 +156,7 @@ export class EralyonArchive {
     let bytes = this.cache.get(key)
     if (bytes === undefined) {
       const response = await this.fetchImpl(`${ORIGIN}/tiles/${key}.zst`, {
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(15_000),
       })
       if (response.status !== 404 && !response.ok)
         throw new Error(`Eralyon tile returned HTTP ${response.status}.`)

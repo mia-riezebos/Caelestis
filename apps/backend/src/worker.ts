@@ -11,6 +11,7 @@ import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 export { AlarmWatcher } from './alarm-watcher.js'
 export { StatusReadModelObject } from './status-read-model-object.js'
 export { TelemetryShard } from './telemetry-shard.js'
+export { TemplateBackfillObject } from './template-backfill-object.js'
 
 /**
  * `SEASON` as a season number, or a refusal.
@@ -75,6 +76,7 @@ const appFor = (env: Env): App => {
     statusReadModelFor(env),
   )
   const app = createApp(context, {
+    backfillClients: (templateId) => env.TEMPLATE_BACKFILL.getByName(templateId),
     bootstrapAdminToken: env.ADMIN_TOKEN,
     serverId: env.SERVER_ID,
     serverName: env.SERVER_NAME,
