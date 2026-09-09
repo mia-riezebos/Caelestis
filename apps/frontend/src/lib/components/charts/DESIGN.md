@@ -1,0 +1,1 @@
+The pace picker shares the painter picker's searchable, multi-select popover and menu styling. Keep the legend compact; show solid green and red swatches for correct and mismatched pixels. Painter metric controls appear only when painter lines are drawn. Archive hover values identify their source and interval, with unknown coverage shown explicitly.

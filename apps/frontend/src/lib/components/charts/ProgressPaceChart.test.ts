@@ -37,9 +37,13 @@ const bucket = (resolution: number, bucketStart: number): HistoryBucket => ({
   repairs: 0,
 })
 
-const paceToggle = (label: string): HTMLButtonElement => {
-  const found = document.querySelector(`button[data-pace-toggle="${label}"]`)
-  if (!(found instanceof HTMLButtonElement)) throw new Error(`missing ${label} pace toggle`)
+const paceToggle = (label: string): HTMLElement => {
+  if (document.querySelector('[data-pace-list]') === null) {
+    document.querySelector<HTMLButtonElement>('[data-pace-trigger]')?.click()
+    flushSync()
+  }
+  const found = document.querySelector(`[data-pace-toggle="${label}"]`)
+  if (!(found instanceof HTMLElement)) throw new Error(`missing ${label} pace toggle`)
   return found
 }
 
@@ -94,6 +98,17 @@ describe('rolling pace retention', () => {
       flushSync()
       expect(document.querySelector('[data-pace-tooltip]')?.textContent).toContain('No coverage')
       expect(document.querySelector('[data-archive-hover]')).toBeNull()
+      expect(document.querySelector('[data-painter-metric]')).toBeNull()
+      if (!allGaps) {
+        paceToggle('archive').click()
+        flushSync()
+        expect(document.querySelector('[data-archive-pace]')).toBeNull()
+        expect(stored.get('caelestis:archive-net-pace')).toBe('false')
+        expect(document.querySelector('[data-pace-trigger]')?.textContent).toContain('None')
+        paceToggle('archive').click()
+        flushSync()
+        expect(document.querySelector('[data-archive-pace]')).not.toBeNull()
+      }
     },
   )
   it('uses Standard axis suffixes and exact pixel labels', () => {
@@ -144,8 +159,8 @@ describe('rolling pace retention', () => {
     })
     flushSync()
 
-    expect(paceToggle('30m').disabled).toBe(false)
-    expect(paceToggle('1h').disabled).toBe(false)
+    expect(paceToggle('30m').getAttribute('aria-disabled')).not.toBe('true')
+    expect(paceToggle('1h').getAttribute('aria-disabled')).not.toBe('true')
     const oneHourLine = document.querySelector('path[data-pace-window="1h"]')
     expect(oneHourLine?.getAttribute('data-series-start')).toBe('7200')
     expect(oneHourLine?.getAttribute('d')).toMatch(/^M/)

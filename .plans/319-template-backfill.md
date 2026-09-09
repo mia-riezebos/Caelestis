@@ -15,7 +15,7 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - [x] Add the userscript context-menu action and accessible modal.
 - [x] Integrate sparse history into existing views, add Changeset and complete validation.
 - [x] Include sparse observations in hover cards and keyboard value navigation.
-- [ ] Compact pace controls into a dropdown and clarify legend colours and painter metrics.
+- [x] Compact pace controls into a dropdown and clarify legend colours and painter metrics.
 
 ## Notes
 - Preserve the supplied clean branch and worktree.
@@ -31,3 +31,4 @@ Import Eralyon snapshots from the userscript template context menu. Retain spars
 - Verified imported frames and completion/net-pace values in the actual local frontend template page. Missing coverage has an explicit notice; live telemetry keeps its original query bounds.
 - Browser verification caught and fixed the Worker fetch binding and modal focus-return handling. No standalone mock page is used as validation evidence.
 - Follow-up hover tests cover sparse-only data, negative interval pace, all-gap observations and keyboard navigation. Existing reported and painter hover tests remain green.
+- Follow-up validation: 97 frontend tests, frontend check/build and repository lint pass. Verified real archive hover values and the pace dropdown at desktop and 375px widths, including keyboard toggling and focus return. Solid legend colours replace translucent swatches; painter metrics appear only when painter lines are available.

@@ -20,6 +20,7 @@
     painterLabel,
   } from '$lib/components/charts/painter-pace'
   import PainterPicker from '$lib/components/charts/PainterPicker.svelte'
+  import PacePicker from '$lib/components/charts/PacePicker.svelte'
   import {
     availableRangePresets,
     axisScale,
@@ -388,9 +389,26 @@
   const targetPoints = $derived(windowPoints(view))
   const archivePoints = $derived(archiveSamples.filter((sample): sample is ArchiveProgressSample & { correct: number } => sample.correct !== null))
   const archivePaces = $derived(archiveIntervals(archiveSamples))
+  const storedArchivePace = persisted<boolean>('caelestis:archive-net-pace', true)
+  const drawnArchivePaces = $derived(storedArchivePace.value !== false ? archivePaces : [])
+  const paceOptions = $derived([
+    ...paceWindows.map((pace, index) => ({
+      key: pace.key,
+      label: pace.key,
+      colour: paceColor(index / (PACE_WINDOWS.length - 1)),
+      selected: enabledWindows.has(pace.key),
+      available: pace.usable || painterHistories.some((source) => source.window === pace.key && source.history.resolution !== undefined && windowUsable(pace.seconds, source.history.resolution) && source.history.buckets.length > 0),
+      description: 'Rolling average',
+    })),
+    ...(archiveSamples.length === 0 ? [] : [{
+      key: 'archive', label: 'Net progress', colour: 'var(--chart-placed)',
+      selected: storedArchivePace.value !== false, available: archivePaces.length > 0,
+      description: 'Between Eralyon snapshots',
+    }]),
+  ])
   const visibleArchivePoints = $derived(archivePoints.filter((sample) => sample.at >= shownView.from && sample.at <= shownView.to))
-  const visibleArchivePaces = $derived(archivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
-  const rightMin = $derived(Math.min(0, ...archivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate)))
+  const visibleArchivePaces = $derived(drawnArchivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
+  const rightMin = $derived(Math.min(0, ...drawnArchivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate)))
   const leftScale = $derived(
     axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archivePoints.filter((sample) => sample.at >= view.from && sample.at <= view.to).map((sample) => sample.correct)), 4, 1),
   )
@@ -398,7 +416,7 @@
     axisScale(
       Math.max(
         0,
-        ...archivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate),
+        ...drawnArchivePaces.filter((interval) => interval.to >= view.from && interval.from <= view.to).map((interval) => interval.rate),
         ...enabledPaces.flatMap((pace) =>
           clipSeries(pace.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
         ),
@@ -1012,46 +1030,26 @@
     <div class="flex items-center gap-4 text-base-content/70">
       <span class="inline-flex items-center gap-2">
         <span
-          class="size-3 rounded-xs border-t-2"
-          style:background="color-mix(in oklab, var(--chart-correct) 35%, transparent)"
-          style:border-color="var(--chart-correct)"
+          class="size-3 rounded-xs"
+          style:background="var(--chart-correct)"
         ></span>
         correct
       </span>
       <span class="inline-flex items-center gap-2">
-        <span class="size-3 rounded-xs bg-error/30"></span>
-        painted, mismatched
+        <span class="size-3 rounded-xs bg-error"></span>
+        mismatched
       </span>
     </div>
 
-    <div class="flex flex-wrap items-center gap-1" role="group" aria-label="rolling pace lines">
-      <span class="me-1 text-base-content/65">pace</span>
-      {#each paceWindows as pace, index (pace.key)}
-        {@const enabled = enabledWindows.has(pace.key)}
-        <button
-          type="button"
-          class="btn btn-xs {enabled && pace.usable ? 'btn-soft' : 'btn-ghost'} gap-1.5 tabular-nums"
-          aria-pressed={enabled && pace.usable}
-          disabled={!pace.usable}
-          data-pace-toggle={pace.key}
-          title={pace.usable
-            ? `Toggle the ${pace.key} rolling pace line`
-            : `No retained data is fine enough for the ${pace.key} pace line`}
-          onclick={() => toggleWindow(pace.key)}
-        >
-          <span
-            class="rounded-full"
-            style:width="10px"
-            style:height="{paceWidth(index / (PACE_WINDOWS.length - 1)) + 1}px"
-            style:background={paceColor(index / (PACE_WINDOWS.length - 1))}
-            aria-hidden="true"
-          ></span>
-          {pace.key}
-        </button>
-      {/each}
+    <div class="flex items-center gap-2" role="group" aria-label="pace lines">
+      <span class="text-base-content/65">pace</span>
+      <PacePicker options={paceOptions} onToggle={(key) => {
+        if (key === 'archive') storedArchivePace.value = !storedArchivePace.value
+        else toggleWindow(key)
+      }} />
     </div>
 
-    {#if hasActivity}
+    {#if painters.length > 0 || paceWindows.some((pace) => pace.usable)}
       <div class="flex flex-wrap items-center gap-2" role="group" aria-label="whose pace lines">
         <span class="text-base-content/65">who</span>
         <PainterPicker
@@ -1066,6 +1064,8 @@
             spotlightPainter = wplaceUserId
           }}
         />
+        {#if painterLines.length > 0}
+        <span class="text-base-content/65">painter metric</span>
         <SlidingTabs
           options={PAINTER_METRICS.map((candidate) => ({
             key: candidate.key,
@@ -1079,6 +1079,7 @@
             storedMetric.value = key as PainterMetric
           }}
         />
+        {/if}
       </div>
     {/if}
 
@@ -1397,7 +1398,7 @@
               <span>{hover.cumCorrect?.toLocaleString() ?? 'No coverage'}</span>
             </span>
             <span class="inline-flex items-center gap-1.5">
-              <span class="size-2 rounded-xs bg-error/70"></span>
+              <span class="size-2 rounded-xs bg-error"></span>
               <span class="text-base-content/70">mismatched</span>
               <span>{hover.cumMismatched?.toLocaleString() ?? 'No coverage'}</span>
             </span>
