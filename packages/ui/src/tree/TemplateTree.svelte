@@ -142,7 +142,7 @@
 
   const clickRow = (event: MouseEvent, row: TreeRowModel): void => {
     if (event.target instanceof Element && event.target.closest('.visibility') !== null) return
-    if (consumeLongPress()) { event.preventDefault(); return }
+    if (suppressLongPressEvents) { event.preventDefault(); return }
     activeKey = row.key
     if (row.container && !row.forceExpanded) emit({ type: 'toggle-expanded', key: row.key })
   }
@@ -155,14 +155,8 @@
   const LONG_PRESS_MS = 450
   const LONG_PRESS_SLOP = 10
   let longPress: { timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number } | null = null
-  let longPressFiredAt = 0
+  let suppressLongPressEvents = false
   let touchPointerActive = false
-
-  const consumeLongPress = (): boolean => {
-    if (longPressFiredAt === 0 || performance.now() - longPressFiredAt > 1000) return false
-    longPressFiredAt = 0
-    return true
-  }
 
   const cancelLongPress = (): void => {
     if (longPress !== null) clearTimeout(longPress.timer)
@@ -182,7 +176,7 @@
       pointerId,
       timer: setTimeout(() => {
         longPress = null
-        longPressFiredAt = performance.now()
+        suppressLongPressEvents = true
         element.focus()
         emit({ type: 'context-menu', key: row.key, x, y })
       }, LONG_PRESS_MS),
@@ -203,7 +197,7 @@
     if (!row.contextMenu) return
     event.preventDefault()
     cancelLongPress()
-    if (consumeLongPress()) return
+    if (suppressLongPressEvents) return
     event.currentTarget instanceof HTMLElement && event.currentTarget.focus()
     emit({ type: 'context-menu', key: row.key, x: event.clientX, y: event.clientY })
   }
@@ -278,6 +272,8 @@
   }
 
   const dismissContextMenu = (event: PointerEvent): void => {
+    // A new pointer gesture ends suppression of the previous hold's trailing events.
+    suppressLongPressEvents = false
     const menu = model.contextMenu
     if (menu === undefined) return
     if (event.composedPath().some((node) => node instanceof HTMLElement && node.dataset.caelestisContextMenu !== undefined)) return
@@ -285,6 +281,7 @@
   }
 
   const dismissTransient = (event: KeyboardEvent): void => {
+    suppressLongPressEvents = false
     if (event.key !== 'Escape') return
     if (model.contextMenu !== undefined) {
       event.preventDefault()
@@ -349,7 +346,7 @@
     const menu = target?.closest('[role="menu"]')
     if (target === null || !menu) return
     const nested = menu !== contextMenuElement
-    if (nested && (event.key === 'ArrowLeft' || event.key === 'Escape')) {
+    if (openSubmenuId !== undefined && (event.key === 'ArrowLeft' || event.key === 'Escape')) {
       event.preventDefault()
       event.stopPropagation()
       closeSubmenu(true)

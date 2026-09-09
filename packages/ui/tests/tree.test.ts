@@ -930,6 +930,59 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it.each([
+    ['contextmenu', 'click'],
+    ['click', 'contextmenu'],
+  ])("suppresses a held folder's trailing %s then %s until the next gesture", (first, second) => {
+    vi.useFakeTimers()
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          entries: model.entries.map((entry) => ({ ...entry, contextMenu: true })),
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+    const row = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
+    if (row === null) throw new Error('missing folder row')
+    const pointer = (type: string): void => {
+      row.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          pointerType: 'touch',
+          isPrimary: true,
+          pointerId: 1,
+        }),
+      )
+    }
+    pointer('pointerdown')
+    vi.advanceTimersByTime(2000)
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({
+      type: 'context-menu',
+      key: 'local',
+      x: 0,
+      y: 0,
+    })
+    pointer('pointerup')
+    onIntent.mockClear()
+    for (const type of [first, second]) {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true })
+      row.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+    }
+    expect(onIntent).not.toHaveBeenCalled()
+
+    pointer('pointerdown')
+    pointer('pointerup')
+    row.click()
+    expect(onIntent).toHaveBeenCalledExactlyOnceWith({ type: 'toggle-expanded', key: 'local' })
+    void unmount(component)
+  })
+
   it('separates menu groups and opens a submenu by keyboard, tap, and hover', async () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, {
@@ -1031,6 +1084,18 @@ describe('template tree', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
     hover(document.querySelector('.context-menu [role="menuitemcheckbox"]'), 'mouse')
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    for (const closeKey of ['ArrowLeft', 'Escape']) {
+      const first = document.querySelector<HTMLButtonElement>('.context-menu [role="menuitem"]')
+      first?.focus()
+      hover(trigger, 'mouse')
+      expect(document.activeElement).toBe(first)
+      key(document.activeElement, closeKey)
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(trigger)
+      expect(onIntent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'dismiss-context-menu' }),
+      )
+    }
     void unmount(component)
   })
 
