@@ -343,8 +343,8 @@ describe('painter pace', () => {
     expect(document.querySelector('path[data-painter-line="10"]')).toBeNull()
     expect(document.querySelector('[data-painter-trigger]')?.textContent).toContain('5 of 7')
     expect(api.getContributions).not.toHaveBeenCalled()
-    // The heatmap read stays sixteen weeks: painter pace no longer rides on contribution days.
-    expect(live.subscribe.mock.calls[0]?.[1]).toBe(NOW_SECONDS - 86_400 * 7 * 16)
+    // The heatmap read stays twenty-six weeks: painter pace no longer rides on contribution days.
+    expect(live.subscribe.mock.calls[0]?.[1]).toBe(NOW_SECONDS - 86_400 * 7 * 26)
 
     // Choosing another painter from the popout fetches the windows again for the new selection.
     document.querySelector<HTMLButtonElement>('[data-painter-trigger]')?.click()
