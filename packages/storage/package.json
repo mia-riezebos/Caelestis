@@ -19,6 +19,10 @@
     "./s3": {
       "types": "./dist/s3.d.ts",
       "default": "./dist/s3.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
     }
   },
   "scripts": {

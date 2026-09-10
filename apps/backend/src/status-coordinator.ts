@@ -93,7 +93,7 @@ export interface LiveHost<Client> {
   readonly storage: CoordinatorStorage
   getWebSockets(tag: string): readonly LiveSocket[]
   connect(attachment: unknown): { client: Client; server: LiveSocket }
-  upgradeResponse(client: Client, headers: Headers): Response
+  upgradeResponse(client: Client, headers: Headers): Response | Promise<Response>
 }
 
 const MANIFEST_KEY = 'status-read-model:v2:manifest'

@@ -2712,11 +2712,11 @@ export class RelationalSqlStore implements SqlStore {
              WHERE season = ?1 AND revision = ?2
            )
          ON CONFLICT (season) DO UPDATE SET
-           revision = revision + CASE
-             WHEN fingerprints_dirty = 1 AND ?3 = 1 THEN 0
-             WHEN fingerprints_dirty = 1
-               OR public_fingerprint <> excluded.public_fingerprint
-               OR admin_fingerprint <> excluded.admin_fingerprint
+           revision = status_read_model_revisions.revision + CASE
+             WHEN status_read_model_revisions.fingerprints_dirty = 1 AND ?3 = 1 THEN 0
+             WHEN status_read_model_revisions.fingerprints_dirty = 1
+               OR status_read_model_revisions.public_fingerprint <> excluded.public_fingerprint
+               OR status_read_model_revisions.admin_fingerprint <> excluded.admin_fingerprint
              THEN 1 ELSE 0 END,
            public_fingerprint = excluded.public_fingerprint,
            admin_fingerprint = excluded.admin_fingerprint,

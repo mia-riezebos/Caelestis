@@ -20,8 +20,8 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - [x] Add PostgreSQL/CNPG with explicit SQL dialect behavior, migrations, and real PostgreSQL conformance coverage.
 - [x] Add filesystem/S3 object adapters and portable social-image storage contracts with conformance coverage.
 - [x] Extract Durable Object domain behavior and implement persisted portable coordination, jobs, and ownership with restart tests.
-- [~] Assemble the Node HTTP/WebSocket runtime and portable SvelteKit frontend with end-to-end validation.
-- [ ] Package Docker and Helm, add release/CI checks, and document configuration and upgrades.
+- [x] Assemble the Node HTTP/WebSocket runtime and portable SvelteKit frontend with end-to-end validation.
+- [~] Package Docker and Helm, add release/CI checks, and document configuration and upgrades.
 - [ ] Run final validation, add Changesets, rebase, and file the PR.
 
 ## Notes
@@ -39,3 +39,5 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - Object storage passes 16 conformance tests against filesystem, real Miniflare R2, and disposable MinIO. Frontend social images pass 17 focused tests; frontend and storage typechecks pass. Filesystem envelopes publish bytes and metadata atomically and preserve conditional creation across instances.
 - Counter and live coordinators now share their domain implementation across runtimes. Portable state and wakeups use the selected database. SQLite uses a kernel-backed ownership lock; PostgreSQL holds ownership on the same non-reconnecting connection used for application queries.
 - Validated 25 counter tests, 37 live coordinator tests, 352 existing adapter/work tests, and new SQLite/PostgreSQL restart, transaction, retry, and ownership checks. One prepared-worker fixture regression was fixed and its 49-test worker/live pass rerun. Backend typecheck passes.
+- One Node listener now serves Hono, SvelteKit, and authenticated v1/v2 WebSockets. It starts durable backfill, verification, mirror, garbage-collection, and social-refresh jobs. Social rendering runs in a worker thread; independent actors run concurrently with bounded concurrency.
+- End-to-end HTTP/SSR/WebSocket restart tests pass with SQLite and PostgreSQL, including frontend credential secrecy and persisted server identity. Node frontend build, frontend/backend typechecks, 23 frontend server/proxy tests, and 10 social-rendering tests pass. Cloudflare Worker dry-run build also passes.

@@ -139,6 +139,37 @@ describe.each(adapters)('$name durable coordination', ({ make }) => {
     expect(await createChunkedStatusPersistence(storage, 0).load()).toEqual(snapshot)
   })
 
+  it('delivers other actors while a slow job remains in progress', async () => {
+    let started: () => void = () => {}
+    let resume: () => void = () => {}
+    let finished: () => void = () => {}
+    const entered = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const delivered = new Promise<void>((resolve) => {
+      finished = resolve
+    })
+    const scheduler = new DurableScheduler(storage.database, async (actor) => {
+      if (actor === 'test') {
+        started()
+        await paused
+      } else finished()
+    })
+    await storage.setAlarm(1)
+    scheduler.start()
+    try {
+      await entered
+      await new SqlCoordinatorStorage(storage.database, 'other').setAlarm(1)
+      await delivered
+    } finally {
+      resume()
+      await scheduler.stop()
+    }
+  })
+
   it('recovers accepted counters and retries an ambiguous flush without doubling history', async () => {
     let now = millis(120000)
     const history: SqlStore = new MemorySqlStore()
