@@ -261,6 +261,29 @@ const mentions = (error: unknown, text: string): boolean => {
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth += 1) {
     if (current.message.includes(text)) return true
     if ('code' in current) {
+      if (
+        ['ER_ROW_IS_REFERENCED_2', 'ER_NO_REFERENCED_ROW_2'].includes(String(current.code)) &&
+        text === 'FOREIGN KEY constraint failed'
+      )
+        return true
+      if (current.code === 'ER_DUP_ENTRY') {
+        if (
+          text.includes('nodes_world_path_idx') &&
+          current.message.includes('nodes_surface_path_idx')
+        )
+          return true
+        if (
+          text === 'UNIQUE constraint failed: tags.' &&
+          current.message.includes('tags_name_key_unique')
+        )
+          return true
+      }
+      if (
+        current.code === 'ER_CONSTRAINT_FAILED' &&
+        text.startsWith('CHECK constraint failed: ') &&
+        current.message.includes(text.slice('CHECK constraint failed: '.length))
+      )
+        return true
       if (current.code === '23503' && text === 'FOREIGN KEY constraint failed') return true
       if (
         (current.code === '23505' || current.code === '23514') &&
@@ -2740,7 +2763,7 @@ export class RelationalSqlStore implements SqlStore {
         )
         .bind(season),
       this.client
-        .prepare(`SELECT template.id AS template_id, version.total_pixels AS total,
+        .prepare(`SELECT template.id AS template_id, version.id AS version_id, version.total_pixels AS total,
         sum(status.correct) AS correct, sum(status.wrong) AS wrong, sum(status.blank) AS blank,
         max(status.observed_at_ms) AS observed_at_ms
         FROM templates AS template

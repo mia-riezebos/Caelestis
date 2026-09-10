@@ -12,6 +12,7 @@ import { MemorySqlStore } from '../memory/memory-sql-store.js'
 import type { TransactionalSqlConnection } from '../sql-connection.js'
 import { coordinatorDatabase } from './coordinator-database.js'
 import { SqlCoordinatorStorage } from './coordinator-storage.js'
+import { mariaTestDatabase } from './mariadb.test-helper.js'
 import { PostgresConnection } from './postgres-connection.js'
 import { SqliteConnection } from './sqlite-connection.js'
 
@@ -66,6 +67,9 @@ if (process.env.CAELESTIS_TEST_POSTGRES_URL)
       }
     },
   })
+
+if (process.env.CAELESTIS_TEST_MARIADB_URL)
+  adapters.push({ name: 'MariaDB', make: mariaTestDatabase })
 
 describe.each(adapters)('$name durable coordination', ({ make }) => {
   let harness: Harness

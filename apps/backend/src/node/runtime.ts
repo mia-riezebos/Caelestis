@@ -5,6 +5,7 @@ import type { ObjectStorage } from '@caelestis/storage'
 import { CoordinatedStatusReadModel } from '../adapters/coordinated-status-read-model.js'
 import { coordinatorDatabase } from '../adapters/node/coordinator-database.js'
 import { SqlCoordinatorStorage } from '../adapters/node/coordinator-storage.js'
+import { MariaConnection } from '../adapters/node/mariadb-connection.js'
 import { PostgresConnection } from '../adapters/node/postgres-connection.js'
 import { SqliteConnection } from '../adapters/node/sqlite-connection.js'
 import { claimSqliteOwnership } from '../adapters/node/sqlite-ownership.js'
@@ -39,23 +40,29 @@ export const openNodeRuntime = async (
     await mkdir(dirname(config.databaseFile), { recursive: true, mode: 0o700 })
     releaseSqlite = claimSqliteOwnership(config.databaseFile)
   }
-  let connection: PostgresConnection | SqliteConnection
+  let connection: PostgresConnection | SqliteConnection | MariaConnection
   try {
     connection =
-      config.adapter === 'postgres'
-        ? new PostgresConnection(config.pg)
-        : new SqliteConnection(config.databaseFile)
+      config.adapter === 'mariadb'
+        ? new MariaConnection(config.maria)
+        : config.adapter === 'postgres'
+          ? new PostgresConnection(config.pg)
+          : new SqliteConnection(config.databaseFile)
   } catch (error) {
     releaseSqlite?.()
     throw error
   }
   try {
-    if (connection instanceof PostgresConnection)
+    if (connection instanceof PostgresConnection || connection instanceof MariaConnection)
       await connection.claimOwnership(options.onOwnershipLost)
     await connection.migrate(
       join(
         import.meta.dirname,
-        connection instanceof PostgresConnection ? '../../migrations-postgres' : '../../migrations',
+        connection instanceof MariaConnection
+          ? '../../migrations-mariadb'
+          : connection instanceof PostgresConnection
+            ? '../../migrations-postgres'
+            : '../../migrations',
       ),
     )
     const database = coordinatorDatabase(connection)
@@ -69,9 +76,13 @@ export const openNodeRuntime = async (
     const counterState = state('telemetry')
     const counters = new TelemetryCoordinator(database, counterState, sql)
     await counters.initialize()
-    let readToken = config.readToken ?? (await serverState.get<string>('frontend-token'))
-    if (!readToken) {
-      readToken = mintToken()
+    const storedReadToken = await serverState.get<string>('frontend-token')
+    let readToken = config.readToken ?? storedReadToken
+    if (
+      !storedReadToken &&
+      (!readToken || !(await sql.readAccessToken(await hashToken(readToken))))
+    ) {
+      readToken ??= mintToken()
       const tokenHash = await hashToken(readToken)
       const generated = readToken
       await connection.transaction(async (transaction) => {
@@ -88,11 +99,13 @@ export const openNodeRuntime = async (
           .run()
       })
     }
+    if (!readToken) throw new Error('Missing frontend read token')
     const token = await sql.readAccessToken(await hashToken(readToken))
     if (token?.scope !== 'read')
       throw new Error(
         'CAELESTIS_READ_TOKEN must identify an active read-only token; the stored frontend token may have been revoked',
       )
+    if (!storedReadToken) await serverState.put('frontend-token', readToken)
     const alarmState = state('alarms')
     const scheduleAlarms = async () => {
       const due = await sql.nextAlarmProbeAt()

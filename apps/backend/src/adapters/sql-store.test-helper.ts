@@ -3,6 +3,7 @@ import type { SqlStore } from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
 import { MemorySqlStore } from './memory/memory-sql-store.js'
+import { mariaTestDatabase } from './node/mariadb.test-helper.js'
 import { PostgresConnection } from './node/postgres-connection.js'
 import { SqliteConnection } from './node/sqlite-connection.js'
 import { RelationalSqlStore } from './relational-sql-store.js'
@@ -72,6 +73,22 @@ if (process.env.CAELESTIS_TEST_POSTGRES_URL) {
           }
         },
       }
+    },
+  })
+}
+
+if (process.env.CAELESTIS_TEST_MARIADB_URL) {
+  sqlStoreAdapters.push({
+    name: 'MariaDB',
+    async make() {
+      const { connection: database, close } = await mariaTestDatabase()
+      try {
+        await database.migrate(join(import.meta.dirname, '../../migrations-mariadb'))
+      } catch (error) {
+        await close()
+        throw error
+      }
+      return { store: new RelationalSqlStore(database), close }
     },
   })
 }

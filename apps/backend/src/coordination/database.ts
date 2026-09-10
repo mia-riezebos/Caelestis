@@ -1,6 +1,6 @@
 /** Transactional SQL used by durable coordinators. Values remain independent of any runtime SDK. */
 export interface CoordinatorDatabase {
-  readonly dialect: 'sqlite' | 'postgres'
+  readonly dialect: 'sqlite' | 'postgres' | 'mariadb'
   all<T>(query: string, ...values: readonly (string | number | null)[]): Promise<T[]>
   one<T>(query: string, ...values: readonly (string | number | null)[]): Promise<T>
   run(

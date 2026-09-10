@@ -18,6 +18,30 @@ afterEach(async () => {
 })
 
 const adapters = ['sqlite', ...(process.env.CAELESTIS_TEST_POSTGRES_URL ? ['postgres'] : [])]
+it('bootstraps a separate frontend credential without restoring it after revocation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'caelestis-frontend-token-'))
+  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  expect(() => readNodeConfig({ ADMIN_TOKEN: 'same', CAELESTIS_READ_TOKEN: 'same' })).toThrow(
+    'different credentials',
+  )
+  const config = readNodeConfig({
+    DATA_DIRECTORY: directory,
+    ADMIN_TOKEN: 'admin-test',
+    CAELESTIS_READ_TOKEN: 'frontend-test',
+  })
+  const storage = new FilesystemObjectStorage(join(directory, 'objects'))
+  const runtime = await openNodeRuntime(config, storage, { onOwnershipLost() {} })
+  expect(runtime.readToken).toBe('frontend-test')
+  expect(await runtime.connection.prepare('SELECT scope FROM access_tokens').first()).toEqual({
+    scope: 'read',
+  })
+  await runtime.connection.prepare('DELETE FROM access_tokens').run()
+  await runtime.close()
+  await expect(openNodeRuntime(config, storage, { onOwnershipLost() {} })).rejects.toThrow(
+    'active read-only token',
+  )
+})
+
 it.each(adapters)(
   '%s serves authenticated HTTP and real v2 WebSockets across a restart',
   async (adapter) => {

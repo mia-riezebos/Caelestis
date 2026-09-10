@@ -13,7 +13,7 @@ export interface SqlStatement {
 }
 
 export interface SqlConnection {
-  readonly dialect?: 'sqlite' | 'postgres'
+  readonly dialect?: 'sqlite' | 'postgres' | 'mariadb'
   prepare(query: string): SqlStatement
   batch<T = unknown>(statements: SqlStatement[]): Promise<SqlResult<T>[]>
 }
