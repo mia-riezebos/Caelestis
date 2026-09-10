@@ -788,6 +788,7 @@
   // The strip under the chart holds the whole fetched range in miniature. Drag a grip to resize
   // the window, drag the window to slide it, drag empty track to draw a fresh one.
   const BRUSH_HEIGHT = 40
+  const BRUSH_OBSERVATION_HALF_WIDTH = 2
   const brushPad = { top: 4, bottom: 4 }
 
   const bx = $derived((t: number) => pad.left + ((t - from) / Math.max(1, span)) * plotWidth)
@@ -795,8 +796,8 @@
     snapTime(from + ((clientX - left - pad.left) / plotWidth) * span, resolution, from, to)
 
   /** The full range's observed progress, with placement totals only when observations are absent. */
-  const brushOutline = $derived.by(() => {
-    const segments = chartSamples.length > 0
+  const brushGeometry = $derived.by(() => {
+    const segments = archiveSamples.length > 0 || progressSamples.length > 0
       ? progressSegments.map((segment) =>
           clipSeries(segment, from, to, lerpProgress).map((point) => ({
             t: point.t, v: point.v + point.mismatched,
@@ -806,7 +807,7 @@
     const max = Math.max(1, ...segments.flatMap((segment) => segment.map((point) => point.v)))
     const y = (v: number) =>
       BRUSH_HEIGHT - brushPad.bottom - (v / max) * (BRUSH_HEIGHT - brushPad.top - brushPad.bottom)
-    return segments.map((segment) => {
+    const outline = segments.filter((segment) => segment.length > 1).map((segment) => {
       const first = segment[0]
       const last = segment.at(-1)
       if (first === undefined || last === undefined) return ''
@@ -815,6 +816,9 @@
         .join('')
       return `${top}L${bx(last.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}L${bx(first.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}Z`
     }).join('')
+    const isolated = segments.filter((segment) => segment.length === 1).flat()
+      .map((point) => ({ x: bx(point.t), y: y(point.v) }))
+    return { outline, isolated }
   })
 
   type Edge = 'head' | 'tail'
@@ -1409,7 +1413,14 @@
           rx="4"
           class="fill-base-200"
         />
-        <path data-brush-outline class="chart-reveal" d={brushOutline} fill="var(--chart-placed)" opacity="0.35" />
+        <g class="chart-reveal">
+          <path data-brush-outline d={brushGeometry.outline} fill="var(--chart-placed)" opacity="0.35" />
+          {#each brushGeometry.isolated as point}
+            <line data-brush-observation
+              x1={point.x - BRUSH_OBSERVATION_HALF_WIDTH} x2={point.x + BRUSH_OBSERVATION_HALF_WIDTH}
+              y1={point.y} y2={point.y} stroke="var(--chart-placed)" stroke-width="2" />
+          {/each}
+        </g>
         <rect
           data-brush-window
           x={bx(view.from)}

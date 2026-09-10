@@ -13,3 +13,4 @@
 - Release PR #342 is a separate change and has merged. This branch starts from its merge commit.
 - Validation: 150 frontend tests, Svelte check (0 errors/warnings), frontend build, repository lint, and 32 release checks pass.
 - Chromium against the local frontend and production read API: overview spans the April–September archive and native observations; dragging the right grip into June updates the chart without changing the overview. Desktop and phone screenshots inspected in both themes; no runtime exceptions. Evidence in /tmp/caelestis-345-qa/result.json.
+- Review follow-up: reproduced both live/final anchor bypass of the placement fallback and invisible singleton archive observations. Select saved observations independently of anchors and draw isolated observations as short ticks. All 153 frontend tests pass after the fix; all three new cases failed before it.

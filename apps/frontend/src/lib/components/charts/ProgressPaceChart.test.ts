@@ -48,6 +48,55 @@ const paceToggle = (label: string): HTMLElement => {
 }
 
 describe('time-range overview', () => {
+  it.each(['live', 'finished'] as const)(
+    'keeps placement history when only the %s anchor exists',
+    (state) => {
+      mounted = mount(ProgressPaceChart, {
+        target: document.body,
+        props: {
+          buckets: [0, 3600, 7200].map((at) => bucket(3600, at)),
+          resolution: 3600,
+          from: 0,
+          to: 10800,
+          anchorCorrect: 100,
+          anchorMismatched: 0,
+          [state]: true,
+        },
+      })
+      flushSync()
+      expect(document.querySelector('[data-brush-outline]')?.getAttribute('d')).toBe(
+        'M48.0,25.3L229.3,14.7L410.7,4.0L410.7,36L48.0,36Z',
+      )
+    },
+  )
+
+  it('shows an isolated archive observation without filling unknown coverage', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [],
+        resolution: 3600,
+        from: 0,
+        to: 2 * 86_400,
+        anchorCorrect: 100,
+        anchorMismatched: 0,
+        archiveSamples: [null, 50, null].map((correct, index) => ({
+          at: index * 86_400,
+          snapshotId: index,
+          correct,
+          mismatched: correct === null ? null : 0,
+          total: 100,
+        })),
+      },
+    })
+    flushSync()
+    const marker = document.querySelector('[data-brush-observation]')
+    expect(marker?.getAttribute('x1')).toBe('318')
+    expect(marker?.getAttribute('x2')).toBe('322')
+    expect(marker?.getAttribute('y1')).toBe('4')
+    expect(document.querySelector('[data-brush-outline]')?.getAttribute('d')).toBe('')
+  })
+
   it.each([false, true])(
     'includes backfill and keeps it selectable (native history: %s)',
     (native) => {
