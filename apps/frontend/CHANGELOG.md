@@ -1,5 +1,11 @@
 # @caelestis/frontend
 
+## 0.5.2
+
+### Patch Changes
+
+- af91052: Stop Eralyon backfill at the first native observation and give native history precedence in charts and timelapses.
+
 ## 0.5.1
 
 ### Patch Changes
