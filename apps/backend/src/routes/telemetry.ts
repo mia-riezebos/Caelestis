@@ -10,7 +10,7 @@ import {
   WORLD_TILES,
 } from '@caelestis/shared'
 import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
-import { Schema } from 'effect'
+import { Schema, Context as Services } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, authenticateRequest, requireScopeEffect } from '../auth/middleware.js'
 import { hashToken } from '../auth/tokens.js'
@@ -26,7 +26,7 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   TILE_HISTORY_RESOLUTIONS,
 } from '../ports/index.js'
-import type { BackendRuntime } from '../runtime/backend-runtime.js'
+import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
 import { runBackendHttp, runBackendMiddleware } from '../runtime/hono.js'
 import {
   MAX_CANVAS_TILE_BYTES,
@@ -35,6 +35,7 @@ import {
   recordPaint,
   uploadTile,
 } from '../telemetry/ingest.js'
+import { readProgressHistory } from '../telemetry/progress-history.js'
 import {
   readAlarms,
   readCanvas,
@@ -380,6 +381,23 @@ export const createTelemetryRoutes = (
       )
     },
   )
+
+  routes.get('/progress/:templateId', requireScopeEffect(runtime, auth, 'read'), async (c) => {
+    const id = c.req.param('templateId')
+    const versionId = c.req.query('version')
+    const range = parseRange(c.req.query('from'), c.req.query('to'))
+    if (!UUID_V7.test(id) || versionId === undefined || !UUID_V7.test(versionId) || range === null)
+      return c.json({ error: 'Choose a template version and valid time range.' }, 400)
+    const sql = Services.get(runtime.context, SqlStoreService)
+    const template = await sql.readTemplate(id)
+    if (template === null || (c.get('caller').scope !== 'admin' && !template.published))
+      return c.json({ error: 'Template not found.' }, 404)
+    const version = await sql.readTemplateVersion(versionId)
+    if (version?.templateId !== id) return c.json({ error: 'Template version not found.' }, 404)
+    return runBackendHttp(c, runtime, readProgressHistory(version, range), (response) =>
+      c.json(response),
+    )
+  })
 
   routes.get('/history', requireScopeEffect(runtime, auth, 'read'), (c) => {
     const templateIds = parseTemplateIds(c.req.query('templateIds'))

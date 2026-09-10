@@ -330,6 +330,7 @@ export interface HistoryBucket {
   /** Unix seconds, floored to `resolution`. */
   readonly bucketStart: Seconds
   readonly placed: number
+  /** Reported correct placements, including repaints. Never a net canvas-progress delta. */
   readonly correct: number
   readonly repairs: number
 }
@@ -341,6 +342,20 @@ export interface HistoryResponse {
   /** First bucket start whose selected-resolution coverage the server still guarantees. */
   readonly coverageStart?: Seconds
   readonly buckets: readonly HistoryBucket[]
+}
+
+/** Canvas counts observed at a fixed time. Null preserves incomplete tile coverage. */
+export interface ProgressSample {
+  readonly at: number
+  readonly correct: number | null
+  readonly mismatched: number | null
+  readonly total: number
+}
+
+export interface ProgressHistoryResponse {
+  readonly versionId: string
+  readonly resolution: number
+  readonly samples: readonly ProgressSample[]
 }
 
 /**
