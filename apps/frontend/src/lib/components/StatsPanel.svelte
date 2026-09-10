@@ -20,6 +20,7 @@
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import { archiveContributionDays, combineArchiveSamples } from '$lib/archive-history'
   import { combineProgressSamples } from '$lib/progress-history'
+  import { completionPace } from '$lib/completion-pace'
   import {
     defaultVisiblePainters,
     MAX_PAINTER_OPTIONS,
@@ -32,7 +33,6 @@
     PACE_WINDOWS,
     type PaceHistorySource,
     type PainterHistorySource,
-    averagePace,
   } from '$lib/components/charts/progress-pace'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
@@ -374,7 +374,7 @@
   // The 1d source already includes the entire retention ladder, including its permanent tier.
   const pace = $derived.by(() => {
     const history = paceHistories?.find((candidate) => candidate.window === '1d')?.history
-    return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
+    return completionPace(history, archiveSamples, progressSamples ?? [], to, estimatePeriod.seconds)
   })
 
   const estimateCoverage = $derived(

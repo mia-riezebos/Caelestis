@@ -72,6 +72,65 @@ afterEach(async () => {
 
 describe('retained history range', () => {
   it.each([false, true])(
+    'includes backfilled progress in the estimate (reported history: %s)',
+    async (reported) => {
+      api.getArchiveHistory.mockResolvedValue({
+        source: 'eralyon',
+        basis: {
+          templateId: 'live',
+          versionId: 'version',
+          name: 'live',
+          season: 0,
+          bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+          total: 400,
+          chunks: [],
+        },
+        samples: [0, 100, 200].map((correct, index) => ({
+          at: NOW_SECONDS - (3 - index) * DAY_SECONDS,
+          snapshotId: index,
+          correct,
+          mismatched: 0,
+          total: 400,
+        })),
+        frames: [],
+      })
+      api.getHistory.mockResolvedValue({
+        resolution: DAY_SECONDS,
+        coverageStart: seconds(0),
+        buckets: reported
+          ? [
+              {
+                templateId: 'live',
+                resolution: DAY_SECONDS,
+                bucketStart: seconds(NOW_SECONDS - DAY_SECONDS),
+                placed: 1000,
+                correct: 10,
+                repairs: 0,
+              },
+            ]
+          : [],
+      })
+      mounted = mount(StatsPanel, {
+        target: document.body,
+        props: {
+          season: 0,
+          liveDashboard: false,
+          templates: [template('live', NOW_SECONDS - DAY_SECONDS, null)],
+          subscribeDashboard: live.subscribe,
+          progress: { completed: 260, mismatched: 0, unpainted: 140, known: 400, total: 400 },
+        },
+      })
+      flushSync()
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain(
+          reported ? 'Estimated completion in ~2 d' : 'Estimated completion in ~34 h',
+        ),
+      )
+      expect(document.body.textContent).toContain(reported ? '3 d of data' : '2 d of data')
+    },
+  )
+
+  it.each([false, true])(
     'waits for imported history before revealing the chart (failure: %s)',
     async (failure) => {
       const pending = Promise.withResolvers<ArchiveHistory>()
