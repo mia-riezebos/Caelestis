@@ -1,5 +1,6 @@
 import type { Manifest } from '@caelestis/shared'
 import { readBackendJson } from '$lib/server/backend.js'
+import { imageStorageFor } from '$lib/server/image-storage.js'
 import { ensureSocialImage } from '$lib/server/social-images.js'
 import { DEFAULT_SOCIAL_IMAGE, socialImageKey } from '$lib/social-image.js'
 import type { RequestHandler } from './$types'
@@ -12,7 +13,7 @@ const serve: RequestHandler = async (event) => {
       (entry) => entry.id === event.params.id && entry.published,
     )
     if (template === undefined) return new Response(null, { status: 404 })
-    const images = event.platform?.env.SOCIAL_IMAGES
+    const images = imageStorageFor(event)
     const key = socialImageKey(manifest.season, template)
     await ensureSocialImage(event, manifest.season, template)
     const object = await images?.get(key)
@@ -25,7 +26,7 @@ const serve: RequestHandler = async (event) => {
     const headers = {
       'content-type': 'image/gif',
       'content-length': String(object.size),
-      etag: object.httpEtag,
+      etag: `"${object.etag}"`,
       // Crawlers cache their own copies. Revalidate ours so publication changes take effect.
       'cache-control': 'public, no-cache',
       'x-content-type-options': 'nosniff',
@@ -33,15 +34,13 @@ const serve: RequestHandler = async (event) => {
     const candidates = (event.request.headers.get('if-none-match') ?? '')
       .split(',')
       .map((candidate) => candidate.trim().replace(/^W\//, ''))
-    if (candidates.includes(object.httpEtag) || candidates.includes('*')) {
-      await object.body.cancel()
+    if (candidates.includes(headers.etag) || candidates.includes('*')) {
       return new Response(null, { status: 304, headers })
     }
     if (event.request.method === 'HEAD') {
-      await object.body.cancel()
       return new Response(null, { headers })
     }
-    return new Response(await object.arrayBuffer(), { headers })
+    return new Response(object.bytes.slice().buffer, { headers })
   } catch (error) {
     console.error('social image read failed', error)
     return new Response(null, { status: 503, headers: { 'retry-after': '60' } })

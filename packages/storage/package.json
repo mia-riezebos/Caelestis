@@ -1,0 +1,39 @@
+{
+  "name": "@caelestis/storage",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./r2": {
+      "types": "./dist/r2.d.ts",
+      "default": "./dist/r2.js"
+    },
+    "./filesystem": {
+      "types": "./dist/filesystem.d.ts",
+      "default": "./dist/filesystem.js"
+    },
+    "./s3": {
+      "types": "./dist/s3.d.ts",
+      "default": "./dist/s3.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.check.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "miniflare": "5.20260908.0-alpha",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1128.0"
+  }
+}

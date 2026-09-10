@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@caelestis/shared": "workspace:*",
+    "@caelestis/storage": "workspace:*",
     "@caelestis/wire-schema": "workspace:*",
     "drizzle-orm": "0.45.2",
     "effect": "4.0.0-beta.102",

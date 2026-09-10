@@ -18,8 +18,8 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 
 - [x] Extract portable relational execution and add SQLite with migrations and shared conformance coverage.
 - [x] Add PostgreSQL/CNPG with explicit SQL dialect behavior, migrations, and real PostgreSQL conformance coverage.
-- [~] Add filesystem/S3 object adapters and portable social-image storage contracts with conformance coverage.
-- [ ] Extract Durable Object domain behavior and implement persisted portable coordination, jobs, and ownership with restart tests.
+- [x] Add filesystem/S3 object adapters and portable social-image storage contracts with conformance coverage.
+- [~] Extract Durable Object domain behavior and implement persisted portable coordination, jobs, and ownership with restart tests.
 - [ ] Assemble the Node HTTP/WebSocket runtime and portable SvelteKit frontend with end-to-end validation.
 - [ ] Package Docker and Helm, add release/CI checks, and document configuration and upgrades.
 - [ ] Run final validation, add Changesets, rebase, and file the PR.
@@ -36,3 +36,4 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - Mia requested complete cross-provider data export/import for later implementation. Filed #350 in v2; keep export/import implementation outside #265.
 - PostgreSQL 17 runs in disposable container caelestis-265-postgres on 127.0.0.1:55465. 352 adapter/work tests passed with the PostgreSQL adapter enabled. Serializable duplicate-event checks pass across four adapters; migration/schema/reconnect tests also pass.
 - PostgreSQL uses explicit null/JSON/aggregate SQL expressions, quoted conflict columns, bigint history arithmetic, and serializable batches with bounded serialization retries. Runtime configuration will expose CNPG credentials and TLS.
+- Object storage passes 16 conformance tests against filesystem, real Miniflare R2, and disposable MinIO. Frontend social images pass 17 focused tests; frontend and storage typechecks pass. Filesystem envelopes publish bytes and metadata atomically and preserve conditional creation across instances.

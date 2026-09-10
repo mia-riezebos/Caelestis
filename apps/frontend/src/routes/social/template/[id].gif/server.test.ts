@@ -10,6 +10,8 @@ const eventFor = (method = 'GET', etag?: string) => {
   const get = vi.fn().mockResolvedValue({
     size: 6,
     httpEtag: '"rev"',
+    etag: 'rev',
+    uploaded: new Date(),
     body: new ReadableStream(),
     arrayBuffer: async () => new TextEncoder().encode('GIF89a').buffer,
   })

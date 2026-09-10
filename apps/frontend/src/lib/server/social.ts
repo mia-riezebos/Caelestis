@@ -1,4 +1,5 @@
 import type { Manifest, ServerInfo, Template, TemplateStatus } from '@caelestis/shared'
+import type { ObjectInfo, ObjectStorage } from '@caelestis/storage'
 import {
   DEFAULT_SOCIAL_IMAGE,
   SOCIAL_IMAGE_HEIGHT,
@@ -16,10 +17,8 @@ interface SocialContext {
 export const socialMetadata = async (
   url: URL,
   context: SocialContext,
-  images?: Pick<NonNullable<App.Platform['env']['SOCIAL_IMAGES']>, 'head'>,
-  ensureImage?: (
-    template: Template,
-  ) => ReturnType<NonNullable<App.Platform['env']['SOCIAL_IMAGES']>['head']>,
+  images?: Pick<ObjectStorage, 'head'>,
+  ensureImage?: (template: Template) => Promise<ObjectInfo | null>,
 ) => {
   const { server, manifest, statuses } = context
   const siteName = server?.name ?? 'Caelestis'
