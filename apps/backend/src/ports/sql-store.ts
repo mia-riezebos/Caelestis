@@ -1351,6 +1351,9 @@ export interface SqlStore extends TagStore {
    */
   readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]>
 
+  /** Earliest native observation bucket across this version's tiles and all retained tiers. */
+  readFirstTemplateObservation(versionId: string): Promise<Seconds | null>
+
   /** Read classifications of these exact historical hashes against one artwork version. */
   readTileMeasurements(
     versionId: string,

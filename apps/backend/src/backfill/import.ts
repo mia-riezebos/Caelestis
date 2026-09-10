@@ -86,6 +86,7 @@ export class TemplateBackfill {
         ? null
         : await this.sql.readTemplateVersion(template.currentVersionId)
     if (version === null) throw new BackfillError('Template artwork is unavailable.', 409)
+    const firstLive = await this.sql.readFirstTemplateObservation(version.versionId)
     return {
       basis: {
         templateId,
@@ -96,7 +97,7 @@ export class TemplateBackfill {
         total: version.totalPixels,
         chunks: version.chunks,
       },
-      end: cutoff(template, this.now()),
+      end: Math.min(cutoff(template, this.now()), firstLive === null ? Infinity : firstLive - 1),
     }
   }
 
@@ -166,6 +167,7 @@ export class TemplateBackfill {
 
   async history(versionId: string, tile?: TileCoord): Promise<ArchiveHistory> {
     const basis = (await this.storage.get<BackfillBasis>(`basis:${versionId}`)) ?? null
+    const firstLive = await this.sql.readFirstTemplateObservation(versionId)
     const samples =
       tile === undefined
         ? [
@@ -182,7 +184,13 @@ export class TemplateBackfill {
               await this.storage.list<Observation>({ prefix: tilePrefix(versionId, tile) })
             ).values(),
           ].map(({ at, snapshotId, hash }) => ({ at, snapshotId, hash }))
-    return { source: 'eralyon', basis, samples, frames }
+    const beforeLive = ({ at }: { at: number }) => firstLive === null || at < firstLive
+    return {
+      source: 'eralyon',
+      basis,
+      samples: samples.filter(beforeLive),
+      frames: frames.filter(beforeLive),
+    }
   }
 
   /** Persist the observation before advancing, making retried alarm deliveries idempotent. */
@@ -200,6 +208,19 @@ export class TemplateBackfill {
     const snapshot = snapshots[Math.floor(summary.completed / tiles.length)]
     const tile = tiles[summary.completed % tiles.length]
     if (snapshot === undefined || tile === undefined) return
+    const firstLive = await this.sql.readFirstTemplateObservation(summary.basis.versionId)
+    if (firstLive !== null && snapshot.at >= firstLive) {
+      await this.storage.put<StoredJob>('job', {
+        ...held,
+        summary: {
+          ...summary,
+          to: snapshots.findLast((entry) => entry.at < firstLive)?.at ?? summary.from,
+          total: summary.completed,
+          status: summary.failed > 0 ? 'failed' : 'completed',
+        },
+      })
+      return
+    }
     if (snapshot.at > cutoff(template, this.now())) {
       await this.cancel()
       return

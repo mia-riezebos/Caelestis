@@ -37,30 +37,19 @@ export const combineProgressSamples = (
     })
 }
 
-/** Keep measured values at their original times. Today's observation can only add today's point. */
+/** Keep archive observations strictly before native history, including explicit native gaps. */
 export const mergeObservedProgress = (
   archive: readonly ArchiveProgressSample[],
   observed: readonly ProgressSample[],
   current?: Omit<ProgressSample, 'total'>,
 ): readonly ObservedProgressSample[] => {
-  const covered = (samples: readonly ProgressSample[], at: number): boolean => {
-    const before = samples.findLast((sample) => sample.at <= at)
-    const after = samples.find((sample) => sample.at >= at)
-    return (
-      before?.correct != null &&
-      before.mismatched != null &&
-      after?.correct != null &&
-      after.mismatched != null
-    )
-  }
+  const firstLive = Math.min(current?.at ?? Infinity, ...observed.map((sample) => sample.at))
   const byTime = new Map<number, ObservedProgressSample>(
     archive
-      .filter((sample) => sample.correct !== null || !covered(observed, sample.at))
+      .filter((sample) => sample.at < firstLive)
       .map((sample) => [sample.at, { ...sample, archive: true }]),
   )
   for (const sample of observed) {
-    // Missing native recounts cannot erase an available archive observation.
-    if (sample.correct === null && covered(archive, sample.at)) continue
     byTime.set(sample.at, { ...sample, archive: false })
   }
   if (current !== undefined)

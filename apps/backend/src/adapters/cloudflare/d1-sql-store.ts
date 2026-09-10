@@ -1451,6 +1451,22 @@ export class D1SqlStore implements SqlStore {
     return rows
   }
 
+  async readFirstTemplateObservation(versionId: string): Promise<Seconds | null> {
+    const row = await this.client
+      .prepare(`
+      SELECT MIN(history.bucket_start_s) AS at
+      FROM version_tiles AS chunk
+      INNER JOIN template_versions AS version ON version.id = chunk.version_id
+      INNER JOIN templates AS template ON template.id = version.template_id
+      INNER JOIN tile_history AS history ON history.season = template.season
+        AND history.tile_x = chunk.tile_x AND history.tile_y = chunk.tile_y
+      WHERE chunk.version_id = ?
+    `)
+      .bind(versionId)
+      .first<{ at: number | null }>()
+    return row?.at == null ? null : seconds(row.at)
+  }
+
   async readTemplateProgressFrames(
     versionId: string,
     from: Seconds,
