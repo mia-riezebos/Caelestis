@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { formatCount, formatPixels } from '@caelestis/shared'
   import type {
     ContributionDay,
     ArchiveHistory,
@@ -372,21 +371,20 @@
     return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
   })
 
-  const pacePeriod = $derived(
+  const estimateCoverage = $derived(
     pace !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
-      ? `over ${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} within the last ${estimatePeriod.label}`
-      : `over the last ${estimatePeriod.label}`,
+      ? `${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} of data`
+      : null,
   )
 
   const eta = $derived.by(() => {
     if (pace === null || pace.correct <= 0 || remainingPixels <= 0) return null
-    const seconds = (remainingPixels / pace.correct) * 3_600
-    // Beyond a year the number is noise, not a forecast.
-    return seconds > 86_400 * 365 ? null : seconds
+    return (remainingPixels / pace.correct) * 3_600
   })
 
   const formatEta = (seconds: number): string => {
     if (seconds < 3_600 * 36) return `~${Math.max(1, Math.round(seconds / 3_600))} h`
+    if (seconds >= DAY_SECONDS * 365) return `~${(seconds / (DAY_SECONDS * 365)).toLocaleString(undefined, { maximumFractionDigits: 1 })} y`
     return `~${Math.round(seconds / 86_400)} d`
   }
 </script>
@@ -396,24 +394,26 @@
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <h2 class="font-semibold">Progress &amp; pace</h2>
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-base-content/60">
+        <span class="font-medium text-base-content">
+          {#if remainingPixels <= 0 && progress.total > 0}
+            Complete
+          {:else if eta !== null}
+            Estimated completion in {formatEta(eta)}
+          {:else}
+            Completion estimate unavailable
+          {/if}
+        </span>
         <label class="inline-flex items-center gap-2">
-          Estimate over
-          <select class="select select-xs w-auto" aria-label="Estimate over" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
+          based on
+          <select class="select select-xs w-auto" aria-label="Completion estimate pace period" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
             {#each estimatePeriods as period (period.key)}
-              <option value={period.key}>{period.key}</option>
+              <option value={period.key}>last {period.label}</option>
             {/each}
           </select>
         </label>
-        <span>
-        {#if pace !== null}
-          <span class="whitespace-nowrap" title={`${formatPixels(pace.placed)} per hour`} aria-label={`${formatPixels(pace.placed)} per hour`}>{formatCount(pace.placed)} px/h</span> {pacePeriod}
-          {#if eta !== null}
-            · done in {formatEta(eta)} at this pace
-          {/if}
-        {:else}
-          Estimate unavailable
+        {#if estimateCoverage !== null}
+          <span>({estimateCoverage})</span>
         {/if}
-        </span>
       </div>
     </div>
     {#if failed}
