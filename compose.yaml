@@ -1,6 +1,6 @@
 services:
   caelestis:
-    image: ${CAELESTIS_IMAGE:-caelestis:local}
+    image: ${CAELESTIS_IMAGE:-miacx/caelestis:local}
     build:
       context: .
       args:

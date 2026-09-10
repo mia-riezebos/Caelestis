@@ -38,12 +38,12 @@ Other adapter settings in `.env` follow the configuration table below. Mount cer
 Build from a checkout with Docker:
 
 ```sh
-docker build --build-arg CAELESTIS_BUILD_ID="$(git rev-parse HEAD)" -t caelestis:local .
+docker build --build-arg CAELESTIS_BUILD_ID="$(git rev-parse HEAD)" -t miacx/caelestis:local .
 docker volume create caelestis-data
 docker run -d --name caelestis --restart unless-stopped \
   --read-only --tmpfs /tmp \
   -p 127.0.0.1:3000:3000 -v caelestis-data:/data \
-  --env-file .env caelestis:local
+  --env-file .env miacx/caelestis:local
 ```
 
 Create `.env` with a private `ADMIN_TOKEN`, `SERVER_NAME`, and the current `SEASON`.
@@ -165,13 +165,16 @@ Portable admin export/import across providers is tracked separately and is not p
 
 ## Versions and development checks
 
-Approved app releases publish multi-platform `linux/amd64` and `linux/arm64` images to `ghcr.io/mia-riezebos/caelestis`.
+Approved app releases publish multi-platform `linux/amd64` and `linux/arm64` images to Docker Hub at `miacx/caelestis`.
 An image tag names both app versions, for example `backend-1.2.3-frontend-4.5.6`.
 Its Helm version is `1.2.3+frontend.4.5.6`, stored at `oci://ghcr.io/mia-riezebos/caelestis/charts/caelestis`.
 OCI represents the chart version's `+` as `_`. Pass the original version to Helm.
 Published charts pin the image digest. Pin chart versions when upgrading.
 Server GitHub Releases contain the chart, image digest, migration checksums, app versions, commit, and `SHA256SUMS`.
 The workflow refuses to replace an existing artifact with different content.
+Before the first release, create the public `miacx/caelestis` repository on Docker Hub.
+Add a Docker Hub access token with write access as the GitHub repository secret `DOCKERHUB_TOKEN`.
+The image workflow signs in as `miacx`. Helm chart archives stay in GHCR and use the workflow's GitHub token.
 Chart or shared-package changes that affect the server need a Changeset for the affected backend/frontend app.
 
 From source, use Node 24.20.0 and the repository's pinned pnpm:
@@ -180,7 +183,7 @@ From source, use Node 24.20.0 and the repository's pinned pnpm:
 pnpm install --frozen-lockfile
 CAELESTIS_TARGET=node pnpm --filter @caelestis/backend... --filter @caelestis/frontend... build
 node apps/backend/dist/node/main.js
-node scripts/test-portable-image.mjs caelestis:local
+node scripts/test-portable-image.mjs miacx/caelestis:local
 ```
 
 The image test creates and removes its own PostgreSQL, S3, network, containers, and volumes.

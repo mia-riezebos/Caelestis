@@ -106,6 +106,8 @@ jobs:
       needs.version.outputs.has_frontend_changesets == 'false' &&
       needs.version.outputs.has_backend_changesets == 'false'
     uses: ./.github/workflows/portable-release.yml
+    secrets:
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
       contents: write
       packages: write

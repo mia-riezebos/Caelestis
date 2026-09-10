@@ -1,6 +1,6 @@
 replicaCount: 1
 image:
-  repository: ghcr.io/mia-riezebos/caelestis
+  repository: docker.io/miacx/caelestis
   tag: ''
   digest: ''
   pullPolicy: IfNotPresent

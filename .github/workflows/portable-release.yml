@@ -2,6 +2,10 @@ name: Release portable server
 
 on:
   workflow_call:
+    secrets:
+      DOCKERHUB_TOKEN:
+        description: Docker Hub access token with write access to miacx/caelestis
+        required: true
 
 permissions:
   contents: read
@@ -55,11 +59,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IMAGE_TAG: ${{ steps.version.outputs.imageTag }}
           CHART_VERSION: ${{ steps.version.outputs.chartVersion }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          registry="ghcr.io/${GITHUB_REPOSITORY,,}"
-          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          image_repository="docker.io/miacx/caelestis"
+          chart_registry="ghcr.io/${GITHUB_REPOSITORY,,}/charts"
+          test -n "${DOCKERHUB_TOKEN:?Configure the DOCKERHUB_TOKEN repository secret}"
+          echo "$DOCKERHUB_TOKEN" | docker login docker.io --username miacx --password-stdin
           echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          image="$registry:$IMAGE_TAG"
+          image="$image_repository:$IMAGE_TAG"
           if docker manifest inspect "$image" > /tmp/manifest.json 2>/tmp/manifest-error; then
             revision="$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' | jq -r '.["linux/amd64"].config.Labels["org.opencontainers.image.revision"]')"
             test "$revision" = "$GITHUB_SHA"
@@ -68,11 +75,11 @@ jobs:
             docker buildx build --platform linux/amd64,linux/arm64 --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" --provenance=true --sbom=true --tag "$image" --push .
           fi
           digest="$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}')"
-          printf '%s@%s\n' "$registry" "$digest" > release/image.txt
+          printf '%s@%s\n' "$image_repository" "$digest" > release/image.txt
           IMAGE_DIGEST="$digest" node --input-type=module -e "import {readFileSync,writeFileSync} from 'node:fs'; const file='deploy/helm/caelestis/values.yaml'; writeFileSync(file,readFileSync(file,'utf8').replace(\"  digest: ''\", '  digest: '+process.env.IMAGE_DIGEST));"
           helm package deploy/helm/caelestis --version "$CHART_VERSION" --app-version "$IMAGE_TAG" --destination release
           chart="release/caelestis-$CHART_VERSION.tgz"
-          if helm pull "oci://$registry/charts/caelestis" --version "$CHART_VERSION" --destination /tmp 2>/tmp/chart-error; then
+          if helm pull "oci://$chart_registry/caelestis" --version "$CHART_VERSION" --destination /tmp 2>/tmp/chart-error; then
             # Tar timestamps can differ on retries. Compare the extracted chart contents.
             mkdir /tmp/chart-existing /tmp/chart-new
             tar -xzf "/tmp/caelestis-$CHART_VERSION.tgz" -C /tmp/chart-existing
@@ -81,7 +88,7 @@ jobs:
             cp "/tmp/caelestis-$CHART_VERSION.tgz" "$chart"
           else
             if ! grep -Eqi 'not found|manifest unknown' /tmp/chart-error; then cat /tmp/chart-error; exit 1; fi
-            helm push "$chart" "oci://$registry/charts"
+            helm push "$chart" "oci://$chart_registry"
           fi
           (cd release && sha256sum *.tgz image.txt versions.json > SHA256SUMS)
       - name: Publish release manifest and chart archive
