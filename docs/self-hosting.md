@@ -19,6 +19,22 @@ The chart rejects multiple replicas and uses `Recreate` updates. Horizontal appl
 
 ## Run with Docker
 
+The repository includes [`Dockerfile`](../Dockerfile), [`compose.yaml`](../compose.yaml), and the [Helm chart](../deploy/helm/caelestis).
+For Compose, copy the example environment and set a private `ADMIN_TOKEN` and the current `SEASON`:
+
+```sh
+cp .env.example .env
+# Edit .env. Generate ADMIN_TOKEN with: openssl rand -hex 32
+docker compose up --build -d --wait
+```
+
+Compose keeps SQLite and filesystem objects in its `data` volume and binds port 3000 to localhost.
+`docker compose down` preserves that volume. The `--volumes` option removes its data.
+Set `CAELESTIS_HTTP_PORT` or `CAELESTIS_BIND_ADDRESS` in `.env` to change the host binding.
+The container listens on port 3000 regardless of the host port.
+Set `CAELESTIS_IMAGE` to a published image reference, then use `docker compose pull` and `docker compose up -d --no-build --wait`.
+Other adapter settings in `.env` follow the configuration table below. Mount certificate files separately when using a private PostgreSQL CA.
+
 Build from a checkout with Docker:
 
 ```sh

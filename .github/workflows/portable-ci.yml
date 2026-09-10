@@ -9,6 +9,8 @@ on:
       - scripts/**
       - deploy/**
       - Dockerfile
+      - compose.yaml
+      - .env.example
       - .dockerignore
       - .github/workflows/portable-*.yml
       - .github/scripts/*portable*.mjs
@@ -49,7 +51,7 @@ jobs:
       - name: Start disposable S3 service
         run: |
           docker run -d --name portable-s3 -p 127.0.0.1:9000:9000 -e MINIO_ROOT_USER=caelestis-test -e MINIO_ROOT_PASSWORD=caelestis-test-password minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
-          curl --retry 30 --retry-delay 1 --retry-connrefused --fail http://127.0.0.1:9000/minio/health/ready
+          curl --retry 30 --retry-delay 1 --retry-all-errors --retry-max-time 60 --fail http://127.0.0.1:9000/minio/health/ready
       - name: Build and check the Node backend and frontend
         env:
           CAELESTIS_TARGET: node
@@ -70,6 +72,11 @@ jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      ADMIN_TOKEN: portable-compose-test
+      CAELESTIS_ENV_FILE: .env.example
+      CAELESTIS_IMAGE: caelestis:test
+      COMPOSE_PROJECT_NAME: portable-ci
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -79,6 +86,14 @@ jobs:
         run: docker build --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" -t caelestis:test .
       - name: Verify installed image with SQLite/filesystem and PostgreSQL/S3
         run: node scripts/test-portable-image.mjs caelestis:test
+      - name: Verify Compose startup
+        run: |
+          docker compose --env-file .env.example config --quiet
+          docker compose --env-file .env.example up -d --no-build --pull never --wait --wait-timeout 120
+          curl --fail http://127.0.0.1:3000/ > /dev/null
+      - name: Remove disposable Compose services and data
+        if: always()
+        run: docker compose --env-file .env.example down --volumes
       - name: Scan production image
         id: scan
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
