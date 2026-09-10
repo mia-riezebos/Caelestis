@@ -108,7 +108,8 @@ jobs:
         run: |
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tar.gz
           echo '9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  /tmp/kubeconform.tar.gz' | sha256sum --check
-          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+          tar -xzf /tmp/kubeconform.tar.gz -C "$RUNNER_TEMP" kubeconform
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Validate storage variants and migration job
         run: |
           helm lint deploy/helm/caelestis
