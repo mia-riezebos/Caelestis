@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { formatCount, formatPixels } from '@caelestis/shared'
   import type {
     ContributionDay,
     ArchiveHistory,
@@ -67,13 +66,13 @@
   const RESOLUTION = 900
   const STATS_REFRESH_MS = 15_000
 
-  let archives = $state<readonly ArchiveHistory[]>([])
+  let archives = $state<readonly ArchiveHistory[] | null>(null)
   let archiveError = $state<string | null>(null)
-  const archiveSamples = $derived(combineArchiveSamples(archives))
+  const archiveSamples = $derived(combineArchiveSamples(archives ?? []))
   $effect(() => {
     const scope = templates.map((template) => ({ id: template.id, version: template.version }))
     let cancelled = false
-    archives = []; archiveError = null
+    archives = null; archiveError = null
     // Bound upstream concurrency for large folders; snapshot reads need no painter subscriptions.
     void (async () => {
       const results: ArchiveHistory[] = []
@@ -82,7 +81,12 @@
         results.push(await getArchiveHistory(template.id, template.version))
       }
       if (!cancelled) archives = results
-    })().catch(() => { if (!cancelled) archiveError = 'Imported progress history could not load.' })
+    })().catch(() => {
+      if (!cancelled) {
+        archives = []
+        archiveError = 'Imported progress history could not load.'
+      }
+    })
     return () => { cancelled = true }
   })
 
@@ -104,7 +108,7 @@
   })
 
   let history = $state<HistoryBucket[] | null>(null)
-  let progressSamples = $state<readonly ProgressSample[]>([])
+  let progressSamples = $state<readonly ProgressSample[] | null>(null)
   const importedContributions = $derived(archiveContributionDays(
     archiveSamples,
     Math.min(...(history ?? []).map((bucket) => bucket.bucketStart)),
@@ -123,7 +127,7 @@
     const key = JSON.stringify([scope, start])
     if (progressScope !== key) {
       progressScope = key
-      progressSamples = []
+      progressSamples = null
       progressError = null
     }
     let cancelled = false
@@ -152,6 +156,7 @@
       }
     })().catch(() => {
       if (!cancelled) {
+        progressSamples ??= []
         progressError = 'Saved progress history could not load.'
       }
     })
@@ -159,7 +164,7 @@
       cancelled = true
     }
   })
-  let paceHistories = $state<readonly PaceHistorySource[]>([])
+  let paceHistories = $state<readonly PaceHistorySource[] | null>(null)
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   /** The rolling pace windows the chart draws; shared so painter lines are fetched for the same. */
@@ -211,7 +216,7 @@
     if (historyScope !== scope) {
       historyScope = scope
       history = null
-      paceHistories = []
+      paceHistories = null
     }
     failed = false
     getHistory(templateIds, from, to)
@@ -368,25 +373,24 @@
   const estimatePeriod = $derived(estimatePeriods.find((period) => period.key === storedEstimatePeriod.value) ?? estimatePeriods[2])
   // The 1d source already includes the entire retention ladder, including its permanent tier.
   const pace = $derived.by(() => {
-    const history = paceHistories.find((candidate) => candidate.window === '1d')?.history
+    const history = paceHistories?.find((candidate) => candidate.window === '1d')?.history
     return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
   })
 
-  const pacePeriod = $derived(
+  const estimateCoverage = $derived(
     pace !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
-      ? `over ${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} within the last ${estimatePeriod.label}`
-      : `over the last ${estimatePeriod.label}`,
+      ? `${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} of data`
+      : null,
   )
 
   const eta = $derived.by(() => {
     if (pace === null || pace.correct <= 0 || remainingPixels <= 0) return null
-    const seconds = (remainingPixels / pace.correct) * 3_600
-    // Beyond a year the number is noise, not a forecast.
-    return seconds > 86_400 * 365 ? null : seconds
+    return (remainingPixels / pace.correct) * 3_600
   })
 
   const formatEta = (seconds: number): string => {
     if (seconds < 3_600 * 36) return `~${Math.max(1, Math.round(seconds / 3_600))} h`
+    if (seconds >= DAY_SECONDS * 365) return `~${(seconds / (DAY_SECONDS * 365)).toLocaleString(undefined, { maximumFractionDigits: 1 })} y`
     return `~${Math.round(seconds / 86_400)} d`
   }
 </script>
@@ -396,31 +400,33 @@
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <h2 class="font-semibold">Progress &amp; pace</h2>
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-base-content/60">
+        <span class="font-medium text-base-content">
+          {#if remainingPixels <= 0 && progress.total > 0}
+            Complete
+          {:else if eta !== null}
+            Estimated completion in {formatEta(eta)}
+          {:else}
+            Completion estimate unavailable
+          {/if}
+        </span>
         <label class="inline-flex items-center gap-2">
-          Estimate over
-          <select class="select select-xs w-auto" aria-label="Estimate over" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
+          based on
+          <select class="select select-xs w-auto" aria-label="Completion estimate pace period" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
             {#each estimatePeriods as period (period.key)}
-              <option value={period.key}>{period.key}</option>
+              <option value={period.key}>last {period.label}</option>
             {/each}
           </select>
         </label>
-        <span>
-        {#if pace !== null}
-          <span class="whitespace-nowrap" title={`${formatPixels(pace.placed)} per hour`} aria-label={`${formatPixels(pace.placed)} per hour`}>{formatCount(pace.placed)} px/h</span> {pacePeriod}
-          {#if eta !== null}
-            · done in {formatEta(eta)} at this pace
-          {/if}
-        {:else}
-          Estimate unavailable
+        {#if estimateCoverage !== null}
+          <span>({estimateCoverage})</span>
         {/if}
-        </span>
       </div>
     </div>
     {#if failed}
       <div class="flex h-[240px] items-center justify-center text-sm text-base-content/50">
         Could not load pace history.
       </div>
-    {:else if history === null}
+    {:else if history === null || archives === null || progressSamples === null || paceHistories === null}
       <Skeleton class="h-[240px] w-full" />
     {:else}
       <ProgressPaceChart

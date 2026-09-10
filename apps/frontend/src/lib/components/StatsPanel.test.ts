@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { millis, seconds, type Template } from '@caelestis/shared'
+import { type ArchiveHistory, millis, seconds, type Template } from '@caelestis/shared'
 import { flushSync, mount, unmount } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -71,6 +71,85 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
+  it.each([false, true])(
+    'waits for imported history before revealing the chart (failure: %s)',
+    async (failure) => {
+      const pending = Promise.withResolvers<ArchiveHistory>()
+      api.getArchiveHistory.mockReturnValue(pending.promise)
+      mounted = mount(StatsPanel, {
+        target: document.body,
+        props: {
+          season: 0,
+          liveDashboard: false,
+          templates: [template('live', 0, null)],
+          subscribeDashboard: live.subscribe,
+          progress: { completed: 10, mismatched: 0, unpainted: 90, known: 100, total: 100 },
+        },
+      })
+      flushSync()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      flushSync()
+      expect(document.querySelector('svg[role="img"]')).toBeNull()
+      if (failure) pending.reject(new Error('Archive unavailable'))
+      else
+        pending.resolve({
+          source: 'eralyon',
+          basis: {
+            templateId: 'live',
+            versionId: 'version',
+            name: 'live',
+            season: 0,
+            bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+            total: 100,
+            chunks: [],
+          },
+          samples: [1, 5].map((correct, index) => ({
+            at: NOW_SECONDS - (3 - index) * DAY_SECONDS,
+            snapshotId: index,
+            correct,
+            mismatched: 0,
+            total: 100,
+          })),
+          frames: [],
+        })
+      await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
+      if (failure)
+        expect(document.body.textContent).toContain('Imported progress history could not load.')
+      else expect(document.querySelector('.chart-reveal [data-archive-progress]')).not.toBeNull()
+    },
+  )
+
+  it('shows time to completion beyond a year using correct pixels rather than placements', async () => {
+    api.getHistory.mockResolvedValue({
+      resolution: DAY_SECONDS,
+      coverageStart: seconds(NOW_SECONDS - DAY_SECONDS),
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: DAY_SECONDS,
+          bucketStart: seconds(NOW_SECONDS - DAY_SECONDS),
+          placed: 1000,
+          correct: 1,
+          repairs: 0,
+        },
+      ],
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 1, mismatched: 0, unpainted: 400, known: 401, total: 401 },
+      },
+    })
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('Estimated completion in ~1.1 y'),
+    )
+  })
+
   it('preserves a complete, unknown, complete transition in recent history', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW_SECONDS * 1000)
@@ -190,14 +269,14 @@ describe('retained history range', () => {
     flushSync()
     await vi.advanceTimersByTimeAsync(0)
     flushSync()
-    expect(document.body.textContent).toContain('over 3 d within the last year')
+    expect(document.body.textContent).toContain('3 d of data')
     expect(api.getHistory).toHaveBeenCalledTimes(11)
     api.getHistory.mockImplementation(() => new Promise(() => {}))
     await vi.advanceTimersByTimeAsync(15_000)
     flushSync()
     expect(api.getHistory).toHaveBeenCalledTimes(22)
-    expect(document.body.textContent).toContain('over 3 d within the last year')
-    expect(document.body.textContent).not.toContain('Estimate unavailable')
+    expect(document.body.textContent).toContain('3 d of data')
+    expect(document.body.textContent).not.toContain('Completion estimate unavailable')
   })
 
   it('changes and persists every ETA period using the loaded history', async () => {
@@ -230,33 +309,39 @@ describe('retained history range', () => {
     }
     mounted = mount(StatsPanel, { target: document.body, props })
     flushSync()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('done in ~40 d'))
-    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('Estimated completion in ~40 d'),
+    )
+    const select = document.querySelector<HTMLSelectElement>(
+      'select[aria-label="Completion estimate pace period"]',
+    )
     if (select === null) throw new Error('missing estimate period')
     expect(select.value).toBe('7d')
     select.value = '1d'
     select.dispatchEvent(new Event('change', { bubbles: true }))
     flushSync()
-    expect(document.body.textContent).toContain('done in ~6 d')
+    expect(document.body.textContent).toContain('Estimated completion in ~6 d')
     expect(storage.get('caelestis:estimate-period')).toBe('"1d"')
     await unmount(mounted)
     mounted = mount(StatsPanel, { target: document.body, props })
     flushSync()
     await vi.waitFor(() =>
       expect(
-        document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')?.value,
+        document.querySelector<HTMLSelectElement>(
+          'select[aria-label="Completion estimate pace period"]',
+        )?.value,
       ).toBe('1d'),
     )
-    const restored = document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')
+    const restored = document.querySelector<HTMLSelectElement>(
+      'select[aria-label="Completion estimate pace period"]',
+    )
     if (restored === null) throw new Error('missing estimate period')
     await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(22))
     restored.value = '1y'
     restored.dispatchEvent(new Event('change', { bubbles: true }))
     flushSync()
     expect(api.getHistory).toHaveBeenCalledTimes(22)
-    await vi.waitFor(() =>
-      expect(document.body.textContent).toContain('over 40 d within the last year'),
-    )
+    await vi.waitFor(() => expect(document.body.textContent).toContain('40 d of data'))
   })
   it('requests an all-history range through a finished scope boundary', async () => {
     const finishedAt = NOW_SECONDS - DAY_SECONDS
@@ -382,9 +467,7 @@ describe('retained history range', () => {
     })
     flushSync()
 
-    await vi.waitFor(() =>
-      expect(document.body.textContent).toContain('over 10.5 h within the last 7 days'),
-    )
+    await vi.waitFor(() => expect(document.body.textContent).toContain('10.5 h of data'))
   })
 })
 

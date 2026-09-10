@@ -219,7 +219,7 @@
         .filter((interval) => interval.to <= reportStart && interval.to <= to)
         .map((interval) => ({ from: interval.from, to: interval.to, pixels: interval.endCorrect - interval.startCorrect, dailyObservation: isDailyArchiveInterval(interval) }))
       const segments = rollingIntervalPace([...imported, ...reported], pace.seconds)
-      return { ...pace, usable: segments.length > 0, segments }
+      return { ...pace, usable: segments.length > 0, segments, importedUntil: imported.at(-1)?.to ?? -Infinity }
     }),
   )
 
@@ -331,14 +331,9 @@
     return [...times].sort((a, b) => a - b)
   })
 
-  /**
-   * Ordered ramp anchored at two colours that are legible by construction: the shortest window is
-   * the series blue itself, the longest is mostly foreground ink, and every step lies between
-   * them. Ramping toward a surface or toward "light" always sinks one end into the background in
-   * one theme or the other — that was the unreadable 30m line, twice.
-   */
+  /** Short windows are darker magenta; longer windows become lighter blue in both themes. */
   const paceColor = (rank: number): string =>
-    `color-mix(in oklab, var(--chart-placed) ${Math.round(100 - rank * 65)}%, var(--color-base-content))`
+    `color-mix(in oklch shorter hue, var(--pace-short) ${Math.round(100 - rank * 100)}%, var(--pace-long))`
   const paceWidth = (rank: number): number => 1.5 + rank * 1.25
 
   // ── Geometry ─────────────────────────────────────────────────────────────────────────────────
@@ -384,7 +379,6 @@
     }
     return segments
   })
-  const archiveSnapshotPaces = $derived(archiveIntervals(archiveSamples))
   // Join at the first saved native observation; current counts cannot reconstruct past progress.
   const archivePaces = $derived(archiveIntervals([
     ...archiveSamples,
@@ -457,10 +451,17 @@
       const series = clipSeries(fullSeries, shownView.from, shownView.to, lerpRate)
       const last = series[series.length - 1]
       if (last !== undefined && last.t < shownView.to && to - last.t < resolution && points.length > 0) series.push({ ...last, t: shownView.to })
+      const imported = series.filter(point => point.t <= pace.importedUntil)
+      const reported = series.filter(point => point.t >= pace.importedUntil)
+      const strokes = [
+        ...(imported.length > 0 ? [{ series: imported, imported: true }] : []),
+        ...(reported.some(point => point.t > pace.importedUntil) ? [{ series: reported, imported: false }] : []),
+      ]
       return {
         ...pace,
         id: `${pace.key}:${index}`,
         fullSeries,
+        strokes,
         rank:
           PACE_WINDOWS.findIndex((x) => x.key === pace.key) /
           Math.max(1, PACE_WINDOWS.length - 1),
@@ -1080,22 +1081,6 @@
   </div>
 
   {#if hasActivity}
-    {#if archiveSamples.length > 0}
-      <details class="text-xs text-base-content/65">
-        <summary class="cursor-pointer">Imported history · view snapshots</summary>
-        <div class="max-h-60 overflow-auto mt-2">
-          <table class="w-full text-start tabular-nums">
-            <caption class="text-start mb-2">Daily and longer pace uses imported net progress before reported placements. Gaps have no pace value.</caption>
-            <thead><tr><th scope="col" class="text-start">Snapshot</th><th scope="col">Correct pixels</th><th scope="col">Net px/h since previous snapshot</th></tr></thead>
-            <tbody>
-              {#each archiveSamples as sample (sample.at)}
-                <tr><th scope="row" class="text-start font-normal">{formatTime(sample.at)}</th><td class="text-center">{sample.correct === null ? 'No coverage' : sample.correct.toLocaleString()}</td><td class="text-center">{archiveSnapshotPaces.find((interval) => interval.to === sample.at)?.rate.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td></tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      </details>
-    {/if}
     <div class="relative">
       <!-- The image is focusable so keyboard users can walk the data points; the live region below
            reads each one out. -->
@@ -1188,18 +1173,22 @@
 
         <g class="chart-reveal">
           {#each activePaces as pace (pace.id)}
+            {#each pace.strokes as stroke (stroke.imported)}
             <path
               in:fade={{ duration: motion(250) }}
               out:fade={{ duration: motion(150) }}
               data-pace-window={pace.key}
               data-series-start={pace.fullSeries[0]?.t}
               data-series-first-value={pace.fullSeries[0]?.v}
-              d={linePath(pace.series)}
+              d={linePath(stroke.series)}
+              data-pace-source={stroke.imported ? 'imported' : 'reported'}
               fill="none"
               stroke={paceColor(pace.rank)}
               stroke-width={paceWidth(pace.rank)}
+              stroke-dasharray={stroke.imported ? '5 4' : undefined}
               stroke-linejoin="round"
             />
+            {/each}
             {#if pace.series.length === 1}
               <circle data-pace-singleton={pace.key} cx={x(pace.series[0].t)} cy={yRight(pace.series[0].v)} r="3" fill={paceColor(pace.rank)} />
             {/if}
