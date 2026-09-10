@@ -47,6 +47,75 @@ const paceToggle = (label: string): HTMLElement => {
   return found
 }
 
+describe('time-range overview', () => {
+  it.each([false, true])(
+    'includes backfill and keeps it selectable (native history: %s)',
+    (native) => {
+      const day = 86_400
+      mounted = mount(ProgressPaceChart, {
+        target: document.body,
+        props: {
+          buckets: native ? [bucket(3600, day)] : [],
+          resolution: 3600,
+          from: 0,
+          to: 2 * day,
+          anchorCorrect: 9999,
+          anchorMismatched: 0,
+          archiveSamples: [0, day].map((at, index) => ({
+            at,
+            snapshotId: index,
+            correct: 20 * (index + 1),
+            mismatched: 5 * (index + 1),
+            total: 100,
+          })),
+          progressSamples: native ? [{ at: 2 * day, correct: 80, mismatched: 20, total: 100 }] : [],
+        },
+      })
+      flushSync()
+      const outline = document.querySelector('[data-brush-outline]')?.getAttribute('d')
+      // The overview starts at the first imported count, using the same combined height as the plot.
+      expect(outline).toBe(
+        native
+          ? 'M48.0,28.0L320.0,20.0L592.0,4.0L592.0,36L48.0,36Z'
+          : 'M48.0,20.0L320.0,4.0L320.0,36L48.0,36Z',
+      )
+
+      const head = document.querySelector('[data-handle="head"]')
+      head?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 48 }))
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: 184 }))
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: 184 }))
+      flushSync()
+      expect(head?.getAttribute('aria-valuenow')).toBe(String(day / 2))
+      expect(document.querySelector('[data-brush-outline]')?.getAttribute('d')).toBe(outline)
+    },
+  )
+
+  it('leaves unknown imported coverage empty instead of joining across it', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [],
+        resolution: 3600,
+        from: 0,
+        to: 4 * 86_400,
+        anchorCorrect: 100,
+        anchorMismatched: 0,
+        archiveSamples: [25, 50, null, 75, 100].map((correct, index) => ({
+          at: index * 86_400,
+          snapshotId: index,
+          correct,
+          mismatched: correct === null ? null : 0,
+          total: 100,
+        })),
+      },
+    })
+    flushSync()
+    expect(document.querySelector('[data-brush-outline]')?.getAttribute('d')).toBe(
+      'M48.0,28.0L184.0,20.0L184.0,36L48.0,36ZM456.0,12.0L592.0,4.0L592.0,36L456.0,36Z',
+    )
+  })
+})
+
 describe('rolling pace retention', () => {
   it.each([false, true])('joins daily pace through saved native coverage only (gap: %s)', (gap) => {
     stored.set('caelestis:pace-windows', JSON.stringify(['1d', '1h']))

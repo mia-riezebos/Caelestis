@@ -794,19 +794,27 @@
   const brushTime = (clientX: number, left: number): number =>
     snapTime(from + ((clientX - left - pad.left) / plotWidth) * span, resolution, from, to)
 
-  /** The full range's cumulative outline, the brush's little mountain. */
+  /** The full range's observed progress, with placement totals only when observations are absent. */
   const brushOutline = $derived.by(() => {
-    if (points.length === 0) return ''
-    const max = Math.max(1, ...points.map((p) => p.cumPlaced))
+    const segments = chartSamples.length > 0
+      ? progressSegments.map((segment) =>
+          clipSeries(segment, from, to, lerpProgress).map((point) => ({
+            t: point.t, v: point.v + point.mismatched,
+          })),
+        )
+      : [points.map((point) => ({ t: point.t, v: point.cumPlaced }))]
+    const max = Math.max(1, ...segments.flatMap((segment) => segment.map((point) => point.v)))
     const y = (v: number) =>
       BRUSH_HEIGHT - brushPad.bottom - (v / max) * (BRUSH_HEIGHT - brushPad.top - brushPad.bottom)
-    const top = points
-      .map((p, i) => `${i === 0 ? 'M' : 'L'}${bx(p.t).toFixed(1)},${y(p.cumPlaced).toFixed(1)}`)
-      .join('')
-    const first = points[0]
-    const last = points[points.length - 1]
-    if (first === undefined || last === undefined) return ''
-    return `${top}L${bx(last.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}L${bx(first.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}Z`
+    return segments.map((segment) => {
+      const first = segment[0]
+      const last = segment.at(-1)
+      if (first === undefined || last === undefined) return ''
+      const top = segment
+        .map((point, index) => `${index === 0 ? 'M' : 'L'}${bx(point.t).toFixed(1)},${y(point.v).toFixed(1)}`)
+        .join('')
+      return `${top}L${bx(last.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}L${bx(first.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}Z`
+    }).join('')
   })
 
   type Edge = 'head' | 'tail'
@@ -1401,7 +1409,7 @@
           rx="4"
           class="fill-base-200"
         />
-        <path class="chart-reveal" d={brushOutline} fill="var(--chart-placed)" opacity="0.35" />
+        <path data-brush-outline class="chart-reveal" d={brushOutline} fill="var(--chart-placed)" opacity="0.35" />
         <rect
           data-brush-window
           x={bx(view.from)}
