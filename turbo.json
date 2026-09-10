@@ -4,7 +4,8 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".svelte-kit/cloudflare/**"]
+      "env": ["CAELESTIS_TARGET", "CAELESTIS_BUILD_ID", "VITE_CAELESTIS_SERVER"],
+      "outputs": ["dist/**", "build/**", ".svelte-kit/cloudflare/**"]
     },
     "dev": {
       "dependsOn": ["^build"],

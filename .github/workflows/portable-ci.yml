@@ -1,0 +1,120 @@
+name: Portable server CI
+
+on:
+  pull_request:
+    paths:
+      - apps/backend/**
+      - apps/frontend/**
+      - packages/**
+      - scripts/**
+      - deploy/**
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/portable-*.yml
+      - .github/scripts/*portable*.mjs
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - turbo.json
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+        env:
+          POSTGRES_PASSWORD: portable-test
+          POSTGRES_DB: caelestis
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      CAELESTIS_TEST_POSTGRES_URL: postgresql://postgres:portable-test@127.0.0.1:5432/caelestis
+      CAELESTIS_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      CAELESTIS_TEST_FRONTEND_HANDLER: ${{ github.workspace }}/apps/frontend/build/handler.js
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.20.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start disposable S3 service
+        run: |
+          docker run -d --name portable-s3 -p 127.0.0.1:9000:9000 -e MINIO_ROOT_USER=caelestis-test -e MINIO_ROOT_PASSWORD=caelestis-test-password minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
+          curl --retry 30 --retry-delay 1 --retry-connrefused --fail http://127.0.0.1:9000/minio/health/ready
+      - name: Build and check the Node backend and frontend
+        env:
+          CAELESTIS_TARGET: node
+          CAELESTIS_BUILD_ID: ${{ github.sha }}
+        run: |
+          pnpm --filter @caelestis/backend... --filter @caelestis/frontend... build
+          pnpm --filter @caelestis/backend... --filter @caelestis/frontend... check
+      - name: Test shared contracts and restart recovery against PostgreSQL and SQLite
+        run: |
+          pnpm --filter @caelestis/backend --filter @caelestis/frontend --filter @caelestis/storage exec vitest run --maxWorkers=1 --testTimeout=30000 --hookTimeout=30000
+          pnpm test:social
+          pnpm test:release
+      - name: Build the Cloudflare deployment
+        run: |
+          pnpm --filter @caelestis/frontend build
+          pnpm --filter @caelestis/backend exec wrangler deploy --dry-run --outdir /tmp/caelestis-worker
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.20.0
+      - name: Build production image
+        run: docker build --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" -t caelestis:test .
+      - name: Verify installed image with SQLite/filesystem and PostgreSQL/S3
+        run: node scripts/test-portable-image.mjs caelestis:test
+      - name: Scan production image
+        id: scan
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: caelestis:test
+          output-format: json
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          grype-version: v0.118.0
+      - name: Retain vulnerability report
+        if: always() && steps.scan.outputs.json != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: portable-image-scan
+          path: ${{ steps.scan.outputs.json }}
+
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.2.3
+      - name: Install schema validator
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tar.gz
+          echo '9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  /tmp/kubeconform.tar.gz' | sha256sum --check
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+      - name: Validate storage variants and migration job
+        run: |
+          helm lint deploy/helm/caelestis
+          helm template local deploy/helm/caelestis | kubeconform -strict -summary
+          helm template cnpg deploy/helm/caelestis -f deploy/helm/cnpg-s3.example.yaml | kubeconform -strict -summary
+          helm template migrate deploy/helm/caelestis --set replicaCount=0,migration.enabled=true | kubeconform -strict -summary
+          if helm template invalid deploy/helm/caelestis --set replicaCount=2; then exit 1; fi
+          if helm template invalid deploy/helm/caelestis --set persistence.enabled=false; then exit 1; fi
+          if helm template invalid deploy/helm/caelestis --set migration.enabled=true; then exit 1; fi

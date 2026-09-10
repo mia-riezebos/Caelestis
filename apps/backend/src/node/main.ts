@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, URL } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { nodeObjectStorage } from '@caelestis/storage/node'
 import { S3ObjectStorage } from '@caelestis/storage/s3'
@@ -37,7 +37,7 @@ try {
     },
     refreshSocial: () =>
       new Promise<void>((resolveJob, rejectJob) => {
-        const worker = new Worker(pathToFileURL(resolve('scripts/social-refresh-worker.mjs')), {
+        const worker = new Worker(new URL('./social-worker.js', import.meta.url), {
           workerData: {
             site: `http://127.0.0.1:${listeningPort}`,
             output: resolve(process.env.DATA_DIRECTORY ?? './data', 'social-cache'),

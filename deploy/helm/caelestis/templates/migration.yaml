@@ -1,0 +1,19 @@
+{{- if .Values.migration.enabled }}
+{{- if ne (int .Values.replicaCount) 0 }}
+{{- fail "Migration jobs require replicaCount=0; resume the application after the job succeeds" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "caelestis.name" . | trunc 40 | trimSuffix "-" }}-migrate-{{ .Release.Revision }}
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: {{ include "caelestis.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- include "caelestis.pod" . | nindent 6 }}
+{{- end }}

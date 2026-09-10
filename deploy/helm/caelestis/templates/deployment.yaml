@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "caelestis.name" . }}
+  labels: {{ include "caelestis.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{ include "caelestis.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "caelestis.labels" . | nindent 8 }}
+      annotations: {{ toYaml .Values.podAnnotations | nindent 8 }}
+    spec: {{ include "caelestis.pod" . | nindent 6 }}

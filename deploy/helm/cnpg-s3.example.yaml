@@ -1,0 +1,28 @@
+server:
+  existingSecret: caelestis-server
+  origin: https://caelestis.example.com
+database:
+  adapter: postgres
+  host: caelestis-db-rw.default.svc
+  existingSecret: caelestis-db-app
+  tls:
+    mode: verify-full
+    existingSecret: caelestis-db-ca
+storage:
+  adapter: s3
+  s3:
+    bucket: caelestis
+    endpoint: https://s3.example.com
+    region: us-east-1
+    forcePathStyle: true
+    existingSecret: caelestis-s3
+# PostgreSQL and S3 hold authoritative state. /data only caches rendered images and map tiles.
+persistence:
+  enabled: false
+ingress:
+  enabled: true
+  className: nginx
+  host: caelestis.example.com
+  tls:
+    - secretName: caelestis-tls
+      hosts: [caelestis.example.com]

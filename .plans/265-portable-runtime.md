@@ -22,7 +22,8 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - [x] Extract Durable Object domain behavior and implement persisted portable coordination, jobs, and ownership with restart tests.
 - [x] Assemble the Node HTTP/WebSocket runtime and portable SvelteKit frontend with end-to-end validation.
 - [x] Fence PostgreSQL migrations on the ownership connection and reject unsupported coordinator formats.
-- [~] Package Docker and Helm, add release/CI checks, and document configuration and upgrades.
+- [x] Preserve durable counter wakeups when reads overlap newly accepted events.
+- [x] Package Docker and Helm, add release/CI checks, and document configuration and upgrades.
 - [ ] Run final validation, add Changesets, rebase, and file the PR.
 
 ## Notes
@@ -43,3 +44,6 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - One Node listener now serves Hono, SvelteKit, and authenticated v1/v2 WebSockets. It starts durable backfill, verification, mirror, garbage-collection, and social-refresh jobs. Social rendering runs in a worker thread; independent actors run concurrently with bounded concurrency.
 - End-to-end HTTP/SSR/WebSocket restart tests pass with SQLite and PostgreSQL, including frontend credential secrecy and persisted server identity. Node frontend build, frontend/backend typechecks, 23 frontend server/proxy tests, and 10 social-rendering tests pass. Cloudflare Worker dry-run build also passes.
 - Final review moved PostgreSQL migrations onto the owned connection and added an explicit coordinator format guard. Twelve coordinator tests and 38 PostgreSQL/lifecycle/ownership/server tests pass. The broad suite passed 770 backend tests, 153 frontend tests, and 16 storage tests; one PostgreSQL setup hook exceeded 10 seconds under concurrent builds and passed on focused retry with a 30-second hook limit.
+- A new race test reproduced an older empty counter read deleting a concurrent event's wakeup. Alarm planning now serializes independently from counter ingestion; all 39 counter/portable coordinator tests pass.
+- Docker runs read-only as UID 1000 and passes real HTTP/SSR/WebSocket, social worker, object persistence, ownership, and restart checks with SQLite/filesystem and PostgreSQL/S3. Grype reports no fixable vulnerabilities after removing unused npm/Yarn and upgrading the affected Debian library. Helm default, CNPG/S3, and migration resources pass strict kubeconform validation. Actionlint and 39 release-tooling tests pass.
+- Release automation runs only after an approved app release. It publishes both CPU architectures, immutable app-version pairs, digest-pinned OCI charts, migration hashes, and checksums. No artifact publication or deployment was performed in this turn.

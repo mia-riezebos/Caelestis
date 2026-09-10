@@ -98,6 +98,18 @@ jobs:
     permissions:
       contents: read
 
+  portable:
+    name: Release approved portable server
+    needs: version
+    if: >-
+      needs.version.outputs.release == 'true' &&
+      needs.version.outputs.has_frontend_changesets == 'false' &&
+      needs.version.outputs.has_backend_changesets == 'false'
+    uses: ./.github/workflows/portable-release.yml
+    permissions:
+      contents: write
+      packages: write
+
   userscript:
     name: Release userscript
     needs: [version, deploy]
