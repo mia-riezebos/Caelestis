@@ -26,9 +26,11 @@ Changes that only affect tests, CI, or internal code do not need a changeset.
 
 After a Changeset reaches `main`, the App release workflow opens or updates one release pull
 request. That pull request consumes pending Changesets and updates each affected app's package and
-changelog independently.
+changelog independently. Ordinary merges to `main` do not deploy or publish. The release PR stays
+open until a maintainer chooses to merge it.
 
-Merging the release pull request publishes the affected app tags:
+Merging the release pull request runs the production checks and deploys its exact merge commit.
+Only after deployment succeeds does the workflow publish the affected app tags:
 
 - `userscript-vX.Y.Z` remains the repository's latest release and includes both installers plus
   their checksums.
