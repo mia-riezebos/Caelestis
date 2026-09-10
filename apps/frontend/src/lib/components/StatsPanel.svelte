@@ -363,22 +363,35 @@
   })
 
   const estimatePeriods = [
-    { key: '1d', seconds: DAY_SECONDS, label: 'day' },
-    { key: '3d', seconds: 3 * DAY_SECONDS, label: '3 days' },
-    { key: '7d', seconds: 7 * DAY_SECONDS, label: '7 days' },
-    { key: '30d', seconds: 30 * DAY_SECONDS, label: '30 days' },
-    { key: '1y', seconds: 365 * DAY_SECONDS, label: 'year' },
+    { key: '1d', seconds: DAY_SECONDS, label: 'last day' },
+    { key: '3d', seconds: 3 * DAY_SECONDS, label: 'last 3 days' },
+    { key: '7d', seconds: 7 * DAY_SECONDS, label: 'last 7 days' },
+    { key: '30d', seconds: 30 * DAY_SECONDS, label: 'last 30 days' },
+    { key: '1y', seconds: 365 * DAY_SECONDS, label: 'last year' },
+    { key: 'all', seconds: null, label: 'all' },
   ] as const
   const storedEstimatePeriod = persisted<string>('caelestis:estimate-period', '7d')
   const estimatePeriod = $derived(estimatePeriods.find((period) => period.key === storedEstimatePeriod.value) ?? estimatePeriods[2])
   // The 1d source already includes the entire retention ladder, including its permanent tier.
   const pace = $derived.by(() => {
     const history = paceHistories?.find((candidate) => candidate.window === '1d')?.history
+    if (estimatePeriod.key === 'all') {
+      if (archives === null || progressSamples === null || paceHistories === null) return null
+      const observations = [...archiveSamples, ...(progressSamples ?? [])]
+        .filter(sample => sample.correct !== null && sample.at < to)
+        .map(sample => sample.at)
+      const reports = (history?.buckets ?? []).filter(bucket => bucket.bucketStart < to).map(bucket => bucket.bucketStart)
+      const first = Math.min(...observations, ...reports)
+      // All-time pace treats the earliest record as the zero-pixel baseline, including idle time.
+      const start = Number.isFinite(first) ? first : Math.min(...templates.map(template => template.createdAt / 1_000))
+      const hours = (to - start) / 3_600
+      return hours > 0 ? { correct: progress.completed / hours, hours } : null
+    }
     return completionPace(history, archiveSamples, progressSamples ?? [], to, estimatePeriod.seconds)
   })
 
   const estimateCoverage = $derived(
-    pace !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
+    pace !== null && estimatePeriod.seconds !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
       ? `${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} of data`
       : null,
   )
@@ -413,7 +426,7 @@
           based on
           <select class="select select-xs w-auto" aria-label="Completion estimate pace period" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
             {#each estimatePeriods as period (period.key)}
-              <option value={period.key}>last {period.label}</option>
+              <option value={period.key}>{period.label}</option>
             {/each}
           </select>
         </label>
