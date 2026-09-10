@@ -390,6 +390,16 @@ describe('retained history range', () => {
 
 describe('live counts', () => {
   it('includes imported contributions after template creation but before the first report', async () => {
+    api.getProgressHistory.mockResolvedValue({
+      samples: [
+        {
+          at: NOW_SECONDS - 2 * DAY_SECONDS + 3600,
+          correct: 22,
+          mismatched: 0,
+          total: 100,
+        },
+      ],
+    })
     api.getArchiveHistory.mockResolvedValue({
       source: 'eralyon',
       basis: {

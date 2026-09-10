@@ -107,7 +107,7 @@
   let progressSamples = $state<readonly ProgressSample[]>([])
   const importedContributions = $derived(archiveContributionDays(
     archiveSamples,
-    Math.min(...progressSamples.map((sample) => sample.at), ...(history ?? []).map((bucket) => bucket.bucketStart)),
+    Math.min(...(history ?? []).map((bucket) => bucket.bucketStart)),
   ))
   let progressError = $state<string | null>(null)
   let progressScope: string | undefined
