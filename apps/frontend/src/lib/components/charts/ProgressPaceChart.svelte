@@ -219,7 +219,7 @@
         .filter((interval) => interval.to <= reportStart && interval.to <= to)
         .map((interval) => ({ from: interval.from, to: interval.to, pixels: interval.endCorrect - interval.startCorrect, dailyObservation: isDailyArchiveInterval(interval) }))
       const segments = rollingIntervalPace([...imported, ...reported], pace.seconds)
-      return { ...pace, usable: segments.length > 0, segments }
+      return { ...pace, usable: segments.length > 0, segments, importedUntil: imported.at(-1)?.to ?? -Infinity }
     }),
   )
 
@@ -456,10 +456,17 @@
       const series = clipSeries(fullSeries, shownView.from, shownView.to, lerpRate)
       const last = series[series.length - 1]
       if (last !== undefined && last.t < shownView.to && to - last.t < resolution && points.length > 0) series.push({ ...last, t: shownView.to })
+      const imported = series.filter(point => point.t <= pace.importedUntil)
+      const reported = series.filter(point => point.t >= pace.importedUntil)
+      const strokes = [
+        ...(imported.length > 0 ? [{ series: imported, imported: true }] : []),
+        ...(reported.some(point => point.t > pace.importedUntil) ? [{ series: reported, imported: false }] : []),
+      ]
       return {
         ...pace,
         id: `${pace.key}:${index}`,
         fullSeries,
+        strokes,
         rank:
           PACE_WINDOWS.findIndex((x) => x.key === pace.key) /
           Math.max(1, PACE_WINDOWS.length - 1),
@@ -1171,18 +1178,22 @@
 
         <g class="chart-reveal">
           {#each activePaces as pace (pace.id)}
+            {#each pace.strokes as stroke (stroke.imported)}
             <path
               in:fade={{ duration: motion(250) }}
               out:fade={{ duration: motion(150) }}
               data-pace-window={pace.key}
               data-series-start={pace.fullSeries[0]?.t}
               data-series-first-value={pace.fullSeries[0]?.v}
-              d={linePath(pace.series)}
+              d={linePath(stroke.series)}
+              data-pace-source={stroke.imported ? 'imported' : 'reported'}
               fill="none"
               stroke={paceColor(pace.rank)}
               stroke-width={paceWidth(pace.rank)}
+              stroke-dasharray={stroke.imported ? '5 4' : undefined}
               stroke-linejoin="round"
             />
+            {/each}
             {#if pace.series.length === 1}
               <circle data-pace-singleton={pace.key} cx={x(pace.series[0].t)} cy={yRight(pace.series[0].v)} r="3" fill={paceColor(pace.rank)} />
             {/if}

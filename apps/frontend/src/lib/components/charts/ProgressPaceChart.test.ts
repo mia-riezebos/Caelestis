@@ -79,7 +79,17 @@ describe('rolling pace retention', () => {
     flushSync()
     const daily = document.querySelector('path[data-pace-window="1d"]')
     expect(daily?.getAttribute('data-series-first-value')).toBe('1')
-    expect((daily?.getAttribute('d')?.match(/L/g) ?? []).length).toBe(gap ? 0 : 2)
+    expect(daily?.getAttribute('stroke-dasharray')).toBe('5 4')
+    expect((daily?.getAttribute('d')?.match(/L/g) ?? []).length).toBe(gap ? 0 : 1)
+    const reported = document.querySelector(
+      'path[data-pace-window="1d"][data-pace-source="reported"]',
+    )
+    if (gap) expect(reported).toBeNull()
+    else {
+      expect(reported?.getAttribute('stroke-dasharray')).toBeNull()
+      const join = daily?.getAttribute('d')?.split('L').at(-1)
+      expect(reported?.getAttribute('d')).toMatch(new RegExp(`^M${join}L`))
+    }
     expect(document.querySelector('path[data-pace-window="1h"]')).toBeNull()
     const chart = document.querySelector('svg[role="img"]')
     chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
