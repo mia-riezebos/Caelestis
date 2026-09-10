@@ -5,11 +5,15 @@ import {
   type WorkItem,
 } from '@caelestis/shared'
 import type { SqlConnection } from '../adapters/sql-connection.js'
+import { sqlDialect } from '../adapters/sql-dialect.js'
 import type { WorkStore } from './store.js'
 
 /** SQL batches make the compare-and-swap and its activity entry one transaction. */
 export class RelationalWorkStore implements WorkStore {
-  constructor(private readonly database: SqlConnection) {}
+  private readonly syntax: ReturnType<typeof sqlDialect>
+  constructor(private readonly database: SqlConnection) {
+    this.syntax = sqlDialect(database.dialect)
+  }
 
   async read(id: string): Promise<WorkItem | null> {
     const row = await this.database
@@ -22,7 +26,7 @@ export class RelationalWorkStore implements WorkStore {
   async list(season: number, surface: TemplateSurface, after = ''): Promise<readonly WorkItem[]> {
     const rows = await this.database
       .prepare(
-        'SELECT data FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id IS ? AND id > ? ORDER BY id LIMIT ?',
+        `SELECT data FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id ${this.syntax.nullEqual} ? AND id > ? ORDER BY id LIMIT ?`,
       )
       .bind(season, surface.kind, surface.allianceId, after, MAX_WORK_ITEMS)
       .all<{ data: string }>()
@@ -32,7 +36,7 @@ export class RelationalWorkStore implements WorkStore {
   async revision(season: number, surface: TemplateSurface): Promise<number> {
     const row = await this.database
       .prepare(
-        'SELECT COALESCE(SUM(revision), 0) AS revision FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id IS ?',
+        `SELECT COALESCE(SUM(revision), 0) AS revision FROM work_items WHERE season = ? AND surface_kind = ? AND alliance_id ${this.syntax.nullEqual} ?`,
       )
       .bind(season, surface.kind, surface.allianceId)
       .first<{ revision: number }>()
