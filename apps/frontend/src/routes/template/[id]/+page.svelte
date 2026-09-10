@@ -124,16 +124,6 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     }
   })
 
-  const missingTiles = $derived.by(() => {
-    if (scrubTime == null || frames === null) return 0
-    let missing = 0
-    for (const history of frames.values()) {
-      const latest = history.findLast((frame) => frame.bucketStart <= scrubTime)
-      if (latest === undefined || latest.missing) missing++
-    }
-    return missing
-  })
-
   /** Playback rate: 1× preserves the original 350 ms cadence; the popout scales that. */
   const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4] as const
   const storedSpeed = persisted<number>('caelestis:timelapse-speed', 1)
@@ -219,14 +209,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     {/if}
 
     <section class="overflow-hidden rounded-2xl border-[1.5px] border-base-300 bg-base-100">
-      <div class="relative">
-        <TemplateViewer {template} {hashFor} {overlayAlpha} class="h-[28rem] w-full" />
-        <div class="pointer-events-none absolute inset-x-3 bottom-3" role="status">
-          {#if missingTiles > 0}
-            <p class="w-fit rounded-lg border border-base-300 bg-base-100/95 px-3 py-2 text-sm text-base-content/70">No coverage for {missingTiles} {missingTiles === 1 ? 'tile' : 'tiles'} at this time. Showing earlier images where available.</p>
-          {/if}
-        </div>
-      </div>
+      <TemplateViewer {template} {hashFor} {overlayAlpha} class="h-[28rem] w-full" />
 
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t-[1.5px] border-base-300 px-4 py-3">
         <span class="shrink-0 text-sm text-base-content/70">Template overlay</span>
