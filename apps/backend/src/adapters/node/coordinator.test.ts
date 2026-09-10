@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { millis, seconds } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DurableScheduler } from '../../coordination/scheduler.js'
@@ -220,5 +221,46 @@ describe.each(adapters)('$name durable coordination', ({ make }) => {
         toSeconds: seconds(300),
       }),
     ).toEqual([expect.objectContaining({ placed: 3, correct: 2, repairs: 1 })])
+  })
+
+  it('does not let an older empty read erase a concurrently accepted counter wakeup', async () => {
+    const counter = new TelemetryCoordinator(storage.database, storage, new MemorySqlStore(), () =>
+      millis(120000),
+    )
+    await counter.initialize()
+    let signalEntered: () => void = () => {}
+    let resume: () => void = () => {}
+    const entered = new Promise<void>((resolve) => {
+      signalEntered = resolve
+    })
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const remove = storage.deleteAlarm.bind(storage)
+    vi.spyOn(storage, 'deleteAlarm').mockImplementationOnce(async () => {
+      signalEntered()
+      await paused
+      await remove()
+    })
+    const read = counter.readPending([])
+    await entered
+    const record = counter.record(
+      [{ templateId: 'template', occurredAt: seconds(120), placed: 1, correct: 1, repairs: 0 }],
+      'concurrent-event',
+    )
+    try {
+      await vi.waitFor(async () => {
+        const row = await storage.database.one<{ count: number }>(
+          'SELECT COUNT(*) AS count FROM pending_counters',
+        )
+        expect(row.count).toBe(1)
+      })
+      // Give the accepted record's planner a turn while the older deletion stays paused.
+      await delay(50)
+    } finally {
+      resume()
+      await Promise.all([read, record])
+    }
+    expect(await storage.getAlarm()).not.toBeNull()
   })
 })

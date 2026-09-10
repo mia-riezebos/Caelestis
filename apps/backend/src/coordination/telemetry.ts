@@ -66,6 +66,7 @@ const eventBucketStart = (occurredAt: Seconds): Seconds =>
 
 /** Shared durable counter validation, retry, retention, and cumulative bucket flushing. */
 export class TelemetryCoordinator {
+  private alarmUpdates: Promise<void> = Promise.resolve()
   constructor(
     private readonly database: CoordinatorDatabase,
     private readonly alarms: AlarmStorage,
@@ -348,7 +349,7 @@ export class TelemetryCoordinator {
           `telemetry flush failed (attempt ${failureCount}), retrying in ${retryDelay}ms`,
           error,
         )
-        await this.alarms.setAlarm(millis(this.clock() + retryDelay))
+        await this.updateAlarm(() => this.alarms.setAlarm(millis(this.clock() + retryDelay)))
         return
       }
 
@@ -565,7 +566,21 @@ export class TelemetryCoordinator {
     )
   }
 
-  private async scheduleNextAlarm(nowMilliseconds: Millis): Promise<void> {
+  /** Keep a stale empty read from deleting a newer record's wakeup or replacing its backoff. */
+  private updateAlarm(operation: () => Promise<void>): Promise<void> {
+    const running = this.alarmUpdates.then(operation, operation)
+    this.alarmUpdates = running.then(
+      () => undefined,
+      () => undefined,
+    )
+    return running
+  }
+
+  private scheduleNextAlarm(nowMilliseconds: Millis): Promise<void> {
+    return this.updateAlarm(() => this.reconcileAlarm(nowMilliseconds))
+  }
+
+  private async reconcileAlarm(nowMilliseconds: Millis): Promise<void> {
     const flushBatchCount = (
       await this.database.one<CountRow>('SELECT COUNT(*) AS count FROM flush_batch')
     ).count
