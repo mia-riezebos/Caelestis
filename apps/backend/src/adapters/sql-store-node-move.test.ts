@@ -2,9 +2,7 @@ import { millis, type TemplateSurface, WORLD_TEMPLATE_SURFACE } from '@caelestis
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { NodeRecord, SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { InvalidNodeParentError, NodePathConflictError } from '../ports/index.js'
-import { D1SqlStore } from './cloudflare/d1-sql-store.js'
-import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
-import { MemorySqlStore } from './memory/memory-sql-store.js'
+import { type SqlStoreHarness, sqlStoreAdapters } from './sql-store.test-helper.js'
 
 const node = (
   id: string,
@@ -38,31 +36,14 @@ const version = (nodeId: string): TemplateVersionRecord => ({
   chunks: [{ tileX: 0, tileY: 0, hash: 'a'.repeat(64) }],
 })
 
-type Harness = { store: SqlStore; close(): void }
+type Harness = SqlStoreHarness
 
-const adapters: readonly { name: string; make(): Harness }[] = [
-  {
-    name: 'memory',
-    make: () => ({ store: new MemorySqlStore(), close: () => undefined }),
-  },
-  {
-    name: 'D1',
-    make: () => {
-      const database = new SqliteD1Database()
-      return {
-        store: new D1SqlStore(database as unknown as D1Database),
-        close: () => database.close(),
-      }
-    },
-  },
-]
-
-describe.each(adapters)('$name node move contract', ({ make }) => {
+describe.each(sqlStoreAdapters)('$name node move contract', ({ make }) => {
   let harness: Harness
   let store: SqlStore
 
-  beforeEach(() => {
-    harness = make()
+  beforeEach(async () => {
+    harness = await make()
     store = harness.store
   })
 

@@ -1,9 +1,7 @@
 import { millis, seconds, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SqlStore, TemplateVersionRecord } from '../ports/index.js'
-import { D1SqlStore } from './cloudflare/d1-sql-store.js'
-import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
-import { MemorySqlStore } from './memory/memory-sql-store.js'
+import { type SqlStoreHarness, sqlStoreAdapters } from './sql-store.test-helper.js'
 
 const TOKEN = 'a'.repeat(64)
 const TEMPLATE_ID = '01890f3a-6b7c-7def-8123-456789abcde1'
@@ -37,31 +35,14 @@ const snapshot = (correct: number, observedAt = NOW, versionId = VERSION_ID) => 
   observedAt,
 })
 
-type Harness = { store: SqlStore; close(): void }
+type Harness = SqlStoreHarness
 
-const adapters: readonly { name: string; make(): Harness }[] = [
-  {
-    name: 'memory',
-    make: () => ({ store: new MemorySqlStore(), close: () => undefined }),
-  },
-  {
-    name: 'D1',
-    make: () => {
-      const database = new SqliteD1Database()
-      return {
-        store: new D1SqlStore(database as unknown as D1Database),
-        close: () => database.close(),
-      }
-    },
-  },
-]
-
-describe.each(adapters)('$name alarm-store contract', ({ make }) => {
+describe.each(sqlStoreAdapters)('$name alarm-store contract', ({ make }) => {
   let harness: Harness
   let store: SqlStore
 
   beforeEach(async () => {
-    harness = make()
+    harness = await make()
     store = harness.store
     await store.insertTemplateVersion(version())
     await store.setTemplatePublishedAt(TEMPLATE_ID, NOW, NOW)

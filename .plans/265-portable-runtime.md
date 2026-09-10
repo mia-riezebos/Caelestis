@@ -16,7 +16,8 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 
 ## TODOs
 
-- [ ] Add portable relational execution and SQLite/PostgreSQL adapters with migrations and shared conformance coverage.
+- [x] Extract portable relational execution and add SQLite with migrations and shared conformance coverage.
+- [~] Add PostgreSQL/CNPG with explicit SQL dialect behavior, migrations, and real PostgreSQL conformance coverage.
 - [ ] Add filesystem/S3 object adapters and portable social-image storage contracts with conformance coverage.
 - [ ] Extract Durable Object domain behavior and implement persisted portable coordination, jobs, and ownership with restart tests.
 - [ ] Assemble the Node HTTP/WebSocket runtime and portable SvelteKit frontend with end-to-end validation.
@@ -30,3 +31,5 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - Cluster-specific S3 provider is unknown. Use configurable S3 endpoint, region, bucket, credentials, and path-style addressing.
 - No production or daily-driver runtime changes are authorized. Tests use isolated local data and ports.
 - Publication is delivered as release automation; publishing a release or merging is outside this implementation turn.
+- SQLite extraction validated with backend typecheck and 276 storage/work tests across memory, D1, and SQLite. Reopen, rollback, and migration checksum tests pass.
+- Docker Desktop was stopped. Started it for disposable PostgreSQL/S3/image validation; production services remain untouched.
