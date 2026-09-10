@@ -1,5 +1,21 @@
 # @caelestis/frontend
 
+## 0.5.3
+
+### Patch Changes
+
+- ed22122: Connect imported history to daily and longer rolling pace lines and add 3d, 7d, and 30d windows.
+- b4bddb1: Distinguish pace windows with a darker magenta to lighter blue gradient.
+- ed22122: Include imported daily progress in the contribution graph without double-counting reported days.
+- 81d5b25: Use a seven-day completion estimate by default with selectable periods from one day to one year.
+- ee71e6a: Remove the imported snapshot details table from progress charts.
+- 3f12d8e: Remove the missing-coverage notice from the timelapse viewer.
+- 9b2b119: Restore dashed imported pace segments with solid live segments on the same connected line.
+- 1551274: Reveal backfilled and native history together in the graph's startup wipe.
+- d0f1630: Show estimated time until completion clearly, including estimates longer than a year.
+- bd24496: Add bulk painter visibility controls and simplify the legend to placement pace.
+- 66bfe37: Keep timelapse controls stationary when tile coverage is missing.
+
 ## 0.5.2
 
 ### Patch Changes
