@@ -857,6 +857,30 @@ export const tileBlobGcState = sqliteTable(
   ],
 )
 
+/** Reconstructible counts keyed to the exact artwork version and saved canvas image. */
+export const templateTileMeasurements = sqliteTable(
+  'template_tile_measurements',
+  {
+    versionId: text('version_id')
+      .notNull()
+      .references(() => templateVersions.id, { onDelete: 'cascade' }),
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    hash: text('sha256').notNull(),
+    correct: integer('correct').notNull(),
+    wrong: integer('wrong').notNull(),
+    blank: integer('blank').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.versionId, table.tileX, table.tileY, table.hash] }),
+    index('template_tile_measurements_hash_idx').on(table.hash),
+    check(
+      'template_tile_measurements_counts_check',
+      sql`${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
+    ),
+  ],
+)
+
 /** Latest classified progress for one current template chunk. */
 export const templateTileStatuses = sqliteTable(
   'template_tile_statuses',

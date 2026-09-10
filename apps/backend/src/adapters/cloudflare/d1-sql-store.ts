@@ -8,6 +8,7 @@ import {
   seconds,
   type TemplateSurface,
   type TemplateTag,
+  type TileCoord,
   type TileHistoryFrame,
   tagNameKey,
   templateSurface,
@@ -46,6 +47,7 @@ import {
   templateAlarmStates,
   templateAlarmTileStatuses,
   templates,
+  templateTileMeasurements,
   templateTileStatuses,
   templateVersions,
   tileBlobGcState,
@@ -83,6 +85,7 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type MeasuredTileFrame,
   type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,
@@ -119,6 +122,7 @@ import {
   type TileBlobScanState,
   type TileHistoryQuery,
   type TileHistoryReporterRow,
+  type TileMeasurement,
   type TileObservation,
   type TileObservationCommit,
   tooManyTemplateIds,
@@ -1422,6 +1426,108 @@ export class D1SqlStore implements SqlStore {
         }
   }
 
+  async readTileMeasurements(versionId: string, tile: TileCoord, hashes: readonly string[]) {
+    const rows: { hash: string; correct: number; wrong: number; blank: number }[] = []
+    for (const group of chunkRows([...new Set(hashes)], 90)) {
+      rows.push(
+        ...(await this.database
+          .select({
+            hash: templateTileMeasurements.hash,
+            correct: templateTileMeasurements.correct,
+            wrong: templateTileMeasurements.wrong,
+            blank: templateTileMeasurements.blank,
+          })
+          .from(templateTileMeasurements)
+          .where(
+            and(
+              eq(templateTileMeasurements.versionId, versionId),
+              eq(templateTileMeasurements.tileX, tile.x),
+              eq(templateTileMeasurements.tileY, tile.y),
+              inArray(templateTileMeasurements.hash, group),
+            ),
+          )),
+      )
+    }
+    return rows
+  }
+
+  async readFirstTemplateObservation(versionId: string): Promise<Seconds | null> {
+    const row = await this.client
+      .prepare(`
+      SELECT MIN(history.bucket_start_s) AS at
+      FROM version_tiles AS chunk
+      INNER JOIN template_versions AS version ON version.id = chunk.version_id
+      INNER JOIN templates AS template ON template.id = version.template_id
+      INNER JOIN tile_history AS history ON history.season = template.season
+        AND history.tile_x = chunk.tile_x AND history.tile_y = chunk.tile_y
+      WHERE chunk.version_id = ?
+    `)
+      .bind(versionId)
+      .first<{ at: number | null }>()
+    return row?.at == null ? null : seconds(row.at)
+  }
+
+  async readTemplateProgressFrames(
+    versionId: string,
+    from: Seconds,
+    to: Seconds,
+    resolution: number,
+  ): Promise<readonly MeasuredTileFrame[]> {
+    const result = await this.client
+      .prepare(`
+      WITH votes AS (
+        SELECT history.tile_x, history.tile_y, history.resolution_s, history.bucket_start_s,
+          history.sha256, COUNT(DISTINCT history.reported_by_user_id) AS reporters
+        FROM version_tiles AS chunk
+        INNER JOIN template_versions AS version ON version.id = chunk.version_id
+        INNER JOIN templates AS template ON template.id = version.template_id
+        INNER JOIN tile_history AS history ON history.season = template.season
+          AND history.tile_x = chunk.tile_x AND history.tile_y = chunk.tile_y
+        WHERE chunk.version_id = ?1 AND history.resolution_s <= ?4
+          AND history.bucket_start_s >= ?2 AND history.bucket_start_s < ?3
+        GROUP BY history.tile_x, history.tile_y, history.resolution_s, history.bucket_start_s, history.sha256
+      ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY tile_x, tile_y, resolution_s, bucket_start_s
+          ORDER BY reporters DESC, sha256 ASC
+        ) AS vote_rank FROM votes
+      ), frames AS (
+        SELECT *, CASE WHEN ?4 = 0 THEN bucket_start_s
+          ELSE CAST(bucket_start_s / ?4 AS INTEGER) * ?4 END AS target_start
+        FROM ranked WHERE vote_rank = 1
+      ), selected AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY tile_x, tile_y, target_start
+          ORDER BY bucket_start_s DESC, resolution_s ASC
+        ) AS frame_rank FROM frames WHERE target_start >= ?2
+      )
+      SELECT frame.tile_x AS tileX, frame.tile_y AS tileY, frame.target_start AS bucketStart,
+        frame.sha256 AS hash, measurement.correct, measurement.wrong
+      FROM selected AS frame LEFT JOIN template_tile_measurements AS measurement
+        ON measurement.version_id = ?1 AND measurement.tile_x = frame.tile_x
+        AND measurement.tile_y = frame.tile_y AND measurement.sha256 = frame.sha256
+      WHERE frame.frame_rank = 1 ORDER BY frame.target_start, frame.tile_x, frame.tile_y
+    `)
+      .bind(versionId, from, to, resolution)
+      .all<MeasuredTileFrame>()
+    return result.results
+  }
+
+  async writeTileMeasurements(
+    versionId: string,
+    tile: TileCoord,
+    measurements: readonly TileMeasurement[],
+  ): Promise<void> {
+    for (const group of chunkRows(measurements, 10)) {
+      await this.database
+        .insert(templateTileMeasurements)
+        .values(
+          group.map((measurement) => ({ versionId, tileX: tile.x, tileY: tile.y, ...measurement })),
+        )
+        .onConflictDoNothing()
+    }
+  }
+
   async recordTileObservation(
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
@@ -1470,6 +1576,15 @@ export class D1SqlStore implements SqlStore {
     if (recordHistory) await this.database.batch([history, current])
     else await current
     await this.writeTileStatuses(statuses, forceCurrent)
+    for (const status of statuses)
+      await this.writeTileMeasurements(status.versionId, status.tile, [
+        {
+          hash: observation.hash,
+          correct: status.correct,
+          wrong: status.wrong,
+          blank: status.blank,
+        },
+      ])
   }
 
   private async writeTileStatuses(
@@ -1893,6 +2008,22 @@ export class D1SqlStore implements SqlStore {
     if (statuses.length > 0) {
       statements.push(
         this.client
+          .prepare(`WITH incoming AS (${incomingStatuses})
+          INSERT INTO template_tile_measurements (version_id, tile_x, tile_y, sha256, correct, wrong, blank)
+          SELECT incoming.version_id, incoming.tile_x, incoming.tile_y, ?, incoming.correct, incoming.wrong, incoming.blank
+          FROM incoming INNER JOIN templates AS template ON template.id = incoming.template_id AND template.current_version_id = incoming.version_id
+          WHERE (? = 1 OR template.published_at IS NOT NULL) AND EXISTS (
+            SELECT 1 FROM tile_blob_reservations AS reservation INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
+            WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
+          ) ON CONFLICT DO NOTHING`)
+          .bind(
+            statusesJson,
+            observation.hash,
+            includeUnpublished ? 1 : 0,
+            reservationId,
+            observation.hash,
+          ),
+        this.client
           .prepare(
             `WITH incoming AS (${incomingStatuses})
              INSERT INTO template_tile_statuses (
@@ -2228,14 +2359,22 @@ export class D1SqlStore implements SqlStore {
   }
 
   async finishTileBlobDeletion(blobKey: string, reclaimedAt: Millis): Promise<void> {
-    await this.client
-      .prepare(
-        `UPDATE tile_blob_objects
+    await this.client.batch([
+      this.client
+        .prepare(
+          `UPDATE tile_blob_objects
          SET state = 'deleted', reclaimed_at_ms = ?
          WHERE blob_key = ? AND state = 'deleting'`,
-      )
-      .bind(reclaimedAt, blobKey)
-      .run()
+        )
+        .bind(reclaimedAt, blobKey),
+      this.client
+        .prepare(`DELETE FROM template_tile_measurements
+        WHERE sha256 = (SELECT sha256 FROM tile_blob_objects WHERE blob_key = ? AND state = 'deleted')
+          AND NOT EXISTS (SELECT 1 FROM tile_history WHERE tile_history.sha256 = template_tile_measurements.sha256)
+          AND NOT EXISTS (SELECT 1 FROM canvas_tiles WHERE canvas_tiles.sha256 = template_tile_measurements.sha256)
+      `)
+        .bind(blobKey),
+    ])
   }
 
   async readTileBlobScanState(): Promise<TileBlobScanState> {

@@ -4,6 +4,7 @@
     ContributionDay,
     ArchiveHistory,
     HistoryBucket,
+    ProgressSample,
     LeaderboardEntry,
     PainterTotal,
     Template,
@@ -12,12 +13,14 @@
     getArchiveHistory,
     getContributions,
     getHistory,
+    getProgressHistory,
     getLeaderboard,
     getPainterHistory,
     getPainterTotals,
   } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import { archiveContributionDays, combineArchiveSamples } from '$lib/archive-history'
+  import { combineProgressSamples } from '$lib/progress-history'
   import {
     defaultVisiblePainters,
     MAX_PAINTER_OPTIONS,
@@ -48,7 +51,7 @@
     templates: readonly Template[]
     season: number
     liveDashboard: boolean
-    /** The scope's live status — the progress chart's anchor and the ETA's numerator. */
+    /** Current canvas status for the chart's current point and the ETA's numerator. */
     progress: Progress
     subscribeDashboard: (
       templateIds: readonly string[],
@@ -101,10 +104,61 @@
   })
 
   let history = $state<HistoryBucket[] | null>(null)
+  let progressSamples = $state<readonly ProgressSample[]>([])
   const importedContributions = $derived(archiveContributionDays(
     archiveSamples,
-    Math.min(...(history ?? []).map((bucket) => bucket.bucketStart)),
+    Math.min(...progressSamples.map((sample) => sample.at), ...(history ?? []).map((bucket) => bucket.bucketStart)),
   ))
+  let progressError = $state<string | null>(null)
+  let progressScope: string | undefined
+  // Current counts stream separately; saved history needs only a slow refresh.
+  const PROGRESS_REFRESH_SECONDS = 5 * 60
+  const progressTo = $derived(
+    hasLiveTemplate ? Math.floor(to / PROGRESS_REFRESH_SECONDS) * PROGRESS_REFRESH_SECONDS + 1 : to,
+  )
+  $effect(() => {
+    const scope = templates.map((template) => ({ id: template.id, version: template.version }))
+    const start = from
+    const end = progressTo
+    const key = JSON.stringify([scope, start])
+    if (progressScope !== key) {
+      progressScope = key
+      progressSamples = []
+      progressError = null
+    }
+    let cancelled = false
+    void (async () => {
+      const histories: (readonly ProgressSample[])[] = []
+      for (const template of scope) {
+        if (cancelled) return
+        const history = await getProgressHistory(template.id, template.version, start, end)
+        // A lifetime read can be daily; retain hourly measurements for recent zoom windows.
+        const recentStart = Math.floor((end - 6 * DAY_SECONDS) / 3600) * 3600
+        const samples = new Map(history.samples.map(sample => [sample.at, sample]))
+        if (start < recentStart) {
+          const recent = await getProgressHistory(template.id, template.version, recentStart, end)
+          let covered = false
+          for (const sample of recent.samples) {
+            if (sample.correct !== null) covered = true
+            // Only the leading unknowns lack the state carried by the lifetime read.
+            if (covered) samples.set(sample.at, sample)
+          }
+        }
+        histories.push([...samples.values()].sort((a,b) => a.at - b.at))
+      }
+      if (!cancelled) {
+        progressSamples = combineProgressSamples(histories)
+        progressError = null
+      }
+    })().catch(() => {
+      if (!cancelled) {
+        progressError = 'Saved progress history could not load.'
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  })
   let paceHistories = $state<readonly PaceHistorySource[]>([])
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
@@ -371,6 +425,7 @@
     {:else}
       <ProgressPaceChart
         {archiveSamples}
+        {progressSamples}
         buckets={history}
         {paceHistories}
         resolution={history[0]?.resolution ?? RESOLUTION}
@@ -379,6 +434,7 @@
         anchorCorrect={progress.completed}
         anchorMismatched={progress.mismatched}
         live={templates.some((template) => template.finishedAt === null)}
+        finished={!hasLiveTemplate}
         {painters}
         {selectedPainters}
         onTogglePainter={togglePainter}
@@ -388,6 +444,7 @@
       />
     {/if}
     {#if archiveError}<p class="mt-2 text-sm text-error" role="alert">{archiveError}</p>{/if}
+    {#if progressError}<p class="mt-2 text-sm text-error" role="alert">{progressError}</p>{/if}
   </section>
 
   <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">

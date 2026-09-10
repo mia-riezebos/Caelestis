@@ -787,6 +787,23 @@ export interface TemplateTileStatusRecord {
   readonly observedAt: Millis
 }
 
+/** Counts for immutable artwork and canvas bytes, independent of current status. */
+export interface TileMeasurement {
+  readonly hash: string
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+}
+
+export interface MeasuredTileFrame {
+  readonly tileX: number
+  readonly tileY: number
+  readonly bucketStart: Seconds
+  readonly hash: string
+  readonly correct: number | null
+  readonly wrong: number | null
+}
+
 export interface TemplateTileStatusChange {
   readonly published: boolean
   readonly totalPixels: number
@@ -1333,6 +1350,31 @@ export interface SqlStore extends TagStore {
    * smaller hash — and returned in bucket order.
    */
   readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]>
+
+  /** Earliest native observation bucket across this version's tiles and all retained tiers. */
+  readFirstTemplateObservation(versionId: string): Promise<Seconds | null>
+
+  /** Read classifications of these exact historical hashes against one artwork version. */
+  readTileMeasurements(
+    versionId: string,
+    tile: TileCoord,
+    hashes: readonly string[],
+  ): Promise<readonly TileMeasurement[]>
+
+  /** Read a whole version's winning frames and measurements in one bounded database query. */
+  readTemplateProgressFrames(
+    versionId: string,
+    from: Seconds,
+    to: Seconds,
+    resolution: number,
+  ): Promise<readonly MeasuredTileFrame[]>
+
+  /** Insert missing measurements, preserving existing counts and all live/placement records. */
+  writeTileMeasurements(
+    versionId: string,
+    tile: TileCoord,
+    measurements: readonly TileMeasurement[],
+  ): Promise<void>
 }
 
 /** Exact drawing surface selected by one manifest request. */

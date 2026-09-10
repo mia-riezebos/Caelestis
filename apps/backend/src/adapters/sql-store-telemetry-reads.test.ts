@@ -1,4 +1,5 @@
 import { millis, seconds } from '@caelestis/shared'
+import { Effect } from 'effect'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type {
   ContributionDelta,
@@ -12,6 +13,9 @@ import {
   painterBucketResolution,
   TELEMETRY_DECAY_EDGES,
 } from '../ports/index.js'
+import { SqlStoreService } from '../runtime/backend-runtime.js'
+import { readProgressHistory } from '../telemetry/progress-history.js'
+import { readTileHistory } from '../telemetry/queries.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
 import { MemorySqlStore } from './memory/memory-sql-store.js'
@@ -77,6 +81,50 @@ const adapters: readonly { name: string; make(): Harness }[] = [
   },
 ]
 
+it('reads progress for an accepted 400-chunk template in one D1 query', async () => {
+  const database = new SqliteD1Database()
+  const store = new D1SqlStore(database as unknown as D1Database)
+  try {
+    const large = {
+      ...version('large'),
+      totalPixels: 400,
+      bbox: { minX: 0, minY: 0, maxX: 20000, maxY: 20000 },
+      chunks: Array.from({ length: 400 }, (_, i) => ({
+        tileX: i % 20,
+        tileY: Math.floor(i / 20),
+        hash: 'c'.repeat(64),
+      })),
+    }
+    await store.insertTemplateVersion(large)
+    const tile = { x: 19, y: 19 }
+    const saved = observation({ tile })
+    await store.recordTileObservation(saved, [
+      {
+        templateId: large.templateId,
+        versionId: large.versionId,
+        tile,
+        correct: 1,
+        wrong: 0,
+        blank: 0,
+        observedAt: saved.observedAt,
+      },
+    ])
+    const before = database.prepareCalls
+    const response = await Effect.runPromise(
+      readProgressHistory(large, {
+        fromSeconds: seconds(0),
+        toSeconds: seconds(DAY + 86401),
+      }).pipe(Effect.provideService(SqlStoreService, store)),
+    )
+    expect(response.samples).toEqual([
+      { at: DAY + 86400, correct: null, mismatched: null, total: 400 },
+    ])
+    expect(database.prepareCalls - before).toBe(1)
+  } finally {
+    database.close()
+  }
+})
+
 describe.each(adapters)('$name telemetry read contract', ({ make }) => {
   let harness: Harness
   let store: SqlStore
@@ -87,6 +135,184 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
   })
 
   afterEach(() => harness.close())
+
+  it('finds the first native bucket across retained tiers without including other seasons or tiles', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const id = 'template-1-version'
+    expect(await store.readFirstTemplateObservation(id)).toBeNull()
+    await store.recordTileObservation(observation({ reportedAt: seconds(DAY - 100) }), [])
+    await store.recordTileObservation(
+      observation({ season: 0, tile: { x: 0, y: 0 }, reportedAt: seconds(DAY - 50) }),
+      [],
+    )
+    expect(await store.readFirstTemplateObservation(id)).toBeNull()
+    const tile = { x: 0, y: 0 }
+    await store.recordTileObservation(observation({ tile, reportedAt: seconds(DAY + 10) }), [])
+    await store.recordTileObservation(observation({ tile, reportedAt: seconds(DAY + 20) }), [])
+    expect(await store.readFirstTemplateObservation(id)).toBe(DAY + 10)
+    await store.foldTileHistory(1, tile, seconds(DAY + 2 * 86400))
+    expect(await store.readFirstTemplateObservation(id)).toBe(DAY)
+    expect(await store.readFirstTemplateObservation('missing')).toBeNull()
+  })
+
+  it.each([0, 3600, 86400])(
+    'batched progress preserves tile-history quorum and latest-frame selection at resolution %s',
+    async (resolution) => {
+      await store.insertTemplateVersion(version('template-1'))
+      const tile = { x: 0, y: 0 }
+      for (const [at, hash, reporter] of [
+        [DAY + 10, 'd'.repeat(64), 1],
+        [DAY + 10, 'd'.repeat(64), 2],
+        [DAY + 10, 'e'.repeat(64), 3],
+        [DAY + 20, 'e'.repeat(64), 1],
+      ] as const) {
+        await store.recordTileObservation(
+          observation({ tile, hash, reportedAt: seconds(at), reportedByUserId: reporter }),
+          [
+            {
+              templateId: 'template-1',
+              versionId: 'template-1-version',
+              tile,
+              correct: hash.startsWith('d') ? 1 : 0,
+              wrong: 0,
+              blank: hash.startsWith('d') ? 0 : 1,
+              observedAt: millis(at * 1000),
+            },
+          ],
+        )
+      }
+      const frames = await store.readTemplateProgressFrames(
+        'template-1-version',
+        DAY,
+        seconds(DAY + 86401),
+        resolution,
+      )
+      if (resolution === 0) {
+        const history = await Effect.runPromise(
+          readTileHistory({
+            season: 1,
+            tile,
+            legacyResolution: 0,
+            range: { fromSeconds: DAY, toSeconds: seconds(DAY + 86401) },
+          }).pipe(Effect.provideService(SqlStoreService, store)),
+        )
+        expect(frames.map(({ bucketStart, hash }) => ({ bucketStart, hash }))).toEqual(
+          history.frames.map(({ bucketStart, hash }) => ({ bucketStart, hash })),
+        )
+        expect(frames.map((frame) => frame.correct)).toEqual([1, 0])
+      } else {
+        expect(frames).toEqual([
+          { tileX: 0, tileY: 0, bucketStart: DAY, hash: 'e'.repeat(64), correct: 0, wrong: 0 },
+        ])
+      }
+    },
+  )
+
+  it('reclaims measurements only after folding and blob GC remove their last source reference', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const tile = { x: 0, y: 0 }
+    const older = observation({ tile, hash: 'd'.repeat(64) })
+    const newer = {
+      ...older,
+      hash: 'e'.repeat(64),
+      reportedAt: seconds(DAY + 1),
+      observedAt: millis(older.observedAt + 1000),
+    }
+    const status = {
+      templateId: 'template-1',
+      versionId: 'template-1-version',
+      tile,
+      correct: 1,
+      wrong: 0,
+      blank: 0,
+      observedAt: older.observedAt,
+    }
+    await store.recordTileObservation(older, [status])
+    await store.recordTileObservation(newer, [{ ...status, observedAt: newer.observedAt }])
+    await store.foldTileHistory(1, tile, seconds(DAY + 2 * 86400))
+    const now = millis((DAY + 2 * 86400) * 1000)
+    expect(await store.noteTileBlobObject(older.hash, older.hash, now)).toBe('candidate')
+    expect(await store.claimTileBlobDeletion(older.hash, now)).toBe('claimed')
+    await store.finishTileBlobDeletion(older.hash, now)
+    expect(await store.readTileMeasurements(status.versionId, tile, [older.hash])).toEqual([])
+    expect(await store.noteTileBlobObject(newer.hash, newer.hash, now)).toBe('referenced')
+    await store.finishTileBlobDeletion(newer.hash, now)
+    expect(await store.readTileMeasurements(status.versionId, tile, [newer.hash])).toHaveLength(1)
+  })
+
+  it('keeps historical pixel counts tied to their tile hash when live progress changes', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const tile = { x: 0, y: 0 }
+    const first = observation({ tile, hash: 'd'.repeat(64) })
+    const status = {
+      templateId: 'template-1',
+      versionId: 'template-1-version',
+      tile,
+      correct: 0,
+      wrong: 0,
+      blank: 1,
+      observedAt: first.observedAt,
+    }
+    await store.recordTileObservation(first, [status])
+    await store.recordTileObservation(
+      {
+        ...first,
+        hash: 'e'.repeat(64),
+        observedAt: millis(first.observedAt + 1000),
+        reportedAt: seconds(first.reportedAt + 1),
+      },
+      [{ ...status, correct: 1, blank: 0, observedAt: millis(first.observedAt + 1000) }],
+    )
+    expect(await store.readTileMeasurements(status.versionId, tile, [first.hash])).toEqual([
+      { hash: first.hash, correct: 0, wrong: 0, blank: 1 },
+    ])
+    expect(await store.readTileMeasurements('other-version', tile, [first.hash])).toEqual([])
+  })
+
+  it('atomically records classifications for a reserved upload, including an older observation', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const tile = { x: 0, y: 0 }
+    const first = observation({ tile, hash: 'd'.repeat(64) })
+    const now = first.observedAt
+    await store.setTemplatePublishedAt('template-1', now, now)
+    const status = {
+      templateId: 'template-1',
+      versionId: 'template-1-version',
+      tile,
+      correct: 1,
+      wrong: 0,
+      blank: 0,
+      observedAt: now,
+    }
+    await store.reserveTileBlobUpload(first.hash, first.hash, 'first', now, millis(now + 10000))
+    expect(
+      await store.commitTileBlobReservation('first', now, first, [status], true),
+    ).not.toBeNull()
+    const older = { ...first, hash: 'e'.repeat(64), observedAt: millis(now - 1000) }
+    await store.reserveTileBlobUpload(older.hash, older.hash, 'older', now, millis(now + 10000))
+    expect(
+      await store.commitTileBlobReservation(
+        'older',
+        now,
+        older,
+        [{ ...status, correct: 0, blank: 1, observedAt: older.observedAt }],
+        true,
+      ),
+    ).not.toBeNull()
+    expect(
+      await store.readTileMeasurements(status.versionId, tile, [first.hash, older.hash]),
+    ).toEqual(
+      expect.arrayContaining([
+        { hash: first.hash, correct: 1, wrong: 0, blank: 0 },
+        { hash: older.hash, correct: 0, wrong: 0, blank: 1 },
+      ]),
+    )
+    const refused = { ...first, hash: 'f'.repeat(64) }
+    expect(
+      await store.commitTileBlobReservation('missing', now, refused, [status], true),
+    ).toBeNull()
+    expect(await store.readTileMeasurements(status.versionId, tile, [refused.hash])).toEqual([])
+  })
 
   it('keeps a finished template frozen until it is reopened', async () => {
     await store.insertTemplateVersion(version('template-1'))

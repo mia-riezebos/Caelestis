@@ -5,6 +5,7 @@
     formatPixels,
     type HistoryBucket,
     type ArchiveProgressSample,
+    type ProgressSample,
     type PainterHistoryBucket,
   } from '@caelestis/shared'
   import { untrack } from 'svelte'
@@ -39,16 +40,19 @@
     windowKeyStep,
   } from '$lib/components/charts/progress-pace'
   import { archiveIntervals, isDailyArchiveInterval } from '$lib/archive-history'
+  import { mergeObservedProgress } from '$lib/progress-history'
 
   let {
     buckets,
-    archiveSamples = [],
+    archiveSamples: importedSamples = [],
+    progressSamples = [],
     paceHistories = [],
     resolution,
     from,
     to,
     anchorCorrect,
     anchorMismatched,
+    finished = false,
     live = false,
     painters = [],
     selectedPainters = new Set<number>(),
@@ -59,6 +63,7 @@
   }: {
     buckets: readonly HistoryBucket[]
     archiveSamples?: readonly ArchiveProgressSample[]
+    progressSamples?: readonly ProgressSample[]
     /** One server-selected retained source for each rolling window. */
     paceHistories?: readonly PaceHistorySource[]
     /** Who painted in the range, leading first: the picker's list. */
@@ -76,20 +81,23 @@
     from: number
     to: number
     /**
-     * The template's live status right now, from `/telemetry/status` — canvas truth, not reports.
-     * The progress areas walk backwards from these anchors along the reported deltas, so the
-     * right edge always equals the meter above and the areas read as overall template progress.
-     * Daily and longer pace windows also use imported net changes before reported history.
+     * Current or frozen canvas counts are drawn only at `to`. Historical levels come exclusively
+     * from saved observations; placement reports are not a net canvas-change ledger.
      */
     anchorCorrect: number
     anchorMismatched: number
+    /** A finished scope has a frozen final observation, even though it has no live pulse. */
+    finished?: boolean
     /** The right edge is now: the canvas is still being painted, so the last point is live. */
     live?: boolean
   } = $props()
 
+  const firstLive = $derived(Math.min(...progressSamples.map(sample => sample.at), (live || finished) ? to : Infinity))
+  const archiveSamples = $derived(importedSamples.filter(sample => sample.at < firstLive))
+
   /**
-   * Fetch deltas once and derive each chart series here. Stacked areas show correct and mismatched
-   * pixels. Rolling pace windows use the right axis. Longer windows use darker, thicker lines.
+   * Saved observations supply completion areas. Reported placements supply rolling pace on the
+   * right axis. Longer pace windows use darker, thicker lines.
    */
   const storedWindows = $derived(windows)
   const enabledWindows = $derived(new Set(storedWindows.value))
@@ -106,55 +114,27 @@
   interface Point {
     t: number
     placed: number
-    correct: number
-    cumCorrect: number
-    cumMismatched: number
     cumPlaced: number
   }
 
   const points = $derived.by<Point[]>(() => {
     if (buckets.length === 0) return []
-    const byStart = new Map<number, { placed: number; correct: number; repairs: number }>()
+    const byStart = new Map<number, number>()
     for (const bucket of buckets) {
-      const entry = byStart.get(bucket.bucketStart) ?? { placed: 0, correct: 0, repairs: 0 }
-      entry.placed += bucket.placed
-      entry.correct += bucket.correct
-      entry.repairs += bucket.repairs
-      byStart.set(bucket.bucketStart, entry)
+      byStart.set(bucket.bucketStart, (byStart.get(bucket.bucketStart) ?? 0) + bucket.placed)
     }
     const filled: Point[] = []
-    let cumCorrect = 0
     let cumPlaced = 0
-    let cumMismatched = 0
     const reportStart = archiveSamples.length === 0 ? from : Math.max(from, Math.min(...buckets.map((bucket) => bucket.bucketStart)))
     const first = Math.ceil(reportStart / resolution) * resolution
     for (let t = first; t < to; t += resolution) {
-      const delta = byStart.get(t) ?? { placed: 0, correct: 0, repairs: 0 }
-      cumCorrect += delta.correct
-      cumPlaced += delta.placed
-      // A mismatch is born by a wrong placement and killed by a repair. `placed - correct` is the
-      // wrong placements; each repair converts one wrong pixel to correct. Without the repairs
-      // term the band could never slope down, which read as "my fixes aren't counting".
-      cumMismatched += delta.placed - delta.correct - delta.repairs
+      const placed = byStart.get(t) ?? 0
+      cumPlaced += placed
       filled.push({
         t,
-        placed: delta.placed,
-        correct: delta.correct,
-        cumCorrect,
-        cumMismatched,
+        placed,
         cumPlaced,
       })
-    }
-    // Anchor to live state: shift each series so its right edge equals what the canvas says now.
-    // Reported deltas only shape the slope between observations; the level is the server's truth.
-    const last = filled[filled.length - 1]
-    if (last !== undefined) {
-      const correctShift = anchorCorrect - last.cumCorrect
-      const mismatchedShift = anchorMismatched - last.cumMismatched
-      for (const point of filled) {
-        point.cumCorrect = Math.max(0, point.cumCorrect + correctShift)
-        point.cumMismatched = Math.max(0, point.cumMismatched + mismatchedShift)
-      }
     }
     return filled
   })
@@ -163,6 +143,8 @@
   // the plot also opens when only painters have reported yet.
   const hasActivity = $derived(
     archiveSamples.length > 0 ||
+    progressSamples.length > 0 ||
+    ((live || finished) && anchorCorrect + anchorMismatched > 0) ||
     points.some((p) => p.placed > 0) ||
       painterHistories.some((source) => source.history.buckets.length > 0),
   )
@@ -197,31 +179,11 @@
   const presets = $derived(availableRangePresets(span, MIN_SELECTION))
   const presetActive = (seconds: number): boolean => relativePreset === seconds
 
-  const lerpPoint = (a: Point, b: Point, fraction: number): Point => ({
-    t: a.t + (b.t - a.t) * fraction,
-    placed: 0,
-    correct: 0,
-    cumCorrect: a.cumCorrect + (b.cumCorrect - a.cumCorrect) * fraction,
-    cumMismatched: a.cumMismatched + (b.cumMismatched - a.cumMismatched) * fraction,
-    cumPlaced: a.cumPlaced + (b.cumPlaced - a.cumPlaced) * fraction,
-  })
   const lerpRate = (a: PaceRatePoint, b: PaceRatePoint, fraction: number): PaceRatePoint => ({
     t: a.t + (b.t - a.t) * fraction,
     v: a.v + (b.v - a.v) * fraction,
   })
 
-  /** The points inside a range, holding the newest bucket's level out to the right edge. */
-  const windowPoints = (range: TimeWindow): Point[] => {
-    const clipped = clipSeries(points, range.from, range.to, lerpPoint)
-    const last = clipped[clipped.length - 1]
-    const newest = points[points.length - 1]
-    // The newest bucket is still filling: hold its level out to the right edge so the areas meet
-    // "now" instead of stopping one bucket short of it.
-    if (last !== undefined && newest !== undefined && last.t === newest.t && last.t < range.to) {
-      clipped.push({ ...last, t: range.to, placed: 0, correct: 0 })
-    }
-    return clipped
-  }
 
   const retainedPacePoints = (source: PaceHistorySource): PacePoint[] => {
     const { buckets: paceBuckets, coverageStart, resolution: paceResolution } = source.history
@@ -347,12 +309,17 @@
     return lines
   })
 
-  /** Reported history owns the chart from its first point, even when archive imports overlap it. */
-  const chartArchiveSamples = $derived(archiveSamples.filter((sample) => points[0] === undefined || sample.at < points[0].t))
+  const chartSamples = $derived(
+    mergeObservedProgress(
+      archiveSamples,
+      progressSamples,
+      live || finished ? { at: to, correct: anchorCorrect, mismatched: anchorMismatched } : undefined,
+    ),
+  )
   /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */
   const hoverSnapTimes = $derived.by(() => {
-    const times = new Set(visiblePoints.map((point) => point.t))
-    for (const sample of chartArchiveSamples) {
+    const times = new Set<number>()
+    for (const sample of chartSamples) {
       if (sample.at >= shownView.from && sample.at <= shownView.to) times.add(sample.at)
     }
     for (const pace of activePaces) {
@@ -382,26 +349,19 @@
   const plotHeight = height - pad.top - pad.bottom
 
   // The axis tops come from the target window, so a zoom re-fits to where it is going.
-  const targetPoints = $derived(windowPoints(view))
-  const archiveConnection = $derived.by(() => {
-    const last = chartArchiveSamples.at(-1)
-    const firstLive = points[0]
-    if (last?.correct == null || firstLive === undefined || firstLive.t <= last.at) return null
-    return {
-      from: last.at, to: firstLive.t,
-      startCorrect: last.correct, endCorrect: firstLive.cumCorrect,
-      endMismatched: firstLive.cumMismatched,
-      rate: (firstLive.cumCorrect - last.correct) / (firstLive.t - last.at) * 3600,
-    }
+  interface ProgressPoint extends PaceRatePoint {
+    mismatched: number
+    archive: boolean
+  }
+  const lerpProgress = (a: ProgressPoint, b: ProgressPoint, fraction: number): ProgressPoint => ({
+    ...lerpRate(a, b, fraction),
+    mismatched: a.mismatched + (b.mismatched - a.mismatched) * fraction,
+    archive: a.archive || b.archive,
   })
-  interface ArchivePoint extends PaceRatePoint { mismatched: number }
-  const lerpArchive = (a: ArchivePoint, b: ArchivePoint, fraction: number): ArchivePoint => ({
-    ...lerpRate(a, b, fraction), mismatched: a.mismatched + (b.mismatched - a.mismatched) * fraction,
-  })
-  const archiveSegments = $derived.by(() => {
-    const segments: ArchivePoint[][] = []
-    let segment: ArchivePoint[] | null = null
-    for (const sample of chartArchiveSamples) {
+  const progressSegments = $derived.by(() => {
+    const segments: ProgressPoint[][] = []
+    let segment: ProgressPoint[] | null = null
+    for (const sample of chartSamples) {
       if (sample.correct === null || sample.mismatched === null) {
         segment = null
         continue
@@ -410,16 +370,26 @@
         segment = []
         segments.push(segment)
       }
-      segment.push({ t: sample.at, v: sample.correct, mismatched: sample.mismatched })
+      const previous = segment.at(-1)
+      if (
+        previous !== undefined && segment.length > 1 &&
+        segment.some((point) => point.archive) !== (previous.archive || sample.archive)
+      ) {
+        segment = [previous]
+        segments.push(segment)
+      }
+      segment.push({
+        t: sample.at, v: sample.correct, mismatched: sample.mismatched, archive: sample.archive,
+      })
     }
-    if (archiveConnection !== null) segment?.push({ t: archiveConnection.to, v: archiveConnection.endCorrect, mismatched: archiveConnection.endMismatched })
     return segments
   })
   const archiveSnapshotPaces = $derived(archiveIntervals(archiveSamples))
-  const archivePaces = $derived([
-    ...archiveSnapshotPaces.filter((interval) => points[0] === undefined || interval.to < points[0].t),
-    ...(archiveConnection === null ? [] : [{ ...archiveConnection, endCorrect: archiveConnection.endCorrect - (points[0]?.correct ?? 0) }]),
-  ])
+  // Join at the first saved native observation; current counts cannot reconstruct past progress.
+  const archivePaces = $derived(archiveIntervals([
+    ...archiveSamples,
+    ...progressSamples.slice(0, 1).map(sample => ({ ...sample, snapshotId: -1 })),
+  ]))
   const paceOptions = $derived([
     ...paceWindows.map((pace, index) => ({
       key: pace.key,
@@ -430,12 +400,12 @@
       description: 'Rolling average',
     })),
   ])
-  const visibleArchiveSegments = $derived(archiveSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpArchive)).filter((segment) => segment.length > 1))
-  const isolatedArchivePoints = $derived(archiveSegments.filter((segment) => segment.length === 1).flat().filter((point) => point.t >= shownView.from && point.t <= shownView.to))
+  const visibleProgressSegments = $derived(progressSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpProgress)).filter((segment) => segment.length > 1))
+  const isolatedProgressPoints = $derived(progressSegments.filter((segment) => segment.length === 1).flat().filter((point) => point.t >= shownView.from && point.t <= shownView.to))
   const targetPaces = $derived(enabledPaces.flatMap((pace) => pace.segments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate))))
   const rightMin = $derived(Math.min(0, ...targetPaces.map((point) => point.v)))
   const leftScale = $derived(
-    axisScale(Math.max(0, ...targetPoints.map((p) => p.cumCorrect + p.cumMismatched), ...archiveSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpArchive).map((point) => point.v + point.mismatched))), 4, 1),
+    axisScale(Math.max(0, ...progressSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpProgress).map((point) => point.v + point.mismatched))), 4, 1),
   )
   const rightScale = $derived(
     axisScale(
@@ -482,7 +452,6 @@
     from: shownWindow.current.from,
     to: shownWindow.current.to,
   })
-  const visiblePoints = $derived(windowPoints(shownView))
   const activePaces = $derived(
     enabledPaces.flatMap((pace) => pace.segments.map((fullSeries, index) => {
       const series = clipSeries(fullSeries, shownView.from, shownView.to, lerpRate)
@@ -530,19 +499,6 @@
     series
       .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${yRight(p.v).toFixed(1)}`)
       .join('')
-
-  /** Stacked band between two cumulative levels, closed into a fillable region. */
-  const bandPath = (lower: (p: Point) => number, upper: (p: Point) => number): string => {
-    if (visiblePoints.length === 0) return ''
-    const top = visiblePoints
-      .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${yLeft(upper(p)).toFixed(1)}`)
-      .join('')
-    const bottom = [...visiblePoints]
-      .reverse()
-      .map((p) => `L${x(p.t).toFixed(1)},${yLeft(lower(p)).toFixed(1)}`)
-      .join('')
-    return `${top}${bottom}Z`
-  }
 
   const DAY_SECONDS = 86_400
   const tickStep = $derived(timeTickStep(shownView.to - shownView.from, plotWidth))
@@ -626,18 +582,18 @@
       return
     }
     if (hover?.t === t) return
-    const sample = chartArchiveSamples.find((sample) => sample.at === t)
+    const sample = chartSamples.find((sample) => sample.at === t)
     const cumCorrect = sample === undefined
-      ? interpolateValue(visiblePoints, t, (point) => point.cumCorrect)
+      ? visibleProgressSegments.map(segment => interpolateValue(segment, t, point => point.v)).find(value => value !== null) ?? null
       : sample.correct
     const cumMismatched = sample === undefined
-      ? interpolateValue(visiblePoints, t, (point) => point.cumMismatched)
+      ? visibleProgressSegments.map(segment => interpolateValue(segment, t, point => point.mismatched)).find(value => value !== null) ?? null
       : sample.mismatched
     hover = {
       t,
       cumCorrect: cumCorrect === null ? null : Math.round(cumCorrect),
       cumMismatched: cumMismatched === null ? null : Math.round(cumMismatched),
-      archive: sample !== undefined,
+      archive: sample?.archive === true,
     }
   }
 
@@ -697,7 +653,7 @@
   })
 
   const liveEdge = $derived(
-    live && view.to === to ? (visiblePoints[visiblePoints.length - 1] ?? null) : null,
+    live && view.to === to ? { t: to, cumCorrect: anchorCorrect } : null,
   )
 
   const hoverSummary = (point: HoverPoint): string => {
@@ -1231,22 +1187,6 @@
         {/each}
 
         <g class="chart-reveal">
-          <path d={bandPath(() => 0, (p) => p.cumCorrect)} fill="var(--chart-correct)" opacity="0.3" />
-          <path
-            d={bandPath((p) => p.cumCorrect, (p) => p.cumCorrect + p.cumMismatched)}
-            class="fill-error"
-            opacity="0.25"
-          />
-          <path
-            d={visiblePoints
-              .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${yLeft(p.cumCorrect).toFixed(1)}`)
-              .join('')}
-            fill="none"
-            stroke="var(--chart-correct)"
-            stroke-width="1.5"
-            stroke-linejoin="round"
-          />
-
           {#each activePaces as pace (pace.id)}
             <path
               in:fade={{ duration: motion(250) }}
@@ -1265,7 +1205,8 @@
             {/if}
           {/each}
 
-          {#each visibleArchiveSegments as segment (segment[0].t)}
+          {#each visibleProgressSegments as segment (segment[0].t)}
+            {@const archived = segment.some(point => point.archive)}
             {@const line = segment.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.t).toFixed(1)},${yLeft(point.v).toFixed(1)}`).join('')}
             {@const mismatchedLine = segment.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.t).toFixed(1)},${yLeft(point.v + point.mismatched).toFixed(1)}`).join('')}
             <path data-archive-progress-area
@@ -1276,14 +1217,14 @@
               class="fill-error" opacity="0.25" />
             {#if segment.some((point) => point.mismatched > 0)}
               <path data-archive-mismatched d={mismatchedLine} fill="none" class="stroke-error"
-                stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" />
+                stroke-width="1.5" stroke-dasharray={archived ? '5 4' : undefined} stroke-linejoin="round" />
             {/if}
             <path data-archive-progress d={line} fill="none" stroke="var(--chart-correct)"
-              stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" />
+              stroke-width="1.5" stroke-dasharray={archived ? '5 4' : undefined} stroke-linejoin="round" />
           {/each}
 
 
-          {#each isolatedArchivePoints as point (point.t)}
+          {#each isolatedProgressPoints as point (point.t)}
             <g data-archive-singleton>
               <path d={`M${Math.max(pad.left, x(point.t) - 3)},${yLeft(point.v)}H${Math.min(width - pad.right, x(point.t) + 3)}`}
                 stroke="var(--chart-correct)" stroke-width="2" />

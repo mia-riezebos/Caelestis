@@ -1,5 +1,17 @@
 # @caelestis/backend
 
+## 0.4.2
+
+### Patch Changes
+
+- af91052: Stop Eralyon backfill at the first native observation and give native history precedence in charts and timelapses.
+
+## 0.4.1
+
+### Patch Changes
+
+- 5140200: Keep historical progress tied to saved canvas observations instead of recalculating it from current totals and placement reports.
+
 ## 0.4.0
 
 ### Minor Changes

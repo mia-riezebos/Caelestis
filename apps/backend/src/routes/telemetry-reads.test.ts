@@ -144,6 +144,33 @@ describe('telemetry read routes', () => {
     vi.restoreAllMocks()
   })
 
+  it('returns observed progress through the upload path and enforces template visibility and version ownership', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(DAY * 1000)
+    const { app, sql } = await harness()
+    const id = await createPublishedTemplate(app)
+    const hiddenId = await createTemplate(app, false)
+    const version = (await sql.readTemplate(id))?.currentVersionId
+    const hiddenVersion = (await sql.readTemplate(hiddenId))?.currentVersionId
+    const reportToken = await mintToken(app, 'report')
+    const readToken = await mintToken(app, 'read')
+    await uploadCanvasTile(app, reportToken, DAY - 10)
+    const url = (templateId: string, versionId: string | null | undefined) =>
+      `/telemetry/progress/${templateId}?version=${versionId}&from=${DAY - 100}&to=${DAY + 1}`
+    const response = await app.request(url(id, version), { headers: bearer(readToken) })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      versionId: version,
+      samples: [{ at: DAY - 10, correct: 1, mismatched: 1, total: 3 }],
+    })
+    expect(
+      (await app.request(url(hiddenId, hiddenVersion), { headers: bearer(readToken) })).status,
+    ).toBe(404)
+    expect((await app.request(url(id, hiddenVersion), { headers: bearer(readToken) })).status).toBe(
+      404,
+    )
+    expect((await app.request(url(id, version))).status).toBe(401)
+  })
+
   it('selects the coarsest retained tier that still yields about 200 points', () => {
     const now = seconds(2_000_000_000)
     const range = (age: number, width = age) => ({

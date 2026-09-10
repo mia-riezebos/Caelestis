@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   getArchiveHistory: vi.fn(),
   getContributions: vi.fn(),
   getHistory: vi.fn(),
+  getProgressHistory: vi.fn(),
   getLeaderboard: vi.fn(),
   getPainterHistory: vi.fn(),
   getPainterTotals: vi.fn(),
@@ -49,6 +50,7 @@ beforeEach(() => {
     removeItem: vi.fn(),
   })
   api.getHistory.mockReset().mockResolvedValue({ buckets: [] })
+  api.getProgressHistory.mockReset().mockResolvedValue({ samples: [] })
   api.getContributions.mockReset().mockResolvedValue({ days: [] })
   api.getLeaderboard.mockReset().mockResolvedValue({ entries: [] })
   api.getArchiveHistory
@@ -69,6 +71,91 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
+  it('preserves a complete, unknown, complete transition in recent history', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_SECONDS * 1000)
+    api.getProgressHistory.mockImplementation((_id, _version, from) =>
+      Promise.resolve({
+        samples:
+          from === 0
+            ? [{ at: NOW_SECONDS - 7200, correct: 5, mismatched: 0, total: 100 }]
+            : [
+                { at: NOW_SECONDS - 5400, correct: null, mismatched: null, total: 100 },
+                { at: NOW_SECONDS - 3600, correct: 10, mismatched: 0, total: 100 },
+                { at: NOW_SECONDS - 1800, correct: null, mismatched: null, total: 100 },
+                { at: NOW_SECONDS - 900, correct: 20, mismatched: 0, total: 100 },
+              ],
+      }),
+    )
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        liveDashboard: true,
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 30, mismatched: 0, unpainted: 70, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    const hover = (key: string) => {
+      document
+        .querySelector('svg[role="img"]')
+        ?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+      flushSync()
+      return document.querySelector('[data-pace-tooltip]')?.textContent
+    }
+    hover('End')
+    expect(hover('Home')).toMatch(/correct\s*5/)
+    expect(hover('ArrowRight')).toMatch(/correct\s*10/)
+    expect(hover('ArrowRight')).toContain('No coverage')
+    expect(hover('ArrowRight')).toMatch(/correct\s*20/)
+  })
+
+  it('keeps successful saved observations after a transient refresh failure and requests recent finer history', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_SECONDS * 1000)
+    api.getProgressHistory.mockResolvedValue({
+      samples: [
+        { at: NOW_SECONDS - 3600, correct: 10, mismatched: 0, total: 100 },
+        { at: NOW_SECONDS - 1800, correct: 20, mismatched: 0, total: 100 },
+      ],
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        liveDashboard: true,
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 30, mismatched: 0, unpainted: 70, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(api.getProgressHistory).toHaveBeenCalledWith(
+      'live',
+      'version',
+      NOW_SECONDS - 6 * DAY_SECONDS,
+      NOW_SECONDS + 1,
+    )
+    const firstValue = () => {
+      const chart = document.querySelector('svg[role="img"]')
+      chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+      chart?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+      flushSync()
+      return document.querySelector('[data-pace-tooltip]')?.textContent
+    }
+    expect(firstValue()).toMatch(/correct\s*10/)
+    api.getProgressHistory.mockRejectedValue(new Error('Temporary error'))
+    await vi.advanceTimersByTimeAsync(300000)
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(document.body.textContent).toContain('Saved progress history could not load.')
+    expect(firstValue()).toMatch(/correct\s*10/)
+  })
+
   it('keeps the annual estimate visible while the next live history read is pending', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW_SECONDS * 1000)
@@ -171,7 +258,6 @@ describe('retained history range', () => {
       expect(document.body.textContent).toContain('over 40 d within the last year'),
     )
   })
-
   it('requests an all-history range through a finished scope boundary', async () => {
     const finishedAt = NOW_SECONDS - DAY_SECONDS
     mounted = mount(StatsPanel, {

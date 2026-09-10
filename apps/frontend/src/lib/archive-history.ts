@@ -11,17 +11,15 @@ export interface PlaybackFrame {
   readonly missing?: boolean
 }
 
-/** Real observations win overlapping buckets; missing frames retain an explicit coverage gap. */
+/** Archive playback ends when native observations begin; later gaps stay native. */
 export const mergeArchiveFrames = (
   live: TileHistoryResponse,
   archive: readonly ArchiveTileFrame[],
 ): readonly PlaybackFrame[] => {
-  const resolution = live.resolution ?? 0
-  const occupied = new Set<number>(live.frames.map((frame) => frame.bucketStart))
+  const firstLive = Math.min(...live.frames.map((frame) => frame.bucketStart))
   const frames: PlaybackFrame[] = [...live.frames]
   for (const frame of archive) {
-    const bucket = resolution > 0 ? Math.floor(frame.at / resolution) * resolution : frame.at
-    if (occupied.has(bucket)) continue
+    if (frame.at >= firstLive) continue
     frames.push({
       bucketStart: frame.at,
       hash: frame.hash === null ? undefined : `archive:${frame.hash}`,
