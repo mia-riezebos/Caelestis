@@ -66,13 +66,13 @@
   const RESOLUTION = 900
   const STATS_REFRESH_MS = 15_000
 
-  let archives = $state<readonly ArchiveHistory[]>([])
+  let archives = $state<readonly ArchiveHistory[] | null>(null)
   let archiveError = $state<string | null>(null)
-  const archiveSamples = $derived(combineArchiveSamples(archives))
+  const archiveSamples = $derived(combineArchiveSamples(archives ?? []))
   $effect(() => {
     const scope = templates.map((template) => ({ id: template.id, version: template.version }))
     let cancelled = false
-    archives = []; archiveError = null
+    archives = null; archiveError = null
     // Bound upstream concurrency for large folders; snapshot reads need no painter subscriptions.
     void (async () => {
       const results: ArchiveHistory[] = []
@@ -81,7 +81,12 @@
         results.push(await getArchiveHistory(template.id, template.version))
       }
       if (!cancelled) archives = results
-    })().catch(() => { if (!cancelled) archiveError = 'Imported progress history could not load.' })
+    })().catch(() => {
+      if (!cancelled) {
+        archives = []
+        archiveError = 'Imported progress history could not load.'
+      }
+    })
     return () => { cancelled = true }
   })
 
@@ -103,7 +108,7 @@
   })
 
   let history = $state<HistoryBucket[] | null>(null)
-  let progressSamples = $state<readonly ProgressSample[]>([])
+  let progressSamples = $state<readonly ProgressSample[] | null>(null)
   const importedContributions = $derived(archiveContributionDays(
     archiveSamples,
     Math.min(...(history ?? []).map((bucket) => bucket.bucketStart)),
@@ -122,7 +127,7 @@
     const key = JSON.stringify([scope, start])
     if (progressScope !== key) {
       progressScope = key
-      progressSamples = []
+      progressSamples = null
       progressError = null
     }
     let cancelled = false
@@ -151,6 +156,7 @@
       }
     })().catch(() => {
       if (!cancelled) {
+        progressSamples ??= []
         progressError = 'Saved progress history could not load.'
       }
     })
@@ -158,7 +164,7 @@
       cancelled = true
     }
   })
-  let paceHistories = $state<readonly PaceHistorySource[]>([])
+  let paceHistories = $state<readonly PaceHistorySource[] | null>(null)
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   /** The rolling pace windows the chart draws; shared so painter lines are fetched for the same. */
@@ -210,7 +216,7 @@
     if (historyScope !== scope) {
       historyScope = scope
       history = null
-      paceHistories = []
+      paceHistories = null
     }
     failed = false
     getHistory(templateIds, from, to)
@@ -367,7 +373,7 @@
   const estimatePeriod = $derived(estimatePeriods.find((period) => period.key === storedEstimatePeriod.value) ?? estimatePeriods[2])
   // The 1d source already includes the entire retention ladder, including its permanent tier.
   const pace = $derived.by(() => {
-    const history = paceHistories.find((candidate) => candidate.window === '1d')?.history
+    const history = paceHistories?.find((candidate) => candidate.window === '1d')?.history
     return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
   })
 
@@ -420,7 +426,7 @@
       <div class="flex h-[240px] items-center justify-center text-sm text-base-content/50">
         Could not load pace history.
       </div>
-    {:else if history === null}
+    {:else if history === null || archives === null || progressSamples === null || paceHistories === null}
       <Skeleton class="h-[240px] w-full" />
     {:else}
       <ProgressPaceChart

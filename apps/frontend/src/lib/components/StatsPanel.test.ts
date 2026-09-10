@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { millis, seconds, type Template } from '@caelestis/shared'
+import { type ArchiveHistory, millis, seconds, type Template } from '@caelestis/shared'
 import { flushSync, mount, unmount } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -71,6 +71,54 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
+  it.each([false, true])(
+    'waits for imported history before revealing the chart (failure: %s)',
+    async (failure) => {
+      const pending = Promise.withResolvers<ArchiveHistory>()
+      api.getArchiveHistory.mockReturnValue(pending.promise)
+      mounted = mount(StatsPanel, {
+        target: document.body,
+        props: {
+          season: 0,
+          liveDashboard: false,
+          templates: [template('live', 0, null)],
+          subscribeDashboard: live.subscribe,
+          progress: { completed: 10, mismatched: 0, unpainted: 90, known: 100, total: 100 },
+        },
+      })
+      flushSync()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      flushSync()
+      expect(document.querySelector('svg[role="img"]')).toBeNull()
+      if (failure) pending.reject(new Error('Archive unavailable'))
+      else
+        pending.resolve({
+          source: 'eralyon',
+          basis: {
+            templateId: 'live',
+            versionId: 'version',
+            name: 'live',
+            season: 0,
+            bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+            total: 100,
+            chunks: [],
+          },
+          samples: [1, 5].map((correct, index) => ({
+            at: NOW_SECONDS - (3 - index) * DAY_SECONDS,
+            snapshotId: index,
+            correct,
+            mismatched: 0,
+            total: 100,
+          })),
+          frames: [],
+        })
+      await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
+      if (failure)
+        expect(document.body.textContent).toContain('Imported progress history could not load.')
+      else expect(document.querySelector('.chart-reveal [data-archive-progress]')).not.toBeNull()
+    },
+  )
+
   it('shows time to completion beyond a year using correct pixels rather than placements', async () => {
     api.getHistory.mockResolvedValue({
       resolution: DAY_SECONDS,
