@@ -71,9 +71,13 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
-  it.each([0, 50])(
+  it.each([0, 50, 200, 250])(
     'persists the all-time estimate across the full elapsed history (initial pixels: %s)',
     async (initial) => {
+      const expected =
+        initial >= 200
+          ? 'Completion estimate unavailable'
+          : `Estimated completion in ~${initial === 0 ? 120 : 160} d`
       const storage = new Map<string, string>()
       vi.stubGlobal('localStorage', {
         getItem: (key: string) => storage.get(key) ?? null,
@@ -116,18 +120,16 @@ describe('retained history range', () => {
       select.value = 'all'
       select.dispatchEvent(new Event('change', { bubbles: true }))
       flushSync()
-      await vi.waitFor(() =>
-        expect(document.body.textContent).toContain('Estimated completion in ~120 d'),
-      )
+      await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
+      await vi.waitFor(() => expect(document.body.textContent).toContain(expected))
       expect(document.body.textContent).not.toContain('of data')
       expect(storage.get('caelestis:estimate-period')).toBe('"all"')
       expect(api.getHistory).toHaveBeenCalledTimes(11)
       await unmount(mounted)
       mounted = mount(StatsPanel, { target: document.body, props })
       flushSync()
-      await vi.waitFor(() =>
-        expect(document.body.textContent).toContain('Estimated completion in ~120 d'),
-      )
+      await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
+      await vi.waitFor(() => expect(document.body.textContent).toContain(expected))
       expect(
         document.querySelector<HTMLSelectElement>(
           'select[aria-label="Completion estimate pace period"]',
@@ -137,30 +139,56 @@ describe('retained history range', () => {
   )
 
   it.each([null, 30 * DAY_SECONDS])(
-    'uses exact creation time without observations and respects the finished boundary (%s)',
+    'uses the first known native observation and respects the finished boundary (%s)',
     async (finishedAt) => {
       vi.stubGlobal('localStorage', {
         getItem: (key: string) => (key === 'caelestis:estimate-period' ? '"all"' : null),
         setItem: vi.fn(),
+      })
+      api.getProgressHistory.mockResolvedValue({
+        samples: [
+          { at: DAY_SECONDS, correct: null, mismatched: null, total: 200 },
+          { at: 10.5 * DAY_SECONDS, correct: 50, mismatched: 0, total: 200 },
+        ],
       })
       mounted = mount(StatsPanel, {
         target: document.body,
         props: {
           season: 0,
           liveDashboard: false,
-          templates: [template('live', 10.5 * DAY_SECONDS, finishedAt)],
+          templates: [template('live', DAY_SECONDS, finishedAt)],
           subscribeDashboard: live.subscribe,
-          progress: { completed: 100, mismatched: 0, unpainted: 1000, known: 1100, total: 1100 },
+          progress: { completed: 100, mismatched: 0, unpainted: 100, known: 200, total: 200 },
         },
       })
       flushSync()
       await vi.waitFor(() =>
         expect(document.body.textContent).toContain(
-          finishedAt === null ? 'Estimated completion in ~295 d' : 'Estimated completion in ~195 d',
+          finishedAt === null ? 'Estimated completion in ~59 d' : 'Estimated completion in ~39 d',
         ),
       )
     },
   )
+
+  it('leaves all-time pace unavailable without a saved progress observation', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => (key === 'caelestis:estimate-period' ? '"all"' : null),
+      setItem: vi.fn(),
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 100, mismatched: 0, unpainted: 100, known: 200, total: 200 },
+      },
+    })
+    flushSync()
+    await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
+    expect(document.body.textContent).toContain('Completion estimate unavailable')
+  })
 
   it.each([false, true])(
     'includes backfilled progress in the estimate (reported history: %s)',

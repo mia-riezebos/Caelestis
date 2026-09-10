@@ -376,16 +376,14 @@
   const pace = $derived.by(() => {
     const history = paceHistories?.find((candidate) => candidate.window === '1d')?.history
     if (estimatePeriod.key === 'all') {
-      if (archives === null || progressSamples === null || paceHistories === null) return null
-      const observations = [...archiveSamples, ...(progressSamples ?? [])]
+      if (archives === null || progressSamples === null) return null
+      // Prefer native progress when both sources observed the same timestamp.
+      const first = [...progressSamples, ...archiveSamples]
         .filter(sample => sample.correct !== null && sample.at < to)
-        .map(sample => sample.at)
-      const reports = (history?.buckets ?? []).filter(bucket => bucket.bucketStart < to).map(bucket => bucket.bucketStart)
-      const first = Math.min(...observations, ...reports)
-      // All-time pace treats the earliest record as the zero-pixel baseline, including idle time.
-      const start = Number.isFinite(first) ? first : Math.min(...templates.map(template => template.createdAt / 1_000))
-      const hours = (to - start) / 3_600
-      return hours > 0 ? { correct: progress.completed / hours, hours } : null
+        .sort((a, b) => a.at - b.at)[0]
+      if (first?.correct == null) return null
+      const hours = (to - first.at) / 3_600
+      return { correct: (progress.completed - first.correct) / hours, hours }
     }
     return completionPace(history, archiveSamples, progressSamples ?? [], to, estimatePeriod.seconds)
   })
