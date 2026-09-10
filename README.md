@@ -137,7 +137,8 @@ frontend Worker without writing it to disk:
 Keep the bootstrap token somewhere safe. It can create normal admin and read tokens, but the server
 never returns its value through the API.
 
-Production deployments run from `.github/workflows/deploy.yml` after a push to `main`. The workflow
+Production deployments run only after the Changesets release PR merges. The App release workflow
+calls `.github/workflows/deploy.yml` for that exact commit before publishing. The workflow
 needs a `CLOUDFLARE_API_TOKEN` repository secret with access to the configured Workers, D1, and R2
 resources.
 
