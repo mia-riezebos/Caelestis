@@ -6,13 +6,13 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 
 ## Acceptance criteria
 
-- [ ] Database and object-storage adapters preserve existing contracts.
-- [ ] Portable runtime supports every existing backend and frontend feature.
-- [ ] Accepted events, jobs, and live revisions recover after restart without duplicate effects.
-- [ ] One active application owner is enforced for local and PostgreSQL deployments.
-- [ ] Docker and Helm support local disk and existing CNPG/S3 connections, migrations, TLS, health checks, and graceful shutdown.
-- [ ] Shared conformance, PostgreSQL, restart, image, and chart checks pass.
-- [ ] Release automation, documentation, Changesets, and PR are complete.
+- [x] Database and object-storage adapters preserve existing contracts.
+- [x] Portable runtime supports every existing backend and frontend feature.
+- [x] Accepted events, jobs, and live revisions recover after restart without duplicate effects.
+- [x] One active application owner is enforced for local and PostgreSQL deployments.
+- [x] Docker and Helm support local disk and existing CNPG/S3 connections, migrations, TLS, health checks, and graceful shutdown.
+- [x] Shared conformance, PostgreSQL, restart, image, and chart checks pass.
+- [x] Release automation, documentation, and Changesets are complete.
 
 ## TODOs
 
@@ -24,7 +24,7 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - [x] Fence PostgreSQL migrations on the ownership connection and reject unsupported coordinator formats.
 - [x] Preserve durable counter wakeups when reads overlap newly accepted events.
 - [x] Package Docker and Helm, add release/CI checks, and document configuration and upgrades.
-- [ ] Run final validation, add Changesets, rebase, and file the PR.
+- [x] Run final validation and add Changesets before rebasing and filing the PR.
 
 ## Notes
 
@@ -47,3 +47,4 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - A new race test reproduced an older empty counter read deleting a concurrent event's wakeup. Alarm planning now serializes independently from counter ingestion; all 39 counter/portable coordinator tests pass.
 - Docker runs read-only as UID 1000 and passes real HTTP/SSR/WebSocket, social worker, object persistence, ownership, and restart checks with SQLite/filesystem and PostgreSQL/S3. Grype reports no fixable vulnerabilities after removing unused npm/Yarn and upgrading the affected Debian library. Helm default, CNPG/S3, and migration resources pass strict kubeconform validation. Actionlint and 39 release-tooling tests pass.
 - Release automation runs only after an approved app release. It publishes both CPU architectures, immutable app-version pairs, digest-pinned OCI charts, migration hashes, and checksums. No artifact publication or deployment was performed in this turn.
+- Final repository validation passed `pnpm check`, `pnpm test --concurrency=1` (2,694 package tests plus fixture/capacity/social/progress scripts), lint, and 39 release-tooling tests. The last counter fix passed 41 focused Cloudflare/SQLite/PostgreSQL coordinator and Node server tests, backend typecheck, and a Cloudflare dry-run build. The CNPG/S3 chart includes a public HTTPS origin and renders with its existing server Secret intact.
