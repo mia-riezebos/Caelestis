@@ -90,7 +90,7 @@ describe('rolling pace retention', () => {
     else expect(document.querySelector('[data-pace-rate="1d"]')?.textContent).toMatch(/1d\s*2/)
   })
 
-  it('removes overlapping archive snapshots from the plot, pace, and snapshot table', () => {
+  it('removes overlapping archive snapshots from the plot and pace', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,
       props: {
@@ -116,7 +116,6 @@ describe('rolling pace retention', () => {
       },
     })
     flushSync()
-    expect(document.querySelectorAll('details tbody tr')).toHaveLength(1)
     expect(document.querySelector('[data-archive-pace]')).toBeNull()
     document
       .querySelector('svg[role="img"]')
@@ -264,7 +263,6 @@ describe('rolling pace retention', () => {
       expect(document.querySelectorAll('circle[data-pace-singleton="1d"]')).toHaveLength(
         allGaps ? 0 : 1,
       )
-      expect(document.body.textContent).toContain('No coverage')
       expect(document.body.textContent).not.toContain('No paint activity')
       const chart = document.querySelector('svg[role="img"]')
       if (!(chart instanceof SVGSVGElement)) throw new Error('missing chart')

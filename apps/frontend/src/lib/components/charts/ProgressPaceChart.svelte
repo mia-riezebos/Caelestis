@@ -384,7 +384,6 @@
     }
     return segments
   })
-  const archiveSnapshotPaces = $derived(archiveIntervals(archiveSamples))
   // Join at the first saved native observation; current counts cannot reconstruct past progress.
   const archivePaces = $derived(archiveIntervals([
     ...archiveSamples,
@@ -1080,22 +1079,6 @@
   </div>
 
   {#if hasActivity}
-    {#if archiveSamples.length > 0}
-      <details class="text-xs text-base-content/65">
-        <summary class="cursor-pointer">Imported history · view snapshots</summary>
-        <div class="max-h-60 overflow-auto mt-2">
-          <table class="w-full text-start tabular-nums">
-            <caption class="text-start mb-2">Daily and longer pace uses imported net progress before reported placements. Gaps have no pace value.</caption>
-            <thead><tr><th scope="col" class="text-start">Snapshot</th><th scope="col">Correct pixels</th><th scope="col">Net px/h since previous snapshot</th></tr></thead>
-            <tbody>
-              {#each archiveSamples as sample (sample.at)}
-                <tr><th scope="row" class="text-start font-normal">{formatTime(sample.at)}</th><td class="text-center">{sample.correct === null ? 'No coverage' : sample.correct.toLocaleString()}</td><td class="text-center">{archiveSnapshotPaces.find((interval) => interval.to === sample.at)?.rate.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '—'}</td></tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      </details>
-    {/if}
     <div class="relative">
       <!-- The image is focusable so keyboard users can walk the data points; the live region below
            reads each one out. -->
