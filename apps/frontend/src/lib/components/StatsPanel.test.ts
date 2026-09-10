@@ -71,6 +71,48 @@ afterEach(async () => {
 })
 
 describe('retained history range', () => {
+  it('preserves a complete, unknown, complete transition in recent history', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_SECONDS * 1000)
+    api.getProgressHistory.mockImplementation((_id, _version, from) =>
+      Promise.resolve({
+        samples:
+          from === 0
+            ? [{ at: NOW_SECONDS - 7200, correct: 5, mismatched: 0, total: 100 }]
+            : [
+                { at: NOW_SECONDS - 5400, correct: null, mismatched: null, total: 100 },
+                { at: NOW_SECONDS - 3600, correct: 10, mismatched: 0, total: 100 },
+                { at: NOW_SECONDS - 1800, correct: null, mismatched: null, total: 100 },
+                { at: NOW_SECONDS - 900, correct: 20, mismatched: 0, total: 100 },
+              ],
+      }),
+    )
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        templates: [template('live', 0, null)],
+        season: 1,
+        liveDashboard: true,
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 30, mismatched: 0, unpainted: 70, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    const hover = (key: string) => {
+      document
+        .querySelector('svg[role="img"]')
+        ?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+      flushSync()
+      return document.querySelector('[data-pace-tooltip]')?.textContent
+    }
+    hover('End')
+    expect(hover('Home')).toMatch(/correct\s*5/)
+    expect(hover('ArrowRight')).toMatch(/correct\s*10/)
+    expect(hover('ArrowRight')).toContain('No coverage')
+    expect(hover('ArrowRight')).toMatch(/correct\s*20/)
+  })
+
   it('keeps successful saved observations after a transient refresh failure and requests recent finer history', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW_SECONDS * 1000)

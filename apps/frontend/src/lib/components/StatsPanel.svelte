@@ -132,8 +132,11 @@
         const samples = new Map(history.samples.map(sample => [sample.at, sample]))
         if (start < recentStart) {
           const recent = await getProgressHistory(template.id, template.version, recentStart, end)
+          let covered = false
           for (const sample of recent.samples) {
-            if (sample.correct !== null) samples.set(sample.at, sample)
+            if (sample.correct !== null) covered = true
+            // Only the leading unknowns lack the state carried by the lifetime read.
+            if (covered) samples.set(sample.at, sample)
           }
         }
         histories.push([...samples.values()].sort((a,b) => a.at - b.at))
