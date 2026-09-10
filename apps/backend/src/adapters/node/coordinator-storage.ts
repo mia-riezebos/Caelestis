@@ -13,6 +13,17 @@ export class SqlCoordinatorStorage implements CoordinatorStorage {
 
   static async initialize(database: CoordinatorDatabase): Promise<void> {
     await database.run(
+      'CREATE TABLE IF NOT EXISTS runtime_schema (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)',
+    )
+    await database.run(
+      'INSERT INTO runtime_schema (id, version) VALUES (1, 1) ON CONFLICT (id) DO NOTHING',
+    )
+    const schema = await database.one<{ version: number }>(
+      'SELECT version FROM runtime_schema WHERE id = 1',
+    )
+    if (schema?.version !== 1)
+      throw new Error(`Unsupported coordinator schema version: ${schema?.version}`)
+    await database.run(
       'CREATE TABLE IF NOT EXISTS runtime_values (actor TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (actor, key))',
     )
     await database.run(

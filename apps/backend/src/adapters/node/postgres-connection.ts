@@ -206,37 +206,36 @@ export class PostgresConnection implements TransactionalSqlConnection {
 
   /** Serialize migration jobs and verify immutable SQL before applying pending migrations. */
   async migrate(directory: string): Promise<void> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('BEGIN')
-      await client.query("SELECT pg_advisory_xact_lock(hashtext('caelestis-migrations'))")
-      await client.query(
-        'CREATE TABLE IF NOT EXISTS caelestis_migrations (name TEXT PRIMARY KEY, sha256 TEXT NOT NULL)',
-      )
-      for (const name of (await readdir(directory))
-        .filter((name) => name.endsWith('.sql'))
-        .sort()) {
-        const source = await readFile(join(directory, name), 'utf8')
-        const digest = createHash('sha256').update(source).digest('hex')
-        const previous = await client.query<{ sha256: string }>(
-          'SELECT sha256 FROM caelestis_migrations WHERE name = $1',
-          [name],
+    await this.withClient(async (client) => {
+      try {
+        await client.query('BEGIN')
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('caelestis-migrations'))")
+        await client.query(
+          'CREATE TABLE IF NOT EXISTS caelestis_migrations (name TEXT PRIMARY KEY, sha256 TEXT NOT NULL)',
         )
-        if (previous.rows[0]) {
-          if (previous.rows[0].sha256 !== digest)
-            throw new Error(`Migration changed after application: ${name}`)
-          continue
+        for (const name of (await readdir(directory))
+          .filter((name) => name.endsWith('.sql'))
+          .sort()) {
+          const source = await readFile(join(directory, name), 'utf8')
+          const digest = createHash('sha256').update(source).digest('hex')
+          const previous = await client.query<{ sha256: string }>(
+            'SELECT sha256 FROM caelestis_migrations WHERE name = $1',
+            [name],
+          )
+          if (previous.rows[0]) {
+            if (previous.rows[0].sha256 !== digest)
+              throw new Error(`Migration changed after application: ${name}`)
+            continue
+          }
+          await client.query(source)
+          await client.query('INSERT INTO caelestis_migrations VALUES ($1, $2)', [name, digest])
         }
-        await client.query(source)
-        await client.query('INSERT INTO caelestis_migrations VALUES ($1, $2)', [name, digest])
+        await client.query('COMMIT')
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
       }
-      await client.query('COMMIT')
-    } catch (error) {
-      await client.query('ROLLBACK')
-      throw error
-    } finally {
-      client.release()
-    }
+    })
   }
 
   async close(): Promise<void> {

@@ -80,6 +80,14 @@ describe.each(adapters)('$name durable coordination', ({ make }) => {
     await harness?.close()
   })
 
+  it('refuses to start against a newer coordinator data format', async () => {
+    const database = coordinatorDatabase(harness.connection)
+    await database.run('UPDATE runtime_schema SET version = 2 WHERE id = 1')
+    await expect(SqlCoordinatorStorage.initialize(database)).rejects.toThrow(
+      'Unsupported coordinator schema version: 2',
+    )
+  })
+
   it('persists values and alarms across reconnect and rolls back failed state publication', async () => {
     await storage.transaction(async (transaction) => {
       await transaction.put('job', { cursor: 2 })
