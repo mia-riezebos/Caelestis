@@ -1,0 +1,25 @@
+server:
+  existingSecret: caelestis-server
+  origin: https://caelestis.example.com
+database:
+  adapter: mariadb
+  host: mariadb.default.svc
+  port: 3306
+  existingSecret: caelestis-mariadb
+  secretKeys:
+    username: username
+    password: password
+    database: database
+  tls:
+    mode: verify-full
+    existingSecret: mariadb-ca
+storage:
+  adapter: s3
+  s3:
+    bucket: caelestis
+    endpoint: https://s3.example.com
+    region: us-east-1
+    forcePathStyle: true
+    existingSecret: caelestis-s3
+persistence:
+  enabled: false

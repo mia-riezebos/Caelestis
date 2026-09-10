@@ -26,25 +26,36 @@ securityContext:
 {{- with .Values.imagePullSecrets }}
 imagePullSecrets: {{ toYaml . | nindent 2 }}
 {{- end }}
+initContainers:
+  - name: prepare-objects
+    image: {{ include "caelestis.image" . | quote }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    command: [node, -e, "require('node:fs').mkdirSync('/data/objects', {recursive:true, mode:0o700})"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities: { drop: [ALL] }
+    volumeMounts:
+      - { name: data, mountPath: /data }
 containers:
-  - name: caelestis
+  - name: backend
     image: {{ include "caelestis.image" . | quote }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}
     {{- if .Values.migration.enabled }}
     command: [node, apps/backend/dist/node/main.js, migrate]
     {{- else }}
     ports:
-      - name: http
-        containerPort: 3000
+      - name: backend
+        containerPort: 3001
     startupProbe:
-      httpGet: { path: /health/ready, port: http }
+      httpGet: { path: /health/ready, port: backend }
       failureThreshold: 60
       periodSeconds: 5
     readinessProbe:
-      httpGet: { path: /health/ready, port: http }
+      httpGet: { path: /health/ready, port: backend }
       periodSeconds: 10
     livenessProbe:
-      httpGet: { path: /health/live, port: http }
+      httpGet: { path: /health/live, port: backend }
       periodSeconds: 10
     {{- end }}
     securityContext:
@@ -62,6 +73,7 @@ containers:
       {{- end }}
     {{- end }}
     env:
+      - { name: PORT, value: '3001' }
       - { name: REPLICAS, value: '1' }
       - { name: DB_ADAPTER, value: {{ .Values.database.adapter | quote }} }
       - { name: OBJECT_STORAGE, value: {{ .Values.storage.adapter | quote }} }
@@ -87,7 +99,22 @@ containers:
             key: {{ $key | quote }}
       {{- end }}
       {{- if .Values.database.tls.existingSecret }}
-      - { name: PG_TLS_CA_FILE, value: /etc/caelestis/postgres/ca.crt }
+      - { name: PG_TLS_CA_FILE, value: /etc/caelestis/database/ca.crt }
+      {{- end }}
+      {{- end }}
+      {{- if eq .Values.database.adapter "mariadb" }}
+      - { name: MARIADB_HOST, value: {{ required "database.host must name the MariaDB primary" .Values.database.host | quote }} }
+      - { name: MARIADB_PORT, value: {{ .Values.database.port | quote }} }
+      - { name: MARIADB_TLS_MODE, value: {{ .Values.database.tls.mode | quote }} }
+      {{- range $name, $key := dict "MARIADB_USER" .Values.database.secretKeys.username "MARIADB_PASSWORD" .Values.database.secretKeys.password "MARIADB_DATABASE" .Values.database.secretKeys.database }}
+      - name: {{ $name }}
+        valueFrom:
+          secretKeyRef:
+            name: {{ required "database.existingSecret must contain application credentials" $.Values.database.existingSecret | quote }}
+            key: {{ $key | quote }}
+      {{- end }}
+      {{- if .Values.database.tls.existingSecret }}
+      - { name: MARIADB_TLS_CA_FILE, value: /etc/caelestis/database/ca.crt }
       {{- end }}
       {{- end }}
       {{- if eq .Values.storage.adapter "s3" }}
@@ -105,8 +132,56 @@ containers:
       - { name: data, mountPath: /data }
       - { name: tmp, mountPath: /tmp }
       {{- if .Values.database.tls.existingSecret }}
-      - { name: postgres-ca, mountPath: /etc/caelestis/postgres, readOnly: true }
+      - { name: database-ca, mountPath: /etc/caelestis/database, readOnly: true }
       {{- end }}
+  {{- if not .Values.migration.enabled }}
+  - name: frontend
+    {{- with .Values.frontend.image }}
+    image: {{ printf "%s%s%s" .repository (ternary "@" ":" (ne .digest "")) (default (default $.Chart.AppVersion .tag) .digest) | quote }}
+    imagePullPolicy: {{ .pullPolicy }}
+    {{- end }}
+    ports:
+      - { name: http, containerPort: 3000 }
+    startupProbe:
+      httpGet: { path: /health/ready, port: http }
+      failureThreshold: 60
+      periodSeconds: 5
+    readinessProbe:
+      httpGet: { path: /health/ready, port: http }
+    livenessProbe:
+      httpGet: { path: /health/live, port: http }
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities: { drop: [ALL] }
+    resources: {{ toYaml .Values.frontend.resources | nindent 6 }}
+    {{- with .Values.storage.s3.existingSecret }}
+    envFrom:
+      - secretRef: { name: {{ . | quote }} }
+    {{- end }}
+    env:
+      - { name: CAELESTIS_SERVER, value: {{ printf "http://127.0.0.1:3001%s" .Values.server.basePath | quote }} }
+      - name: CAELESTIS_READ_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: {{ required "server.existingSecret must contain ADMIN_TOKEN and CAELESTIS_READ_TOKEN" .Values.server.existingSecret | quote }}
+            key: CAELESTIS_READ_TOKEN
+      - { name: OBJECT_STORAGE, value: {{ .Values.storage.adapter | quote }} }
+      {{- with .Values.server.origin }}
+      - { name: ORIGIN, value: {{ . | quote }} }
+      {{- end }}
+      {{- if eq .Values.storage.adapter "s3" }}
+      - { name: S3_BUCKET, value: {{ .Values.storage.s3.bucket | quote }} }
+      - { name: S3_REGION, value: {{ .Values.storage.s3.region | quote }} }
+      - { name: S3_FORCE_PATH_STYLE, value: {{ .Values.storage.s3.forcePathStyle | quote }} }
+      {{- with .Values.storage.s3.endpoint }}
+      - { name: S3_ENDPOINT, value: {{ . | quote }} }
+      {{- end }}
+      {{- end }}
+    volumeMounts:
+      - { name: data, mountPath: /data/objects, subPath: objects }
+      - { name: frontend-tmp, mountPath: /tmp }
+  {{- end }}
 volumes:
   - name: data
     {{- if .Values.persistence.enabled }}
@@ -117,8 +192,10 @@ volumes:
     {{- end }}
   - name: tmp
     emptyDir: {}
+  - name: frontend-tmp
+    emptyDir: {}
   {{- if .Values.database.tls.existingSecret }}
-  - name: postgres-ca
+  - name: database-ca
     secret:
       secretName: {{ .Values.database.tls.existingSecret | quote }}
       items:

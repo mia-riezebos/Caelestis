@@ -30,6 +30,7 @@ const shutdown = async (error?: Error) => {
 }
 try {
   let listeningPort = config.port
+  let rendererReadToken: string | undefined
   const runtime = await openNodeRuntime(config, objects, {
     onOwnershipLost: (error) => {
       ownershipFailure = error
@@ -40,6 +41,8 @@ try {
         const worker = new Worker(new URL('./social-worker.js', import.meta.url), {
           workerData: {
             site: `http://127.0.0.1:${listeningPort}`,
+            apiPath: `${config.basePath}/v1/`,
+            readToken: rendererReadToken,
             output: resolve(process.env.DATA_DIRECTORY ?? './data', 'social-cache'),
           },
         })
@@ -52,6 +55,7 @@ try {
       }),
   })
   close = () => runtime.close()
+  rendererReadToken = runtime.readToken
   if (ownershipFailure) {
     await runtime.close()
     throw ownershipFailure
@@ -60,10 +64,10 @@ try {
     await shutdown()
     console.info('Database migrations applied')
   } else {
-    const module: { handler: FrontendHandler } = await import(
-      pathToFileURL(resolve(process.env.FRONTEND_HANDLER ?? 'apps/frontend/build/handler.js')).href
-    )
-    const server = await listenNodeServer(runtime, config, module.handler)
+    const module: { handler: FrontendHandler } | undefined = process.env.FRONTEND_HANDLER
+      ? await import(pathToFileURL(resolve(process.env.FRONTEND_HANDLER)).href)
+      : undefined
+    const server = await listenNodeServer(runtime, config, module?.handler)
     if (ownershipFailure) {
       await server.close()
       throw ownershipFailure

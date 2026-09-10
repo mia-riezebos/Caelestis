@@ -29,6 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
+      mariadb:
+        image: mariadb:11.8@sha256:2d2f4095530294735a857cfe22bb101e19b0849b416911c796ec4aa81b164a62
+        env:
+          MARIADB_ROOT_PASSWORD: portable-test
+        ports: ['3306:3306']
+        options: --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 5s --health-timeout 5s --health-retries 20
       postgres:
         image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
         env:
@@ -38,6 +44,7 @@ jobs:
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       CAELESTIS_TEST_POSTGRES_URL: postgresql://postgres:portable-test@127.0.0.1:5432/caelestis
+      CAELESTIS_TEST_MARIADB_URL: mariadb://root:portable-test@127.0.0.1:3306
       CAELESTIS_TEST_S3_ENDPOINT: http://127.0.0.1:9000
       CAELESTIS_TEST_FRONTEND_HANDLER: ${{ github.workspace }}/apps/frontend/build/handler.js
     steps:
@@ -74,31 +81,39 @@ jobs:
     timeout-minutes: 30
     env:
       ADMIN_TOKEN: portable-compose-test
+      CAELESTIS_READ_TOKEN: portable-compose-read-test
       CAELESTIS_ENV_FILE: .env.example
-      CAELESTIS_IMAGE: caelestis:test
+      CAELESTIS_BACKEND_IMAGE: caelestis-backend:test
+      CAELESTIS_FRONTEND_IMAGE: caelestis-frontend:test
       COMPOSE_PROJECT_NAME: portable-ci
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.20.0
-      - name: Build production image
-        run: docker build --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" -t caelestis:test .
-      - name: Verify installed image with SQLite/filesystem and PostgreSQL/S3
-        run: node scripts/test-portable-image.mjs caelestis:test
-      - name: Verify Compose startup
+      - name: Build production images
         run: |
-          docker compose --env-file .env.example config --quiet
-          docker compose --env-file .env.example up -d --no-build --pull never --wait --wait-timeout 120
-          curl --fail http://127.0.0.1:3000/ > /dev/null
-      - name: Remove disposable Compose services and data
-        if: always()
-        run: docker compose --env-file .env.example down --volumes
+          docker build --target backend --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" -t caelestis-backend:test .
+          docker build --target frontend --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" -t caelestis-frontend:test .
+      - name: Verify installed images with every database adapter
+        run: node scripts/test-portable-image.mjs caelestis-backend:test caelestis-frontend:test
+      - name: Verify all Compose database and storage combinations
+        run: node scripts/test-portable-compose.mjs caelestis-backend:test caelestis-frontend:test
       - name: Scan production image
         id: scan
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
-          image: caelestis:test
+          image: caelestis-backend:test
+          output-format: json
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          grype-version: v0.118.0
+      - name: Scan frontend image
+        id: frontend-scan
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: caelestis-frontend:test
           output-format: json
           fail-build: true
           severity-cutoff: high
@@ -109,7 +124,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: portable-image-scan
-          path: ${{ steps.scan.outputs.json }}
+          path: |
+            ${{ steps.scan.outputs.json }}
+            ${{ steps.frontend-scan.outputs.json }}
 
   chart:
     runs-on: ubuntu-latest
@@ -130,6 +147,7 @@ jobs:
           helm lint deploy/helm/caelestis
           helm template local deploy/helm/caelestis | kubeconform -strict -summary
           helm template cnpg deploy/helm/caelestis -f deploy/helm/cnpg-s3.example.yaml | kubeconform -strict -summary
+          helm template mariadb deploy/helm/caelestis -f deploy/helm/mariadb-s3.example.yaml | kubeconform -strict -summary
           helm template migrate deploy/helm/caelestis --set replicaCount=0,migration.enabled=true | kubeconform -strict -summary
           if helm template invalid deploy/helm/caelestis --set replicaCount=2; then exit 1; fi
           if helm template invalid deploy/helm/caelestis --set persistence.enabled=false; then exit 1; fi

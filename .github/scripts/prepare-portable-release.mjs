@@ -45,7 +45,7 @@ if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
       }))
   writeFileSync(
     resolve(values['output-dir'], 'versions.json'),
-    `${JSON.stringify({ ...identity, commit: sha, postgresMigrations: migrations('apps/backend/migrations-postgres'), sqliteMigrations: migrations('apps/backend/migrations'), runtimeSchema: 1 }, null, 2)}\n`,
+    `${JSON.stringify({ ...identity, commit: sha, postgresMigrations: migrations('apps/backend/migrations-postgres'), mariaMigrations: migrations('apps/backend/migrations-mariadb'), sqliteMigrations: migrations('apps/backend/migrations'), runtimeSchema: 1 }, null, 2)}\n`,
   )
   writeFileSync(
     resolve(values['output-dir'], 'notes.md'),

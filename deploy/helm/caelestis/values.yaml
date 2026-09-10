@@ -1,10 +1,19 @@
 replicaCount: 1
 image:
-  repository: docker.io/miacx/caelestis
+  repository: docker.io/miacx/caelestis-backend
   tag: ''
   digest: ''
   pullPolicy: IfNotPresent
 imagePullSecrets: []
+frontend:
+  image:
+    repository: docker.io/miacx/caelestis-frontend
+    tag: ''
+    digest: ''
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: '2', memory: 1Gi }
 server:
   name: Caelestis
   origin: ''
@@ -12,7 +21,7 @@ server:
   season: 0
   openAccess: false
   basePath: /backend
-  existingSecret: ''
+  existingSecret: caelestis-server
 database:
   adapter: sqlite
   host: ''
@@ -59,7 +68,7 @@ resources:
     memory: 1Gi
 podAnnotations:
   prometheus.io/scrape: 'true'
-  prometheus.io/port: '3000'
+  prometheus.io/port: '3001'
   prometheus.io/path: /metrics
 extraEnv: []
 nodeSelector: {}

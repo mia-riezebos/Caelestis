@@ -1,8 +1,8 @@
-# #265 Ship a portable Docker image and Helm chart
+# #265 Ship portable backend and frontend images, adapters, and Helm chart
 
 ## Summary
 
-Keep Cloudflare supported and add a single-process Node deployment with SQLite or PostgreSQL/CNPG and filesystem or S3 object storage. Preserve existing behavior, durable jobs, and live reconciliation. Package the server and frontend as a versioned image and Helm chart.
+Keep Cloudflare supported and add separate Node backend and frontend containers with SQLite, PostgreSQL/CNPG, or MariaDB and filesystem or S3 storage. Preserve existing behavior, durable jobs, and live reconciliation. Package both images and the Helm chart together.
 
 ## Acceptance criteria
 
@@ -16,6 +16,9 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 
 ## TODOs
 
+- [x] Split runtime images and wire frontend HTTP/WebSocket access to the backend; validate authentication and restart behavior.
+- [x] Add composable PostgreSQL, S3, and external CNPG examples; update Helm and publication for both images.
+- [x] Add MariaDB migrations, configuration, SQL compatibility, ownership, and real database coverage, including Compose and Helm examples.
 - [x] Extract portable relational execution and add SQLite with migrations and shared conformance coverage.
 - [x] Add PostgreSQL/CNPG with explicit SQL dialect behavior, migrations, and real PostgreSQL conformance coverage.
 - [x] Add filesystem/S3 object adapters and portable social-image storage contracts with conformance coverage.
@@ -49,4 +52,9 @@ Keep Cloudflare supported and add a single-process Node deployment with SQLite o
 - Release automation runs only after an approved app release. It publishes both CPU architectures, immutable app-version pairs, digest-pinned OCI charts, migration hashes, and checksums. No artifact publication or deployment was performed in this turn.
 - Final repository validation passed `pnpm check`, `pnpm test --concurrency=1` (2,694 package tests plus fixture/capacity/social/progress scripts), lint, and 39 release-tooling tests. The last counter fix passed 41 focused Cloudflare/SQLite/PostgreSQL coordinator and Node server tests, backend typecheck, and a Cloudflare dry-run build. The CNPG/S3 chart includes a public HTTPS origin and renders with its existing server Secret intact.
 - Follow-up adds root `compose.yaml`, `.env.example`, persistent storage, image/port overrides, and Compose startup coverage in CI. Compose configuration and actionlint pass locally; Docker Desktop is stopped. The prior remote image/chart checks passed, while runtime setup failed on an S3 connection reset. Its bounded readiness retry now includes connection resets.
-- Mia selected Docker Hub username `miacx`. Its public profile exists, and `miacx/caelestis` returns 404. Compose, Helm, and image publishing now use that repository. The release workflow requires `DOCKERHUB_TOKEN`; Helm chart archives remain in GHCR. Public repository creation and actual publishing remain outside this implementation turn.
+- Mia selected Docker Hub username `miacx`, then requested separate images. Both `miacx/caelestis-backend` and `miacx/caelestis-frontend` return public 404s. Compose, Helm, and release automation now use those repositories and publish two digest manifests. Helm archives remain in GHCR. Repository creation, credentials, and actual publication remain outside this implementation turn.
+- Added MariaDB 11.8 on request, including strict InnoDB schema, binary text comparison, JSON and conditional-write compatibility, serializable batches, connection ownership, TLS, and an interrupted-DDL journal. Shared contracts and coordinator/server tests passed 293 assertions; 71 focused assertions passed after final JSON and Unicode fixes. Bootstrap read credentials cannot equal the admin token or revive a revoked token.
+- Separate images pass real HTTP, SSR, authenticated WebSockets, scheduled rendering, object persistence, ownership rejection, and restart checks with SQLite/filesystem, PostgreSQL/S3, and MariaDB/S3. Backend rendering reads the backend directly and does not depend on the frontend process.
+- All six Compose combinations (three databases, each with filesystem or S3) started successfully and served the frontend and read API. Frontend containers receive no database/admin credentials. External CNPG Compose configuration validates; local, CNPG/S3, MariaDB/S3, and migration charts pass strict Kubernetes schema validation.
+- Workspace typechecks, both Cloudflare builds, workflow validation, 39 release tests, and 10 social-rendering tests pass. Local image scanning could not download its vulnerability database because the host has only 2.4 GiB free; the scanner removed its partial download. CI builds and scans both images. No broad cache cleanup was performed.
+- The full backend suite passes 778 tests with MariaDB enabled (two PostgreSQL-only tests skipped in this pass); all 153 frontend tests pass. Dedicated MariaDB migration tests also cover semicolons and comment markers inside SQL literals.

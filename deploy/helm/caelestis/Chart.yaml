@@ -1,6 +1,6 @@
 apiVersion: v2
 name: caelestis
-description: Caelestis backend, frontend, and live coordination in one portable server
+description: Caelestis backend and frontend containers with portable storage and live coordination
 type: application
 version: 0.1.0
 appVersion: development

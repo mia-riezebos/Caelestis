@@ -23,13 +23,16 @@ export const buildSocialImages = async ({
   bucket = 'caelestis-blobs',
   storage,
   templateId,
+  apiPath = '/api/v1/',
+  readToken,
   readMapTile = cachedMapTiles(resolve(output, '.osm')),
 }) => {
-  const api = new URL('/api/v1/', site)
+  const api = new URL(apiPath, site)
   const read = async (path, init) => {
     const response = await fetch(new URL(path, api), {
       signal: AbortSignal.timeout(60_000),
       ...init,
+      ...(readToken ? { headers: { ...init?.headers, authorization: `Bearer ${readToken}` } } : {}),
     })
     if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`)
     return response

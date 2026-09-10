@@ -3,7 +3,9 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { setTimeout } from 'node:timers/promises'
 
 const image = process.argv[2]
-if (!image) throw new Error('Usage: node scripts/test-portable-image.mjs IMAGE')
+const frontendImage = process.argv[3]
+if (!image || !frontendImage)
+  throw new Error('Usage: node scripts/test-portable-image.mjs BACKEND_IMAGE FRONTEND_IMAGE')
 const prefix = `caelestis-smoke-${process.pid}-${Date.now()}`
 const containers = []
 const volumes = []
@@ -57,12 +59,43 @@ try {
     'server',
     '/data',
   ])
-  for (const adapter of ['sqlite', 'postgres']) {
+  run(`${prefix}-maria`, [
+    '-d',
+    '-e',
+    'MARIADB_ROOT_PASSWORD=smoke',
+    '-e',
+    'MARIADB_DATABASE=caelestis',
+    'mariadb:11.8@sha256:2d2f4095530294735a857cfe22bb101e19b0849b416911c796ec4aa81b164a62',
+  ])
+  for (const adapter of ['sqlite', 'postgres', 'mariadb']) {
     const name = `${prefix}-${adapter}`
     const volume = `${name}-data`
     volumes.push(volume)
     docker('volume', 'create', volume)
-    const env = ['-e', 'ADMIN_TOKEN=smoke-admin', '-e', 'SERVER_NAME=Portable smoke']
+    const frontendName = `${name}-frontend`
+    const env = [
+      '-e',
+      'ADMIN_TOKEN=smoke-admin',
+      '-e',
+      'SERVER_NAME=Portable smoke',
+      '-e',
+      'CAELESTIS_READ_TOKEN=smoke-read',
+    ]
+    if (adapter === 'mariadb')
+      env.push(
+        '-e',
+        'DB_ADAPTER=mariadb',
+        '-e',
+        `MARIADB_HOST=${prefix}-maria`,
+        '-e',
+        'MARIADB_USER=root',
+        '-e',
+        'MARIADB_PASSWORD=smoke',
+        '-e',
+        'MARIADB_DATABASE=caelestis',
+        '-e',
+        'MARIADB_TLS_MODE=disable',
+      )
     if (adapter === 'postgres')
       env.push(
         '-e',
@@ -71,10 +104,13 @@ try {
         `DATABASE_URL=postgresql://postgres:smoke@${prefix}-pg:5432/caelestis`,
         '-e',
         'PG_TLS_MODE=disable',
+      )
+    if (adapter !== 'sqlite')
+      env.push(
         '-e',
         'OBJECT_STORAGE=s3',
         '-e',
-        'S3_BUCKET=caelestis',
+        `S3_BUCKET=caelestis-${adapter}`,
         '-e',
         `S3_ENDPOINT=http://${prefix}-s3:9000`,
         '-e',
@@ -84,7 +120,7 @@ try {
         '-e',
         'AWS_SECRET_ACCESS_KEY=caelestis-smoke-password',
       )
-    if (adapter === 'postgres') {
+    if (adapter !== 'sqlite') {
       run(`${name}-setup`, [
         ...env,
         '-w',
@@ -97,25 +133,43 @@ try {
         import { createRequire } from 'node:module';
         const { S3Client, CreateBucketCommand } = createRequire(import.meta.resolve('@caelestis/storage/s3'))('@aws-sdk/client-s3');
         const client = new S3Client({ region: 'us-east-1', endpoint: process.env.S3_ENDPOINT, forcePathStyle: true });
-        await client.send(new CreateBucketCommand({ Bucket: 'caelestis' })); client.destroy();
+        await client.send(new CreateBucketCommand({ Bucket: process.env.S3_BUCKET })); client.destroy();
       `,
       ])
     }
     run(name, ['-d', '--read-only', '--tmpfs', '/tmp', '-v', `${volume}:/data`, ...env, image])
     await ready(name)
+    run(frontendName, [
+      '-d',
+      '--read-only',
+      '--tmpfs',
+      '/tmp',
+      '-v',
+      `${volume}:/data`,
+      ...env.flatMap((value) =>
+        /^(CAELESTIS_READ_TOKEN|OBJECT_STORAGE|S3_\w+|AWS_\w+)=/.test(value) ? ['-e', value] : [],
+      ),
+      '-e',
+      `CAELESTIS_SERVER=http://${name}:3000/backend`,
+      frontendImage,
+    ])
+    await ready(frontendName)
     const id = inside(
       name,
       `
       import assert from 'node:assert/strict';
       import { once } from 'node:events';
       import { WebSocket } from 'ws';
-      const site = 'http://127.0.0.1:3000';
+      const site = 'http://${frontendName}:3000';
       assert.equal((await fetch(site+'/backend/v1/manifest')).status, 401);
       const manifest = await (await fetch(site+'/api/v1/manifest')).json();
       assert.equal(manifest.server.liveSyncMax, 2);
       const page = await fetch(site); assert.equal(page.status, 200);
-      assert.ok((await page.text()).includes(manifest.server.id));
-      const ws = new WebSocket('ws://127.0.0.1:3000/api/v1/telemetry/live?season=0&scope=public&stateVector=1', ['caelestis.live.v2']);
+      const html = await page.text();
+      assert.ok(html.includes(manifest.server.id));
+      assert.ok(!html.includes('smoke-read') && !html.includes('smoke-admin'));
+      assert.equal((await fetch(site+'/backend/v1/manifest', {headers: {authorization: 'Bearer smoke-admin'}})).status, 200);
+      const ws = new WebSocket('ws://${frontendName}:3000/api/v1/telemetry/live?season=0&scope=public&stateVector=1', ['caelestis.live.v2']);
       const timeout = setTimeout(()=>process.exit(1), 10000);
       await once(ws, 'open'); const message = once(ws, 'message');
       ws.send(JSON.stringify({ type: 'state-vector', requestId: '01890f3e-7b2c-7abc-8def-000000000003', revision: null, projections: [] }));
@@ -130,7 +184,7 @@ try {
       import { Worker } from 'node:worker_threads';
       import { once } from 'node:events';
       process.chdir('/app');
-      const worker = new Worker('/app/apps/backend/dist/node/social-worker.js', { execArgv: [], workerData: { site: 'http://127.0.0.1:3000', output: '/data/social-smoke' } });
+      const worker = new Worker('/app/apps/backend/dist/node/social-worker.js', { execArgv: [], workerData: { site: 'http://127.0.0.1:3000', apiPath: '/backend/v1/', readToken: 'smoke-read', output: '/data/social-smoke' } });
       const [code] = await once(worker, 'exit');
       if (code !== 0) throw new Error('Packaged social worker failed');
     `,
@@ -153,7 +207,7 @@ try {
     )
     assert.notEqual(rejected.status, 0, 'A second application owner must fail startup')
     assert.equal(rejected.error, undefined, 'A second owner must fail promptly, not hang')
-    assert.match(rejected.stderr + rejected.stdout, /owner|lock|already running/i)
+    assert.match(rejected.stderr + rejected.stdout, /owns|owner|lock|already running/i)
     docker('restart', '--time', '35', name)
     await ready(name)
     inside(
@@ -161,7 +215,7 @@ try {
       `
       import assert from 'node:assert/strict';
       import { nodeObjectStorage } from '@caelestis/storage/node';
-      const manifest = await (await fetch('http://127.0.0.1:3000/api/v1/manifest')).json();
+      const manifest = await (await fetch('http://${frontendName}:3000/api/v1/manifest')).json();
       assert.equal(manifest.server.id, ${JSON.stringify(id)});
       const storage = nodeObjectStorage(process.env);
       const object = await storage.get('smoke/persisted');
@@ -173,7 +227,7 @@ try {
     console.log(`${adapter}: HTTP, SSR, WebSocket, ownership, objects, and restart passed`)
   }
 } finally {
-  for (const name of containers) spawnSync('docker', ['rm', '-f', name])
+  for (const name of containers) spawnSync('docker', ['rm', '-fv', name])
   for (const volume of volumes) spawnSync('docker', ['volume', 'rm', volume])
   docker('network', 'rm', prefix)
 }
