@@ -48,6 +48,44 @@ const paceToggle = (label: string): HTMLElement => {
 }
 
 describe('rolling pace retention', () => {
+  it('removes overlapping archive snapshots from the plot, pace, and snapshot table', () => {
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets: [],
+        resolution: 900,
+        from: 0,
+        to: 7200,
+        anchorCorrect: 30,
+        anchorMismatched: 0,
+        archiveSamples: [0, 3600, 5400].map((at) => ({
+          at,
+          snapshotId: at,
+          correct: 999,
+          mismatched: 0,
+          total: 1000,
+        })),
+        progressSamples: [3600, 7200].map((at) => ({
+          at,
+          correct: 20,
+          mismatched: 0,
+          total: 1000,
+        })),
+      },
+    })
+    flushSync()
+    expect(document.querySelectorAll('details tbody tr')).toHaveLength(1)
+    expect(document.querySelector('[data-archive-pace]')).toBeNull()
+    document
+      .querySelector('svg[role="img"]')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    flushSync()
+    expect(document.querySelector('[data-pace-tooltip]')?.textContent).not.toContain(
+      'Eralyon snapshot',
+    )
+    expect(document.querySelector('[data-pace-tooltip]')?.textContent).toMatch(/correct\s*20/)
+  })
+
   it('keeps a finished scope final observation even when its last folded bucket is unavailable', () => {
     mounted = mount(ProgressPaceChart, {
       target: document.body,

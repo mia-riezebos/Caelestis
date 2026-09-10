@@ -9,6 +9,8 @@ it('preserves real buckets and distinguishes missing archive coverage from a bla
       { at: 100, snapshotId: 1, hash: 'old' },
       { at: 200, snapshotId: 2, hash: null },
       { at: 3700, snapshotId: 3, hash: 'overlap' },
+      { at: 3600, snapshotId: 4, hash: 'same-time' },
+      { at: 7200, snapshotId: 5, hash: 'later-gap' },
     ],
   )
   expect(frames).toEqual([
@@ -16,6 +18,12 @@ it('preserves real buckets and distinguishes missing archive coverage from a bla
     { bucketStart: 200, hash: undefined, missing: true },
     { bucketStart: 3600, hash: 'real', reporters: 1 },
   ])
+})
+
+it('keeps the archive when no native frames exist', () => {
+  expect(
+    mergeArchiveFrames({ resolution: 3600, frames: [] }, [{ at: 100, snapshotId: 1, hash: 'old' }]),
+  ).toEqual([{ bucketStart: 100, hash: 'archive:old' }])
 })
 
 it('keeps net regressions and does not bridge incomplete observations', () => {

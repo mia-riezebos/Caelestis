@@ -45,7 +45,7 @@
 
   let {
     buckets,
-    archiveSamples = [],
+    archiveSamples: importedSamples = [],
     progressSamples = [],
     paceHistories = [],
     resolution,
@@ -90,6 +90,9 @@
     /** The right edge is now: the canvas is still being painted, so the last point is live. */
     live?: boolean
   } = $props()
+
+  const firstLive = $derived(Math.min(...progressSamples.map(sample => sample.at), (live || finished) ? to : Infinity))
+  const archiveSamples = $derived(importedSamples.filter(sample => sample.at < firstLive))
 
   /**
    * Saved observations supply completion areas. Reported placements supply rolling pace on the

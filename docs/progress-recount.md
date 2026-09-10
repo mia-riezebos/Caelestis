@@ -13,6 +13,11 @@ The chart dates those measurements at the bucket end. Missing measurements leave
 Archived progress remains tied to its own snapshot times. Both sources compare with the selected
 artwork version, so changing artwork can deliberately change the comparison basis.
 
+Eralyon backfill ends strictly before the first retained native observation for the version's tiles.
+For folded history, the first bucket's start is the cutoff because its exact capture time is unknown.
+Preview, running imports, and archive reads use this boundary. Previously imported overlaps remain
+stored but are excluded from charts and playback. Native gaps are never filled by later archive snapshots.
+
 ## Recount saved history
 
 Build the shared decoder and generate a local repair plan for one published world template:
