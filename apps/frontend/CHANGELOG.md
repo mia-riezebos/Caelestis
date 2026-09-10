@@ -1,5 +1,11 @@
 # @caelestis/frontend
 
+## 0.5.4
+
+### Patch Changes
+
+- 64cfabd: Include backfilled progress in the graph's time-range overview.
+
 ## 0.5.3
 
 ### Patch Changes
