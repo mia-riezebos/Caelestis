@@ -388,12 +388,6 @@
     return completionPace(history, archiveSamples, progressSamples ?? [], to, estimatePeriod.seconds)
   })
 
-  const estimateCoverage = $derived(
-    pace !== null && estimatePeriod.seconds !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
-      ? `${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} of data`
-      : null,
-  )
-
   const eta = $derived.by(() => {
     if (pace === null || pace.correct <= 0 || remainingPixels <= 0) return null
     return (remainingPixels / pace.correct) * 3_600
@@ -428,9 +422,6 @@
             {/each}
           </select>
         </label>
-        {#if estimateCoverage !== null}
-          <span>({estimateCoverage})</span>
-        {/if}
       </div>
     </div>
     {#if failed}

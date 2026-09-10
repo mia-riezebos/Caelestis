@@ -122,7 +122,6 @@ describe('retained history range', () => {
       flushSync()
       await vi.waitFor(() => expect(document.querySelector('svg[role="img"]')).not.toBeNull())
       await vi.waitFor(() => expect(document.body.textContent).toContain(expected))
-      expect(document.body.textContent).not.toContain('of data')
       expect(storage.get('caelestis:estimate-period')).toBe('"all"')
       expect(api.getHistory).toHaveBeenCalledTimes(11)
       await unmount(mounted)
@@ -245,7 +244,6 @@ describe('retained history range', () => {
           reported ? 'Estimated completion in ~2 d' : 'Estimated completion in ~34 h',
         ),
       )
-      expect(document.body.textContent).toContain(reported ? '3 d of data' : '2 d of data')
     },
   )
 
@@ -447,13 +445,13 @@ describe('retained history range', () => {
     flushSync()
     await vi.advanceTimersByTimeAsync(0)
     flushSync()
-    expect(document.body.textContent).toContain('3 d of data')
+    expect(document.body.textContent).toContain('Estimated completion in ~2 d')
     expect(api.getHistory).toHaveBeenCalledTimes(11)
     api.getHistory.mockImplementation(() => new Promise(() => {}))
     await vi.advanceTimersByTimeAsync(15_000)
     flushSync()
     expect(api.getHistory).toHaveBeenCalledTimes(22)
-    expect(document.body.textContent).toContain('3 d of data')
+    expect(document.body.textContent).toContain('Estimated completion in ~2 d')
     expect(document.body.textContent).not.toContain('Completion estimate unavailable')
   })
 
@@ -519,7 +517,9 @@ describe('retained history range', () => {
     restored.dispatchEvent(new Event('change', { bubbles: true }))
     flushSync()
     expect(api.getHistory).toHaveBeenCalledTimes(22)
-    await vi.waitFor(() => expect(document.body.textContent).toContain('40 d of data'))
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('Estimated completion in ~229 d'),
+    )
   })
   it('requests an all-history range through a finished scope boundary', async () => {
     const finishedAt = NOW_SECONDS - DAY_SECONDS
@@ -620,33 +620,6 @@ describe('retained history range', () => {
       expect(document.querySelector('[class*="animate-ping"]')).not.toBeNull()
     },
   )
-
-  it('formats partial-day coverage without exposing floating-point noise', async () => {
-    api.getHistory.mockImplementation((_templateIds, _from, _to, options) =>
-      Promise.resolve(
-        options?.maxResolution === 43_200
-          ? {
-              resolution: 900,
-              coverageStart: seconds(NOW_SECONDS - 10.5 * 3_600),
-              buckets: [],
-            }
-          : { buckets: [] },
-      ),
-    )
-    mounted = mount(StatsPanel, {
-      target: document.body,
-      props: {
-        season: 0,
-        liveDashboard: true,
-        templates: [template('live', 0, null)],
-        subscribeDashboard: live.subscribe,
-        progress: { completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
-      },
-    })
-    flushSync()
-
-    await vi.waitFor(() => expect(document.body.textContent).toContain('10.5 h of data'))
-  })
 })
 
 describe('live counts', () => {
