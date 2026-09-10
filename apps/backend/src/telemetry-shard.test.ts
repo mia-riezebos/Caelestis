@@ -148,6 +148,19 @@ class SqliteDurableObjectStorage {
     }
   }
 
+  async transaction<T>(closure: () => Promise<T>): Promise<T> {
+    this.assertUngated()
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = await closure()
+      this.database.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   /**
    * Run `callback` as the sole permitted user of this storage. Membership is tracked by async
    * context rather than a flag, so the callback's own continuations after an `await` still count as

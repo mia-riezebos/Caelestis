@@ -17,3 +17,8 @@ export interface SqlConnection {
   prepare(query: string): SqlStatement
   batch<T = unknown>(statements: SqlStatement[]): Promise<SqlResult<T>[]>
 }
+
+/** Callback operations use the supplied connection and commit or roll back together. */
+export interface TransactionalSqlConnection extends SqlConnection {
+  transaction<T>(operation: (connection: SqlConnection) => Promise<T>): Promise<T>
+}

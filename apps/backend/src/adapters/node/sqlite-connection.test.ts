@@ -52,3 +52,34 @@ it('rejects changed migrations and leaves failed migrations unapplied', () => {
     database.close()
   }
 })
+
+it('keeps unrelated requests outside a transaction that yields and rolls back', async () => {
+  const database = new SqliteConnection(':memory:')
+  try {
+    await database.prepare('CREATE TABLE items (id TEXT PRIMARY KEY)').run()
+    let entered: () => void = () => {}
+    let resume: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const transaction = database.transaction(async (connection) => {
+      await connection.prepare("INSERT INTO items VALUES ('rolled-back')").run()
+      entered()
+      await paused
+      throw new Error('rollback')
+    })
+    await started
+    const unrelated = database.prepare("INSERT INTO items VALUES ('committed')").run()
+    resume()
+    await expect(transaction).rejects.toThrow('rollback')
+    await unrelated
+    expect((await database.prepare('SELECT * FROM items').all()).results).toEqual([
+      { id: 'committed' },
+    ])
+  } finally {
+    database.close()
+  }
+})

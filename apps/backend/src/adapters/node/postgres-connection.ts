@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Pool, type PoolClient, type PoolConfig, types } from 'pg'
-import type { SqlConnection, SqlResult, SqlStatement } from '../sql-connection.js'
+import type {
+  SqlConnection,
+  SqlResult,
+  SqlStatement,
+  TransactionalSqlConnection,
+} from '../sql-connection.js'
 
 /** Translate parameter markers while preserving quoted strings and identifiers verbatim. */
 export const postgresParameters = (query: string): string => {
@@ -33,9 +38,10 @@ class Statement implements SqlStatement {
     readonly owner: PostgresConnection,
     readonly query: string,
     readonly values: unknown[] = [],
+    readonly client?: PoolClient,
   ) {}
   bind(...values: unknown[]): Statement {
-    return new Statement(this.owner, this.query, values)
+    return new Statement(this.owner, this.query, values, this.client)
   }
 
   async execute(client: PoolClient) {
@@ -48,8 +54,7 @@ class Statement implements SqlStatement {
   }
 
   async run<T>(): Promise<SqlResult<T>> {
-    const client = await this.owner.pool.connect()
-    try {
+    const run = async (client: PoolClient): Promise<SqlResult<T>> => {
       const result = await this.execute(client)
       return {
         results: result.rows.map((row) =>
@@ -61,30 +66,29 @@ class Statement implements SqlStatement {
             : 0,
         },
       }
-    } finally {
-      client.release()
     }
+    return this.client ? run(this.client) : this.owner.withClient(run)
   }
-  async all<T>(): Promise<SqlResult<T>> {
+  all<T>(): Promise<SqlResult<T>> {
     return this.run<T>()
   }
   async first<T>(): Promise<T | null> {
     return (await this.run<T>()).results[0] ?? null
   }
   async raw<T>(): Promise<T[]> {
-    const client = await this.owner.pool.connect()
-    try {
-      return (await this.execute(client)).rows as T[]
-    } finally {
-      client.release()
-    }
+    const run = async (client: PoolClient) => (await this.execute(client)).rows as T[]
+    return this.client ? run(this.client) : this.owner.withClient(run)
   }
 }
 
 /** PostgreSQL/CNPG uses primary connections and one checked-out client per atomic batch. */
-export class PostgresConnection implements SqlConnection {
+export class PostgresConnection implements TransactionalSqlConnection {
   readonly dialect = 'postgres'
   readonly pool: Pool
+  private owner: PoolClient | undefined
+  private ownerFailure: Error | undefined
+  private ownerTail: Promise<unknown> = Promise.resolve()
+  private closing = false
 
   constructor(config: PoolConfig) {
     this.pool = new Pool({
@@ -101,6 +105,51 @@ export class PostgresConnection implements SqlConnection {
     })
   }
 
+  /** Hold the ownership lock on the same connection used for every application query. */
+  async claimOwnership(onLost: (error: Error) => void): Promise<void> {
+    if (this.owner) throw new Error('Ownership already acquired')
+    const client = await this.pool.connect()
+    const lost = (error: Error) => {
+      this.ownerFailure ??= error
+      if (!this.closing) onLost(error)
+    }
+    client.on('error', lost)
+    try {
+      const lock = await client.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtext('caelestis-runtime'), hashtext(current_schema())) AS acquired",
+      )
+      if (!lock.rows[0]?.acquired) throw new Error('Another Caelestis server owns this database')
+      this.owner = client
+    } catch (error) {
+      client.release(true)
+      throw error
+    }
+  }
+
+  /** Owned deployments never reconnect behind a lost ownership lock. */
+  async withClient<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+    const owner = this.owner
+    if (owner) {
+      const execute = () => {
+        if (this.closing) throw new Error('Database is closing')
+        if (this.ownerFailure) throw this.ownerFailure
+        return operation(owner)
+      }
+      const running = this.ownerTail.then(execute, execute)
+      this.ownerTail = running.then(
+        () => undefined,
+        () => undefined,
+      )
+      return running
+    }
+    const client = await this.pool.connect()
+    try {
+      return await operation(client)
+    } finally {
+      client.release()
+    }
+  }
+
   prepare(query: string): SqlStatement {
     return new Statement(this, query)
   }
@@ -115,39 +164,44 @@ export class PostgresConnection implements SqlConnection {
     }
   }
 
-  private async commitBatch<T>(statements: SqlStatement[]): Promise<SqlResult<T>[]> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE')
-      const results: SqlResult<T>[] = []
-      for (const statement of statements) {
-        if (!(statement instanceof Statement) || statement.owner !== this)
-          throw new Error('Statement belongs to another connection')
-        if (statement.query.includes("current_setting('caelestis.changed_rows')")) {
-          await client.query("SELECT set_config('caelestis.changed_rows', $1, true)", [
-            String(results.at(-1)?.meta.changes ?? 0),
-          ])
-        }
-        const result = await statement.execute(client)
-        results.push({
-          results: result.rows.map((row) =>
-            Object.fromEntries(result.fields.map((field, index) => [field.name, row[index]])),
-          ) as T[],
-          meta: {
-            changes: ['INSERT', 'UPDATE', 'DELETE'].includes(result.command)
-              ? (result.rowCount ?? 0)
-              : 0,
-          },
-        })
+  private async executeBatch<T>(
+    client: PoolClient,
+    statements: SqlStatement[],
+  ): Promise<SqlResult<T>[]> {
+    const results: SqlResult<T>[] = []
+    for (const statement of statements) {
+      if (!(statement instanceof Statement) || statement.owner !== this)
+        throw new Error('Statement belongs to another connection')
+      if (statement.query.includes("current_setting('caelestis.changed_rows')")) {
+        await client.query("SELECT set_config('caelestis.changed_rows', $1, true)", [
+          String(results.at(-1)?.meta.changes ?? 0),
+        ])
       }
-      await client.query('COMMIT')
-      return results
-    } catch (error) {
-      await client.query('ROLLBACK')
-      throw error
-    } finally {
-      client.release()
+      results.push(await new Statement(this, statement.query, statement.values, client).run<T>())
     }
+    return results
+  }
+
+  private commitBatch<T>(statements: SqlStatement[]): Promise<SqlResult<T>[]> {
+    return this.transaction((connection) => connection.batch<T>(statements))
+  }
+
+  async transaction<T>(operation: (connection: SqlConnection) => Promise<T>): Promise<T> {
+    return this.withClient(async (client) => {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE')
+      try {
+        const result = await operation({
+          dialect: 'postgres',
+          prepare: (query) => new Statement(this, query, [], client),
+          batch: <R>(statements: SqlStatement[]) => this.executeBatch<R>(client, statements),
+        })
+        await client.query('COMMIT')
+        return result
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      }
+    })
   }
 
   /** Serialize migration jobs and verify immutable SQL before applying pending migrations. */
@@ -185,7 +239,10 @@ export class PostgresConnection implements SqlConnection {
     }
   }
 
-  close(): Promise<void> {
-    return this.pool.end()
+  async close(): Promise<void> {
+    this.closing = true
+    await this.ownerTail
+    this.owner?.release(true)
+    await this.pool.end()
   }
 }

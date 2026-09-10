@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { SqlConnection, SqlResult, SqlStatement } from '../sql-connection.js'
+import type {
+  SqlConnection,
+  SqlResult,
+  SqlStatement,
+  TransactionalSqlConnection,
+} from '../sql-connection.js'
 
 type Value = null | number | bigint | string | NodeJS.ArrayBufferView
 
@@ -24,10 +29,11 @@ class Statement implements SqlStatement {
     readonly owner: SqliteConnection,
     readonly query: string,
     readonly values: Value[] = [],
+    readonly direct = false,
   ) {}
 
   bind(...values: unknown[]): Statement {
-    return new Statement(this.owner, this.query, values.map(binding))
+    return new Statement(this.owner, this.query, values.map(binding), this.direct)
   }
 
   execute<T>(): SqlResult<T> {
@@ -40,24 +46,27 @@ class Statement implements SqlStatement {
   }
 
   async run<T>(): Promise<SqlResult<T>> {
-    return this.execute<T>()
+    return this.owner.exclusive(() => this.execute<T>(), this.direct)
   }
   async all<T>(): Promise<SqlResult<T>> {
-    return this.execute<T>()
+    return this.run<T>()
   }
   async first<T>(): Promise<T | null> {
-    return this.execute<T>().results[0] ?? null
+    return (await this.run<T>()).results[0] ?? null
   }
   async raw<T>(): Promise<T[]> {
-    const statement = this.owner.sqlite.prepare(this.query)
-    statement.setReturnArrays(true)
-    return statement.all(...this.values) as T[]
+    return this.owner.exclusive(() => {
+      const statement = this.owner.sqlite.prepare(this.query)
+      statement.setReturnArrays(true)
+      return statement.all(...this.values) as T[]
+    }, this.direct)
   }
 }
 
-/** Persistent SQLite connection. Synchronous batches cannot interleave across async requests. */
-export class SqliteConnection implements SqlConnection {
+/** Persistent SQLite connection with serialized access across asynchronous transaction callbacks. */
+export class SqliteConnection implements TransactionalSqlConnection {
   readonly sqlite: DatabaseSync
+  private tail: Promise<unknown> = Promise.resolve()
 
   constructor(filename: string) {
     this.sqlite = new DatabaseSync(filename)
@@ -70,20 +79,44 @@ export class SqliteConnection implements SqlConnection {
     return new Statement(this, query)
   }
 
-  async batch<T>(statements: SqlStatement[]): Promise<SqlResult<T>[]> {
-    this.sqlite.exec('BEGIN IMMEDIATE')
-    try {
-      const results = statements.map((statement) => {
-        if (!(statement instanceof Statement) || statement.owner !== this)
-          throw new Error('Statement belongs to another connection')
-        return statement.execute<T>()
-      })
-      this.sqlite.exec('COMMIT')
-      return results
-    } catch (error) {
-      this.sqlite.exec('ROLLBACK')
-      throw error
-    }
+  /** Serialize connection use across asynchronous transaction callbacks. */
+  exclusive<T>(operation: () => T | Promise<T>, direct = false): Promise<T> {
+    if (direct) return Promise.resolve().then(operation)
+    const running = this.tail.then(operation, operation)
+    this.tail = running.then(
+      () => undefined,
+      () => undefined,
+    )
+    return running
+  }
+
+  private statements<T>(statements: SqlStatement[]): SqlResult<T>[] {
+    return statements.map((statement) => {
+      if (!(statement instanceof Statement) || statement.owner !== this)
+        throw new Error('Statement belongs to another connection')
+      return statement.execute<T>()
+    })
+  }
+
+  transaction<T>(operation: (connection: SqlConnection) => Promise<T>): Promise<T> {
+    return this.exclusive(async () => {
+      this.sqlite.exec('BEGIN IMMEDIATE')
+      try {
+        const result = await operation({
+          prepare: (query) => new Statement(this, query, [], true),
+          batch: async <R>(statements: SqlStatement[]) => this.statements<R>(statements),
+        })
+        this.sqlite.exec('COMMIT')
+        return result
+      } catch (error) {
+        this.sqlite.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  batch<T>(statements: SqlStatement[]): Promise<SqlResult<T>[]> {
+    return this.transaction(async () => this.statements<T>(statements))
   }
 
   /** Apply immutable migrations once, recording their digest in the same transaction. */
