@@ -331,14 +331,9 @@
     return [...times].sort((a, b) => a - b)
   })
 
-  /**
-   * Ordered ramp anchored at two colours that are legible by construction: the shortest window is
-   * the series blue itself, the longest is mostly foreground ink, and every step lies between
-   * them. Ramping toward a surface or toward "light" always sinks one end into the background in
-   * one theme or the other — that was the unreadable 30m line, twice.
-   */
+  /** Short windows are darker magenta; longer windows become lighter blue in both themes. */
   const paceColor = (rank: number): string =>
-    `color-mix(in oklab, var(--chart-placed) ${Math.round(100 - rank * 65)}%, var(--color-base-content))`
+    `color-mix(in oklch shorter hue, var(--pace-short) ${Math.round(100 - rank * 100)}%, var(--pace-long))`
   const paceWidth = (rank: number): number => 1.5 + rank * 1.25
 
   // ── Geometry ─────────────────────────────────────────────────────────────────────────────────

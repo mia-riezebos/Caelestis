@@ -140,6 +140,8 @@
 :root,
 [data-theme='caelestis'] {
   --chart-placed: #4093e4;
+  --pace-short: oklch(52% 0.19 325);
+  --pace-long: oklch(65% 0.16 265);
   --chart-correct: #0eb968;
   --painter-l: 52%;
   --painter-c: 0.16;
@@ -159,6 +161,8 @@
 
 [data-theme='caelestis-dark'] {
   --chart-placed: #4a8cd9;
+  --pace-short: oklch(64% 0.18 325);
+  --pace-long: oklch(84% 0.1 265);
   --chart-correct: #16a566;
   --painter-l: 74%;
   --painter-c: 0.14;
@@ -179,6 +183,8 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     --chart-placed: #4a8cd9;
+    --pace-short: oklch(64% 0.18 325);
+    --pace-long: oklch(84% 0.1 265);
     --chart-correct: #16a566;
     --painter-l: 74%;
     --painter-c: 0.14;
