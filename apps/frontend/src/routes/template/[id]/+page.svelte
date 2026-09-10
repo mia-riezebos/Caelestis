@@ -219,10 +219,14 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     {/if}
 
     <section class="overflow-hidden rounded-2xl border-[1.5px] border-base-300 bg-base-100">
-      <TemplateViewer {template} {hashFor} {overlayAlpha} class="h-[28rem] w-full" />
-      {#if missingTiles > 0}
-        <p class="px-4 py-2 text-sm text-base-content/70" role="status">No coverage for {missingTiles} {missingTiles === 1 ? 'tile' : 'tiles'} at this time. Showing earlier images where available.</p>
-      {/if}
+      <div class="relative">
+        <TemplateViewer {template} {hashFor} {overlayAlpha} class="h-[28rem] w-full" />
+        <div class="pointer-events-none absolute inset-x-3 bottom-3" role="status">
+          {#if missingTiles > 0}
+            <p class="w-fit rounded-lg border border-base-300 bg-base-100/95 px-3 py-2 text-sm text-base-content/70">No coverage for {missingTiles} {missingTiles === 1 ? 'tile' : 'tiles'} at this time. Showing earlier images where available.</p>
+          {/if}
+        </div>
+      </div>
 
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t-[1.5px] border-base-300 px-4 py-3">
         <span class="shrink-0 text-sm text-base-content/70">Template overlay</span>

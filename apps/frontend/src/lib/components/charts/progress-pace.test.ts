@@ -30,6 +30,11 @@ describe('pace summaries', () => {
     }
 
     expect(averagePace(history, 90_000, 86_400)).toEqual({
+      placed: 32.5,
+      correct: 16.25,
+      hours: 24,
+    })
+    expect(averagePace({ ...history, coverageStart: seconds(10_800) }, 90_000, 86_400)).toEqual({
       placed: 10,
       correct: 5,
       hours: 18,

@@ -7,6 +7,7 @@ import {
   painterHue,
   painterLabel,
   rankPainters,
+  selectAllPainters,
   togglePainterSelection,
 } from './painter-pace.js'
 
@@ -19,6 +20,11 @@ const painter = (wplaceUserId: number, displayName = `painter ${wplaceUserId}`):
 })
 
 describe('selection', () => {
+  it('sets every painter override and respects the request limit', () => {
+    const crowd = [1, 2, 3, 4].map((id) => painter(id))
+    expect(selectAllPainters(crowd, true, 3)).toEqual({ 1: true, 2: true, 3: true, 4: false })
+    expect(selectAllPainters(crowd, false)).toEqual({ 1: false, 2: false, 3: false, 4: false })
+  })
   it('picks a bounded set of leading painters in the order the server listed them', () => {
     const crowd = Array.from({ length: 20 }, (_, index) => painter(index + 1))
     expect([...defaultVisiblePainters(crowd)]).toEqual([1, 2, 3, 4, 5])

@@ -1,13 +1,5 @@
 import type { PainterTotal, WplaceUserId } from '@caelestis/shared'
 
-export const PAINTER_METRICS = [
-  { key: 'placed', label: 'placed', noun: 'placed pixels' },
-  { key: 'correct', label: 'correct', noun: 'correct pixels' },
-  { key: 'repairs', label: 'repairs', noun: 'repaired pixels' },
-] as const
-
-export type PainterMetric = (typeof PAINTER_METRICS)[number]['key']
-
 /** How many leading painters a fresh chart draws before anyone touches the picker. */
 export const DEFAULT_VISIBLE_PAINTERS = 5
 
@@ -34,6 +26,14 @@ export const togglePainterSelection = (
 
 /** A painter the picker can offer: `GET /telemetry/painters` already sums and orders them. */
 export type PainterOption = PainterTotal
+
+/** Set the entire picker selection in one update, within the history request limit. */
+export const selectAllPainters = (
+  options: readonly PainterOption[],
+  shown: boolean,
+  max = MAX_SELECTED_PAINTERS,
+): Record<number, boolean> =>
+  Object.fromEntries(options.map((painter, index) => [painter.wplaceUserId, shown && index < max]))
 
 /** The leading painters that a chart shows until the picker says otherwise. */
 export const defaultVisiblePainters = (

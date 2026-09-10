@@ -155,6 +155,109 @@ describe('retained history range', () => {
     expect(document.body.textContent).toContain('Saved progress history could not load.')
     expect(firstValue()).toMatch(/correct\s*10/)
   })
+
+  it('keeps the annual estimate visible while the next live history read is pending', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_SECONDS * 1000)
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => (key === 'caelestis:estimate-period' ? '"1y"' : null),
+      setItem: vi.fn(),
+    })
+    api.getHistory.mockResolvedValue({
+      resolution: 900,
+      coverageStart: seconds(NOW_SECONDS - 3 * DAY_SECONDS),
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: 900,
+          bucketStart: seconds(NOW_SECONDS - 900),
+          placed: 60,
+          correct: 60,
+          repairs: 0,
+        },
+      ],
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 60, mismatched: 0, unpainted: 40, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.advanceTimersByTimeAsync(0)
+    flushSync()
+    expect(document.body.textContent).toContain('over 3 d within the last year')
+    expect(api.getHistory).toHaveBeenCalledTimes(11)
+    api.getHistory.mockImplementation(() => new Promise(() => {}))
+    await vi.advanceTimersByTimeAsync(15_000)
+    flushSync()
+    expect(api.getHistory).toHaveBeenCalledTimes(22)
+    expect(document.body.textContent).toContain('over 3 d within the last year')
+    expect(document.body.textContent).not.toContain('Estimate unavailable')
+  })
+
+  it('changes and persists every ETA period using the loaded history', async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    })
+    api.getHistory.mockResolvedValue({
+      resolution: DAY_SECONDS,
+      coverageStart: seconds(0),
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: DAY_SECONDS,
+          bucketStart: seconds(NOW_SECONDS - DAY_SECONDS),
+          placed: 420,
+          correct: 420,
+          repairs: 0,
+        },
+      ],
+    })
+    const props = {
+      season: 0,
+      liveDashboard: false,
+      templates: [template('live', 0, null)],
+      subscribeDashboard: live.subscribe,
+      progress: { completed: 420, mismatched: 0, unpainted: 2400, known: 2820, total: 2820 },
+    }
+    mounted = mount(StatsPanel, { target: document.body, props })
+    flushSync()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('done in ~40 d'))
+    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')
+    if (select === null) throw new Error('missing estimate period')
+    expect(select.value).toBe('7d')
+    select.value = '1d'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    flushSync()
+    expect(document.body.textContent).toContain('done in ~6 d')
+    expect(storage.get('caelestis:estimate-period')).toBe('"1d"')
+    await unmount(mounted)
+    mounted = mount(StatsPanel, { target: document.body, props })
+    flushSync()
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')?.value,
+      ).toBe('1d'),
+    )
+    const restored = document.querySelector<HTMLSelectElement>('select[aria-label="Estimate over"]')
+    if (restored === null) throw new Error('missing estimate period')
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(22))
+    restored.value = '1y'
+    restored.dispatchEvent(new Event('change', { bubbles: true }))
+    flushSync()
+    expect(api.getHistory).toHaveBeenCalledTimes(22)
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('over 40 d within the last year'),
+    )
+  })
   it('requests an all-history range through a finished scope boundary', async () => {
     const finishedAt = NOW_SECONDS - DAY_SECONDS
     mounted = mount(StatsPanel, {
@@ -171,15 +274,14 @@ describe('retained history range', () => {
       },
     })
     flushSync()
-    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(8))
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(11))
 
     expect(api.getHistory).toHaveBeenCalledWith(['older', 'newer'], 0, finishedAt + 1)
     expect(
       api.getHistory.mock.calls
         .map((call) => call[3]?.maxResolution)
         .filter((resolution) => resolution !== undefined),
-    ).toEqual([900, 1_800, 3_600, 5_400, 10_800, 21_600, 43_200])
-    expect(document.body.textContent).not.toContain('last 7 days')
+    ).toEqual([900, 1_800, 3_600, 5_400, 10_800, 21_600, 43_200, 129_600, 302_400, 1_296_000])
   })
 
   it('ends at the current boundary when any included template is live', async () => {
@@ -197,7 +299,7 @@ describe('retained history range', () => {
       },
     })
     flushSync()
-    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(8))
+    await vi.waitFor(() => expect(api.getHistory).toHaveBeenCalledTimes(11))
 
     expect(api.getHistory).toHaveBeenCalledWith(['finished', 'live'], 0, NOW_SECONDS + 1)
   })
@@ -231,7 +333,7 @@ describe('retained history range', () => {
       })
       flushSync()
       await vi.advanceTimersByTimeAsync(0)
-      expect(api.getHistory).toHaveBeenCalledTimes(8)
+      expect(api.getHistory).toHaveBeenCalledTimes(11)
       const preset = document.querySelector<HTMLButtonElement>('[data-range-preset="6h"]')
       preset?.click()
       flushSync()
@@ -241,9 +343,9 @@ describe('retained history range', () => {
       flushSync()
       await vi.advanceTimersByTimeAsync(0)
 
-      expect(api.getHistory).toHaveBeenCalledTimes(16)
+      expect(api.getHistory).toHaveBeenCalledTimes(22)
       expect(api.getHistory).toHaveBeenLastCalledWith(['live'], 0, NOW_SECONDS + 16, {
-        maxResolution: 43_200,
+        maxResolution: 1_296_000,
       })
       expect(preset?.getAttribute('aria-pressed')).toBe('true')
       expect(document.querySelector('[data-handle="head"]')?.getAttribute('aria-valuenow')).toBe(
@@ -281,12 +383,75 @@ describe('retained history range', () => {
     flushSync()
 
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain('over 10.5 h within the last day'),
+      expect(document.body.textContent).toContain('over 10.5 h within the last 7 days'),
     )
   })
 })
 
 describe('live counts', () => {
+  it('includes imported contributions after template creation but before the first report', async () => {
+    api.getProgressHistory.mockResolvedValue({
+      samples: [
+        {
+          at: NOW_SECONDS - 2 * DAY_SECONDS + 3600,
+          correct: 22,
+          mismatched: 0,
+          total: 100,
+        },
+      ],
+    })
+    api.getArchiveHistory.mockResolvedValue({
+      source: 'eralyon',
+      basis: {
+        templateId: 'live',
+        versionId: 'version',
+        name: 'live',
+        season: 0,
+        bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+        total: 100,
+        chunks: [],
+      },
+      samples: [10, 22].map((correct, index) => ({
+        at: NOW_SECONDS - (3 - index) * DAY_SECONDS,
+        snapshotId: index,
+        correct,
+        mismatched: 0,
+        total: 100,
+      })),
+      frames: [],
+    })
+    api.getHistory.mockResolvedValue({
+      resolution: 900,
+      coverageStart: seconds(NOW_SECONDS - DAY_SECONDS),
+      buckets: [
+        {
+          templateId: 'live',
+          resolution: 900,
+          bucketStart: seconds(NOW_SECONDS - DAY_SECONDS),
+          placed: 7,
+          correct: 7,
+          repairs: 0,
+        },
+      ],
+    })
+    mounted = mount(StatsPanel, {
+      target: document.body,
+      props: {
+        season: 0,
+        liveDashboard: false,
+        templates: [template('live', 0, null)],
+        subscribeDashboard: live.subscribe,
+        progress: { completed: 29, mismatched: 0, unpainted: 71, known: 100, total: 100 },
+      },
+    })
+    flushSync()
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('[aria-label$="12 net correct pixels (imported)"]'),
+      ).not.toBeNull(),
+    )
+  })
+
   it('applies contributions and leaderboard snapshots from one live subscription', async () => {
     mounted = mount(StatsPanel, {
       target: document.body,
@@ -453,6 +618,18 @@ describe('painter pace', () => {
     expect(
       document.querySelector('[data-painter-option="10"] [data-painter-state]')?.textContent,
     ).toBe('drawn')
+
+    document.querySelector<HTMLButtonElement>('[data-painters-hide-all]')?.click()
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(0),
+    )
+    document.querySelector<HTMLButtonElement>('[data-painters-show-all]')?.click()
+    flushSync()
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('path[data-painter-line]')).toHaveLength(14),
+    )
+    expect(api.getPainterHistory.mock.calls.at(-1)?.[1]).toEqual([5, 6, 7, 8, 9, 10, 11])
   })
 
   it('draws the template lines alone when the server has no painter buckets', async () => {

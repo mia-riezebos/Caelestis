@@ -14,8 +14,6 @@
   import { fade, type TransitionConfig } from 'svelte/transition'
   import { type Persisted, persisted } from '$lib/persisted.svelte'
   import {
-    PAINTER_METRICS,
-    type PainterMetric,
     type PainterOption,
     painterColour,
     painterLabel,
@@ -34,13 +32,14 @@
     type PaceRatePoint,
     type PainterHistorySource,
     rollingPaceSeries,
+    rollingIntervalPace,
+    paceIntervals,
     snapTime,
     timeTickStep,
     type TimeWindow,
     windowKeyStep,
   } from '$lib/components/charts/progress-pace'
-  import SlidingTabs from '$lib/components/charts/SlidingTabs.svelte'
-  import { archiveIntervals } from '$lib/archive-history'
+  import { archiveIntervals, isDailyArchiveInterval } from '$lib/archive-history'
   import { mergeObservedProgress } from '$lib/progress-history'
 
   let {
@@ -58,6 +57,7 @@
     painters = [],
     selectedPainters = new Set<number>(),
     onTogglePainter = () => {},
+    onSetAllPainters = () => {},
     painterHistories = [],
     windows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h']),
   }: {
@@ -71,6 +71,7 @@
     /** The painters being drawn; whoever fetches `painterHistories` owns this. */
     selectedPainters?: ReadonlySet<number>
     onTogglePainter?: (wplaceUserId: number) => void
+    onSetAllPainters?: (shown: boolean) => void
     /** The selected painters' retained sources for the enabled rolling windows. */
     painterHistories?: readonly PainterHistorySource[]
     /** The enabled rolling windows, shared with whoever fetches the painter sources. */
@@ -186,12 +187,13 @@
 
   const retainedPacePoints = (source: PaceHistorySource): PacePoint[] => {
     const { buckets: paceBuckets, coverageStart, resolution: paceResolution } = source.history
-    if (paceResolution === undefined || coverageStart === undefined) return []
+    if (paceResolution === undefined || coverageStart === undefined || paceBuckets.length === 0) return []
     const placedByStart = new Map<number, number>()
     for (const bucket of paceBuckets) {
       placedByStart.set(bucket.bucketStart, (placedByStart.get(bucket.bucketStart) ?? 0) + bucket.placed)
     }
-    const firstBucket = Math.ceil(coverageStart / paceResolution) * paceResolution
+    const start = archiveSamples.length === 0 ? coverageStart : Math.max(coverageStart, Math.min(...paceBuckets.map((bucket) => bucket.bucketStart)))
+    const firstBucket = Math.ceil(start / paceResolution) * paceResolution
     const filled: PacePoint[] = []
     let cumPlaced = 0
     for (let t = firstBucket; t + paceResolution <= to; t += paceResolution) {
@@ -211,9 +213,13 @@
             windowUsable(pace.seconds, retained.history.resolution)
           ? { points: retainedPacePoints(retained), resolution: retained.history.resolution }
           : null
-      const fullSeries =
-        source === null ? [] : rollingPaceSeries(source.points, source.resolution, pace.seconds)
-      return { ...pace, usable: fullSeries.length > 0, fullSeries }
+      const reported = source === null ? [] : paceIntervals(source.points, source.resolution)
+      const reportStart = reported[0]?.from ?? Infinity
+      const imported = pace.seconds < 86_400 ? [] : archivePaces
+        .filter((interval) => interval.to <= reportStart && interval.to <= to)
+        .map((interval) => ({ from: interval.from, to: interval.to, pixels: interval.endCorrect - interval.startCorrect, dailyObservation: isDailyArchiveInterval(interval) }))
+      const segments = rollingIntervalPace([...imported, ...reported], pace.seconds)
+      return { ...pace, usable: segments.length > 0, segments }
     }),
   )
 
@@ -230,15 +236,7 @@
   // ── Painters ─────────────────────────────────────────────────────────────────────────────────
   // Painter lines are the same rolling windows over the same ladder, one line per painter per
   // enabled window. Colour says who, width says which window, exactly as for the template lines.
-  const storedMetric = persisted<PainterMetric>('caelestis:painter-metric', 'placed')
-  const painterMetric = $derived<PainterMetric>(
-    PAINTER_METRICS.some((candidate) => candidate.key === storedMetric.value)
-      ? storedMetric.value
-      : 'placed',
-  )
-  const painterMetricNoun = $derived(
-    PAINTER_METRICS.find((candidate) => candidate.key === painterMetric)?.noun ?? painterMetric,
-  )
+  const painterMetricNoun = 'placed pixels'
   /** The painter under the picker's pointer or keyboard, drawn on top with the others dimmed. */
   let spotlightPainter = $state<number | null>(null)
 
@@ -254,7 +252,7 @@
       if (bucket.wplaceUserId !== wplaceUserId) continue
       byStart.set(
         bucket.bucketStart,
-        (byStart.get(bucket.bucketStart) ?? 0) + bucket[painterMetric],
+        (byStart.get(bucket.bucketStart) ?? 0) + bucket.placed,
       )
     }
     const firstBucket = Math.ceil(coverageStart / resolution) * resolution
@@ -324,10 +322,6 @@
     for (const sample of chartSamples) {
       if (sample.at >= shownView.from && sample.at <= shownView.to) times.add(sample.at)
     }
-    for (const interval of visibleArchivePaces) {
-      times.add(Math.max(interval.from, shownView.from))
-      times.add(Math.min(interval.to, shownView.to))
-    }
     for (const pace of activePaces) {
       for (const point of pace.series) times.add(point.t)
     }
@@ -391,21 +385,11 @@
     return segments
   })
   const archiveSnapshotPaces = $derived(archiveIntervals(archiveSamples))
-  const archivePaces = $derived(archiveSnapshotPaces)
-  const storedArchivePace = persisted<boolean>('caelestis:archive-net-pace', true)
-  const drawnArchivePaces = $derived(storedArchivePace.value !== false ? archivePaces : [])
-  const archivePaceSegments = $derived.by(() => {
-    const segments: PaceRatePoint[][] = []
-    let segment: PaceRatePoint[] | undefined
-    for (const interval of drawnArchivePaces) {
-      if (segment?.at(-1)?.t !== interval.from) {
-        segment = [{ t: interval.from, v: interval.rate }]
-        segments.push(segment)
-      }
-      segment?.push({ t: interval.to, v: interval.rate })
-    }
-    return segments
-  })
+  // Join at the first saved native observation; current counts cannot reconstruct past progress.
+  const archivePaces = $derived(archiveIntervals([
+    ...archiveSamples,
+    ...progressSamples.slice(0, 1).map(sample => ({ ...sample, snapshotId: -1 })),
+  ]))
   const paceOptions = $derived([
     ...paceWindows.map((pace, index) => ({
       key: pace.key,
@@ -415,18 +399,11 @@
       available: pace.usable || painterHistories.some((source) => source.window === pace.key && source.history.resolution !== undefined && windowUsable(pace.seconds, source.history.resolution) && source.history.buckets.length > 0),
       description: 'Rolling average',
     })),
-    ...(archiveSamples.length === 0 ? [] : [{
-      key: 'archive', label: 'Net progress', colour: 'var(--chart-placed)',
-      selected: storedArchivePace.value !== false, available: archivePaces.length > 0,
-      description: 'Between Eralyon snapshots',
-    }]),
   ])
   const visibleProgressSegments = $derived(progressSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpProgress)).filter((segment) => segment.length > 1))
   const isolatedProgressPoints = $derived(progressSegments.filter((segment) => segment.length === 1).flat().filter((point) => point.t >= shownView.from && point.t <= shownView.to))
-  const visibleArchivePaces = $derived(drawnArchivePaces.filter((interval) => interval.to >= shownView.from && interval.from <= shownView.to))
-  const visibleArchivePaceSegments = $derived(archivePaceSegments.map((segment) => clipSeries(segment, shownView.from, shownView.to, lerpRate)).filter((segment) => segment.length > 1))
-  const targetArchivePaces = $derived(archivePaceSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate)))
-  const rightMin = $derived(Math.min(0, ...targetArchivePaces.map((point) => point.v)))
+  const targetPaces = $derived(enabledPaces.flatMap((pace) => pace.segments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpRate))))
+  const rightMin = $derived(Math.min(0, ...targetPaces.map((point) => point.v)))
   const leftScale = $derived(
     axisScale(Math.max(0, ...progressSegments.flatMap((segment) => clipSeries(segment, view.from, view.to, lerpProgress).map((point) => point.v + point.mismatched))), 4, 1),
   )
@@ -434,10 +411,7 @@
     axisScale(
       Math.max(
         0,
-        ...targetArchivePaces.map((point) => point.v),
-        ...enabledPaces.flatMap((pace) =>
-          clipSeries(pace.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
-        ),
+        ...targetPaces.map((point) => point.v),
         ...painterLines.flatMap((line) =>
           clipSeries(line.fullSeries, view.from, view.to, lerpRate).map((point) => point.v),
         ),
@@ -479,18 +453,20 @@
     to: shownWindow.current.to,
   })
   const activePaces = $derived(
-    enabledPaces.map((pace) => {
-      const series = clipSeries(pace.fullSeries, shownView.from, shownView.to, lerpRate)
+    enabledPaces.flatMap((pace) => pace.segments.map((fullSeries, index) => {
+      const series = clipSeries(fullSeries, shownView.from, shownView.to, lerpRate)
       const last = series[series.length - 1]
-      if (last !== undefined && last.t < shownView.to) series.push({ ...last, t: shownView.to })
+      if (last !== undefined && last.t < shownView.to && to - last.t < resolution && points.length > 0) series.push({ ...last, t: shownView.to })
       return {
         ...pace,
+        id: `${pace.key}:${index}`,
+        fullSeries,
         rank:
           PACE_WINDOWS.findIndex((x) => x.key === pace.key) /
           Math.max(1, PACE_WINDOWS.length - 1),
         series,
       }
-    }),
+    })),
   )
 
   const activePainterLines = $derived(
@@ -621,15 +597,6 @@
     }
   }
 
-  const hoverArchivePace = $derived(hover === null ? undefined :
-    visibleArchivePaces.find((interval) => hover !== null && hover.t > interval.from && hover.t <= interval.to) ??
-    visibleArchivePaces.find((interval) => interval.from === hover?.t))
-  const hoverArchiveRate = $derived.by(() => {
-    if (hover === null) return null
-    const t = hover.t
-    return visibleArchivePaceSegments.map((segment) => interpolateValue(segment, t, (point) => point.v))
-      .find((value) => value !== null) ?? null
-  })
 
   const hoverPointer = (clientX: number, left: number): void =>
     hoverAt(nearestSorted(hoverSnapTimes, timeAt(clientX, left)))
@@ -707,7 +674,6 @@
       ...(point.archive ? ['Eralyon snapshot'] : []),
       point.cumCorrect === null ? 'No completion coverage' : `${point.cumCorrect.toLocaleString()} correct`,
       point.cumMismatched === null ? 'No mismatch coverage' : `${point.cumMismatched.toLocaleString()} mismatched`,
-      ...(hoverArchiveRate === null ? [] : [`Net progress ${formatCount(hoverArchiveRate)} px/h`]),
       ...paces,
       ...painterPaces,
     ].join(', ')
@@ -1053,10 +1019,7 @@
 
     <div class="flex items-center gap-2" role="group" aria-label="pace lines">
       <span class="text-base-content/65">pace</span>
-      <PacePicker options={paceOptions} onToggle={(key) => {
-        if (key === 'archive') storedArchivePace.value = !storedArchivePace.value
-        else toggleWindow(key)
-      }} />
+      <PacePicker options={paceOptions} onToggle={toggleWindow} />
     </div>
 
     {#if painters.length > 0 || paceWindows.some((pace) => pace.usable)}
@@ -1066,6 +1029,7 @@
           options={painters}
           selected={selectedPainters}
           onToggle={onTogglePainter}
+          onSetAll={onSetAllPainters}
           {allUsersShown}
           onToggleAllUsers={() => {
             storedAllUsers.value = !allUsersShown
@@ -1074,22 +1038,6 @@
             spotlightPainter = wplaceUserId
           }}
         />
-        {#if painterLines.length > 0}
-        <span class="text-base-content/65">painter metric</span>
-        <SlidingTabs
-          options={PAINTER_METRICS.map((candidate) => ({
-            key: candidate.key,
-            label: candidate.label,
-            title: `Draw painter lines from ${candidate.noun}`,
-          }))}
-          value={painterMetric}
-          label="painter metric"
-          name="painter-metric"
-          onselect={(key) => {
-            storedMetric.value = key as PainterMetric
-          }}
-        />
-        {/if}
       </div>
     {/if}
 
@@ -1134,10 +1082,10 @@
   {#if hasActivity}
     {#if archiveSamples.length > 0}
       <details class="text-xs text-base-content/65">
-        <summary class="cursor-pointer">Eralyon: dashed progress and interval net pace. View snapshot values</summary>
+        <summary class="cursor-pointer">Imported history · view snapshots</summary>
         <div class="max-h-60 overflow-auto mt-2">
           <table class="w-full text-start tabular-nums">
-            <caption class="text-start mb-2">Compared with the imported artwork version. Gaps have no completion or pace value.</caption>
+            <caption class="text-start mb-2">Daily and longer pace uses imported net progress before reported placements. Gaps have no pace value.</caption>
             <thead><tr><th scope="col" class="text-start">Snapshot</th><th scope="col">Correct pixels</th><th scope="col">Net px/h since previous snapshot</th></tr></thead>
             <tbody>
               {#each archiveSamples as sample (sample.at)}
@@ -1189,7 +1137,7 @@
             >
           {/if}
         {/each}
-        {#if activePaces.length > 0 || archivePaces.length > 0}
+        {#if activePaces.length > 0 || activePainterLines.length > 0}
           {#if rightMin < 0}
             <text x={width - pad.right + 8} y={yRight(rightMin) + 3} class="fill-base-content/50 text-[10px] tabular-nums">{formatCount(rightMin)}</text>
           {/if}
@@ -1207,7 +1155,7 @@
           {/each}
         {/if}
         <text x={pad.left - 8} y={9} text-anchor="end" class="fill-base-content/40 text-[9px]">px</text>
-        {#if activePaces.length > 0 || archivePaces.length > 0}
+        {#if activePaces.length > 0 || activePainterLines.length > 0}
           <text x={width - pad.right + 8} y={9} text-anchor="start" class="fill-base-content/40 text-[9px]"
             >px/h</text
           >
@@ -1239,7 +1187,7 @@
         {/each}
 
         <g class="chart-reveal">
-          {#each activePaces as pace (pace.key)}
+          {#each activePaces as pace (pace.id)}
             <path
               in:fade={{ duration: motion(250) }}
               out:fade={{ duration: motion(150) }}
@@ -1252,6 +1200,9 @@
               stroke-width={paceWidth(pace.rank)}
               stroke-linejoin="round"
             />
+            {#if pace.series.length === 1}
+              <circle data-pace-singleton={pace.key} cx={x(pace.series[0].t)} cy={yRight(pace.series[0].v)} r="3" fill={paceColor(pace.rank)} />
+            {/if}
           {/each}
 
           {#each visibleProgressSegments as segment (segment[0].t)}
@@ -1272,10 +1223,6 @@
               stroke-width="1.5" stroke-dasharray={archived ? '5 4' : undefined} stroke-linejoin="round" />
           {/each}
 
-          {#each visibleArchivePaceSegments as segment (segment[0].t)}
-            <path data-archive-pace d={linePath(segment)} fill="none"
-              stroke="var(--chart-placed)" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" />
-          {/each}
 
           {#each isolatedProgressPoints as point (point.t)}
             <g data-archive-singleton>
@@ -1354,10 +1301,7 @@
               class="stroke-base-100"
               stroke-width="1.5"
             />{/if}
-            {#if hoverArchiveRate !== null}
-              <circle cx={x(hover.t)} cy={yRight(hoverArchiveRate)} r="3" fill="var(--chart-placed)" class="stroke-base-100" stroke-width="1.5" />
-            {/if}
-            {#each activePaces as pace (pace.key)}
+            {#each activePaces as pace (pace.id)}
               {@const value = hoverPace(pace.series, hover.t)}
               {#if value !== null}
                 <circle
@@ -1415,11 +1359,8 @@
               <span>{hover.cumMismatched?.toLocaleString() ?? 'No coverage'}</span>
             </span>
           </div>
-          {#if hoverArchivePace !== undefined && hoverArchiveRate !== null}
-            <div data-archive-hover class="mt-2 border-t border-base-300 pt-1.5">
-              <div class="flex justify-between gap-3"><span>Net progress</span><span>{formatExactCount(Math.round(hoverArchiveRate * 100) / 100)} px/h</span></div>
-              <div class="mt-0.5 text-base-content/60">{#if hoverArchiveRate !== hoverArchivePace.rate}Interpolated between pace samples{:else}{formatTime(hoverArchivePace.from)} → {formatTime(hoverArchivePace.to)}{/if}</div>
-            </div>
+          {#if archiveSamples.length > 0 && activePaces.some((pace) => hover !== null && pace.seconds >= 86_400 && hover.t - pace.seconds < (points[0]?.t ?? Infinity) && hoverPace(pace.series, hover.t) !== null)}
+            <p class="mt-2 text-base-content/60">Includes imported net progress.</p>
           {/if}
           {#if hoverPaceRows.length > 0}
             <div class="mt-2 flex items-center justify-between border-t border-base-300 pt-1.5 text-base-content/60">

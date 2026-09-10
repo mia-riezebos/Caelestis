@@ -139,7 +139,7 @@ describe('painter lines', () => {
     expect(chart().getAttribute('aria-label')).toContain('3 of 7 painters')
   })
 
-  it('draws a window only from its own retained source and follows the metric switch', () => {
+  it('draws a window only from its own retained source', () => {
     stored.set('caelestis:pace-windows', JSON.stringify(['1h', '6h']))
     mountChart({
       painters: [painter(1)],
@@ -147,15 +147,7 @@ describe('painter lines', () => {
       painterHistories: sources(['1h'], [painterBucket(1, 6 * HOUR, { placed: 8, correct: 2 })]),
     })
     expect(lines()).toEqual(['1:1h'])
-    const placedPath = document.querySelector('path[data-painter-line="1"]')?.getAttribute('d')
-
-    document.querySelector<HTMLButtonElement>('button[data-painter-metric="correct"]')?.click()
-    flushSync()
-    expect(stored.get('caelestis:painter-metric')).toBe(JSON.stringify('correct'))
-    expect(document.querySelector('path[data-painter-line="1"]')?.getAttribute('d')).not.toBe(
-      placedPath,
-    )
-    expect(chart().getAttribute('aria-label')).toContain('correct pixels pace lines')
+    expect(chart().getAttribute('aria-label')).toContain('placed pixels pace lines')
   })
 
   it('announces each painter’s pace on the keyboard walk and lists it in the tooltip', () => {
@@ -302,6 +294,8 @@ describe('painter lines', () => {
     await vi.waitFor(() => expect(paceLines()).toBe(0))
     expect(lines()).toEqual(['1:1h'])
     expect(stored.get('caelestis:pace-all-users')).toBe('false')
+    expect(chart().querySelector('text[aria-label$="per hour"]')).not.toBeNull()
+    expect(chart().textContent).toContain('px/h')
     expect(document.querySelector('[data-all-users] [data-painter-state]')?.textContent).toBe(
       'not drawn',
     )

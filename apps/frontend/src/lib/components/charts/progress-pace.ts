@@ -8,6 +8,9 @@ export const PACE_WINDOWS = [
   { key: '6h', seconds: 21_600 },
   { key: '12h', seconds: 43_200 },
   { key: '1d', seconds: 86_400 },
+  { key: '3d', seconds: 3 * 86_400 },
+  { key: '7d', seconds: 7 * 86_400 },
+  { key: '30d', seconds: 30 * 86_400 },
 ] as const
 
 export type PaceWindowKey = (typeof PACE_WINDOWS)[number]['key']
@@ -42,28 +45,67 @@ export interface PaceRatePoint {
   readonly v: number
 }
 
+export interface PaceInterval {
+  readonly from: number
+  readonly to: number
+  readonly pixels: number
+  /** Daily capture times may drift; day-or-longer windows use the observed interval's average. */
+  readonly dailyObservation?: boolean
+}
+
+/** Roll complete windows over observed intervals, keeping coverage gaps as separate lines. */
+export const rollingIntervalPace = (
+  intervals: readonly PaceInterval[],
+  windowSeconds: number,
+): PaceRatePoint[][] => {
+  const segments: PaceRatePoint[][] = []
+  let run: { t: number; total: number }[] = []
+  let segment: PaceRatePoint[] = []
+  let left = 0
+  for (const interval of intervals) {
+    const duration = interval.to - interval.from
+    if (duration > windowSeconds && !(interval.dailyObservation && windowSeconds >= 86_400)) {
+      run = []
+      continue
+    }
+    if (run.at(-1)?.t !== interval.from) {
+      run = [{ t: interval.from, total: 0 }]
+      segment = []
+      left = 0
+    }
+    const total = (run.at(-1)?.total ?? 0) + interval.pixels
+    run.push({ t: interval.to, total })
+    const start = interval.to - windowSeconds
+    if (start < (run[0]?.t ?? interval.from)) continue
+    while ((run[left + 1]?.t ?? Infinity) <= start) left++
+    const before = run[left]
+    const after = run[left + 1]
+    if (before === undefined || after === undefined) continue
+    const baseline =
+      before.total + ((after.total - before.total) * (start - before.t)) / (after.t - before.t)
+    if (segment.length === 0) segments.push(segment)
+    segment.push({ t: interval.to, v: ((total - baseline) * 3_600) / windowSeconds })
+  }
+  return segments
+}
+
+/** Convert complete placement buckets into intervals without changing their time boundaries. */
+export const paceIntervals = (points: readonly PacePoint[], resolution: number): PaceInterval[] =>
+  points.map((point, index) => ({
+    from: point.t,
+    to: point.t + resolution,
+    pixels: point.cumPlaced - (points[index - 1]?.cumPlaced ?? 0),
+  }))
+
 /** Calculate trailing px/h windows at the end of each complete source bucket. */
 export const rollingPaceSeries = (
   source: readonly PacePoint[],
   bucketSeconds: number,
   windowSeconds: number,
-): PaceRatePoint[] => {
-  const series: PaceRatePoint[] = []
-  const steps = Math.round(windowSeconds / bucketSeconds)
-  for (let i = steps - 1; i < source.length; i++) {
-    const current = source[i]
-    if (current === undefined) continue
-    const before = i === steps - 1 ? 0 : source[i - steps]?.cumPlaced
-    if (before === undefined) continue
-    series.push({
-      t: current.t + bucketSeconds,
-      v: ((current.cumPlaced - before) / windowSeconds) * 3_600,
-    })
-  }
-  return series
-}
+): PaceRatePoint[] =>
+  rollingIntervalPace(paceIntervals(source, bucketSeconds), windowSeconds).flat()
 
-/** Average only complete retained buckets inside the requested window. */
+/** Average a trailing window ending at the latest complete retained bucket. */
 export const averagePace = (
   history: HistoryResponse,
   to: number,
@@ -72,8 +114,8 @@ export const averagePace = (
   const { coverageStart, resolution } = history
   if (coverageStart === undefined || resolution === undefined) return null
 
-  const from = Math.ceil(Math.max(to - windowSeconds, coverageStart) / resolution) * resolution
   const until = Math.floor(to / resolution) * resolution
+  const from = Math.ceil(Math.max(until - windowSeconds, coverageStart) / resolution) * resolution
   if (until <= from) return null
 
   let placed = 0

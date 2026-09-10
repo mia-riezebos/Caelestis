@@ -19,13 +19,14 @@
     getPainterTotals,
   } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
-  import { combineArchiveSamples } from '$lib/archive-history'
+  import { archiveContributionDays, combineArchiveSamples } from '$lib/archive-history'
   import { combineProgressSamples } from '$lib/progress-history'
   import {
     defaultVisiblePainters,
     MAX_PAINTER_OPTIONS,
     MAX_SELECTED_PAINTERS,
     togglePainterSelection,
+    selectAllPainters,
   } from '$lib/components/charts/painter-pace'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import {
@@ -104,6 +105,10 @@
 
   let history = $state<HistoryBucket[] | null>(null)
   let progressSamples = $state<readonly ProgressSample[]>([])
+  const importedContributions = $derived(archiveContributionDays(
+    archiveSamples,
+    Math.min(...(history ?? []).map((bucket) => bucket.bucketStart)),
+  ))
   let progressError = $state<string | null>(null)
   let progressScope: string | undefined
   // Current counts stream separately; saved history needs only a slow refresh.
@@ -171,6 +176,7 @@
     new Set(
       painters
         .filter((painter) => painterShown(painter.wplaceUserId))
+        .slice(0, MAX_SELECTED_PAINTERS)
         .map((painter) => painter.wplaceUserId),
     ),
   )
@@ -351,16 +357,25 @@
     }
   })
 
-  // Show the last 24 hours as pixels per hour.
+  const estimatePeriods = [
+    { key: '1d', seconds: DAY_SECONDS, label: 'day' },
+    { key: '3d', seconds: 3 * DAY_SECONDS, label: '3 days' },
+    { key: '7d', seconds: 7 * DAY_SECONDS, label: '7 days' },
+    { key: '30d', seconds: 30 * DAY_SECONDS, label: '30 days' },
+    { key: '1y', seconds: 365 * DAY_SECONDS, label: 'year' },
+  ] as const
+  const storedEstimatePeriod = persisted<string>('caelestis:estimate-period', '7d')
+  const estimatePeriod = $derived(estimatePeriods.find((period) => period.key === storedEstimatePeriod.value) ?? estimatePeriods[2])
+  // The 1d source already includes the entire retention ladder, including its permanent tier.
   const pace = $derived.by(() => {
-    const source = paceHistories.find((candidate) => candidate.window === '1d')
-    return source === undefined ? null : averagePace(source.history, to, DAY_SECONDS)
+    const history = paceHistories.find((candidate) => candidate.window === '1d')?.history
+    return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
   })
 
   const pacePeriod = $derived(
-    pace !== null && pace.hours < 23
-      ? `over ${pace.hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h within the last day`
-      : 'over the last day',
+    pace !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
+      ? `over ${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} within the last ${estimatePeriod.label}`
+      : `over the last ${estimatePeriod.label}`,
   )
 
   const eta = $derived.by(() => {
@@ -380,13 +395,25 @@
   <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <h2 class="font-semibold">Progress &amp; pace</h2>
-      <div class="text-xs tabular-nums text-base-content/60">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-base-content/60">
+        <label class="inline-flex items-center gap-2">
+          Estimate over
+          <select class="select select-xs w-auto" aria-label="Estimate over" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
+            {#each estimatePeriods as period (period.key)}
+              <option value={period.key}>{period.key}</option>
+            {/each}
+          </select>
+        </label>
+        <span>
         {#if pace !== null}
           <span class="whitespace-nowrap" title={`${formatPixels(pace.placed)} per hour`} aria-label={`${formatPixels(pace.placed)} per hour`}>{formatCount(pace.placed)} px/h</span> {pacePeriod}
           {#if eta !== null}
             · done in {formatEta(eta)} at this pace
           {/if}
+        {:else}
+          Estimate unavailable
         {/if}
+        </span>
       </div>
     </div>
     {#if failed}
@@ -411,6 +438,7 @@
         {painters}
         {selectedPainters}
         onTogglePainter={togglePainter}
+        onSetAllPainters={(shown) => { painterOverrides = selectAllPainters(painters, shown) }}
         {painterHistories}
         windows={storedWindows}
       />
@@ -433,7 +461,7 @@
     {#if contributions === null}
       <Skeleton class="h-28 w-full" />
     {:else}
-      <ContributionHeatmap days={contributions} />
+      <ContributionHeatmap days={contributions} imported={importedContributions} />
     {/if}
   </section>
 </div>

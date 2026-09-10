@@ -20,6 +20,7 @@
     options,
     selected,
     onToggle,
+    onSetAll = () => {},
     allUsersShown,
     onToggleAllUsers,
     onHover = () => {},
@@ -30,6 +31,7 @@
     /** Painters currently drawn. */
     selected: ReadonlySet<number>
     onToggle: (wplaceUserId: number) => void
+    onSetAll?: (shown: boolean) => void
     /** Whether the template's own rolling pace lines, everyone together, are drawn. */
     allUsersShown: boolean
     onToggleAllUsers: () => void
@@ -95,6 +97,12 @@
       align="start"
       class="caelestis-menu z-50 w-72 outline-none"
     >
+      {#if options.length > 0}
+        <div class="mb-2 flex gap-2" role="group" aria-label="All painter lines">
+          <button type="button" class="btn btn-xs btn-soft flex-1" data-painters-show-all onclick={() => onSetAll(true)}>{options.length > max ? `Show first ${max}` : 'Show all'}</button>
+          <button type="button" class="btn btn-xs btn-soft flex-1" data-painters-hide-all onclick={() => onSetAll(false)}>Hide all</button>
+        </div>
+      {/if}
       <!-- The command cursor is the keyboard's pointer: wherever it lands gets the spotlight. -->
       <Command.Root shouldFilter={false} loop class="flex flex-col gap-1" onValueChange={spotlight}>
         <Command.Input

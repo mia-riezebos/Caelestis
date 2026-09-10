@@ -63,7 +63,7 @@ export const combineArchiveSamples = (
     })
 }
 
-/** Net change belongs to the whole observed interval, not to a placement bucket or rolling window. */
+/** Net changes retain their observed intervals and signed regressions. */
 export const archiveIntervals = (samples: readonly ArchiveProgressSample[]) =>
   samples.flatMap((sample, index) => {
     const before = samples[index - 1]
@@ -78,3 +78,25 @@ export const archiveIntervals = (samples: readonly ArchiveProgressSample[]) =>
       },
     ]
   })
+
+/** Consecutive UTC capture dates count as daily observations despite hour-level drift. */
+export const isDailyArchiveInterval = (interval: {
+  readonly from: number
+  readonly to: number
+}): boolean => Math.floor(interval.to / 86_400) - Math.floor(interval.from / 86_400) <= 1
+
+/** Credit daily gains to the newer capture's UTC date; omit missed capture dates and live days. */
+export const archiveContributionDays = (
+  samples: readonly ArchiveProgressSample[],
+  liveFrom: number,
+): ReadonlyMap<number, number> => {
+  const daySeconds = 86_400
+  const liveDay = Math.floor(liveFrom / daySeconds) * daySeconds
+  const days = new Map<number, number>()
+  for (const interval of archiveIntervals(samples)) {
+    const day = Math.floor(interval.to / daySeconds) * daySeconds
+    if (!isDailyArchiveInterval(interval) || day >= liveDay) continue
+    days.set(day, (days.get(day) ?? 0) + Math.max(0, interval.endCorrect - interval.startCorrect))
+  }
+  return days
+}
