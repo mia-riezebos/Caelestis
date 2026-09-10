@@ -2,6 +2,7 @@ import {
   type ArchiveSnapshot,
   encodeIndexedPng,
   millis,
+  seconds,
   TILE_SIZE,
   TRANSPARENT_INDEX,
 } from '@caelestis/shared'
@@ -146,4 +147,49 @@ it('keeps start retryable when the first alarm cannot be scheduled', async () =>
   await h.engine.start('template', 'version', 10)
   await h.finish()
   expect((await h.engine.job())?.status).toBe('completed')
+})
+
+const observeLive = (sql: MemorySqlStore, at: number) =>
+  sql.recordTileObservation(
+    {
+      season: 0,
+      tile: { x: 0, y: 0 },
+      hash: 'd'.repeat(64),
+      observedAt: millis(at * 1000),
+      reportedAt: seconds(at),
+      reportedWithToken: 'a'.repeat(64),
+      reportedByUserId: 1,
+    },
+    [],
+  )
+
+it('excludes snapshots at and after the first native observation from preview and new imports', async () => {
+  const h = await setup()
+  await observeLive(h.sql, 200)
+  expect((await h.engine.preview('template')).snapshots.map((snapshot) => snapshot.at)).toEqual([
+    100,
+  ])
+  await h.engine.start('template', 'version', 10)
+  await h.finish()
+  expect(h.calls()).toBe(1)
+})
+
+it('stops an existing job when native history arrives and hides previously imported overlaps', async () => {
+  const h = await setup()
+  await h.engine.start('template', 'version', 10)
+  await h.finish()
+  await h.engine.start('template', 'version', 10)
+  await h.engine.step()
+  await observeLive(h.sql, 200)
+  await h.finish()
+  expect(await h.engine.job()).toMatchObject({
+    status: 'completed',
+    completed: 1,
+    total: 1,
+    to: 100,
+  })
+  expect((await h.engine.history('version')).samples.map((sample) => sample.at)).toEqual([100])
+  expect(
+    (await h.engine.history('version', { x: 0, y: 0 })).frames.map((frame) => frame.at),
+  ).toEqual([100])
 })

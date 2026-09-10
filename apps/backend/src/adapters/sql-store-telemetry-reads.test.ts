@@ -136,6 +136,25 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
 
   afterEach(() => harness.close())
 
+  it('finds the first native bucket across retained tiers without including other seasons or tiles', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    const id = 'template-1-version'
+    expect(await store.readFirstTemplateObservation(id)).toBeNull()
+    await store.recordTileObservation(observation({ reportedAt: seconds(DAY - 100) }), [])
+    await store.recordTileObservation(
+      observation({ season: 0, tile: { x: 0, y: 0 }, reportedAt: seconds(DAY - 50) }),
+      [],
+    )
+    expect(await store.readFirstTemplateObservation(id)).toBeNull()
+    const tile = { x: 0, y: 0 }
+    await store.recordTileObservation(observation({ tile, reportedAt: seconds(DAY + 10) }), [])
+    await store.recordTileObservation(observation({ tile, reportedAt: seconds(DAY + 20) }), [])
+    expect(await store.readFirstTemplateObservation(id)).toBe(DAY + 10)
+    await store.foldTileHistory(1, tile, seconds(DAY + 2 * 86400))
+    expect(await store.readFirstTemplateObservation(id)).toBe(DAY)
+    expect(await store.readFirstTemplateObservation('missing')).toBeNull()
+  })
+
   it.each([0, 3600, 86400])(
     'batched progress preserves tile-history quorum and latest-frame selection at resolution %s',
     async (resolution) => {

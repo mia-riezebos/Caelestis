@@ -1,7 +1,34 @@
 import { expect, it } from 'vitest'
 import { combineProgressSamples, mergeObservedProgress } from './progress-history'
 
-it('does not break covered intervals merely because the other source has not been recounted', () => {
+it('ends archive history before native history begins, including native coverage gaps', () => {
+  const archive = [1, 2, 3, 4, 5].map((at) => ({
+    at,
+    snapshotId: at,
+    correct: 99,
+    mismatched: 0,
+    total: 100,
+  }))
+  const observed = [
+    { at: 2, correct: 20, mismatched: 0, total: 100 },
+    { at: 4, correct: null, mismatched: null, total: 100 },
+    { at: 6, correct: 30, mismatched: 0, total: 100 },
+  ]
+  expect(
+    mergeObservedProgress(archive, observed).map((sample) => [
+      sample.at,
+      sample.correct,
+      sample.archive,
+    ]),
+  ).toEqual([
+    [1, 99, true],
+    [2, 20, false],
+    [4, null, false],
+    [6, 30, false],
+  ])
+})
+
+it('keeps native coverage unknown until its measurements have been recounted', () => {
   const archive = [1, 3].map((at) => ({
     at,
     snapshotId: at,
@@ -10,7 +37,7 @@ it('does not break covered intervals merely because the other source has not bee
     total: 100,
   }))
   const gap = { at: 2, correct: null, mismatched: null, total: 100 }
-  expect(mergeObservedProgress(archive, [gap]).map((sample) => sample.at)).toEqual([1, 3])
+  expect(mergeObservedProgress(archive, [gap]).map((sample) => sample.at)).toEqual([1, 2])
   expect(
     mergeObservedProgress([{ ...gap, snapshotId: 2 }], archive).map((sample) => sample.at),
   ).toEqual([1, 3])
@@ -47,7 +74,7 @@ it('prefers measured native observations at the same time and only adds current 
   const past = mergeObservedProgress(archive, observed)
   expect(past.map((sample) => [sample.correct, sample.archive])).toEqual([
     [10, true],
-    [10, true],
+    [null, false],
     [20, false],
   ])
   expect(
