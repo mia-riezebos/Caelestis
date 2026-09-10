@@ -1,5 +1,11 @@
 # @caelestis/backend
 
+## 0.4.1
+
+### Patch Changes
+
+- 5140200: Keep historical progress tied to saved canvas observations instead of recalculating it from current totals and placement reports.
+
 ## 0.4.0
 
 ### Minor Changes
