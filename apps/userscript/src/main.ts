@@ -83,6 +83,7 @@ import { installUserscriptUpdateCheck } from './userscript-update.js'
 import { loadAccount } from './wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 import { installColourPicker } from './wplace-picker.js'
+import { getWplaceState, installWplaceStateCapture } from './wplace-state.js'
 
 /**
  * Entry point.
@@ -274,12 +275,16 @@ const main = (): void => {
   registerProfileMemorySource('Marker draw batches', markerBatchMemoryBytes)
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
+  // Both traps must be armed before Wplace's modules evaluate; the state is built during startup.
+  step('wplace state capture', installWplaceStateCapture)
   step('map capture', installMapCapture)
   step('alliance surface observer', installAllianceSurfaceObserver)
   step('debug API', () => {
     installDebugApi({
       /** The captured MapLibre Map, for poking at its style and layers from the console. */
       map: () => getMap(),
+      /** Wplace's captured global state object, whose setters drive theme and dialogs. */
+      wplaceState: () => getWplaceState(),
       /** Each template's own switch beside the renderer's effective visibility decision. */
       templates: () =>
         localTemplates().map((template) => ({

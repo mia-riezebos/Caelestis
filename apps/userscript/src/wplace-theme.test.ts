@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   setStyle: vi.fn(),
   resources: [] as string[],
+  state: null as { theme: string } | null,
 }))
 
 vi.mock('./debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('./map-handle.js', () => ({ getMap: () => ({ setStyle: harness.setStyle }) }))
+vi.mock('./wplace-state.js', () => ({ getWplaceState: () => harness.state }))
 
 /** A stand-in for Wplace's setter: storage, attribute, and a pressed-state group in a dialog. */
 const installWplace = (initial = 'custom-winter', { settings = true } = {}): void => {
@@ -53,6 +55,7 @@ beforeEach(() => {
   document.head.innerHTML = ''
   localStorage.clear()
   harness.setStyle.mockClear()
+  harness.state = null
   harness.resources = ['https://maps.wplace.live/styles/liberty']
   vi.stubGlobal('performance', {
     ...performance,
@@ -67,6 +70,41 @@ afterEach(() => {
 })
 
 describe('toggleWplaceTheme', () => {
+  it('assigns the captured state object first, touching no DOM control', async () => {
+    installWplace('custom-winter')
+    const setter = vi.fn()
+    harness.state = {
+      get theme() {
+        return document.documentElement.getAttribute('data-theme') ?? ''
+      },
+      set theme(value: string) {
+        setter(value)
+        localStorage.setItem('theme', value)
+        document.documentElement.setAttribute('data-theme', value)
+      },
+    }
+    const { toggleWplaceTheme } = await import('./wplace-theme.js')
+
+    expect(toggleWplaceTheme()).toBe(true)
+    expect(setter).toHaveBeenCalledWith('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    await Promise.resolve()
+    expect(document.querySelector('dialog[open]')).toBeNull()
+    expect(harness.setStyle).not.toHaveBeenCalled()
+    expect(toggleWplaceTheme()).toBe(true)
+    expect(setter).toHaveBeenLastCalledWith('custom-winter')
+  })
+
+  it('falls through when the captured setter does not take effect', async () => {
+    installWplace('custom-winter', { settings: false })
+    harness.state = { theme: 'custom-winter' }
+    const { toggleWplaceTheme } = await import('./wplace-theme.js')
+
+    expect(toggleWplaceTheme()).toBe(true)
+    await vi.waitFor(() => expect(document.documentElement.getAttribute('data-theme')).toBe('dark'))
+    expect(harness.setStyle).toHaveBeenCalledOnce()
+  })
+
   it('clicks a visible native control and keeps every copy of the state together', async () => {
     installWplace('custom-winter')
     document.querySelector<HTMLElement>('[aria-label="Settings"]')?.click()

@@ -1,5 +1,6 @@
 import { log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
+import { getWplaceState } from './wplace-state.js'
 
 /**
  * Wplace's light and dark theme, toggled from a key.
@@ -13,6 +14,8 @@ import { getMap } from './map-handle.js'
  *
  * So this no longer depends on one selector. In order:
  *
+ * 0. Call their setter. `wplace-state.ts` catches the state object as it is built, and assigning
+ *    its `theme` is exactly what their button does. This is the normal path.
  * 1. If a theme control is on screen, click it. That runs their setter and keeps every copy of the
  *    state in step.
  * 2. Otherwise open the settings dialog with a stylesheet that hides it, click the control, and
@@ -210,6 +213,16 @@ const syncThroughSettings = async (theme: string): Promise<boolean> => {
 export const toggleWplaceTheme = (): boolean => {
   if (typeof document === 'undefined') return false
   const theme = nextTheme()
+  // Their own setter, when the state object was caught at startup: the direct, complete path.
+  const state = getWplaceState()
+  if (state !== null) {
+    try {
+      state.theme = theme
+      if (currentWplaceTheme() === theme) return true
+    } catch (error) {
+      warn('install', 'Wplace theme setter failed; falling back', String(error))
+    }
+  }
   const visible = nativeControlFor(theme)
   if (visible !== null && isEnabled(visible)) {
     visible.click()
