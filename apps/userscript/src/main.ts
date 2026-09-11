@@ -29,6 +29,7 @@ import {
   markerDensityMemoryBytes,
   markerGpuMemoryBytes,
 } from './gl/markers.js'
+import { installPresenceLayer, repaintPresence } from './gl/presence-layer.js'
 import { installKeyboardShortcuts } from './keyboard-shortcuts.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
 import { installPaintCursorTracking, syncPaintCursorMap } from './paint-cursor.js'
@@ -37,6 +38,8 @@ import {
   paintPaletteProgress,
   refreshPaintPaletteFocus,
 } from './paint-palette.js'
+import { installPresence, observePresenceFrame, onPresenceChange } from './presence-client.js'
+import { renderPresenceLabels } from './presence-labels.js'
 import {
   configureProfileRun,
   installProfile,
@@ -161,6 +164,7 @@ const attachOverlayLayer = (): void => {
     }
     if (getMap() === null) installMapCapture()
     installOverlayLayer()
+    installPresenceLayer()
     syncPaintCursorMap(getMap())
   }
   attach()
@@ -382,6 +386,19 @@ const main = (): void => {
   // Drafting Transparent writes nothing a canvas hook can see, so the only place it shows up is
   // wplace's crosshairs. Throttled inside; with nothing drafted there is nothing to read.
   step('drafted pixels', () => onFrame(reconcileDrafts, 'Reconcile drafted pixels'))
+  // Where this tab is looking and drafting, for the other painters; and their tags for us. The
+  // socket itself is throttled inside, so feeding it every frame costs a rect comparison.
+  step('presence', () => {
+    installPresence()
+    onPresenceChange(() => {
+      repaintPresence()
+      repaint()
+    })
+    onFrame(observePresenceFrame, 'Presence viewport')
+    onFrame((frame) => {
+      if (activeAllianceSurface() === null) renderPresenceLabels(frame)
+    }, 'Presence labels')
+  })
   /**
    * Start capturing before the first frame, not on it.
    *
