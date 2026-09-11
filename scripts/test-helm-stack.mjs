@@ -193,7 +193,8 @@ try {
       metadata: { name: 'caelestis-db' },
       spec: {
         instances: process.env.CAELESTIS_TEST_EXTENDED === 'true' ? 2 : 1,
-        imageName: 'ghcr.io/cloudnative-pg/postgresql:17.6',
+        imageName:
+          'ghcr.io/cloudnative-pg/postgresql:17.6@sha256:30b304a2e300ed80b6d1b740e4369e9b0f25599fb518de78c01fd9f25531791b',
         storage: { size: '1Gi' },
         bootstrap: { initdb: { database: 'caelestis', owner: 'caelestis' } },
       },
