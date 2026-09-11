@@ -168,6 +168,17 @@ describe('shortcut overrides', () => {
       'toggle-panel': [],
     })
   })
+
+  it('keeps a recording made on another layout even when its character is the default', () => {
+    // AZERTY: physical KeyQ reports "a", the character of the default chord.
+    const azerty = recorded('a', 'KeyQ')
+    const { overrides, displaced } = assignShortcutBinding({}, 'cycle-colour-previous', azerty)
+    expect(displaced).toEqual([])
+    expect(overrides).toEqual({ 'cycle-colour-previous': [azerty] })
+    const resolved = resolveShortcutBindings(overrides)
+    const qwertyA = keyBindingFromStroke(stroke('a', { code: 'KeyA' }), 'mac') as KeyBinding
+    expect(resolved['cycle-colour-previous'].some((b) => keyBindingMatches(b, qwertyA))).toBe(false)
+  })
 })
 
 describe('labels and keyboard codes', () => {

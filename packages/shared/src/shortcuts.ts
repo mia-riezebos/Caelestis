@@ -234,9 +234,19 @@ export const resolveShortcutBindings = (overrides: ShortcutOverrides = {}): Shor
   return resolved
 }
 
+/**
+ * Whether two stored chords are the same chord, not merely colliding ones. A recording carries the
+ * physical key it was made on; it equals a key-only default only when that physical key is the one
+ * the default's character sits on, so a recording made on another layout keeps its identity.
+ */
+const sameStoredBinding = (a: KeyBinding, b: KeyBinding): boolean =>
+  sameModifiers(a, b) &&
+  (a.key === b.key || a.key === '' || b.key === '') &&
+  mainKeyCode(a) === mainKeyCode(b)
+
 const sameBindingList = (a: readonly KeyBinding[], b: readonly KeyBinding[]): boolean =>
   a.length === b.length &&
-  a.every((binding, index) => sameKeyBinding(binding, b[index] as KeyBinding))
+  a.every((binding, index) => sameStoredBinding(binding, b[index] as KeyBinding))
 
 /**
  * Give an action one chord, or none. Any other action holding that chord loses it, so a stroke can
@@ -335,11 +345,16 @@ export const keyBindingCodes = (binding: KeyBinding, platform: ShortcutPlatform)
   if (binding.command) codes.push(platform === 'mac' ? 'MetaLeft' : 'ControlLeft')
   if (binding.alt) codes.push('AltLeft')
   if (binding.shift) codes.push('ShiftLeft')
-  if (binding.code !== '') codes.push(binding.code)
-  else if (/^[a-z]$/.test(binding.key)) codes.push(`Key${binding.key.toUpperCase()}`)
-  else if (/^[0-9]$/.test(binding.key)) codes.push(`Digit${binding.key}`)
-  else codes.push(CODE_BY_CHARACTER[binding.key] ?? binding.key)
+  codes.push(mainKeyCode(binding))
   return codes
+}
+
+/** The physical key a chord sits on: the recorded code, or the US position of its character. */
+function mainKeyCode(binding: KeyBinding): string {
+  if (binding.code !== '') return binding.code
+  if (/^[a-z]$/.test(binding.key)) return `Key${binding.key.toUpperCase()}`
+  if (/^[0-9]$/.test(binding.key)) return `Digit${binding.key}`
+  return CODE_BY_CHARACTER[binding.key] ?? binding.key
 }
 
 /** Join every chord of an action: `` ` or Shift+/ ``. Empty when the action has no key. */
