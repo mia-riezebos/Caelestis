@@ -16,6 +16,7 @@ const harness = vi.hoisted(() => ({
   cycleColour: vi.fn(),
   navigateColour: vi.fn(async () => true),
   peek: false,
+  overrides: {} as import('@caelestis/shared').ShortcutOverrides,
   setPeek: vi.fn((next: boolean) => {
     if (harness.peek === next) return false
     harness.peek = next
@@ -75,7 +76,11 @@ vi.mock('./paint-palette.js', () => ({
 }))
 vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: harness.setPeek }))
 vi.mock('./state.js', () => ({
-  getState: () => ({ appearance: harness.appearance, onlySelectedColour: false }),
+  getState: () => ({
+    appearance: harness.appearance,
+    onlySelectedColour: false,
+    shortcutOverrides: harness.overrides,
+  }),
   getSurfaceAppearance: () => harness.surfaceAppearance,
   onlySelectedColourFor: () => harness.onlySelected,
   setOnlySelectedColourFor: harness.setOnlySelectedColour,
@@ -117,6 +122,7 @@ const press = (key: string, init: KeyboardEventInit = {}): KeyboardEvent => {
 beforeEach(async () => {
   vi.clearAllMocks()
   harness.peek = false
+  harness.overrides = {}
   harness.onlySelected = false
   harness.moving = false
   harness.allianceActive = false
@@ -148,6 +154,37 @@ describe('keyboard shortcut actions', () => {
     window.dispatchEvent(new KeyboardEvent('keyup', { key: 'g', cancelable: true }))
     expect(harness.peek).toBe(false)
     expect(harness.triggerRepaint).toHaveBeenCalledTimes(2)
+  })
+
+  it('follows rebound chords, releasing a rebound peek whatever modifiers remain down', () => {
+    harness.overrides = {
+      'peek-overlays': [{ key: 'g', code: 'KeyG', command: false, shift: true, alt: false }],
+      'toggle-panel': [{ key: 'p', code: 'KeyP', command: false, shift: false, alt: false }],
+    }
+
+    expect(press('c').defaultPrevented).toBe(false)
+    expect(harness.togglePanel).not.toHaveBeenCalled()
+    expect(press('p', { code: 'KeyP' }).defaultPrevented).toBe(true)
+    expect(harness.togglePanel).toHaveBeenCalledOnce()
+
+    expect(press('g', { code: 'KeyG' }).defaultPrevented).toBe(false)
+    expect(harness.peek).toBe(false)
+    expect(press('G', { code: 'KeyG', shiftKey: true }).defaultPrevented).toBe(true)
+    expect(harness.peek).toBe(true)
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'g', code: 'KeyG', cancelable: true }))
+    expect(harness.peek).toBe(false)
+  })
+
+  it('leaves every key alone while a settings control records a binding', () => {
+    const recorder = document.createElement('button')
+    recorder.setAttribute('data-caelestis-key-capture', '')
+    document.body.append(recorder)
+    const event = new KeyboardEvent('keydown', { key: 'c', bubbles: true, cancelable: true })
+
+    recorder.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(harness.togglePanel).not.toHaveBeenCalled()
   })
 
   it('routes every template-local action through the shared focused-template selector', async () => {

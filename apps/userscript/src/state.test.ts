@@ -45,6 +45,26 @@ describe('server state boundaries', () => {
     stored = JSON.stringify({ notifyRegressions: 'false', notifyUpdates: null })
     expect(loadState()).toMatchObject(defaults)
   })
+
+  it('restores rebound shortcuts and drops chords it cannot read', async () => {
+    let stored = '{}'
+    vi.stubGlobal('GM_getValue', () => stored)
+    vi.stubGlobal('GM_setValue', (_key: string, value: string) => {
+      stored = value
+    })
+    const { getState, loadState, setState } = await import('./state.js')
+    expect(loadState().shortcutOverrides).toEqual({})
+
+    const panel = { key: 'p', code: 'KeyP', command: false, shift: true, alt: false }
+    setState({ shortcutOverrides: { 'toggle-panel': [panel], 'toggle-theme': [] } })
+    expect(loadState().shortcutOverrides).toEqual({ 'toggle-panel': [panel], 'toggle-theme': [] })
+    expect(getState().shortcutOverrides).toEqual({ 'toggle-panel': [panel], 'toggle-theme': [] })
+
+    stored = JSON.stringify({
+      shortcutOverrides: { 'toggle-panel': [{ code: 'no such code' }], nonsense: [{ key: 'q' }] },
+    })
+    expect(loadState().shortcutOverrides).toEqual({ 'toggle-panel': [] })
+  })
   it('round-trips local template claims and rejects invalid stored identities', async () => {
     const claim = { templateId: 'local-art', claimant: { wplaceUserId: 42, displayName: 'Mia' } }
     let stored = JSON.stringify({

@@ -1,5 +1,6 @@
+import { resolveShortcutBindings } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
-import { shortcutFor, shortcutPlatformFor } from './shortcuts.js'
+import { KEY_CAPTURE_ATTRIBUTE, shortcutFor, shortcutPlatformFor } from './shortcuts.js'
 
 const keydown = (
   key: string,
@@ -85,6 +86,38 @@ describe('shortcutFor', () => {
     ).toBeNull()
     expect(shortcutFor(keydown('z', { altKey: true, ctrlKey: true }), 'windows-linux')).toBeNull()
     expect(shortcutFor(keydown('r', { repeat: true }))).toBeNull()
+  })
+
+  it('does not claim keys aimed at a control that is recording a binding', () => {
+    const recorder = Object.assign(new EventTarget(), {
+      tagName: 'BUTTON',
+      getAttribute: (name: string) => (name === KEY_CAPTURE_ATTRIBUTE ? '' : null),
+    })
+    expect(shortcutFor(keydown('c', { target: recorder }))).toBeNull()
+    const host = Object.assign(new EventTarget(), { tagName: 'CAELESTIS-PANEL' })
+    const event = Object.assign(keydown('Escape', { target: host }), {
+      composedPath: () => [recorder, host],
+    })
+    expect(shortcutFor(event)).toBeNull()
+  })
+
+  it('follows rebound chords by physical key and keeps repeat rules per action', () => {
+    const bindings = resolveShortcutBindings({
+      'toggle-panel': [{ key: 'p', code: 'KeyP', command: false, shift: true, alt: false }],
+      'undo-paint': [{ key: 'u', code: 'KeyU', command: true, shift: false, alt: false }],
+      'cycle-colour-next': [],
+    })
+    expect(shortcutFor(keydown('P', { code: 'KeyP', shiftKey: true }), 'mac', bindings)).toBe(
+      'toggle-panel',
+    )
+    expect(shortcutFor(keydown('c', { code: 'KeyC' }), 'mac', bindings)).toBeNull()
+    expect(shortcutFor(keydown('d', { code: 'KeyD' }), 'mac', bindings)).toBeNull()
+    expect(
+      shortcutFor(keydown('u', { code: 'KeyU', metaKey: true, repeat: true }), 'mac', bindings),
+    ).toBe('undo-paint')
+    expect(
+      shortcutFor(keydown('P', { code: 'KeyP', shiftKey: true, repeat: true }), 'mac', bindings),
+    ).toBeNull()
   })
 
   it('maps the physical help keys even when the layout reports a dead key', () => {
