@@ -41,6 +41,8 @@ export interface ServerInfo {
   readonly liveSyncMax?: 1 | 2
   /** Present only when the legacy v1 live channel accepts hash-cache tile offer commands. */
   readonly liveTileOffers?: 1
+  /** Present when `/telemetry/presence` accepts the live painter presence protocol. */
+  readonly presence?: 1
 }
 
 /**
