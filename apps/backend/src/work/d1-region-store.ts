@@ -1,6 +1,9 @@
 import {
+  isRegionShape,
   MAX_PRESENCE_REGIONS,
   type RegionClaim,
+  type RegionShape,
+  regionShapeBounds,
   type TemplateSurface,
   templateSurface,
 } from '@caelestis/shared'
@@ -12,13 +15,23 @@ import type { RegionStore } from './region-store.js'
 const fromRow = (row: typeof workRegions.$inferSelect): RegionClaim => {
   const surface = templateSurface(row.surfaceKind, row.allianceId)
   if (surface === null) throw new Error('Invalid stored region surface')
+  const rect = { x: row.x, y: row.y, w: row.w, h: row.h }
+  let shape: unknown = null
+  if (row.shape !== null) {
+    try {
+      shape = JSON.parse(row.shape)
+    } catch {
+      // Legacy or malformed shape data falls back to the stored rectangle.
+    }
+  }
   return {
     id: row.id,
     season: row.season,
     surface,
     templateId: row.templateId,
     claimant: { wplaceUserId: row.claimantUserId, displayName: row.claimantName },
-    rect: { x: row.x, y: row.y, w: row.w, h: row.h },
+    shape: isRegionShape(shape) ? shape : { kind: 'rectangle', ...rect },
+    rect,
     label: row.label,
     createdAt: row.createdAt,
   }
@@ -60,11 +73,12 @@ export class D1RegionStore implements RegionStore {
   }
 
   async createRegion(region: RegionClaim): Promise<boolean> {
-    const { surface, rect, claimant } = region
+    const { surface, shape, claimant } = region
+    const rect = regionShapeBounds(shape)
     const result = await this.client
       .prepare(`INSERT INTO work_regions
-      (id, season, surface_kind, alliance_id, template_id, claimant_user_id, claimant_name, x, y, w, h, label, created_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      (id, season, surface_kind, alliance_id, template_id, claimant_user_id, claimant_name, x, y, w, h, label, created_at, shape)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM work_regions WHERE season = ? AND surface_kind = ? AND alliance_id IS ?) < ?
       ON CONFLICT(id) DO NOTHING`)
       .bind(
@@ -81,6 +95,7 @@ export class D1RegionStore implements RegionStore {
         rect.h,
         region.label,
         region.createdAt,
+        JSON.stringify(shape),
         region.season,
         surface.kind,
         surface.allianceId,
@@ -92,5 +107,14 @@ export class D1RegionStore implements RegionStore {
 
   async deleteRegion(id: string): Promise<void> {
     await this.db.delete(workRegions).where(eq(workRegions.id, id))
+  }
+
+  async updateRegion(id: string, shape: RegionShape, label: string): Promise<RegionClaim | null> {
+    const [row] = await this.db
+      .update(workRegions)
+      .set({ shape: JSON.stringify(shape), ...regionShapeBounds(shape), label })
+      .where(eq(workRegions.id, id))
+      .returning()
+    return row === undefined ? null : fromRow(row)
   }
 }

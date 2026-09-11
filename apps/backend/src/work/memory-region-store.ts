@@ -1,12 +1,14 @@
 import {
   MAX_PRESENCE_REGIONS,
   type RegionClaim,
+  type RegionShape,
+  regionShapeBounds,
   sameTemplateSurface,
   type TemplateSurface,
 } from '@caelestis/shared'
 import type { RegionStore } from './region-store.js'
 
-/** In-memory equivalent of D1's immutable, bounded region records. */
+/** In-memory equivalent of D1's bounded region records. */
 export class MemoryRegionStore implements RegionStore {
   private readonly records = new Map<string, RegionClaim>()
 
@@ -33,8 +35,18 @@ export class MemoryRegionStore implements RegionStore {
       (held) => held.season === region.season && sameTemplateSurface(held.surface, region.surface),
     ).length
     if (this.records.has(region.id) || count >= MAX_PRESENCE_REGIONS) return false
-    this.records.set(region.id, structuredClone(region))
+    this.records.set(
+      region.id,
+      structuredClone({ ...region, rect: regionShapeBounds(region.shape) }),
+    )
     return true
+  }
+  async updateRegion(id: string, shape: RegionShape, label: string): Promise<RegionClaim | null> {
+    const current = this.records.get(id)
+    if (current === undefined) return null
+    const region = structuredClone({ ...current, shape, rect: regionShapeBounds(shape), label })
+    this.records.set(id, region)
+    return region
   }
   async deleteRegion(id: string): Promise<void> {
     this.records.delete(id)

@@ -1,0 +1,1 @@
+ALTER TABLE `work_regions` ADD `shape` text;

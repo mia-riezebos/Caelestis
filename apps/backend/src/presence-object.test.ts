@@ -10,8 +10,14 @@ import {
   PRESENCE_STALE_MS,
   PRESENCE_TICK_MS,
   type PresenceServerEvent,
+  type RegionClaim,
+  type RegionShape,
+  regionShapeBounds,
+  uuidV7,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
+import { PresenceServerEvent as PresenceServerEventSchema } from '@caelestis/wire-schema'
+import { Schema } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
@@ -33,7 +39,9 @@ class Socket {
     return this.data
   }
   events(): PresenceServerEvent[] {
-    return this.send.mock.calls.map(([message]) => JSON.parse(message))
+    return this.send.mock.calls.map(([message]) =>
+      Schema.decodeUnknownSync(PresenceServerEventSchema)(JSON.parse(message)),
+    )
   }
 }
 
@@ -263,13 +271,39 @@ describe('presence room', () => {
   })
 
   it('broadcasts persisted regions and removes closed peers', async () => {
+    const sql = new D1SqlStore(database as unknown as D1Database)
+    const shape: RegionShape = {
+      kind: 'star',
+      cx: 20,
+      cy: 20,
+      r: 10,
+      inner: 4,
+      points: 5,
+      rotation: 90,
+    }
+    const region: RegionClaim = {
+      id: uuidV7(),
+      season: 0,
+      surface: WORLD_TEMPLATE_SURFACE,
+      templateId: uuidV7(),
+      claimant: { wplaceUserId: 1, displayName: 'Mia' },
+      shape,
+      rect: regionShapeBounds(shape),
+      label: '',
+      createdAt: Date.now(),
+    }
+    await sql.regions.createRegion(region)
     const a = await attach()
     const b = await attach()
+    expect(b.events()[0]).toMatchObject({ type: 'presence-ready', regions: [region] })
     update(a, { viewport: rect(0) })
     update(b, { viewport: rect(0) })
     tick()
+    const nextShape: RegionShape = { kind: 'ellipse', x: 0, y: 0, w: 8, h: 8 }
+    const updated = await sql.regions.updateRegion(region.id, nextShape, 'Updated')
     await object.publishRegions(0, WORLD_TEMPLATE_SURFACE)
-    expect(b.events().at(-1)).toEqual({ type: 'regions', regions: [] })
+    expect(b.events().at(-1)).toEqual({ type: 'regions', regions: [updated] })
+    expect(updated).toEqual({ ...region, shape: nextShape, rect: rect(0), label: 'Updated' })
     object.webSocketError(asWebSocket(a))
     tick()
     expect(b.events().at(-1)).toMatchObject({ online: 1, remove: [expect.any(String)] })

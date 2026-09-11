@@ -8,7 +8,10 @@ import {
   MAX_PRESENCE_REGION_PIXELS,
   MAX_PRESENCE_REGIONS,
   MAX_PRESENCE_SUBSCRIBERS,
+  MAX_REGION_SHAPE_CORNERS,
+  MAX_REGION_SHAPE_EXTENT,
   MAX_TILE_OFFERS,
+  MIN_REGION_SHAPE_CORNERS,
   PALETTE_SIZE,
   parseTemplateTags,
   TILE_SIZE,
@@ -202,12 +205,42 @@ const RegionRect = PresenceRect.check(
 )
 const RegionLabel = Schema.String.check(Schema.isMaxLength(MAX_PRESENCE_REGION_LABEL))
 
+const RegionBox = {
+  x: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  y: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  w: integerBetween(1, MAX_REGION_SHAPE_EXTENT),
+  h: integerBetween(1, MAX_REGION_SHAPE_EXTENT),
+}
+const RegionRadial = {
+  cx: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  cy: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  r: integerBetween(1, MAX_REGION_SHAPE_EXTENT / 2),
+  rotation: integerBetween(0, 359),
+}
+const RegionCorners = integerBetween(MIN_REGION_SHAPE_CORNERS, MAX_REGION_SHAPE_CORNERS)
+
+/** Whole-pixel shapes with the same structural limits as the shared contract. */
+export const RegionShape = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('rectangle'), ...RegionBox }),
+  Schema.Struct({ kind: Schema.Literal('ellipse'), ...RegionBox }),
+  Schema.Struct({ kind: Schema.Literal('polygon'), ...RegionRadial, sides: RegionCorners }),
+  Schema.Struct({
+    kind: Schema.Literal('star'),
+    ...RegionRadial,
+    points: RegionCorners,
+    inner: integerBetween(1, MAX_REGION_SHAPE_EXTENT / 2 - 1),
+  }).check(
+    booleanFilter((shape) => shape.inner < shape.r, 'inner radius must be less than radius'),
+  ),
+])
+
 export const RegionClaim = Schema.Struct({
   id: Identifier,
   season: Season,
   surface: TemplateSurface,
   templateId: Identifier,
   claimant: PresenceIdentity,
+  shape: RegionShape,
   rect: RegionRect,
   label: RegionLabel,
   createdAt: integerBetween(0, Number.MAX_SAFE_INTEGER),
@@ -215,7 +248,7 @@ export const RegionClaim = Schema.Struct({
 
 export const RegionClaimRequest = Schema.Struct({
   templateId: Identifier,
-  rect: RegionRect,
+  shape: RegionShape,
   label: RegionLabel,
   actor: PresenceIdentity,
 })
@@ -1254,6 +1287,8 @@ assertExact<Exact<Schema.Schema.Type<typeof PresenceClientEvent>, Shared.Presenc
 assertExact<Exact<Schema.Codec.Encoded<typeof PresenceClientEvent>, Shared.PresenceClientEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof PresencePeer>, Shared.PresencePeer>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof PresencePeer>, Shared.PresencePeer>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionShape>, Shared.RegionShape>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionShape>, Shared.RegionShape>>()
 assertExact<Exact<Schema.Schema.Type<typeof RegionClaim>, Shared.RegionClaim>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof RegionClaim>, Shared.RegionClaim>>()
 assertExact<Exact<Schema.Schema.Type<typeof PresenceServerEvent>, Shared.PresenceServerEvent>>()

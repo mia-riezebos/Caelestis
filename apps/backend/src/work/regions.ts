@@ -1,7 +1,10 @@
 import {
+  isRegionShape,
+  MAX_PRESENCE_REGION_PIXELS,
   type PainterIdentity,
   type RegionClaim,
   type RegionClaimRequest,
+  regionShapeBounds,
   sameTemplateSurface,
   type TemplateSurface,
 } from '@caelestis/shared'
@@ -30,7 +33,7 @@ export const listRegions = (season: number, surface: TemplateSurface, templateId
     return yield* storage(() => sql.regions.listRegions(season, surface, templateId))
   })
 
-/** Create an immutable claim; replaying an ID repairs delivery without changing the record. */
+/** Create a claim or update its shape and label as its claimant or an administrator. */
 export const putRegion = (
   id: string,
   season: number,
@@ -43,9 +46,16 @@ export const putRegion = (
       return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
     const sql = yield* SqlStoreService
     const live = yield* PresenceService
-    if (!presenceRectWithinSurface(request.rect, surface))
+    if (!isRegionShape(request.shape))
+      return yield* Effect.fail(new RequestValidationError({ message: 'Invalid region shape' }))
+    const rect = regionShapeBounds(request.shape)
+    if (!presenceRectWithinSurface(rect, surface))
       return yield* Effect.fail(
         new RequestValidationError({ message: 'Region is outside the drawing surface' }),
+      )
+    if (rect.w * rect.h > MAX_PRESENCE_REGION_PIXELS)
+      return yield* Effect.fail(
+        new RequestValidationError({ message: 'Region area exceeds limit' }),
       )
     const template = yield* storage(() => sql.readTemplate(request.templateId))
     if (
@@ -59,6 +69,7 @@ export const putRegion = (
         }),
       )
     let region = yield* storage(() => sql.regions.readRegion(id))
+    let inserted = false
     if (region === null) {
       const created: RegionClaim = {
         id,
@@ -66,21 +77,26 @@ export const putRegion = (
         surface,
         templateId: request.templateId,
         claimant: request.actor,
-        rect: request.rect,
+        shape: request.shape,
+        rect,
         label: request.label,
         createdAt: Date.now(),
       }
-      const saved = yield* storage(() => sql.regions.createRegion(created))
-      region = saved ? created : yield* storage(() => sql.regions.readRegion(id))
+      inserted = yield* storage(() => sql.regions.createRegion(created))
+      region = inserted ? created : yield* storage(() => sql.regions.readRegion(id))
     }
     if (region === null)
       return yield* Effect.fail(new ResourceConflictError({ message: 'Region limit reached' }))
     if (
-      region.claimant.wplaceUserId !== request.actor.wplaceUserId ||
+      (caller.scope !== 'admin' && region.claimant.wplaceUserId !== request.actor.wplaceUserId) ||
       region.season !== season ||
       !sameTemplateSurface(region.surface, surface)
     )
       return yield* Effect.fail(new ResourceConflictError({ message: 'Region is already claimed' }))
+    if (!inserted)
+      region = yield* storage(() => sql.regions.updateRegion(id, request.shape, request.label))
+    if (region === null)
+      return yield* Effect.fail(new ResourceConflictError({ message: 'Region no longer exists' }))
     yield* storage(() => live.publishRegions(season, surface))
     return region
   })

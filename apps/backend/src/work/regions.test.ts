@@ -2,10 +2,14 @@ import {
   MAX_PRESENCE_REGIONS,
   millis,
   type RegionClaim,
+  type RegionShape,
+  regionShapeBounds,
   uuidV7,
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
+import { RegionClaim as RegionClaimSchema } from '@caelestis/wire-schema'
+import { Schema } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { D1SqlStore } from '../adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from '../adapters/cloudflare/sqlite-d1.test-helper.js'
@@ -18,6 +22,7 @@ import { makeBackendContext } from '../runtime/backend-runtime.js'
 
 const actor = { wplaceUserId: 1, displayName: 'Mia' }
 const other = { wplaceUserId: 2, displayName: 'Dawn' }
+const star: RegionShape = { kind: 'star', cx: 30, cy: 40, r: 20, inner: 8, points: 5, rotation: 90 }
 let database: SqliteD1Database | undefined
 afterEach(() => {
   database?.close()
@@ -64,7 +69,12 @@ const setup = async (adapter: 'memory' | 'd1') => {
     totalPixels: 1,
     chunks: [{ tileX: 0, tileY: 0, hash: 'b'.repeat(64) }],
   })
-  const body = { templateId, actor, rect: { x: 0, y: 0, w: 8, h: 8 }, label: '' }
+  const body = {
+    templateId,
+    actor,
+    shape: { kind: 'rectangle' as const, x: 0, y: 0, w: 8, h: 8 },
+    label: '',
+  }
   const call = (method: string, id: string, body: unknown, token = 'report', query = 'season=0') =>
     app.request(`/v1/work/regions/${id}?${query}`, {
       method,
@@ -75,7 +85,7 @@ const setup = async (adapter: 'memory' | 'd1') => {
 }
 
 describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
-  it('creates, lists, replays without overwriting, rejects conflicts, and publishes mutations', async () => {
+  it('creates, lists, replays identical requests, rejects conflicts, and publishes mutations', async () => {
     const h = await setup(adapter)
     const id = uuidV7()
     const response = await h.call('PUT', id, h.body)
@@ -86,9 +96,11 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
       season: 0,
       surface: WORLD_TEMPLATE_SURFACE,
       claimant: actor,
+      shape: h.body.shape,
+      rect: regionShapeBounds(h.body.shape),
       label: '',
     })
-    const replay = await h.call('PUT', id, { ...h.body, label: 'changed' })
+    const replay = await h.call('PUT', id, h.body)
     expect(replay.status).toBe(200)
     expect(await replay.json()).toEqual(region)
     expect((await h.call('PUT', id, { ...h.body, actor: other })).status).toBe(409)
@@ -107,13 +119,81 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     expect(h.publishRegions).toHaveBeenLastCalledWith(0, WORLD_TEMPLATE_SURFACE)
   })
 
+  it('stores a star with derived bounds and reads its shape back', async () => {
+    const h = await setup(adapter)
+    const id = uuidV7()
+    const response = await h.call('PUT', id, { ...h.body, shape: star })
+    expect(response.status).toBe(200)
+    const region = Schema.decodeUnknownSync(RegionClaimSchema)(await response.json())
+    expect(region).toMatchObject({ shape: star, rect: regionShapeBounds(star) })
+    expect(await h.sql.regions.readRegion(id)).toEqual(region)
+    expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([region])
+    if (database !== undefined) {
+      expect(
+        database.sqlite.prepare('SELECT shape, x, y, w, h FROM work_regions WHERE id = ?').get(id),
+      ).toEqual({ shape: JSON.stringify(region.shape), ...regionShapeBounds(star) })
+    }
+  })
+
+  it.each(['report', 'admin'])(
+    'updates shape and label in place as %s and broadcasts',
+    async (token) => {
+      const h = await setup(adapter)
+      const id = uuidV7()
+      const original = Schema.decodeUnknownSync(RegionClaimSchema)(
+        await (await h.call('PUT', id, h.body)).json(),
+      )
+      const publications: unknown[] = []
+      h.publishRegions.mockImplementation(async () => {
+        publications.push(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE))
+      })
+      const response = await h.call(
+        'PUT',
+        id,
+        {
+          ...h.body,
+          actor: token === 'admin' ? other : { ...actor, displayName: 'New name' },
+          shape: star,
+          label: 'Star work',
+        },
+        token,
+      )
+      expect(response.status).toBe(200)
+      const updated = {
+        ...original,
+        shape: star,
+        rect: regionShapeBounds(star),
+        label: 'Star work',
+      }
+      expect(await response.json()).toEqual(updated)
+      expect(await h.sql.regions.readRegion(id)).toEqual(updated)
+      expect(publications).toEqual([[updated]])
+      expect(h.publishRegions).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it('rejects an ellipse outside the surface and an out-of-range radius with 400', async () => {
+    const h = await setup(adapter)
+    const outside = await h.call('PUT', uuidV7(), {
+      ...h.body,
+      shape: { kind: 'ellipse', x: WORLD_PIXELS - 1, y: 0, w: 8, h: 8 },
+    })
+    expect(outside.status).toBe(400)
+    expect(await outside.json()).toEqual({ error: 'Region is outside the drawing surface' })
+    const invalid = await h.call('PUT', uuidV7(), { ...h.body, shape: { ...star, r: 1_001 } })
+    expect(invalid.status).toBe(400)
+    expect(await invalid.json()).toEqual({ error: 'Invalid region request' })
+    expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([])
+    expect(h.publishRegions).not.toHaveBeenCalled()
+  })
+
   it('validates scope, identity, template membership, rect bounds and area, and label length', async () => {
     const h = await setup(adapter)
     expect((await h.call('PUT', uuidV7(), h.body, 'read')).status).toBe(403)
     for (const body of [
-      { ...h.body, rect: { x: WORLD_PIXELS, y: 0, w: 8, h: 8 } },
-      { ...h.body, rect: { x: 0, y: 0, w: 2_001, h: 2_000 } },
-      { ...h.body, rect: { x: -1, y: 0, w: 8, h: 8 } },
+      { ...h.body, shape: { ...h.body.shape, x: WORLD_PIXELS } },
+      { ...h.body, shape: { ...h.body.shape, w: 2_001, h: 2_000 } },
+      { ...h.body, shape: { ...h.body.shape, x: -1 } },
       { ...h.body, label: 'x'.repeat(65) },
       { ...h.body, actor: { ...actor, displayName: '' } },
       { ...h.body, templateId: uuidV7() },
@@ -158,3 +238,15 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     expect((await h.call('PUT', uuidV7(), h.body)).status).toBe(200)
   })
 })
+
+it.each([null, '{', 'null', JSON.stringify({ ...star, inner: star.r })])(
+  'reads a legacy rectangle when stored shape is %s',
+  async (shape) => {
+    const h = await setup('d1')
+    const id = uuidV7()
+    const region = await (await h.call('PUT', id, h.body)).json()
+    database?.sqlite.prepare('UPDATE work_regions SET shape = ? WHERE id = ?').run(shape, id)
+    expect(await h.sql.regions.readRegion(id)).toEqual(region)
+    expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([region])
+  },
+)

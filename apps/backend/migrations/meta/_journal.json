@@ -155,6 +155,13 @@
       "when": 1789136408775,
       "tag": "0021_amazing_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1789140288358,
+      "tag": "0022_yielding_vulcan",
+      "breakpoints": true
     }
   ]
 }

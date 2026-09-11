@@ -1,4 +1,13 @@
-import { millis, tileKey, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
+import {
+  isRegionShape,
+  MAX_REGION_SHAPE_CORNERS,
+  MAX_REGION_SHAPE_EXTENT,
+  MIN_REGION_SHAPE_CORNERS,
+  millis,
+  tileKey,
+  WORLD_PIXELS,
+  WORLD_TILES,
+} from '@caelestis/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -23,6 +32,7 @@ import {
   PresenceRect,
   PresenceServerEvent,
   RegionClaimRequest,
+  RegionShape,
   ServerInfo,
   StatusDelta,
   StatusResponse,
@@ -37,6 +47,73 @@ import {
 const HASH = 'a'.repeat(64)
 
 describe('presence schemas', () => {
+  const shapes = [
+    { kind: 'rectangle', x: 0, y: 1, w: 1, h: MAX_REGION_SHAPE_EXTENT },
+    { kind: 'ellipse', x: 1, y: 0, w: MAX_REGION_SHAPE_EXTENT, h: 1 },
+    { kind: 'polygon', cx: 0, cy: 1, r: 1, sides: MIN_REGION_SHAPE_CORNERS, rotation: 0 },
+    {
+      kind: 'star',
+      cx: 1,
+      cy: 0,
+      r: MAX_REGION_SHAPE_EXTENT / 2,
+      inner: 1,
+      points: MAX_REGION_SHAPE_CORNERS,
+      rotation: 359,
+    },
+  ]
+  it.each(shapes)('round-trips a valid $kind', (shape) => {
+    expect(isRegionShape(shape)).toBe(true)
+    expect(Schema.decodeUnknownSync(RegionShape)(shape)).toEqual(shape)
+    expect(Schema.encodeSync(RegionShape)(Schema.decodeUnknownSync(RegionShape)(shape))).toEqual(
+      shape,
+    )
+  })
+  it.each(shapes)('matches shared validation at every $kind field boundary', (shape) => {
+    for (const field of Object.keys(shape).filter((key) => key !== 'kind')) {
+      for (const value of [
+        undefined,
+        null,
+        '1',
+        -1,
+        0,
+        0.5,
+        1,
+        2,
+        3,
+        12,
+        13,
+        359,
+        360,
+        999,
+        1_000,
+        1_001,
+        2_000,
+        2_001,
+        Number.MAX_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER + 1,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+      ]) {
+        const candidate = { ...shape, [field]: value }
+        if (isRegionShape(candidate))
+          expect(Schema.decodeUnknownSync(RegionShape)(candidate)).toEqual(candidate)
+        else expect(() => Schema.decodeUnknownSync(RegionShape)(candidate)).toThrow()
+      }
+    }
+  })
+  it('rejects a star whose inner radius equals its radius', () => {
+    expect(() =>
+      Schema.decodeUnknownSync(RegionShape)({
+        kind: 'star',
+        cx: 10,
+        cy: 10,
+        r: 10,
+        inner: 10,
+        points: 5,
+        rotation: 0,
+      }),
+    ).toThrow()
+  })
   it('accepts safe rects and the shared bounded draft mask format', () => {
     const rect = { x: 0, y: 8, w: 8, h: 1 }
     expect(Schema.decodeUnknownSync(PresenceRect)(rect)).toEqual(rect)
@@ -70,7 +147,7 @@ describe('presence schemas', () => {
     expect(() =>
       Schema.decodeUnknownSync(RegionClaimRequest)({
         templateId: 'not-a-uuid',
-        rect,
+        shape: { kind: 'rectangle', ...rect },
         label: '',
         actor: { wplaceUserId: 1, displayName: 'Mia' },
       }),

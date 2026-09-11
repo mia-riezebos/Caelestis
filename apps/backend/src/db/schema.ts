@@ -26,6 +26,7 @@ export const workRegions = sqliteTable(
     templateId: text('template_id').notNull(),
     claimantUserId: integer('claimant_user_id').notNull(),
     claimantName: text('claimant_name').notNull(),
+    shape: text('shape'),
     x: integer('x').notNull(),
     y: integer('y').notNull(),
     w: integer('w').notNull(),
