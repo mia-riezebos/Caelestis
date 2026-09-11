@@ -335,6 +335,20 @@ describe('personal template ownership', () => {
     })
   })
 
+  it('preserves native opacity when taking ownership of marker controls', async () => {
+    const { seed, api, personal, read } = await fixture()
+    const migrated = await seed(local({ owns: [], appearance: null }))
+    const snapshot = await api.read(migrated.native?.id ?? '')
+    if (!snapshot) throw new Error('Missing native template')
+    await api.save(snapshot.template.id, { opacity: 0.25 }, snapshot)
+    await personal.synchronizePersonalTemplates()
+    const store = await import('./local-store.js')
+    await store.restoreLocalTemplates()
+    expect(await store.setOwnsGroup(migrated.id, 'markers', true)).toBe(true)
+    expect((await api.read(snapshot.template.id))?.template.opacity).toBe(0.25)
+    expect((await read()).native?.opacityOverride).toBe(true)
+  })
+
   it('does not expose a local alliance copy when its initial persistence fails', async () => {
     const { disk } = await fixture()
     const store = await import('./local-store.js')

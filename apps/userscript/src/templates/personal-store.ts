@@ -249,11 +249,12 @@ export const saveTemplate = async (
         return { status: 'conflict' }
       }
       const patch = nativeMetadata(template)
+      const ownsPixels = template.owns?.includes('pixels') === true
       const opacityChanged =
-        template.appearance?.opacity !== previous.appearance?.opacity ||
-        template.owns?.includes('pixels') !== previous.owns?.includes('pixels')
+        ownsPixels !== (previous.owns?.includes('pixels') === true) ||
+        (ownsPixels && template.appearance?.opacity !== previous.appearance?.opacity)
       const opacity = opacityChanged
-        ? template.owns?.includes('pixels') && template.appearance != null
+        ? ownsPixels && template.appearance != null
           ? template.appearance.opacity
           : getSurfaceAppearance(WORLD_TEMPLATE_SURFACE).opacity
         : snapshot.template.opacity
