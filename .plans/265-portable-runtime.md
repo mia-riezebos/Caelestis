@@ -16,6 +16,10 @@ Keep Cloudflare supported and add separate Node backend and frontend containers 
 
 ## TODOs
 
+- [x] Share application acceptance checks across six independent Compose jobs, with persisted data and event retry checks.
+- [x] Execute both Cloudflare Workers locally and install the Helm chart into disposable Kubernetes, including real CNPG.
+- [x] Add nightly/release architecture, recovery, migration, and isolated Cloudflare checks; publish tested image artifacts.
+- [x] Validate the workflows and document or automate every required account setup step.
 - [x] Split runtime images and wire frontend HTTP/WebSocket access to the backend; validate authentication and restart behavior.
 - [x] Add composable PostgreSQL, S3, and external CNPG examples; update Helm and publication for both images.
 - [x] Add MariaDB migrations, configuration, SQL compatibility, ownership, and real database coverage, including Compose and Helm examples.
@@ -31,6 +35,11 @@ Keep Cloudflare supported and add separate Node backend and frontend containers 
 
 ## Notes
 
+- Shared acceptance passes all six fresh Compose combinations, including abrupt backend replacement and database connection-loss recovery. Local Cloudflare tests pass across Worker restarts. Real Helm installs pass SQLite, MariaDB TLS, and CNPG TLS with primary switchover; final CNPG rerun is pending after improving MinIO readiness.
+- Previous-version upgrade tests found PostgreSQL publication booleans were compared with numeric flags. Corrected the SQL projection and added a one-time migration to invalidate only affected status caches. PostgreSQL upgrade now passes; SQLite upgrade passes; MariaDB upgrade is running.
+- Current validation passes workspace checks, 774 backend tests with PostgreSQL enabled (7 MariaDB-only tests skipped), 110 telemetry-read contract tests, three PostgreSQL migration tests, 39 release tests, Biome, actionlint, and wizard shell syntax. CI runs both real relational services together.
+- Added scripts/setup-stack-ci.sh and docs/stack-testing.md for the account-only steps. Created the main-only GitHub stack-tests environment without reviewer or wait gates. Dedicated Cloudflare test credentials and Docker Hub publishing credentials remain for the wizard. Live Cloudflare and image publication have not run; no production resources were changed.
+- Required-check activation is scripted for after merge. GitHub CI execution on the pushed head is pending.
 - Workspace and branch are supplied by the harness: t3code/cloud-independent-adapters. Initially clean.
 - PostgreSQL/CNPG is required in the first release. The application supports one active replica; the CNPG database may have replicas.
 - Cluster-specific S3 provider is unknown. Use configurable S3 endpoint, region, bucket, credentials, and path-style addressing.

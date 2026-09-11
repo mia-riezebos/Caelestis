@@ -232,6 +232,8 @@ node apps/frontend/node/main.mjs
 node scripts/test-portable-image.mjs miacx/caelestis-backend:local miacx/caelestis-frontend:local
 ```
 
+See [stack testing](stack-testing.md) for the CI matrix, isolated CNPG tests, upgrade checks, and one-time account setup.
+
 The image test creates and removes its own PostgreSQL, S3, network, containers, and volumes.
 CI runs database contracts, restart tests, both deployment builds, image checks, vulnerability scans, and Helm schema validation.
 Cloudflare remains the default frontend build target. Existing Wrangler configuration and deployment commands still apply.
