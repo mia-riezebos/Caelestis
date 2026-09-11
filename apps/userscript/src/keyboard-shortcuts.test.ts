@@ -175,6 +175,16 @@ describe('keyboard shortcut actions', () => {
     expect(harness.peek).toBe(false)
   })
 
+  it('releases a held peek on the key that started it even after that key is rebound', () => {
+    expect(press('g', { code: 'KeyG' }).defaultPrevented).toBe(true)
+    expect(harness.peek).toBe(true)
+
+    harness.overrides = { 'peek-overlays': [] }
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'g', code: 'KeyG', cancelable: true }))
+
+    expect(harness.peek).toBe(false)
+  })
+
   it('leaves every key alone while a settings control records a binding', () => {
     const recorder = document.createElement('button')
     recorder.setAttribute('data-caelestis-key-capture', '')

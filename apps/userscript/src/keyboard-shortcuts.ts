@@ -1,4 +1,4 @@
-import { keyBindingReleasedBy, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { type KeyBinding, keyBindingReleasedBy, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
@@ -126,6 +126,8 @@ export const installKeyboardShortcuts = (
   platform: ShortcutPlatform = currentShortcutPlatform(),
 ): (() => void) => {
   let peeking = false
+  /** The chords that started the current peek; a rebinding mid-hold must not strand it. */
+  let peekBindings: readonly KeyBinding[] = []
   const repaintPeek = (active: boolean): void => {
     if (!setOverlayPeekActive(active)) return
     triggerMapRepaint()
@@ -133,15 +135,13 @@ export const installKeyboardShortcuts = (
   const endPeek = (): void => {
     if (!peeking) return
     peeking = false
+    peekBindings = []
     repaintPeek(false)
   }
 
   const onKeyup = (event: KeyboardEvent): void => {
     if (!peeking) return
-    const releases = activeShortcutBindings()['peek-overlays'].some((binding) =>
-      keyBindingReleasedBy(binding, event),
-    )
-    if (!releases) return
+    if (!peekBindings.some((binding) => keyBindingReleasedBy(binding, event))) return
     claimShortcut(event)
     endPeek()
   }
@@ -237,6 +237,7 @@ export const installKeyboardShortcuts = (
     }
     if (shortcut === 'peek-overlays') {
       claim()
+      if (!peeking) peekBindings = activeShortcutBindings()['peek-overlays']
       peeking = true
       repaintPeek(true)
       return
