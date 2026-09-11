@@ -1,3 +1,5 @@
+import { copyFile, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PostgresConnection, postgresParameters } from './postgres-connection.js'
@@ -10,6 +12,52 @@ it('preserves quoted markers and repeated numbered parameters', () => {
 })
 
 describe.skipIf(!process.env.CAELESTIS_TEST_POSTGRES_URL)('PostgreSQL persistence', () => {
+  it('invalidates old public status caches once while retaining other coordinator state', async () => {
+    const schema = `test_${crypto.randomUUID().replaceAll('-', '')}`
+    const connection = new PostgresConnection({
+      connectionString: process.env.CAELESTIS_TEST_POSTGRES_URL,
+      options: `-c search_path=${schema}`,
+    })
+    const baseline = await mkdtemp(join(tmpdir(), 'caelestis-pg-baseline-'))
+    const migrations = join(import.meta.dirname, '../../../migrations-postgres')
+    await connection.pool.query(`CREATE SCHEMA ${schema}`)
+    try {
+      await copyFile(
+        join(migrations, '0000_portable_baseline.sql'),
+        join(baseline, '0000_portable_baseline.sql'),
+      )
+      await connection.migrate(baseline)
+      await connection.pool.query(`
+        CREATE TABLE runtime_values (actor TEXT, key TEXT, value TEXT, PRIMARY KEY(actor, key));
+        INSERT INTO runtime_values VALUES
+          ('season:0', 'status-read-model:v2:manifest', 'old'),
+          ('season:0', 'status-read-model:v2:chunk:0', 'old'),
+          ('season:0', 'manifest', 'keep'),
+          ('counter:0', 'pending', 'keep');
+      `)
+      await connection.migrate(migrations)
+      expect((await connection.pool.query('SELECT value FROM runtime_values')).rows).toEqual([
+        { value: 'keep' },
+        { value: 'keep' },
+      ])
+      await connection.pool.query(
+        "INSERT INTO runtime_values VALUES ('season:0', 'status-read-model:v2:manifest', 'rebuilt')",
+      )
+      await connection.migrate(migrations)
+      expect(
+        (
+          await connection.pool.query(
+            "SELECT value FROM runtime_values WHERE key = 'status-read-model:v2:manifest'",
+          )
+        ).rows,
+      ).toEqual([{ value: 'rebuilt' }])
+    } finally {
+      await connection.pool.query(`DROP SCHEMA ${schema} CASCADE`)
+      await connection.close()
+      await rm(baseline, { recursive: true, force: true })
+    }
+  })
+
   it('matches SQLite tables and columns, reruns migrations safely, and preserves committed data on reconnect', async () => {
     const schema = `test_${crypto.randomUUID().replaceAll('-', '')}`
     const config = {
