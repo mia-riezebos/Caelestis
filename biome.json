@@ -43,6 +43,18 @@
       "preset": "recommended"
     }
   },
+  "overrides": [
+    {
+      "includes": [
+        "scripts/stack-tests/**",
+        "scripts/test-portable-compose.mjs",
+        "scripts/test-helm-stack.mjs",
+        "scripts/test-cloudflare-stack.mjs",
+        "scripts/test-cloudflare-remote.mjs"
+      ],
+      "linter": { "rules": { "suspicious": { "noUndeclaredEnvVars": "off" } } }
+    }
+  ],
   "assist": {
     "actions": {
       "source": {
