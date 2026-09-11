@@ -262,6 +262,7 @@ describe('presence client', () => {
       surface: { kind: 'world', allianceId: null },
       templateId: '0192e7c0-0000-7000-8000-000000000001',
       claimant: { wplaceUserId: 9, displayName: 'Sam' },
+      shape: { kind: 'rectangle', x: 5, y: 5, w: 10, h: 10 },
       rect: { x: 5, y: 5, w: 10, h: 10 },
       label: '',
       createdAt: 1,
@@ -283,7 +284,7 @@ describe('presence client', () => {
     const { client } = await connect()
     const error = await client.claimRegion(server, '0192e7c0-0000-7000-8000-000000000002', {
       templateId: '0192e7c0-0000-7000-8000-000000000001',
-      rect: { x: 0, y: 0, w: 10, h: 10 },
+      shape: { kind: 'rectangle', x: 0, y: 0, w: 10, h: 10 },
       label: '',
       actor: { wplaceUserId: 7, displayName: 'Mia' },
     })

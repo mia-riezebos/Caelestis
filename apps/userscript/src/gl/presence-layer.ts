@@ -1,9 +1,12 @@
 import {
   decodePresenceDraftMask,
   type PresenceRect,
+  type RegionShape,
   rectsIntersect,
+  regionShapePixels,
   TILE_SIZE,
 } from '@caelestis/shared'
+import { claimToolEditingId, claimToolShape } from '../claim-tool.js'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { presenceView } from '../presence-client.js'
@@ -25,6 +28,9 @@ import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
  * over finished art, or it says nothing once an area fills in. It is a faint fill with a dashed
  * edge, so it reads as an outline rather than a tint.
  *
+ * Every rect is drawn on the tile grid, and every draft and claim is a whole-pixel mask sampled
+ * with nearest filtering: the tint stops exactly at a pixel edge, never half way across one. A
+ * claim's edge pixels carry a stronger value so the outline stays crisp without any smoothing.
  * Everything arrives and leaves on the shared fade ramp so a painter closing their tab does not
  * blink out.
  */
@@ -35,6 +41,10 @@ const OUTLINE_LAYER_ID = 'caelestis-outline'
 const PIXEL_ART_LAYER = 'pixel-art-layer'
 const MARKER_LAYER_ID = 'caelestis-markers'
 const CROSSHAIR_LAYER = 'pixel-hover'
+const TOOL_KEY = 'tool'
+/** Mask texel levels: outside, inside, and inside-on-the-edge. */
+const MASK_INSIDE = 128
+const MASK_EDGE = 255
 
 const FRAGMENT_SOURCE = `#version 300 es
 precision highp float;
@@ -48,24 +58,31 @@ uniform vec2 u_size;
 uniform int u_hasMask;
 uniform sampler2D u_mask;
 uniform float u_maskAlpha;
+uniform float u_maskEdge;
 out vec4 fragColor;
 void main() {
-  vec2 px = v_uv * u_size;
-  float horizontal = min(px.x, u_size.x - px.x);
-  float vertical = min(px.y, u_size.y - px.y);
-  float edge = min(horizontal, vertical);
   float alpha = u_fill;
-  if (u_hasMask == 1 && texture(u_mask, v_uv).r > 0.5) alpha = max(alpha, u_maskAlpha);
-  if (edge < u_borderWidth) {
-    float along = horizontal < vertical ? px.y : px.x;
-    bool on = u_dash <= 0.0 || mod(along, u_dash * 2.0) < u_dash;
-    if (on) alpha = max(alpha, u_border);
+  if (u_hasMask == 1) {
+    float level = texture(u_mask, v_uv).r;
+    if (level > 0.9) alpha = max(alpha, u_maskEdge);
+    else if (level > 0.4) alpha = max(alpha, u_maskAlpha);
+  }
+  if (u_borderWidth > 0.0) {
+    vec2 px = v_uv * u_size;
+    float horizontal = min(px.x, u_size.x - px.x);
+    float vertical = min(px.y, u_size.y - px.y);
+    float edge = min(horizontal, vertical);
+    if (edge < u_borderWidth) {
+      float along = horizontal < vertical ? px.y : px.x;
+      bool on = u_dash <= 0.0 || mod(along, u_dash * 2.0) < u_dash;
+      if (on) alpha = max(alpha, u_border);
+    }
   }
   fragColor = vec4(u_colour * alpha, alpha);
 }
 `
 
-type Kind = 'viewport' | 'draft' | 'region'
+type Kind = 'viewport' | 'draft' | 'region' | 'tool'
 
 interface Style {
   readonly fill: number
@@ -73,12 +90,14 @@ interface Style {
   readonly borderWidth: number
   readonly dash: number
   readonly maskAlpha: number
+  readonly maskEdge: number
 }
 
 const STYLES: Record<Kind, Style> = {
-  viewport: { fill: 0.04, border: 0.35, borderWidth: 1.5, dash: 6, maskAlpha: 0 },
-  draft: { fill: 0.1, border: 0.6, borderWidth: 1.5, dash: 0, maskAlpha: 0.5 },
-  region: { fill: 0.09, border: 0.5, borderWidth: 2, dash: 0, maskAlpha: 0 },
+  viewport: { fill: 0.04, border: 0.35, borderWidth: 1.5, dash: 6, maskAlpha: 0, maskEdge: 0 },
+  draft: { fill: 0.1, border: 0.6, borderWidth: 1.5, dash: 0, maskAlpha: 0.5, maskEdge: 0.5 },
+  region: { fill: 0, border: 0, borderWidth: 0, dash: 0, maskAlpha: 0.1, maskEdge: 0.5 },
+  tool: { fill: 0, border: 0, borderWidth: 0, dash: 0, maskAlpha: 0.22, maskEdge: 0.85 },
 }
 
 interface Item {
@@ -86,16 +105,43 @@ interface Item {
   readonly kind: Kind
   readonly rect: PresenceRect
   readonly colour: readonly [number, number, number]
-  readonly mask: string | null
+  /** A draft's base64 bitmask, or a claim's shape; either becomes a nearest-sampled texture. */
+  readonly mask: string | RegionShape | null
   readonly mine: boolean
 }
 
 interface MaskTexture {
-  readonly mask: string
+  readonly source: string | RegionShape
   readonly texture: WebGLTexture
 }
 
-/** What the presence view says should be on screen, keyed for fading. */
+/** Paint a shape's pixels as texel levels, marking pixels whose 4-neighbour is outside as edge. */
+const shapeTexels = (
+  shape: RegionShape,
+): { readonly rect: PresenceRect; readonly texels: Uint8Array } => {
+  const { rect, mask } = regionShapePixels(shape)
+  const texels = new Uint8Array(mask.length)
+  const { w, h } = rect
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const at = y * w + x
+      if (mask[at] !== 1) continue
+      const edge =
+        x === 0 ||
+        y === 0 ||
+        x === w - 1 ||
+        y === h - 1 ||
+        mask[at - 1] !== 1 ||
+        mask[at + 1] !== 1 ||
+        mask[at - w] !== 1 ||
+        mask[at + w] !== 1
+      texels[at] = edge ? MASK_EDGE : MASK_INSIDE
+    }
+  }
+  return { rect, texels }
+}
+
+/** What the presence view and the claim tool say should be on screen, keyed for fading. */
 const currentItems = (): Item[] => {
   const view = presenceView()
   const items: Item[] = []
@@ -122,14 +168,29 @@ const currentItems = (): Item[] => {
       })
     }
   }
+  const editing = claimToolEditingId()
   for (const region of view.regions) {
+    // The claim being edited is drawn by the tool instead, so its stored copy steps aside.
+    if (region.id === editing) continue
     items.push({
       key: `region:${region.id}`,
       kind: 'region',
       rect: region.rect,
       colour: presenceRgb(region.claimant.wplaceUserId),
-      mask: null,
+      mask: region.shape,
       mine: view.me?.wplaceUserId === region.claimant.wplaceUserId,
+    })
+  }
+  const tool = claimToolShape()
+  if (tool !== null) {
+    const { rect } = regionShapePixels(tool)
+    items.push({
+      key: TOOL_KEY,
+      kind: 'tool',
+      rect,
+      colour: view.me === null ? [1, 1, 1] : presenceRgb(view.me.wplaceUserId),
+      mask: tool,
+      mine: true,
     })
   }
   return items
@@ -175,31 +236,34 @@ class PresenceLayer {
   private maskTexture(gl: WebGL2RenderingContext, item: Item): WebGLTexture | null {
     if (item.mask === null) return null
     const held = this.masks.get(item.key)
-    if (held !== undefined && held.mask === item.mask) return held.texture
+    if (held !== undefined && held.source === item.mask) return held.texture
     if (held !== undefined) gl.deleteTexture(held.texture)
     this.masks.delete(item.key)
-    const bits = decodePresenceDraftMask({ rect: item.rect, mask: item.mask, pixels: 0 })
-    if (bits === null) return null
+    let texels: Uint8Array
+    let width: number
+    let height: number
+    if (typeof item.mask === 'string') {
+      const bits = decodePresenceDraftMask({ rect: item.rect, mask: item.mask, pixels: 0 })
+      if (bits === null) return null
+      texels = bits.map((bit) => (bit === 0 ? 0 : MASK_EDGE))
+      width = item.rect.w
+      height = item.rect.h
+    } else {
+      const painted = shapeTexels(item.mask)
+      texels = painted.texels
+      width = painted.rect.w
+      height = painted.rect.h
+    }
     const texture = gl.createTexture()
     if (texture === null) return null
     gl.bindTexture(gl.TEXTURE_2D, texture)
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R8,
-      item.rect.w,
-      item.rect.h,
-      0,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      bits.map((bit) => (bit === 0 ? 0 : 255)),
-    )
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, width, height, 0, gl.RED, gl.UNSIGNED_BYTE, texels)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    this.masks.set(item.key, { mask: item.mask, texture })
+    this.masks.set(item.key, { source: item.mask, texture })
     return texture
   }
 
@@ -301,19 +365,27 @@ class PresenceLayer {
     const { program, vao, quad } = this
     if (program === null || vao === null || quad === null) return
     const now = performance.now()
-    const items = getState().showPresence
-      ? currentItems().filter((item) => this.kinds.has(item.kind))
-      : []
+    const shown = getState().showPresence
+    // The tool's own shape shows even with other painters hidden; it is the user's own work.
+    const items = currentItems().filter(
+      (item) => this.kinds.has(item.kind) && (shown || item.kind === 'tool'),
+    )
     const keys = new Set<string>()
     for (const item of items) {
       keys.add(item.key)
       this.retained.set(item.key, item)
     }
     // Everything drawn is what is present or still fading out. Ramps start from zero, so a new
-    // item arrives over the shared fade rather than appearing.
+    // item arrives over the shared fade rather than appearing. The tool preview skips the ramp:
+    // a shape being dragged has to follow the pointer this frame.
     let animating = false
     const drawn: { item: Item; fade: number }[] = []
     for (const [key, item] of this.retained) {
+      if (key === TOOL_KEY) {
+        if (keys.has(key)) drawn.push({ item, fade: 1 })
+        else this.retained.delete(key)
+        continue
+      }
       const fade = this.fades.advance(key, keys.has(key) ? 1 : 0, now)
       if (!fade.done) animating = true
       if (fade.value <= 0 && fade.done && !keys.has(key)) {
@@ -342,13 +414,20 @@ class PresenceLayer {
         for (const { item, fade } of drawn) {
           const style = STYLES[item.kind]
           const texture = this.maskTexture(gl, item)
-          const emphasis = item.mine ? 1.4 : 1
+          const emphasis = item.mine && item.kind === 'region' ? 1.4 : 1
           gl.uniform3f(this.uniform(gl, 'u_colour'), item.colour[0], item.colour[1], item.colour[2])
           gl.uniform1f(this.uniform(gl, 'u_fill'), style.fill * emphasis * fade)
           gl.uniform1f(this.uniform(gl, 'u_border'), Math.min(1, style.border * emphasis) * fade)
           gl.uniform1f(this.uniform(gl, 'u_borderWidth'), style.borderWidth * deviceScale)
           gl.uniform1f(this.uniform(gl, 'u_dash'), style.dash * deviceScale)
-          gl.uniform1f(this.uniform(gl, 'u_maskAlpha'), style.maskAlpha * fade)
+          gl.uniform1f(
+            this.uniform(gl, 'u_maskAlpha'),
+            Math.min(1, style.maskAlpha * emphasis) * fade,
+          )
+          gl.uniform1f(
+            this.uniform(gl, 'u_maskEdge'),
+            Math.min(1, style.maskEdge * emphasis) * fade,
+          )
           gl.uniform1i(this.uniform(gl, 'u_hasMask'), texture === null ? 0 : 1)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, texture)
@@ -365,10 +444,10 @@ class PresenceLayer {
   }
 }
 
-/** Drafts and claims, under the artwork. */
+/** Drafts, claims, and the claim tool's shape, under the artwork. */
 export const presenceLayer = new PresenceLayer(
   PRESENCE_LAYER_ID,
-  new Set<Kind>(['draft', 'region']),
+  new Set<Kind>(['draft', 'region', 'tool']),
   'under the artwork',
 )
 
