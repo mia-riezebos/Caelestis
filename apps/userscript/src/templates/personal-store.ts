@@ -1,6 +1,7 @@
 import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { warn } from '../debug.js'
-import { DEFAULT_APPEARANCE } from './appearance.js'
+import { getSurfaceAppearance } from '../state.js'
+import { APPEARANCE_GROUPS } from './appearance.js'
 import {
   NativeConflict,
   type NativeSnapshot,
@@ -60,6 +61,10 @@ const project = async (
 ): Promise<StoredTemplate> => {
   if (previous?.native?.token === snapshot.token) return previous
   const pixels = await api.pixels(snapshot)
+  const nativeOpacityChanged =
+    previous === null ||
+    (previous.native?.status === 'linked' && previous.native.opacity !== snapshot.template.opacity)
+  const owns = previous?.owns ?? (previous?.appearance != null ? APPEARANCE_GROUPS : [])
   const template: StoredTemplate = {
     ...previous,
     ...pixels,
@@ -72,8 +77,13 @@ const project = async (
     everPlaced: snapshot.template.hasPlaced,
     updatedAt: snapshot.template.updatedAt,
     surface: WORLD_TEMPLATE_SURFACE,
-    appearance: previous?.appearance ?? null,
-    owns: previous?.owns ?? [],
+    appearance: nativeOpacityChanged
+      ? {
+          ...(previous?.appearance ?? getSurfaceAppearance(WORLD_TEMPLATE_SURFACE)),
+          opacity: snapshot.template.opacity,
+        }
+      : (previous?.appearance ?? null),
+    owns: nativeOpacityChanged ? [...new Set([...owns, 'pixels' as const])] : owns,
     folderId: previous?.folderId ?? null,
     native: {
       id: snapshot.template.id,
@@ -116,7 +126,10 @@ const migrate = async (api: NativeTemplates, template: StoredTemplate): Promise<
         ...nativeMetadata(pending),
         originalWidth: pending.width,
         originalHeight: pending.height,
-        opacity: pending.appearance?.opacity ?? DEFAULT_APPEARANCE.opacity,
+        opacity:
+          (pending.owns?.includes('pixels') ?? pending.appearance != null)
+            ? (pending.appearance?.opacity ?? getSurfaceAppearance(WORLD_TEMPLATE_SURFACE).opacity)
+            : getSurfaceAppearance(WORLD_TEMPLATE_SURFACE).opacity,
       },
       null,
       await nativeImage(pending),
@@ -240,9 +253,13 @@ export const saveTemplate = async (
         return { status: 'conflict' }
       }
       const patch = nativeMetadata(template)
-      const opacityChanged = template.appearance?.opacity !== previous.appearance?.opacity
+      const opacityChanged =
+        template.appearance?.opacity !== previous.appearance?.opacity ||
+        template.owns?.includes('pixels') !== previous.owns?.includes('pixels')
       const opacity = opacityChanged
-        ? (template.appearance?.opacity ?? DEFAULT_APPEARANCE.opacity)
+        ? template.owns?.includes('pixels') && template.appearance != null
+          ? template.appearance.opacity
+          : getSurfaceAppearance(WORLD_TEMPLATE_SURFACE).opacity
         : snapshot.template.opacity
       const changed =
         JSON.stringify(patch) !== JSON.stringify(nativeMetadata(linked)) ||
@@ -297,7 +314,10 @@ export const saveTemplate = async (
 
 /** Native deletion wins; server-owned templates never reach this local persistence boundary. */
 export const deleteTemplate = async (id: IDBValidKey, revision: number): Promise<SaveResult> => {
-  const previous = typeof id === 'string' ? loadedTemplate(await disk.loadTemplate(id)) : null
+  const loaded = typeof id === 'string' ? await disk.loadTemplate(id) : null
+  if (loaded?.status === 'unavailable' || loaded?.status === 'invalid')
+    return { status: 'unavailable' }
+  const previous = loaded === null ? null : loadedTemplate(loaded)
   if (previous?.native === undefined) return await disk.deleteTemplate(id, revision)
   if (native === null) return { status: 'unavailable' }
   return await exclusive(async () => {

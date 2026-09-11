@@ -11,7 +11,6 @@ import {
   forgetServerTemplates,
   hasRoomForServerTemplate,
   localTemplates,
-  markPlaced,
   putServerTemplate,
 } from './local-store.js'
 import {
@@ -183,7 +182,7 @@ export const installNativeAllianceTemplates = (native: NativeTemplates): (() => 
     const admitted = new Set<string>()
     const signal = controller.signal
     for (const placement of placements) {
-      const id = `native-alliance-${await nativeLocalId(`${active.surface.allianceId}:${target.target}:${target.draftId ?? ''}:${placement.id}`)}`
+      const id = `srv:${encodeURIComponent(NATIVE_ALLIANCE_OWNER)}:${await nativeLocalId(`${active.surface.allianceId}:${target.target}:${target.draftId ?? ''}:${placement.id}`)}`
       admitted.add(id)
       const existing = localTemplates().find((template) => template.id === id)
       if (existing?.serverVersion === placement.version) continue
@@ -242,6 +241,7 @@ export const installNativeAllianceTemplates = (native: NativeTemplates): (() => 
           serverTemplateId: placement.id,
           serverNodeId: null,
           serverVersion: placement.version,
+          sourceOpacity: placement.opacity,
         },
         () => current(active, epoch) && sequence === requestSequence,
       )
@@ -307,7 +307,7 @@ export const copyNativeAllianceTemplate = async (id: string): Promise<void> => {
     (template) => template.id === id && template.serverUrl === NATIVE_ALLIANCE_OWNER,
   )
   if (source === undefined) throw new Error('The Wplace template is no longer available')
-  const copied = await addLocalTemplate(
+  await addLocalTemplate(
     {
       id: `local-${crypto.randomUUID()}`,
       name: source.name,
@@ -321,6 +321,6 @@ export const copyNativeAllianceTemplate = async (id: string): Promise<void> => {
       opaque: source.opaque,
     },
     source.surface,
+    true,
   )
-  if (!(await markPlaced(copied.id))) throw new Error('Could not save the template placement')
 }

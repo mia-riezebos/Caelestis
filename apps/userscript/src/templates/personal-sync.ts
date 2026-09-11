@@ -1,3 +1,4 @@
+import { onActiveAllianceSurfaceChange } from '../alliance-surface.js'
 import { warn } from '../debug.js'
 import { refreshPersonalTemplates, restoreLocalTemplates } from './local-store.js'
 import { installNativeAllianceTemplates } from './native-alliance.js'
@@ -10,13 +11,33 @@ let installed = false
 export const installPersonalTemplates = async (): Promise<void> => {
   if (installed) return
   installed = true
+  // Establish the durable-row admission barrier synchronously, before server sync can claim its budget.
+  const restored = restoreLocalTemplates()
   try {
+    await restored
     if (document.readyState === 'loading')
       await new Promise<void>((resolve) =>
         document.addEventListener('DOMContentLoaded', () => resolve(), { once: true }),
       )
     const native = await connectNativeTemplates()
     installNativeAllianceTemplates(native)
+    if (native.alliance === undefined) {
+      let discovering = false
+      const stop = onActiveAllianceSurfaceChange((active) => {
+        if (active === null || discovering) return
+        discovering = true
+        void connectNativeTemplates()
+          .then((available) => {
+            if (available.alliance === undefined) return
+            installNativeAllianceTemplates(available)
+            stop()
+          })
+          .catch((error) => warn('install', 'native alliance discovery failed', String(error)))
+          .finally(() => {
+            discovering = false
+          })
+      })
+    }
     let queued: ReturnType<typeof setTimeout> | undefined
     let syncing = false
     let changed = false
@@ -53,7 +74,7 @@ export const installPersonalTemplates = async (): Promise<void> => {
       if (!document.hidden) schedule()
     })
     await synchronizePersonalTemplates()
-    await restoreLocalTemplates()
+    await refreshPersonalTemplates()
   } catch (error) {
     warn('install', 'native personal templates unavailable; retaining local records', String(error))
     await restoreLocalTemplates()

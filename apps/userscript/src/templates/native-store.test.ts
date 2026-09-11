@@ -179,6 +179,24 @@ describe('native personal templates', () => {
     expect(metadata.templates).toEqual([])
   })
 
+  it('restores the previous image when native metadata changes during the image write', async () => {
+    const { create, api, images, metadata, blobs } = fixture()
+    const before = await create()
+    vi.mocked(images.save).mockImplementationOnce(async (id, blob) => {
+      blobs.set(id, blob)
+      metadata.update(id, { name: 'Concurrent native rename' })
+    })
+    await expect(
+      api.save('one', { name: 'Stale name' }, before, new Blob(['replacement'])),
+    ).rejects.toThrow(NativeConflict)
+    expect(metadata.getById('one')?.name).toBe('Concurrent native rename')
+    const restored = blobs.get('one')
+    if (!restored) throw new Error('Missing source image')
+    expect(new Uint8Array(await restored.arrayBuffer())).toEqual(
+      new Uint8Array(await before.image.arrayBuffer()),
+    )
+  })
+
   it('observes native reordering and restores the original method on disposal', () => {
     const { api, metadata } = fixture()
     const original = metadata.persist

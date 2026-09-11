@@ -241,7 +241,7 @@ describe('personal template ownership', () => {
     for (const kind of ['alliance-headquarters', 'alliance-picture', 'alliance-banner'] as const) {
       const template = local({
         id: kind,
-        originX: 0,
+        originX: kind === 'alliance-headquarters' ? -1 : 0,
         originY: 0,
         surface: { kind, allianceId: 42 },
       })
@@ -250,6 +250,93 @@ describe('personal template ownership', () => {
     }
     await personal.synchronizePersonalTemplates()
     expect(api.ids()).toEqual([])
+  })
+
+  it('does not delete a linked owner when the initial durable read is unavailable', async () => {
+    const { seed, personal, disk, api } = await fixture()
+    const before = await seed()
+    vi.spyOn(disk, 'loadTemplate').mockResolvedValueOnce({ status: 'unavailable' })
+    expect(await personal.deleteTemplate(before.id, before.revision)).toEqual({
+      status: 'unavailable',
+    })
+    expect((await disk.loadTemplate(before.id)).status).toBe('loaded')
+    expect(api.ids()).toHaveLength(1)
+  })
+
+  it('preserves inherited opacity during migration and after global changes', async () => {
+    const { seed, api } = await fixture()
+    const state = await import('../state.js')
+    const { DEFAULT_APPEARANCE } = await import('./appearance.js')
+    state.setState({ appearance: { ...DEFAULT_APPEARANCE, opacity: 0.2 } })
+    const migrated = await seed()
+    expect((await api.read(migrated.native?.id ?? ''))?.template.opacity).toBe(0.2)
+    const store = await import('./local-store.js')
+    await store.restoreLocalTemplates()
+    const row = store.templateById(migrated.id)
+    if (!row) throw new Error('Missing migrated template')
+    state.setState({ appearance: { ...DEFAULT_APPEARANCE, opacity: 0.7 } })
+    expect(store.appearanceOf(row).opacity).toBe(0.7)
+  })
+
+  it('retains signed alliance copies after reload and commits their placed state once', async () => {
+    const { disk } = await fixture()
+    const store = await import('./local-store.js')
+    const { copyNativeAllianceTemplate, NATIVE_ALLIANCE_OWNER } = await import(
+      './native-alliance.js'
+    )
+    const surface = { kind: 'alliance-headquarters', allianceId: 42 } as const
+    const source = {
+      ...local(),
+      id: `srv:${encodeURIComponent(NATIVE_ALLIANCE_OWNER)}:source`,
+      originX: -10,
+      originY: -20,
+      surface,
+      sourceOpacity: 0.25,
+      serverUrl: NATIVE_ALLIANCE_OWNER,
+      serverTemplateId: 'source',
+      serverNodeId: null,
+      serverVersion: '1',
+    }
+    await store.putServerTemplate(source)
+    const native = store.templateById(source.id)
+    if (!native) throw new Error('Missing native row')
+    expect(store.appearanceOf(native).opacity).toBe(0.25)
+    const save = vi.spyOn(disk, 'saveTemplate')
+    await copyNativeAllianceTemplate(source.id)
+    expect(save).toHaveBeenCalledTimes(1)
+    const copied = store.localTemplates().find((row) => row.serverUrl === undefined)
+    if (!copied) throw new Error('Missing copy')
+    vi.resetModules()
+    const restored = await import('./local-store.js')
+    await restored.restoreLocalTemplates()
+    expect(restored.templateById(copied.id)).toMatchObject({
+      originX: -10,
+      originY: -20,
+      everPlaced: true,
+      surface,
+    })
+  })
+
+  it('does not expose a local alliance copy when its initial persistence fails', async () => {
+    const { disk } = await fixture()
+    const store = await import('./local-store.js')
+    const { copyNativeAllianceTemplate, NATIVE_ALLIANCE_OWNER } = await import(
+      './native-alliance.js'
+    )
+    const id = `srv:${encodeURIComponent(NATIVE_ALLIANCE_OWNER)}:source`
+    await store.putServerTemplate({
+      ...local(),
+      id,
+      surface: { kind: 'alliance-headquarters', allianceId: 42 },
+      serverUrl: NATIVE_ALLIANCE_OWNER,
+      serverTemplateId: 'source',
+      serverNodeId: null,
+      serverVersion: '1',
+    })
+    vi.spyOn(disk, 'saveTemplate').mockResolvedValueOnce({ status: 'unavailable' })
+    await expect(copyNativeAllianceTemplate(id)).rejects.toThrow('could not be saved')
+    expect(store.localTemplates().map((row) => row.id)).toEqual([id])
+    expect(await disk.loadTemplates()).toEqual([])
   })
 
   it('leaves native artwork intact when its archive cannot reserve space', async () => {

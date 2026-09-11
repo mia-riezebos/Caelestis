@@ -64,6 +64,7 @@ export interface NativeImageStore {
   read(id: string): Promise<Blob | undefined>
   save(id: string, blob: Blob, origin: 'remote'): Promise<void>
   remove(id: string): Promise<void>
+  commit?(id: string): Promise<void>
   subscribe(listener: (change: NativeChange) => void): () => void
   render(blob: Blob, template: NativeTemplate, deriveTemplatePalette?: boolean): Promise<ImageData>
 }
@@ -255,10 +256,25 @@ export class NativeTemplates {
       throw new NativeConflict()
     if (current === null && image === undefined) throw new Error('A native template needs artwork')
     if (image !== undefined) await this.images.save(id, image, 'remote')
-    this.assertFresh()
-    // Image storage yields. A native metadata edit during that write must win.
-    if (metadataToken(this.metadata.getById(id)) !== metadataToken(current?.template))
-      throw new NativeConflict()
+    try {
+      this.assertFresh()
+      // Image storage yields. A native metadata edit during that write must win.
+      if (metadataToken(this.metadata.getById(id)) !== metadataToken(current?.template))
+        throw new NativeConflict()
+    } catch (error) {
+      if (image !== undefined) {
+        const latest = await this.images.read(id)
+        // Do not roll a newer native image back over our original source.
+        if (
+          latest !== undefined &&
+          (await hash(await latest.arrayBuffer())) === (await hash(await image.arrayBuffer()))
+        ) {
+          if (current !== null) await this.images.save(id, current.image, 'remote')
+          else if (this.metadata.getById(id) === undefined) await this.images.remove(id)
+        }
+      }
+      throw error
+    }
     if (current === null) {
       this.metadata.add({
         id,
@@ -290,6 +306,7 @@ export class NativeTemplates {
       !saved.token.endsWith(`\n${await hash(await intendedImage.arrayBuffer())}`)
     )
       throw new NativeConflict()
+    if (image !== undefined) await this.images.commit?.(id)
     return saved
   }
 
@@ -345,7 +362,11 @@ export const connectNativeTemplates = async (): Promise<NativeTemplates> => {
   let imageModule: NativeModule | undefined
   let imageModuleSource = ''
   let allianceModule: NativeModule | undefined
-  while (candidates.size > 0 && visited.size < 384 && (!metadataModule || !imageModule)) {
+  while (
+    candidates.size > 0 &&
+    visited.size < 384 &&
+    (!metadataModule || !imageModule || !allianceModule)
+  ) {
     const batch = [...candidates].slice(0, 6)
     for (const url of batch) candidates.delete(url)
     await Promise.all(
@@ -446,8 +467,8 @@ export const connectNativeTemplates = async (): Promise<NativeTemplates> => {
       read,
       async save(id, blob, origin) {
         await save(id, blob, origin)
-        await clearEditor(id)
       },
+      commit: clearEditor,
       async remove(id) {
         await remove(id)
         await clearEditor(id)

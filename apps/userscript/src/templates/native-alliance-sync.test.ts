@@ -97,7 +97,9 @@ it('mirrors native reads, discards a response from a closed canvas, and copies w
     surface,
     serverUrl: NATIVE_ALLIANCE_OWNER,
     serverTemplateId: '42',
+    sourceOpacity: 1,
   })
+  expect(mirrored.id).toMatch(/^srv:/)
   expect(fetchImage.mock.calls[0]?.[0]).toContain(
     '/alliance/templates/42/image?target=headquarters',
   )
@@ -117,6 +119,7 @@ it('mirrors native reads, discards a response from a closed canvas, and copies w
   expect(state.copy).toHaveBeenCalledWith(
     expect.objectContaining({ name: 'Native art', originX: -1 }),
     surface,
+    true,
   )
   expect(state.copy.mock.calls[0]?.[0]).not.toHaveProperty('serverUrl')
   expect(api.metadata.add).not.toHaveBeenCalled()

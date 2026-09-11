@@ -61,6 +61,8 @@ import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './serv
 
 export interface PlacedTemplate extends ImportedTemplate {
   readonly native?: NonNullable<StoredTemplate['native']>
+  /** Wplace's alliance opacity, used until this browser takes ownership of the pixels appearance. */
+  readonly sourceOpacity?: number
   /** Last local content or placement edit; absent on legacy records and server render copies. */
   readonly updatedAt?: number
   /** Drawing surface this placement belongs to. Legacy browser-owned templates are world-scoped. */
@@ -508,14 +510,18 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
 export const appearanceOf = (template: PlacedTemplate): Appearance => {
   const global = getSurfaceAppearance(template.surface ?? WORLD_TEMPLATE_SURFACE)
   const own = template.appearance
-  const nativeOpacity = template.native?.status === 'linked' ? template.native.opacity : undefined
-  if (own === null || template.owns.length === 0)
-    return nativeOpacity === undefined ? global : { ...global, opacity: nativeOpacity }
+  const nativeOpacity =
+    template.native?.status === 'linked' && template.owns.includes('pixels')
+      ? template.native.opacity
+      : undefined
+  const inherited =
+    template.sourceOpacity === undefined ? global : { ...global, opacity: template.sourceOpacity }
+  if (own === null || template.owns.length === 0) return inherited
 
   // Field by field, from whichever side owns that field's group. A template that has taken over its
   // markers still follows the global sliders for its shape, which is the whole point of splitting
   // the switch: wanting one's own marker colour used to mean freezing everything else as well.
-  const composed: Record<string, unknown> = { ...global }
+  const composed: Record<string, unknown> = { ...inherited }
   for (const group of template.owns) {
     for (const field of GROUP_FIELDS[group]) composed[field] = own[field]
   }
@@ -1038,6 +1044,7 @@ export const putServerTemplate = async (
     serverTemplateId: string
     serverNodeId: string | null
     serverVersion: string
+    sourceOpacity?: number
     serverConnection?: ConnectedServer
     serverTileKeys?: readonly string[]
     wrapX?: boolean
@@ -1161,9 +1168,11 @@ export const forgetServerSurfaceTemplates = async (
   await Promise.all(ids.map(async (id) => await forgetServerTemplate(id)))
 }
 
+/** Admit an import, optionally committing an existing placement in the same initial write. */
 export const addLocalTemplate = async (
   template: ImportedTemplate,
   surface: TemplateSurface = WORLD_TEMPLATE_SURFACE,
+  everPlaced = false,
 ): Promise<PlacedTemplate> => {
   const restoring = restoreInFlight
   if (restoring !== null) await restoring
@@ -1201,7 +1210,7 @@ export const addLocalTemplate = async (
       surface,
       tiles,
       visible: true,
-      everPlaced: false,
+      everPlaced,
       // Follows the global appearance until someone touches this one's own controls.
       appearance: null,
       owns: [],

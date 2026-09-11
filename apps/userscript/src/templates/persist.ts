@@ -1,4 +1,10 @@
-import { type TemplateSurface, WORLD_PIXELS } from '@caelestis/shared'
+import {
+  type TemplateSurface,
+  templateSurface,
+  templateSurfaceBounds,
+  WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { warn } from '../debug.js'
 import { isStoredBlob, isUint8Array, type StoredBlob } from '../page-world.js'
 import type { Appearance, AppearanceGroup } from './appearance.js'
@@ -488,9 +494,7 @@ const boundedStoredCandidate = (
     typeof record.source !== 'string' ||
     !['wplace', 'marble', 'image'].includes(record.source) ||
     !Number.isSafeInteger(record.originX) ||
-    Number(record.originX) < 0 ||
     !Number.isSafeInteger(record.originY) ||
-    Number(record.originY) < 0 ||
     !Number.isSafeInteger(record.width) ||
     Number(record.width) <= 0 ||
     !Number.isSafeInteger(record.height) ||
@@ -512,11 +516,28 @@ const boundedStoredCandidate = (
   const height = Number(record.height)
   const originX = Number(record.originX)
   const originY = Number(record.originY)
+  const rawSurface = record.surface
+  const surface =
+    rawSurface === undefined
+      ? WORLD_TEMPLATE_SURFACE
+      : typeof rawSurface === 'object' && rawSurface !== null && 'kind' in rawSurface
+        ? templateSurface(
+            rawSurface.kind,
+            'allianceId' in rawSurface ? rawSurface.allianceId : undefined,
+          )
+        : null
+  if (surface === null) return false
+  const bounds = templateSurfaceBounds(surface) ?? {
+    minX: 0,
+    minY: 0,
+    maxX: WORLD_PIXELS,
+    maxY: WORLD_PIXELS,
+  }
   if (
-    width > WORLD_PIXELS ||
-    height > WORLD_PIXELS ||
-    originX > WORLD_PIXELS - width ||
-    originY > WORLD_PIXELS - height ||
+    originX < bounds.minX ||
+    originY < bounds.minY ||
+    originX > bounds.maxX - width ||
+    originY > bounds.maxY - height ||
     indexPixels !== width * height ||
     (record.source === 'image' && record.everPlaced === false)
   ) {
