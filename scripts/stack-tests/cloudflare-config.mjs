@@ -36,7 +36,7 @@ export async function cloudflareConfigs({
       ...config(backend, `${prefix}-backend`),
       vars: {
         ...backend.vars,
-        SERVER_ID: randomUUID().replace(/-4/, '-7'),
+        SERVER_ID: randomUUID().replace(/^(.{14})./, '$17'),
         SERVER_NAME: 'Stack test',
         ADMIN_TOKEN: adminToken,
       },
