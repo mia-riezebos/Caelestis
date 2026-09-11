@@ -66,7 +66,7 @@ try {
     }
     writeFileSync('images/baseline.json', JSON.stringify({ release: previous.tag_name }))
   } else {
-    execFileSync('git', ['fetch', '--depth=1', 'origin', firstBaseline], { stdio: 'inherit' })
+    execFileSync('git', ['fetch', 'origin', firstBaseline], { stdio: 'inherit' })
     const archive = execFileSync('git', ['archive', firstBaseline], { maxBuffer: 64 * 1024 * 1024 })
     execFileSync('tar', ['-x', '-C', directory], { input: archive })
     for (const component of ['backend', 'frontend'])
