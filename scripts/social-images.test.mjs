@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import sharp from 'sharp'
+import { encodeTimelapseGif } from '../apps/frontend/src/lib/social-gif.ts'
 import { renderTemplateHistory } from '../apps/frontend/src/lib/social-render.ts'
 import { TILE_SIZE, WORLD_PIXELS } from '../packages/shared/dist/index.js'
 import {
@@ -40,6 +41,56 @@ test('samples the entire retained timeline, preserving both endpoints', () => {
   assert.deepEqual(sampleTimeline([9, 1, 5, 1, 3, 7], 3), [1, 5, 9])
 })
 
+test('delta frames repaint erasures, preserve static pixels and all 128 colors, and reset on loop', async () => {
+  const width = 128
+  const height = 2
+  const first = Buffer.alloc(width * height * 4)
+  for (let i = 0; i < width * height; i++)
+    first.set([(i % 32) * 8, Math.floor((i % 128) / 32) * 64, 0, 255], i * 4)
+  const painted = Buffer.from(first)
+  painted.set([248, 192, 0, 255], 0)
+  painted.set([0, 0, 0, 255], first.length - 4)
+  const erased = Buffer.from(first)
+  const frames = [first, painted, erased, painted, painted]
+  const gif = encodeTimelapseGif(frames, width, height)
+  const metadata = await sharp(gif, { animated: true }).metadata()
+  assert.equal(metadata.loop, 0)
+  assert.deepEqual(metadata.delay, [2500, 2500, 2500, 2500, 5000])
+  for (let page = 0; page < frames.length; page++) {
+    const decoded = await sharp(gif, { page }).ensureAlpha().raw().toBuffer()
+    assert.deepEqual(decoded, frames[page], `composited frame ${page}`)
+  }
+})
+
+test('coalescing sums the original GIF ticks while keeping both history endpoints and the final hold', async () => {
+  const red = Uint8Array.of(255, 0, 0, 255)
+  const blue = Uint8Array.of(0, 0, 255, 255)
+  const gif = encodeTimelapseGif([red, red, red, blue, blue, blue, red, blue], 1, 1)
+  const metadata = await sharp(gif, { animated: true }).metadata()
+  assert.deepEqual(metadata.delay, [4290, 4290, 1420, 5000])
+  for (const [page, color] of [red, blue, red, blue].entries()) {
+    const decoded = await sharp(gif, { page }).ensureAlpha().raw().toBuffer()
+    assert.deepEqual([...decoded], [...color])
+  }
+  const staticGif = encodeTimelapseGif([red], 1, 1)
+  assert.deepEqual((await sharp(staticGif, { animated: true }).metadata()).delay, [5000])
+})
+
+test('300 changing history frames retain the 30 fps ceiling and exact ten-second duration', async () => {
+  const frames = Array.from({ length: 301 }, (_, i) =>
+    i % 2 ? Uint8Array.of(255, 0, 0, 255) : Uint8Array.of(0, 0, 255, 255),
+  )
+  const gif = encodeTimelapseGif(frames, 1, 1)
+  const { delay } = await sharp(gif, { animated: true }).metadata()
+  assert.equal(delay.length, 301)
+  assert.equal(delay.at(-1), 5000)
+  assert.equal(
+    delay.slice(0, -1).reduce((sum, ms) => sum + ms, 0),
+    10000,
+  )
+  assert.ok(delay.slice(0, -1).every((ms) => ms === 30 || ms === 40))
+})
+
 test('history lasts ten seconds at up to 30 fps, followed by five seconds of live state', async () => {
   const png = await tile('#ff0000')
   for (const count of [1, 8, 96, 300, 450]) {
@@ -56,7 +107,7 @@ test('history lasts ten seconds at up to 30 fps, followed by five seconds of liv
     const { delay } = await sharp(gif, { animated: true }).metadata()
     assert.equal(delay.at(-1), 5000)
     const playback = delay.slice(0, -1)
-    assert.equal(playback.length, Math.min(count, 300))
+    assert.equal(playback.length, 1, 'identical history canvases coalesce')
     assert.equal(
       playback.reduce((sum, ms) => sum + ms, 0),
       10000,

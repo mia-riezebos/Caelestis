@@ -36,6 +36,10 @@ Large captures use fewer frames to keep source image reads and decodes within 4,
 including the final state. Both history endpoints remain present.
 GIF timing distributes 10 ms ticks across the history, preserving its duration even if size limits
 require fewer frames. Without history, the GIF holds only the latest state.
+Unchanged history frames share their playback delay. Later frames preserve unchanged pixels through
+GIF transparency, with an explicit five-second final hold. Dimensions remain 640x360; changed pixels
+retain the existing 128-color quantization. See [the benchmark and samples](../docs/timelapse-gif-size.md)
+for measured sizes and encoder tradeoffs.
 Real OpenStreetMap tiles remain visible through transparent and
 unobserved canvas pixels. Every frame includes map attribution. The Worker caches map tiles in R2;
 the CLI uses `.scratch/social-images/.osm`, retained between workflow runs. Both cache for seven days

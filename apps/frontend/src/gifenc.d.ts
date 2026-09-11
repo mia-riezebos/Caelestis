@@ -7,9 +7,12 @@ declare module 'gifenc/dist/gifenc.js' {
       width: number,
       height: number,
       options: {
-        palette: number[][]
+        palette?: number[][]
         repeat?: number
         delay?: number
+        dispose?: number
+        transparent?: boolean
+        transparentIndex?: number
       },
     ): void
     finish(): void

@@ -7,21 +7,16 @@ import {
   timelapseCaptureRect,
   WORLD_PIXELS,
 } from '@caelestis/shared'
-import gifenc from 'gifenc/dist/gifenc.js'
 import { mergeArchiveFrames, type PlaybackFrame } from './archive-history.ts'
 import { stampMapAttribution } from './social-attribution.ts'
 import { type ReadMapTile, renderBasemap } from './social-basemap.ts'
+import { encodeTimelapseGif, HISTORY_PLAYBACK_SECONDS } from './social-gif.ts'
 import { SOCIAL_IMAGE_HEIGHT, SOCIAL_IMAGE_WIDTH } from './social-image.ts'
 
 const MAX_FPS = 30
-const HISTORY_PLAYBACK_SECONDS = 10
 const MAX_FRAMES = MAX_FPS * HISTORY_PLAYBACK_SECONDS
 const MAX_SOURCE_IMAGES = 4096
-const GIF_TICK_MS = 10
-const LIVE_PAUSE_MS = 5000
-const MAX_GIF_BYTES = 4_500_000
 const BACKGROUND = [27, 27, 32, 255]
-const { applyPalette, GIFEncoder, quantize } = gifenc
 
 /** Sample the retained timeline evenly, preserving both endpoints. */
 export const sampleTimeline = (times: readonly number[], limit = MAX_FRAMES): number[] => {
@@ -140,32 +135,7 @@ export const renderTimelapse = async ({
   }
   if (!observed) return null
   if (readMapTile) await stampMapAttribution(frames, width, height)
-  let selected = frames
-  while (true) {
-    const gif = GIFEncoder()
-    const historyFrames = selected.length - 1
-    const historyTicks = (HISTORY_PLAYBACK_SECONDS * 1000) / GIF_TICK_MS
-    for (const [index, frame] of selected.entries()) {
-      const palette = quantize(frame, 128)
-      // Divide the full ten seconds again after size reduction, using GIF's 10 ms ticks.
-      const delay =
-        index === historyFrames
-          ? LIVE_PAUSE_MS
-          : (Math.ceil(((index + 1) * historyTicks) / historyFrames) -
-              Math.ceil((index * historyTicks) / historyFrames)) *
-            GIF_TICK_MS
-      gif.writeFrame(applyPalette(frame, palette), width, height, {
-        palette,
-        repeat: 0,
-        delay,
-      })
-    }
-    gif.finish()
-    const bytes = gif.bytes()
-    if (bytes.length <= MAX_GIF_BYTES) return bytes
-    if (selected.length <= 3) throw new Error('Timelapse exceeds the share image size limit')
-    selected = [...selected.slice(0, -2).filter((_, i) => i % 2 === 0), ...selected.slice(-2)]
-  }
+  return encodeTimelapseGif(frames, width, height)
 }
 
 /** Merge native observations with this version's sparse backfill before rendering. */
