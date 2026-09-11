@@ -29,7 +29,7 @@ let host: HTMLElement | null = null
 const nodes = new Map<string, HTMLElement>()
 
 const ensureHost = (document: Document): HTMLElement => {
-  if (host !== null && host.isConnected) return host
+  if (host?.isConnected) return host
   host = document.getElementById(HOST_ID)
   if (host !== null) return host
   host = document.createElement('div')

@@ -25,12 +25,12 @@ the template layer as low-opacity tinted rects so finished art covers them. Ever
 - [x] Changesets for backend and userscript; run backend, userscript, and shared tests, typecheck, and lint.
 
 ### Review round 2: a region claim tool with shapes
-- [ ] Shared `RegionShape` contract (rectangle, circle, polygon with corner count, star with point count and inner radius), outline, bounds, and hit-test helpers with tests; claims carry a shape and a server-derived bounding rect.
-- [ ] Backend (Codex): shape column and migration, wire schemas, shape validation on `PUT /work/regions/:id`, tests.
-- [ ] Userscript GL shape renderer: fill any star-shaped outline as a fan and stroke it, used for claims and the tool preview.
-- [ ] Userscript claim tool: a mode that works in explore and paint, captures pointer input over the map, draws the chosen shape by drag, exposes resize and inner-radius handles, and claims or cancels with keys or buttons.
-- [ ] Claim tool toolbar element in `@caelestis/ui`: shape picker, corner and point steppers, claim and cancel; entry from the In progress drawer.
-- [ ] Tests for the tool state machine and shape maths; typecheck, lint, full suites.
+- [x] Shared `RegionShape` contract (rectangle, ellipse, polygon with corner count, star with point count and inner radius) as whole-pixel sets: scanline rasteriser, bounds, pixel hit test, translate, with tests; claims carry a shape and a server-derived bounding rect.
+- [~] Backend (Codex): shape column and migration, wire schemas, shape validation on `PUT /work/regions/:id`, same-claimant update on re-put, tests.
+- [x] Userscript claim rendering: claims and the tool preview rasterise to nearest-sampled masks with crisp edge pixels.
+- [x] Userscript claim tool: a mode that works in explore and paint, captures pointer input over the map, draws the chosen shape by drag, selects your saved claims on click, moves them with ⌘ or Ctrl drag, exposes resize and inner-radius handles, Enter saves, Delete removes, Escape leaves.
+- [x] Claim tool toolbar element in `@caelestis/ui`: shape picker, corner and point inputs, pixel count, save, delete, cancel; entry from the In progress drawer and the M and L keys.
+- [x] Tests for the tool (8), presence layer order (4), shape maths (6); typecheck, lint, full suites.
 
 ## Notes
 - The existing `/telemetry/live` socket in `StatusReadModelObject` is capped at 256 subscribers per season and already carries tile uploads. Presence gets its own Durable Object keyed by season and surface so it can hold thousands of hibernating sockets without touching the status model.
@@ -39,6 +39,8 @@ the template layer as low-opacity tinted rects so finished art covers them. Ever
 - Region selection reuses what the painter already has: the current viewport or the draft bounds. No new drag gesture.
 - Codex runs with `gpt-6-astra` on the backend while I build the userscript side. It does not commit; I review the diff and commit it.
 - The userscript has its own `ServerInfo` parser in `server-manifest.ts`; the `presence` flag had to be added there as well as in shared, or the capability was dropped on read.
+- Mia's round-2 review: region claims are a tool with shapes (rectangle, ellipse, polygon, star), usable in explore and draft; M opens it with a rectangle and L with an ellipse; hover, click to select, ⌘-drag to move, Delete removes; shapes must be nearest-neighbour and aliased with no half pixels. L used to toggle the Wplace theme; that moved to N.
+- Pixel exactness: every shape is defined by integers and rasterised by pixel-centre membership in shared; the GL layer uploads that mask as an R8 texture with nearest sampling, so the tint stops on pixel edges. Circles became ellipses defined by a whole-pixel box for the same reason.
 - Mia's review: viewports must not hide under the art; only drafts and claims do. Two custom layers now share one program: `caelestis-presence` below the outline and pixel art, `caelestis-presence-viewports` above the markers and below Wplace's crosshair.
 - Presence is world-surface only in this slice. Alliance artboards are a separate canvas and keep no presence socket yet.
 - Validation so far: shared presence tests (7), userscript presence client (10) and geometry (8) tests, plus state, layer, manifest, panel, and main suites; userscript `tsc` and ui `svelte-check` clean.

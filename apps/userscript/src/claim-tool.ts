@@ -216,7 +216,7 @@ const reshape = (): void => {
 }
 
 const ensureCapture = (): HTMLDivElement => {
-  if (capture !== null && capture.isConnected) return capture
+  if (capture?.isConnected) return capture
   capture = document.createElement('div')
   capture.id = CAPTURE_ID
   Object.assign(capture.style, {
@@ -264,7 +264,7 @@ const handle = (label: string, mode: 'outer' | 'inner'): HTMLDivElement => {
 }
 
 const ensureToolbar = (): void => {
-  if (toolbar !== null && toolbar.isConnected) return
+  if (toolbar?.isConnected) return
   const element = document.createElement(CLAIM_TOOL_TAG) as HTMLElement & { model: ClaimToolModel }
   element.id = TOOLBAR_ID
   Object.assign(element.style, {
