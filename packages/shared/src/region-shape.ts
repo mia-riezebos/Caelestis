@@ -1,9 +1,13 @@
 import type { PresenceRect } from './presence.js'
 
 /**
- * The shapes a painter can claim. Every shape is star-shaped about its centre, so a fill is one
- * triangle fan and an outline is one ring of points; that is what keeps the renderer simple and
- * the wire small. Coordinates are canvas pixels; angles are whole degrees, clockwise from +x.
+ * The shapes a painter can claim.
+ *
+ * A claim is a set of whole canvas pixels, never a smooth curve: a pixel belongs to a shape when
+ * its centre does. Rectangles and ellipses are defined by a whole-pixel box, so their edges land
+ * on the grid by construction. Polygons and stars are defined by an integer centre, radius, and
+ * whole-degree rotation, and rasterised by scanline against pixel centres. `regionShapePixels` is
+ * the one source of truth for membership; every renderer and hit test goes through it.
  */
 export type RegionShape =
   | {
@@ -13,7 +17,13 @@ export type RegionShape =
       readonly w: number
       readonly h: number
     }
-  | { readonly kind: 'circle'; readonly cx: number; readonly cy: number; readonly r: number }
+  | {
+      readonly kind: 'ellipse'
+      readonly x: number
+      readonly y: number
+      readonly w: number
+      readonly h: number
+    }
   | {
       readonly kind: 'polygon'
       readonly cx: number
@@ -36,26 +46,49 @@ export type RegionShapeKind = RegionShape['kind']
 
 export const REGION_SHAPE_KINDS: readonly RegionShapeKind[] = [
   'rectangle',
-  'circle',
+  'ellipse',
   'polygon',
   'star',
 ]
 export const MIN_REGION_SHAPE_CORNERS = 3
 export const MAX_REGION_SHAPE_CORNERS = 12
-/** Largest radius, in canvas pixels, a round shape may have. Keeps the bounding box bounded. */
-export const MAX_REGION_SHAPE_RADIUS = 1_000
-const MIN_CIRCLE_SEGMENTS = 24
-const MAX_CIRCLE_SEGMENTS = 96
+/** Largest radius or box side, in canvas pixels. Keeps the bounding box and mask bounded. */
+export const MAX_REGION_SHAPE_EXTENT = 2_000
+
+export interface Point {
+  readonly x: number
+  readonly y: number
+}
+
+/** A shape as whole pixels: `mask[i]` is 1 inside, row-major over `rect`. */
+export interface RegionShapePixels {
+  readonly rect: PresenceRect
+  readonly mask: Uint8Array
+  readonly count: number
+}
 
 const int = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value)
 
-const validRotation = (value: unknown): value is number => int(value) && value >= 0 && value < 360
+const validBox = (shape: Record<string, unknown>): boolean =>
+  int(shape.x) &&
+  int(shape.y) &&
+  int(shape.w) &&
+  int(shape.h) &&
+  shape.x >= 0 &&
+  shape.y >= 0 &&
+  shape.w >= 1 &&
+  shape.h >= 1 &&
+  shape.w <= MAX_REGION_SHAPE_EXTENT &&
+  shape.h <= MAX_REGION_SHAPE_EXTENT
 
 const validRadius = (value: unknown): value is number =>
-  int(value) && value >= 1 && value <= MAX_REGION_SHAPE_RADIUS
+  int(value) && value >= 1 && value <= MAX_REGION_SHAPE_EXTENT / 2
 
-const validCentre = (cx: unknown, cy: unknown): boolean => int(cx) && int(cy) && cx >= 0 && cy >= 0
+const validRotation = (value: unknown): value is number => int(value) && value >= 0 && value < 360
+
+const validCorners = (value: unknown): value is number =>
+  int(value) && value >= MIN_REGION_SHAPE_CORNERS && value <= MAX_REGION_SHAPE_CORNERS
 
 /** Structural validation only; surface bounds are the caller's concern. */
 export const isRegionShape = (value: unknown): value is RegionShape => {
@@ -63,37 +96,29 @@ export const isRegionShape = (value: unknown): value is RegionShape => {
   const shape = value as Record<string, unknown>
   switch (shape.kind) {
     case 'rectangle':
-      return (
-        int(shape.x) &&
-        int(shape.y) &&
-        int(shape.w) &&
-        int(shape.h) &&
-        shape.x >= 0 &&
-        shape.y >= 0 &&
-        shape.w > 0 &&
-        shape.h > 0
-      )
-    case 'circle':
-      return validCentre(shape.cx, shape.cy) && validRadius(shape.r)
+    case 'ellipse':
+      return validBox(shape)
     case 'polygon':
       return (
-        validCentre(shape.cx, shape.cy) &&
+        int(shape.cx) &&
+        int(shape.cy) &&
+        shape.cx >= 0 &&
+        shape.cy >= 0 &&
         validRadius(shape.r) &&
-        int(shape.sides) &&
-        shape.sides >= MIN_REGION_SHAPE_CORNERS &&
-        shape.sides <= MAX_REGION_SHAPE_CORNERS &&
+        validCorners(shape.sides) &&
         validRotation(shape.rotation)
       )
     case 'star':
       return (
-        validCentre(shape.cx, shape.cy) &&
+        int(shape.cx) &&
+        int(shape.cy) &&
+        shape.cx >= 0 &&
+        shape.cy >= 0 &&
         validRadius(shape.r) &&
         int(shape.inner) &&
         shape.inner >= 1 &&
         shape.inner < Number(shape.r) &&
-        int(shape.points) &&
-        shape.points >= MIN_REGION_SHAPE_CORNERS &&
-        shape.points <= MAX_REGION_SHAPE_CORNERS &&
+        validCorners(shape.points) &&
         validRotation(shape.rotation)
       )
     default:
@@ -101,24 +126,13 @@ export const isRegionShape = (value: unknown): value is RegionShape => {
   }
 }
 
-export const regionShapeCentre = (
-  shape: RegionShape,
-): { readonly x: number; readonly y: number } =>
-  shape.kind === 'rectangle'
-    ? { x: shape.x + shape.w / 2, y: shape.y + shape.h / 2 }
-    : { x: shape.cx, y: shape.cy }
-
-const radians = (degrees: number): number => (degrees * Math.PI) / 180
+const radians = (value: number): number => (value * Math.PI) / 180
 
 /**
- * The outline as a closed ring of canvas-pixel points, clockwise in screen space.
- *
- * Round shapes are sampled so that a large circle stays smooth and a small one stays cheap.
- * Polygon and star vertices are exact; the first vertex sits at `rotation`.
+ * The geometric outline as a ring of points, for handles and hit testing. Pixel membership does
+ * not come from this; see `regionShapePixels`.
  */
-export const regionShapeOutline = (
-  shape: RegionShape,
-): readonly { readonly x: number; readonly y: number }[] => {
+export const regionShapeOutline = (shape: RegionShape): readonly Point[] => {
   switch (shape.kind) {
     case 'rectangle':
       return [
@@ -127,14 +141,16 @@ export const regionShapeOutline = (
         { x: shape.x + shape.w, y: shape.y + shape.h },
         { x: shape.x, y: shape.y + shape.h },
       ]
-    case 'circle': {
-      const segments = Math.max(
-        MIN_CIRCLE_SEGMENTS,
-        Math.min(MAX_CIRCLE_SEGMENTS, Math.round(shape.r / 4)),
-      )
+    case 'ellipse': {
+      const cx = shape.x + shape.w / 2
+      const cy = shape.y + shape.h / 2
+      const segments = Math.max(24, Math.min(96, Math.round(Math.max(shape.w, shape.h) / 8)))
       return Array.from({ length: segments }, (_, index) => {
         const angle = (index / segments) * Math.PI * 2
-        return { x: shape.cx + Math.cos(angle) * shape.r, y: shape.cy + Math.sin(angle) * shape.r }
+        return {
+          x: cx + (Math.cos(angle) * shape.w) / 2,
+          y: cy + (Math.sin(angle) * shape.h) / 2,
+        }
       })
     }
     case 'polygon':
@@ -151,34 +167,123 @@ export const regionShapeOutline = (
   }
 }
 
+export const regionShapeCentre = (shape: RegionShape): Point =>
+  shape.kind === 'rectangle' || shape.kind === 'ellipse'
+    ? { x: shape.x + shape.w / 2, y: shape.y + shape.h / 2 }
+    : { x: shape.cx, y: shape.cy }
+
 /** The whole-pixel bounding box, clamped at the canvas origin. Interest checks use this. */
 export const regionShapeBounds = (shape: RegionShape): PresenceRect => {
-  if (shape.kind === 'rectangle') return { x: shape.x, y: shape.y, w: shape.w, h: shape.h }
-  const left = Math.max(0, shape.cx - shape.r)
-  const top = Math.max(0, shape.cy - shape.r)
-  return {
-    x: left,
-    y: top,
-    w: Math.max(1, shape.cx + shape.r - left),
-    h: Math.max(1, shape.cy + shape.r - top),
+  if (shape.kind === 'rectangle' || shape.kind === 'ellipse')
+    return { x: shape.x, y: shape.y, w: shape.w, h: shape.h }
+  const ring = regionShapeOutline(shape)
+  let left = Number.POSITIVE_INFINITY
+  let top = Number.POSITIVE_INFINITY
+  let right = Number.NEGATIVE_INFINITY
+  let bottom = Number.NEGATIVE_INFINITY
+  for (const point of ring) {
+    left = Math.min(left, point.x)
+    top = Math.min(top, point.y)
+    right = Math.max(right, point.x)
+    bottom = Math.max(bottom, point.y)
   }
+  const x = Math.max(0, Math.floor(left))
+  const y = Math.max(0, Math.floor(top))
+  return { x, y, w: Math.max(1, Math.ceil(right) - x), h: Math.max(1, Math.ceil(bottom) - y) }
 }
 
-/** Whether a canvas pixel lies inside the shape. Used for hit tests, not for rendering. */
-export const regionShapeContains = (shape: RegionShape, x: number, y: number): boolean => {
+/** Move a shape by whole pixels, keeping it on the canvas. */
+export const translateRegionShape = (shape: RegionShape, dx: number, dy: number): RegionShape => {
+  const mx = Math.round(dx)
+  const my = Math.round(dy)
+  if (shape.kind === 'rectangle' || shape.kind === 'ellipse')
+    return { ...shape, x: Math.max(0, shape.x + mx), y: Math.max(0, shape.y + my) }
+  return { ...shape, cx: Math.max(0, shape.cx + mx), cy: Math.max(0, shape.cy + my) }
+}
+
+/**
+ * Rasterise by scanline: for each pixel row, the ring's crossings with the row's centre line are
+ * sorted and filled in pairs. Exact for every simple polygon, including stars, and linear in the
+ * area plus rows times vertices.
+ */
+const scanlineFill = (ring: readonly Point[], rect: PresenceRect, mask: Uint8Array): number => {
+  let count = 0
+  const crossings: number[] = []
+  for (let row = 0; row < rect.h; row++) {
+    const y = rect.y + row + 0.5
+    crossings.length = 0
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i] as Point
+      const b = ring[j] as Point
+      if (a.y > y === b.y > y) continue
+      crossings.push(a.x + ((y - a.y) * (b.x - a.x)) / (b.y - a.y))
+    }
+    crossings.sort((left, right) => left - right)
+    for (let k = 0; k + 1 < crossings.length; k += 2) {
+      const from = Math.max(rect.x, Math.ceil((crossings[k] as number) - 0.5))
+      const to = Math.min(rect.x + rect.w - 1, Math.floor((crossings[k + 1] as number) - 0.5))
+      for (let x = from; x <= to; x++) {
+        const at = row * rect.w + (x - rect.x)
+        if (mask[at] === 0) {
+          mask[at] = 1
+          count++
+        }
+      }
+    }
+  }
+  return count
+}
+
+/** The whole pixels a shape covers. Callers should cache this per shape; it is O(area). */
+export const regionShapePixels = (shape: RegionShape): RegionShapePixels => {
+  const rect = regionShapeBounds(shape)
+  const mask = new Uint8Array(rect.w * rect.h)
+  if (shape.kind === 'rectangle') {
+    mask.fill(1)
+    return { rect, mask, count: mask.length }
+  }
+  if (shape.kind === 'ellipse') {
+    const rx = shape.w / 2
+    const ry = shape.h / 2
+    let count = 0
+    for (let row = 0; row < shape.h; row++) {
+      const dy = (row + 0.5 - ry) / ry
+      const half = rx * Math.sqrt(Math.max(0, 1 - dy * dy))
+      const from = Math.max(0, Math.ceil(rx - half - 0.5))
+      const to = Math.min(shape.w - 1, Math.floor(rx + half - 0.5))
+      for (let x = from; x <= to; x++) {
+        mask[row * shape.w + x] = 1
+        count++
+      }
+    }
+    return { rect, mask, count }
+  }
+  const count = scanlineFill(regionShapeOutline(shape), rect, mask)
+  return { rect, mask, count }
+}
+
+/** Whether a whole canvas pixel belongs to the shape; consistent with `regionShapePixels`. */
+export const regionShapeContainsPixel = (shape: RegionShape, px: number, py: number): boolean => {
+  const x = Math.floor(px)
+  const y = Math.floor(py)
   if (shape.kind === 'rectangle')
     return x >= shape.x && x < shape.x + shape.w && y >= shape.y && y < shape.y + shape.h
-  const dx = x - shape.cx
-  const dy = y - shape.cy
-  if (shape.kind === 'circle') return dx * dx + dy * dy <= shape.r * shape.r
-  // Ray cast against the exact outline; both remaining shapes are simple polygons.
+  if (shape.kind === 'ellipse') {
+    const rx = shape.w / 2
+    const ry = shape.h / 2
+    const dx = (x + 0.5 - shape.x - rx) / rx
+    const dy = (y + 0.5 - shape.y - ry) / ry
+    return dx * dx + dy * dy <= 1
+  }
+  const cx = x + 0.5
+  const cy = y + 0.5
   const ring = regionShapeOutline(shape)
   let inside = false
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const a = ring[i]
-    const b = ring[j]
-    if (a === undefined || b === undefined) continue
-    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+    const a = ring[i] as Point
+    const b = ring[j] as Point
+    if (a.y > cy !== b.y > cy && cx < ((b.x - a.x) * (cy - a.y)) / (b.y - a.y) + a.x)
+      inside = !inside
   }
   return inside
 }

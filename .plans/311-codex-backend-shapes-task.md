@@ -9,9 +9,10 @@ match. Only edit files under `apps/backend/` and `packages/wire-schema/`. Do not
 
 Read first:
 
-1. `packages/shared/src/region-shape.ts` — `RegionShape` (four kinds), `isRegionShape`,
-   `regionShapeBounds`, `regionShapeOutline`, `regionShapeContains`, and the limits
-   `MIN_REGION_SHAPE_CORNERS`, `MAX_REGION_SHAPE_CORNERS`, `MAX_REGION_SHAPE_RADIUS`.
+1. `packages/shared/src/region-shape.ts` — `RegionShape` (rectangle, ellipse, polygon, star),
+   `isRegionShape`, `regionShapeBounds`, `regionShapePixels`, and the limits
+   `MIN_REGION_SHAPE_CORNERS`, `MAX_REGION_SHAPE_CORNERS`, `MAX_REGION_SHAPE_EXTENT`. Shapes are
+   whole-pixel sets; the server never needs to rasterise, only to validate and derive bounds.
 2. `packages/shared/src/presence.ts` — `RegionClaim` now has `shape: RegionShape` plus `rect`
    (the bounding box, derived by the server). `RegionClaimRequest` now has `shape` instead of
    `rect`.
@@ -23,9 +24,10 @@ Read first:
 ### Wire schema
 
 Add an Effect `RegionShape` schema (a union of four structs discriminated on `kind`) whose checks
-mirror `isRegionShape` exactly: non-negative integer coordinates, positive sizes, radius within
-`1..MAX_REGION_SHAPE_RADIUS`, corners within `MIN..MAX_REGION_SHAPE_CORNERS`, rotation an integer
-in `0..359`, star `inner` an integer in `1..r-1`. Update `RegionClaim` and `RegionClaimRequest`
+mirror `isRegionShape` exactly: non-negative integer coordinates, box sides within
+`1..MAX_REGION_SHAPE_EXTENT`, radius within `1..MAX_REGION_SHAPE_EXTENT / 2`, corners within
+`MIN..MAX_REGION_SHAPE_CORNERS`, rotation an integer in `0..359`, star `inner` an integer in
+`1..r-1`. Update `RegionClaim` and `RegionClaimRequest`
 schemas to the new shared types and keep the `assertExact` checks passing for `Type` and
 `Encoded`. Add wire tests for one valid and one invalid value of each shape kind.
 
@@ -43,9 +45,11 @@ still load. Update the memory store the same way.
 
 `putRegion` validates the request shape (the wire schema already decoded it), derives the bounding
 rect, and rejects with a 400 validation error when the rect is outside the surface (reuse
-`presenceRectWithinSurface`) or its area exceeds `MAX_PRESENCE_REGION_PIXELS`. The idempotent
-re-put rule stays: same id and same claimant returns the stored record; a different claimant is a
-409. The `RegionClaim` returned and broadcast includes both `shape` and `rect`.
+`presenceRectWithinSurface`) or its area exceeds `MAX_PRESENCE_REGION_PIXELS`. The re-put rule changes: a PUT to an existing id by the same
+claimant (same `wplaceUserId`) *updates* the stored shape and label in place, keeping `createdAt`,
+and returns the updated record; an admin credential may also update anyone's claim; a different
+non-admin claimant is a 409. The `RegionClaim` returned and broadcast includes both `shape` and
+`rect`. Add an `updateRegion` store method for this.
 
 The presence Durable Object needs no logic change; it serialises whatever the store returns. Check
 that `presence-ready` and `regions` events still validate against the updated wire schema in its
@@ -56,8 +60,9 @@ tests.
 Update `apps/backend/src/work/regions.test.ts` (or wherever the region tests live) so the create,
 list, idempotent re-put, conflict, and delete cases use shapes, and add: a star claim is stored and
 read back with its shape and derived rect; a rectangle row with a null `shape` column reads back
-as a rectangle shape; a circle whose bounds leave the surface is rejected with 400; a shape with
-an out-of-range radius fails wire decoding with 400.
+as a rectangle shape; an ellipse whose bounds leave the surface is rejected with 400; a shape with
+an out-of-range radius fails wire decoding with 400; a same-claimant re-put with a new shape
+updates the record and broadcasts; an admin re-put of someone else's claim updates it.
 
 ## Done means
 
