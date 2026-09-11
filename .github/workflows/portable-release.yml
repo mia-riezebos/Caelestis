@@ -17,9 +17,14 @@ concurrency:
 jobs:
   validate:
     uses: ./.github/workflows/portable-ci.yml
+    with:
+      extended: true
+
+  cloudflare:
+    uses: ./.github/workflows/portable-cloudflare.yml
 
   publish:
-    needs: validate
+    needs: [validate, cloudflare]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -45,14 +50,17 @@ jobs:
             404) echo 'exists=false' >> "$GITHUB_OUTPUT" ;;
             *) cat /tmp/existing-release.json; exit 1 ;;
           esac
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-        if: steps.existing.outputs.exists == 'false'
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         if: steps.existing.outputs.exists == 'false'
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         if: steps.existing.outputs.exists == 'false'
         with:
           version: v4.2.3
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.existing.outputs.exists == 'false'
+        with:
+          pattern: portable-images-*
+          path: tested-images
       - name: Publish immutable images and chart
         if: steps.existing.outputs.exists == 'false'
         env:
@@ -65,15 +73,39 @@ jobs:
           test -n "${DOCKERHUB_TOKEN:?Configure the DOCKERHUB_TOKEN repository secret}"
           echo "$DOCKERHUB_TOKEN" | docker login docker.io --username miacx --password-stdin
           echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          for arch in amd64 arm64; do
+            directory="tested-images/portable-images-$arch"
+            (cd "$directory" && sha256sum --check SHA256SUMS)
+            docker load -i "$directory/images.tar"
+            cp "$directory/image-configs.json" "release/$arch-image-configs.json"
+            for component in backend frontend; do
+              local_image="caelestis-$component:test"
+              image="docker.io/miacx/caelestis-$component:$IMAGE_TAG-$arch"
+              test "$(docker inspect "$local_image" --format '{{.Architecture}}')" = "$arch"
+              test "$(docker inspect "$local_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+              local_id="$(docker inspect "$local_image" --format '{{.Id}}')"
+              jq -e --arg id "$local_id" 'any(.[]; .Id == $id)' "$directory/image-configs.json"
+              if docker manifest inspect "$image" > /tmp/manifest.json 2>/tmp/manifest-error; then
+                test "$(jq -r .config.digest /tmp/manifest.json)" = "$local_id"
+              else
+                if ! grep -Eqi 'manifest unknown|no such manifest|not found' /tmp/manifest-error; then cat /tmp/manifest-error; exit 1; fi
+                docker tag "$local_image" "$image"
+                docker push "$image"
+              fi
+              cp "$directory/$component-sbom.spdx.json" "release/$component-$arch-sbom.spdx.json"
+            done
+          done
           for component in backend frontend; do
             image_repository="docker.io/miacx/caelestis-$component"
             image="$image_repository:$IMAGE_TAG"
             if docker manifest inspect "$image" > /tmp/manifest.json 2>/tmp/manifest-error; then
-              revision="$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' | jq -r '.["linux/amd64"].config.Labels["org.opencontainers.image.revision"]')"
-              test "$revision" = "$GITHUB_SHA"
+              for arch in amd64 arm64; do
+                digest="$(docker buildx imagetools inspect "$image-$arch" --format '{{.Manifest.Digest}}')"
+                jq -e --arg arch "$arch" --arg digest "$digest" 'any(.manifests[]; .platform.architecture == $arch and .digest == $digest)' /tmp/manifest.json
+              done
             else
               if ! grep -Eqi 'manifest unknown|no such manifest|not found' /tmp/manifest-error; then cat /tmp/manifest-error; exit 1; fi
-              docker buildx build --target "$component" --platform linux/amd64,linux/arm64 --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" --provenance=true --sbom=true --tag "$image" --push .
+              docker buildx imagetools create --tag "$image" "$image-amd64" "$image-arm64"
             fi
             digest="$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}')"
             printf '%s@%s\n' "$image_repository" "$digest" > "release/$component-image.txt"
@@ -92,7 +124,7 @@ jobs:
             if ! grep -Eqi 'not found|manifest unknown' /tmp/chart-error; then cat /tmp/chart-error; exit 1; fi
             helm push "$chart" "oci://$chart_registry"
           fi
-          (cd release && sha256sum *.tgz *-image.txt versions.json > SHA256SUMS)
+          (cd release && sha256sum *.tgz *-image.txt *.json > SHA256SUMS)
       - name: Publish release manifest and chart archive
         if: steps.existing.outputs.exists == 'false'
         env:
@@ -100,4 +132,4 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           IMAGE_TAG: ${{ steps.version.outputs.imageTag }}
         run: |
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "Caelestis server $IMAGE_TAG" --notes-file release/notes.md --latest=false release/*.tgz release/*-image.txt release/versions.json release/SHA256SUMS
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "Caelestis server $IMAGE_TAG" --notes-file release/notes.md --latest=false release/*.tgz release/*-image.txt release/*.json release/SHA256SUMS

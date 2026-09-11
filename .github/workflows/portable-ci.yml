@@ -2,29 +2,47 @@ name: Portable server CI
 
 on:
   pull_request:
-    paths:
-      - apps/backend/**
-      - apps/frontend/**
-      - packages/**
-      - scripts/**
-      - deploy/**
-      - Dockerfile
-      - compose.yaml
-      - .env.example
-      - .dockerignore
-      - .github/workflows/portable-*.yml
-      - .github/scripts/*portable*.mjs
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - turbo.json
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 23 * * *'
   workflow_call:
+    inputs:
+      extended:
+        type: boolean
+        default: false
   workflow_dispatch:
+    inputs:
+      extended:
+        description: Include ARM64, upgrades, and database recovery
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: portable-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      architectures: ${{ steps.matrix.outputs.architectures }}
+      extended: ${{ steps.matrix.outputs.extended }}
+    steps:
+      - id: matrix
+        env:
+          EXTENDED: ${{ github.event_name == 'schedule' || inputs.extended }}
+        run: |
+          if [ "$EXTENDED" = true ]; then
+            echo 'architectures=["amd64","arm64"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'architectures=["amd64"]' >> "$GITHUB_OUTPUT"
+          fi
+          echo "extended=$EXTENDED" >> "$GITHUB_OUTPUT"
+
   runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -66,8 +84,11 @@ jobs:
         run: |
           pnpm --filter @caelestis/backend... --filter @caelestis/frontend... build
           pnpm --filter @caelestis/backend... --filter @caelestis/frontend... check
-      - name: Test shared contracts and restart recovery against PostgreSQL and SQLite
+      - name: Test every database and object-storage contract
         run: |
+          test -n "$CAELESTIS_TEST_POSTGRES_URL"
+          test -n "$CAELESTIS_TEST_MARIADB_URL"
+          test -n "$CAELESTIS_TEST_S3_ENDPOINT"
           pnpm --filter @caelestis/backend --filter @caelestis/frontend --filter @caelestis/storage exec vitest run --maxWorkers=1 --testTimeout=30000 --hookTimeout=30000
           pnpm test:social
           pnpm test:release
@@ -75,58 +96,196 @@ jobs:
         run: |
           pnpm --filter @caelestis/frontend build
           pnpm --filter @caelestis/backend exec wrangler deploy --dry-run --outdir /tmp/caelestis-worker
+      - name: Exercise both Workers and real local bindings
+        run: node scripts/test-cloudflare-stack.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: cloudflare-local-results
+          path: test-results/
+          retention-days: 7
 
   image:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.matrix.outputs.architectures) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build the two release images once
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          for component in backend frontend; do
+            docker buildx build --target "$component" --platform "linux/$ARCH" \
+              --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" \
+              --cache-from "type=gha,scope=$component-$ARCH" \
+              --cache-to "type=gha,scope=$component-$ARCH,mode=max" \
+              --tag "caelestis-$component:test" --load .
+          done
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.20.0
+      - name: Prepare the previous release for upgrade tests
+        if: needs.matrix.outputs.extended == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+        run: node scripts/stack-tests/prepare-baseline.mjs "$ARCH"
+      - run: mkdir -p images
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: caelestis-backend:test
+          output-file: images/backend-sbom.spdx.json
+          upload-artifact: false
+          syft-version: v1.51.1
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: caelestis-frontend:test
+          output-file: images/frontend-sbom.spdx.json
+          upload-artifact: false
+          syft-version: v1.51.1
+      - name: Archive candidate and baseline images
+        env:
+          EXTENDED: ${{ needs.matrix.outputs.extended }}
+        run: |
+          mkdir -p images
+          images=(caelestis-backend:test caelestis-frontend:test)
+          if [ "$EXTENDED" = true ]; then images+=(caelestis-backend:baseline caelestis-frontend:baseline); fi
+          docker save "${images[@]}" -o images/images.tar
+          docker inspect caelestis-backend:test caelestis-frontend:test > images/image-configs.json
+          (cd images && sha256sum images.tar *.json > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: portable-images-${{ matrix.arch }}
+          path: images/
+          compression-level: 1
+          retention-days: 3
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && needs.matrix.outputs.extended == 'true'
+        with:
+          name: baseline-build-${{ matrix.arch }}
+          path: test-results/baseline/
+          retention-days: 7
+
+  compose:
+    needs: [matrix, image]
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.matrix.outputs.architectures) }}
+        database: [sqlite, postgres, mariadb]
+        storage: [filesystem, s3]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 20
     env:
-      ADMIN_TOKEN: portable-compose-test
-      CAELESTIS_READ_TOKEN: portable-compose-read-test
-      CAELESTIS_ENV_FILE: .env.example
-      CAELESTIS_BACKEND_IMAGE: caelestis-backend:test
-      CAELESTIS_FRONTEND_IMAGE: caelestis-frontend:test
-      COMPOSE_PROJECT_NAME: portable-ci
+      CAELESTIS_TEST_EXTENDED: ${{ needs.matrix.outputs.extended }}
+      CAELESTIS_BASELINE_BACKEND_IMAGE: ${{ needs.matrix.outputs.extended == 'true' && 'caelestis-backend:baseline' || '' }}
+      CAELESTIS_BASELINE_FRONTEND_IMAGE: ${{ needs.matrix.outputs.extended == 'true' && 'caelestis-frontend:baseline' || '' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.20.0
-      - name: Build production images
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: portable-images-${{ matrix.arch }}
+          path: images
+      - name: Load verified image artifacts
         run: |
-          docker build --target backend --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" -t caelestis-backend:test .
-          docker build --target frontend --build-arg CAELESTIS_BUILD_ID="$GITHUB_SHA" -t caelestis-frontend:test .
-      - name: Verify installed images with every database adapter
-        run: node scripts/test-portable-image.mjs caelestis-backend:test caelestis-frontend:test
-      - name: Verify all Compose database and storage combinations
-        run: node scripts/test-portable-compose.mjs caelestis-backend:test caelestis-frontend:test
-      - name: Scan production image
+          (cd images && sha256sum --check SHA256SUMS)
+          docker load -i images/images.tar
+      - name: Run stack acceptance
+        env:
+          DATABASE: ${{ matrix.database }}
+          STORAGE: ${{ matrix.storage }}
+        run: node scripts/test-portable-compose.mjs caelestis-backend:test caelestis-frontend:test "$DATABASE" "$STORAGE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: compose-${{ matrix.arch }}-${{ matrix.database }}-${{ matrix.storage }}
+          path: test-results/
+          retention-days: 7
+
+  helm:
+    needs: [matrix, image]
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [sqlite, cnpg, mariadb]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CAELESTIS_TEST_EXTENDED: ${{ needs.matrix.outputs.extended }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.20.0
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.2.3
+      - name: Install kind
+        run: |
+          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o "$RUNNER_TEMP/kind"
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  $RUNNER_TEMP/kind" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/kind"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: portable-images-amd64
+          path: images
+      - name: Load verified image artifacts
+        run: |
+          (cd images && sha256sum --check SHA256SUMS)
+          docker load -i images/images.tar
+      - name: Install and exercise the shipped Helm chart
+        env:
+          STACK: ${{ matrix.stack }}
+        run: node scripts/test-helm-stack.mjs caelestis-backend:test caelestis-frontend:test "$STACK"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: helm-${{ matrix.stack }}
+          path: test-results/
+          retention-days: 7
+
+  scan:
+    needs: [matrix, image]
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.matrix.outputs.architectures) }}
+        component: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: portable-images-${{ matrix.arch }}
+          path: images
+      - run: |
+          (cd images && sha256sum --check SHA256SUMS)
+          docker load -i images/images.tar
+      - uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         id: scan
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
-          image: caelestis-backend:test
+          image: caelestis-${{ matrix.component }}:test
           output-format: json
           fail-build: true
           severity-cutoff: high
           only-fixed: true
           grype-version: v0.118.0
-      - name: Scan frontend image
-        id: frontend-scan
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
-        with:
-          image: caelestis-frontend:test
-          output-format: json
-          fail-build: true
-          severity-cutoff: high
-          only-fixed: true
-          grype-version: v0.118.0
-      - name: Retain vulnerability report
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always() && steps.scan.outputs.json != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: portable-image-scan
-          path: |
-            ${{ steps.scan.outputs.json }}
-            ${{ steps.frontend-scan.outputs.json }}
+          name: scan-${{ matrix.arch }}-${{ matrix.component }}
+          path: ${{ steps.scan.outputs.json }}
+          retention-days: 7
 
   chart:
     runs-on: ubuntu-latest
@@ -152,3 +311,14 @@ jobs:
           if helm template invalid deploy/helm/caelestis --set replicaCount=2; then exit 1; fi
           if helm template invalid deploy/helm/caelestis --set persistence.enabled=false; then exit 1; fi
           if helm template invalid deploy/helm/caelestis --set migration.enabled=true; then exit 1; fi
+
+  stack-tests:
+    if: always()
+    needs: [matrix, runtime, image, compose, helm, scan, chart]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every expected stack
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=module -e 'const results=JSON.parse(process.env.RESULTS); for(const [name,job] of Object.entries(results)) { if(job.result !== "success") throw new Error(name+": "+job.result) }'
