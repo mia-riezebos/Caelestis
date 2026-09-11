@@ -226,6 +226,10 @@ export interface State {
   readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
+  /** Publish this tab's viewport and draft to other painters on the same server. */
+  readonly sharePresence: boolean
+  /** Draw other painters' viewports, drafts, and region claims under the artwork. */
+  readonly showPresence: boolean
   readonly notifyRegressions: boolean
   readonly notifyGriefing: boolean
   readonly notifyUpdates: boolean
@@ -251,6 +255,8 @@ const DEFAULT_STATE: State = {
   appearance: DEFAULT_APPEARANCE,
   reportPaints: true,
   shareTiles: true,
+  sharePresence: true,
+  showPresence: true,
   notifyRegressions: false,
   notifyGriefing: false,
   notifyUpdates: true,
@@ -584,6 +590,8 @@ export const loadState = (): State => {
       // disable either feed; an explicit false remains durable across reloads.
       reportPaints: stored.reportPaints !== false,
       shareTiles: stored.shareTiles !== false,
+      sharePresence: stored.sharePresence !== false,
+      showPresence: stored.showPresence !== false,
       notifyRegressions: stored.notifyRegressions === true,
       notifyGriefing: stored.notifyGriefing === true,
       notifyUpdates: stored.notifyUpdates !== false,

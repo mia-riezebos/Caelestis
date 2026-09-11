@@ -1354,6 +1354,17 @@ export function* draftedPixelOffsets(tile: TileCoord): IterableIterator<number> 
   yield* draftedOffsets.get(tileKey(tile))?.keys() ?? []
 }
 
+/** Every tile that currently holds at least one drafted pixel, on screen or not. */
+export const draftedTiles = (): readonly TileCoord[] => {
+  const tiles: TileCoord[] = []
+  for (const [key, offsets] of draftedOffsets) {
+    if (offsets.size === 0) continue
+    const tile = parseTileKey(key)
+    if (tile !== null) tiles.push(tile)
+  }
+  return tiles
+}
+
 /** The draft layer for a tile, or null if nothing has been drafted on it. */
 export const draftPixels = (tile: TileCoord): Uint8Array | null => {
   const key = tileKey(tile)
