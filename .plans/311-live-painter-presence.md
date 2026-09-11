@@ -24,6 +24,14 @@ the template layer as low-opacity tinted rects so finished art covers them. Ever
 - [x] Userscript controls: share and show toggles in the panel, claim and release region actions, claimant labels.
 - [x] Changesets for backend and userscript; run backend, userscript, and shared tests, typecheck, and lint.
 
+### Review round 2: a region claim tool with shapes
+- [ ] Shared `RegionShape` contract (rectangle, circle, polygon with corner count, star with point count and inner radius), outline, bounds, and hit-test helpers with tests; claims carry a shape and a server-derived bounding rect.
+- [ ] Backend (Codex): shape column and migration, wire schemas, shape validation on `PUT /work/regions/:id`, tests.
+- [ ] Userscript GL shape renderer: fill any star-shaped outline as a fan and stroke it, used for claims and the tool preview.
+- [ ] Userscript claim tool: a mode that works in explore and paint, captures pointer input over the map, draws the chosen shape by drag, exposes resize and inner-radius handles, and claims or cancels with keys or buttons.
+- [ ] Claim tool toolbar element in `@caelestis/ui`: shape picker, corner and point steppers, claim and cancel; entry from the In progress drawer.
+- [ ] Tests for the tool state machine and shape maths; typecheck, lint, full suites.
+
 ## Notes
 - The existing `/telemetry/live` socket in `StatusReadModelObject` is capped at 256 subscribers per season and already carries tile uploads. Presence gets its own Durable Object keyed by season and surface so it can hold thousands of hibernating sockets without touching the status model.
 - Cloudflare bills incoming hibernated WebSocket messages at 20:1 against requests and does not bill outgoing ones, so the client is the throttle point. Server ticks batch changes and only send peers whose rect intersects the subscriber's viewport padded by one tile.

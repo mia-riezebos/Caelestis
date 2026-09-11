@@ -28,6 +28,7 @@ export {
   type QuantiseResult,
   quantiseToPalette,
 } from './quantise.js'
+export * from './region-shape.js'
 export {
   type PixelBounds,
   SliceError,

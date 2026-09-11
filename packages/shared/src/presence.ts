@@ -1,3 +1,4 @@
+import type { RegionShape } from './region-shape.js'
 import type { PainterIdentity } from './telemetry.js'
 import type { TemplateSurface } from './template-surface.js'
 
@@ -72,13 +73,17 @@ export interface PresencePeer {
   readonly draft: PresenceDraft | null
 }
 
-/** A persisted region claim. Coordinates are canvas pixels, like templates. */
+/**
+ * A persisted region claim. Coordinates are canvas pixels, like templates. `rect` is the shape's
+ * bounding box, derived by the server, so interest checks and older readers need only rects.
+ */
 export interface RegionClaim {
   readonly id: string
   readonly season: number
   readonly surface: TemplateSurface
   readonly templateId: string
   readonly claimant: PainterIdentity
+  readonly shape: RegionShape
   readonly rect: PresenceRect
   readonly label: string
   readonly createdAt: number
@@ -102,7 +107,7 @@ export type PresenceServerEvent =
 
 export interface RegionClaimRequest {
   readonly templateId: string
-  readonly rect: PresenceRect
+  readonly shape: RegionShape
   readonly label: string
   readonly actor: PainterIdentity
 }
