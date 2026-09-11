@@ -122,6 +122,11 @@ import {
   PanelSessions,
   type PanelView,
 } from './panel-scope.js'
+import {
+  claimPresenceRegion,
+  presenceSummaryModel,
+  releasePresenceRegion,
+} from './presence-actions.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
@@ -575,6 +580,8 @@ const settingsModel = (): SettingsModel => {
     colourNavigationOrder: state.colourNavigationOrder,
     reportPaints: state.reportPaints,
     shareTiles: state.shareTiles,
+    sharePresence: state.sharePresence,
+    showPresence: state.showPresence,
     notifyRegressions: state.notifyRegressions,
     notifyGriefing: state.notifyGriefing,
     notifyUpdates: state.notifyUpdates,
@@ -1031,6 +1038,12 @@ const claimTreeModels = (
       },
       canShowOthers: claims.canShowOthers,
       error: claims.error,
+      ...(panelSurface.kind === 'world'
+        ? (() => {
+            const presence = presenceSummaryModel()
+            return presence === undefined ? {} : { presence }
+          })()
+        : {}),
     },
   }
 }
@@ -1079,6 +1092,12 @@ const buildSveltePanel = (): CaelestisPanel => {
       case 'work-visibility':
         showOtherClaims = intent.showOtherClaims
         rerenderTree()
+        break
+      case 'region-claim':
+        claimPresenceRegion(intent.mode, rerenderTree)
+        break
+      case 'region-release':
+        releasePresenceRegion(intent.id, rerenderTree)
         break
       case 'navigate':
         if (panelSurface.kind !== 'world' && intent.view === 'settings') break

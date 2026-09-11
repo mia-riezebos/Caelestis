@@ -144,7 +144,7 @@
     {#if model.view === 'tree' && model.tree !== undefined}
       <TemplateTree model={model.tree} allowGrid={poppedOut} onIntent={treeIntent} />
       {#if model.work !== undefined}
-        <WorkSummary model={model.work} showOtherClaims={model.showOtherClaims ?? false} onshowothers={(showOtherClaims) => emit({ type: 'work-visibility', showOtherClaims })} onIntent={(intent) => treeIntent(intent, true)} onretry={() => emit({ type: 'work-retry' })} />
+        <WorkSummary model={model.work} showOtherClaims={model.showOtherClaims ?? false} onshowothers={(showOtherClaims) => emit({ type: 'work-visibility', showOtherClaims })} onIntent={(intent) => treeIntent(intent, true)} onretry={() => emit({ type: 'work-retry' })} onclaimregion={(mode) => emit({ type: 'region-claim', mode })} onreleaseregion={(id) => emit({ type: 'region-release', id })} />
       {/if}
     {:else if model.view === 'appearance' && model.appearance !== undefined}
       <AppearanceEditor model={model.appearance} onIntent={(intent) => emit({ type: 'appearance', intent })} />

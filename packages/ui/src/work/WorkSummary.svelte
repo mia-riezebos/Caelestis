@@ -11,14 +11,19 @@
     onretry,
     showOtherClaims = false,
     onshowothers,
+    onclaimregion,
+    onreleaseregion,
   }: {
     model: NonNullable<PanelModel['work']>
     onIntent: (intent: TemplateTreeIntent) => void
     onretry: () => void
     showOtherClaims?: boolean
     onshowothers: (show: boolean) => void
+    onclaimregion?: (mode: 'viewport' | 'draft') => void
+    onreleaseregion?: (id: string) => void
   } = $props()
   const count = $derived(model.tree.entries.length)
+  const presence = $derived(model.presence)
   const drawerId = $props.id()
   let open = $state(false)
 </script>
@@ -49,6 +54,49 @@
           <p class="empty">Right-click a template and choose Claim to keep it here.</p>
         {:else}
           <TemplateTree model={model.tree} toolbar={false} {onIntent} />
+        {/if}
+        {#if presence !== undefined}
+          <div class="presence" aria-label="Painters">
+            <p class="painters" role="status">
+              {#if presence.connected}
+                {presence.online} {presence.online === 1 ? 'painter' : 'painters'} online
+              {:else}
+                Painters offline
+              {/if}
+            </p>
+            {#if presence.canClaim}
+              <div class="claim-actions">
+                <Button
+                  label={presence.claimViewport === null ? 'Claim view' : `Claim view of ${presence.claimViewport}`}
+                  size="compact"
+                  kind="ghost"
+                  disabled={presence.claimViewport === null || presence.pending === true}
+                  onclick={() => onclaimregion?.('viewport')}
+                />
+                <Button
+                  label={presence.claimDraft === null ? 'Claim draft' : `Claim draft on ${presence.claimDraft}`}
+                  size="compact"
+                  kind="ghost"
+                  disabled={presence.claimDraft === null || presence.pending === true}
+                  onclick={() => onclaimregion?.('draft')}
+                />
+              </div>
+            {/if}
+            {#if presence.message}
+              <p class="notice" role="alert">{presence.message}</p>
+            {/if}
+            {#each presence.regions as region (region.id)}
+              <div class="region" data-mine={String(region.mine)}>
+                <span class="region-text">
+                  <strong>{region.claimant}</strong>
+                  {region.label === '' ? 'claimed' : region.label} · {region.size}
+                </span>
+                {#if region.mine}
+                  <Button label="Release" size="compact" kind="ghost" disabled={presence.pending === true} onclick={() => onreleaseregion?.(region.id)} />
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
       </div>
     </div>
@@ -101,6 +149,42 @@
   }
   .options {
     padding: 0.25rem 0.75rem 0;
+  }
+  .presence {
+    border-block-start: 1px solid var(--caelestis-border);
+    margin-block-start: 0.5rem;
+    padding: 0.5rem 0.75rem 0;
+  }
+  .painters {
+    margin: 0 0 0.35rem;
+    color: var(--caelestis-muted-text);
+    font-size: 0.75rem;
+  }
+  .claim-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-block-end: 0.35rem;
+  }
+  .region {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-block-size: 1.75rem;
+    font-size: 0.75rem;
+  }
+  .region-text {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .region[data-mine='true'] .region-text {
+    color: var(--caelestis-text);
+  }
+  .region[data-mine='false'] .region-text {
+    color: var(--caelestis-muted-text);
   }
   button {
     width: 100%;

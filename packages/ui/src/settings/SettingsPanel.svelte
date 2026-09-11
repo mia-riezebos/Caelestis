@@ -147,6 +147,10 @@
   <SettingRow label="Report my activity" hint="Shares paint activity only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Report my activity" checked={model.reportPaints} onChange={(value) => emit({ type: 'set-boolean', key: 'reportPaints', value })} />{/snippet}</SettingRow>
   <SettingRow label="Share tiles" hint="Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Share tiles" checked={model.shareTiles} onChange={(value) => emit({ type: 'set-boolean', key: 'shareTiles', value })} />{/snippet}</SettingRow>
 
+  <SectionHeader title="Painters" icon="share" />
+  <SettingRow label="Share where I am" hint="Other painters on the same server see the area you are looking at and the pixels you have drafted, while this tab is open. Nothing is stored.">{#snippet children()}<Toggle label="Share where I am" checked={model.sharePresence} onChange={(value) => emit({ type: 'set-boolean', key: 'sharePresence', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Show other painters" hint="Draws their viewports, drafts, and claimed regions under the artwork at low opacity.">{#snippet children()}<Toggle label="Show other painters" checked={model.showPresence} onChange={(value) => emit({ type: 'set-boolean', key: 'showPresence', value })} />{/snippet}</SettingRow>
+
   <SectionHeader title="Diagnostics" icon="bug" />
   <SettingRow label="Debug logging" hint="Verbose console output for bug reports">{#snippet children()}<Toggle label="Debug logging" checked={model.debugLogging} onChange={(value) => emit({ type: 'set-boolean', key: 'debugLogging', value })} />{/snippet}</SettingRow>
   <SettingRow label="Performance profiling" hint="Measures Caelestis CPU, GPU and known buffers. Profiling adds a small overhead.">{#snippet children()}<Toggle label="Performance profiling" checked={model.performanceProfiling} onChange={(value) => emit({ type: 'set-boolean', key: 'performanceProfiling', value })} />{/snippet}</SettingRow>

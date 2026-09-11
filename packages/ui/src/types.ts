@@ -99,15 +99,42 @@ export interface PanelModel {
     readonly tree: TemplateTreeModel
     readonly error: string
     readonly canShowOthers: boolean
+    readonly presence?: PresenceSummaryModel
   }
   readonly showOtherClaims?: boolean
   readonly appearance?: AppearanceEditorModel
   readonly settings?: SettingsModel
 }
 
+/** One persisted region claim as the In progress drawer lists it. */
+export interface RegionClaimRowModel {
+  readonly id: string
+  readonly label: string
+  readonly claimant: string
+  readonly mine: boolean
+  /** Human size, such as "120 × 80". */
+  readonly size: string
+}
+
+/** Live painter headcount and region claims for the current drawing surface. */
+export interface PresenceSummaryModel {
+  readonly online: number
+  readonly connected: boolean
+  readonly regions: readonly RegionClaimRowModel[]
+  readonly canClaim: boolean
+  /** Name of the template a viewport claim would land on, or null when there is none. */
+  readonly claimViewport: string | null
+  /** Name of the template a draft claim would land on, or null when nothing is drafted on one. */
+  readonly claimDraft: string | null
+  readonly pending?: boolean
+  readonly message?: string
+}
+
 export type PanelIntent =
   | { readonly type: 'work-retry' }
   | { readonly type: 'work-visibility'; readonly showOtherClaims: boolean }
+  | { readonly type: 'region-claim'; readonly mode: 'viewport' | 'draft' }
+  | { readonly type: 'region-release'; readonly id: string }
   | { readonly type: 'work-tree'; readonly intent: TemplateTreeIntent }
   | { readonly type: 'navigate'; readonly view: PanelView }
   | { readonly type: 'close' }
@@ -127,6 +154,8 @@ export interface PanelProps {
 export type SettingsBooleanKey =
   | 'reportPaints'
   | 'shareTiles'
+  | 'sharePresence'
+  | 'showPresence'
   | 'debugLogging'
   | 'performanceProfiling'
   | 'notifyRegressions'
@@ -182,6 +211,8 @@ export interface SettingsModel {
   readonly colourNavigationOrder: 'unpainted-first' | 'mismatched-first'
   readonly reportPaints: boolean
   readonly shareTiles: boolean
+  readonly sharePresence: boolean
+  readonly showPresence: boolean
   readonly debugLogging: boolean
   readonly performanceProfiling: boolean
   readonly notifyRegressions: boolean
