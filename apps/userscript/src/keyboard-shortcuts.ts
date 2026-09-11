@@ -1,5 +1,6 @@
 import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
+import { isClaimToolActive } from './claim-tool.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
@@ -23,6 +24,7 @@ import { isMoving } from './templates/move.js'
 import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
 import { togglePanel } from './ui/panel.js'
+import { openClaimTool } from './ui/presence-actions.js'
 import { toggleShortcutHelp } from './ui/shortcut-help.js'
 import {
   cancelPaintDraft,
@@ -147,6 +149,12 @@ export const installKeyboardShortcuts = (
     // Placement owns its confirm/cancel keys. This listener runs in capture so Wplace's alliance
     // modal cannot swallow shortcuts before they reach the shared key map.
     if (isMoving() && (event.key === 'Escape' || event.key === 'Enter')) return
+    // The claim tool answers its own keys while open: confirm, cancel, delete, and shape switches.
+    if (
+      isClaimToolActive() &&
+      ['Escape', 'Enter', 'Delete', 'Backspace', 'm', 'M', 'l', 'L'].includes(event.key)
+    )
+      return
     const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
     const alliance = activeAllianceSurface()
@@ -186,6 +194,14 @@ export const installKeyboardShortcuts = (
     if (shortcut === 'toggle-panel') {
       claim()
       togglePanel()
+      return
+    }
+    if (shortcut === 'claim-rectangle' || shortcut === 'claim-ellipse') {
+      // Claimed on every canvas so Wplace never sees the key; alliance artboards have no
+      // presence room yet, so only the world canvas opens the tool.
+      claim()
+      if (allianceSurface === null)
+        openClaimTool(shortcut === 'claim-rectangle' ? 'rectangle' : 'ellipse')
       return
     }
     if (shortcut === 'toggle-template-menu') {

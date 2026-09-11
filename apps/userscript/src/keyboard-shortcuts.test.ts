@@ -74,6 +74,8 @@ vi.mock('./paint-palette.js', () => ({
   navigateFocusedSelectedColour: harness.navigateColour,
 }))
 vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: harness.setPeek }))
+vi.mock('./claim-tool.js', () => ({ isClaimToolActive: () => false }))
+vi.mock('./ui/presence-actions.js', () => ({ openClaimTool: vi.fn(() => true) }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: harness.appearance, onlySelectedColour: false }),
   getSurfaceAppearance: () => harness.surfaceAppearance,
@@ -201,7 +203,7 @@ describe('keyboard shortcut actions', () => {
     expect(press('b').defaultPrevented).toBe(true)
     expect(press('Escape').defaultPrevented).toBe(true)
     expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
-    for (const key of ['a', 'd', 'f', 'l', 's', 'w', 'x']) {
+    for (const key of ['a', 'd', 'f', 'l', 'm', 'n', 's', 'w', 'x']) {
       expect(press(key).defaultPrevented).toBe(true)
     }
 
@@ -236,7 +238,7 @@ describe('keyboard shortcut actions', () => {
     harness.allianceStage = stage
 
     expect(press('b').defaultPrevented).toBe(true)
-    for (const key of ['1', 'a', 'c', 'd', 'f', 'g', 'l', 'r', 's', 't', 'v', 'w', 'x']) {
+    for (const key of ['1', 'a', 'c', 'd', 'f', 'g', 'l', 'm', 'n', 'r', 's', 't', 'v', 'w', 'x']) {
       expect(press(key).defaultPrevented).toBe(true)
     }
 
@@ -270,7 +272,7 @@ describe('keyboard shortcut actions', () => {
     expect(press('Escape').defaultPrevented).toBe(true)
     expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
     expect(press('z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true)
-    expect(press('l').defaultPrevented).toBe(true)
+    expect(press('n').defaultPrevented).toBe(true)
 
     harness.paintAction.mockImplementationOnce(() => {
       harness.allianceEditorActive = false
@@ -306,7 +308,7 @@ describe('keyboard shortcut actions', () => {
     press('d')
     press('b')
     press('Escape')
-    press('l')
+    press('n')
 
     expect(harness.cycleColour).toHaveBeenNthCalledWith(1, -1)
     expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)

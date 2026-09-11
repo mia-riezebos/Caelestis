@@ -167,8 +167,13 @@
       },
       {
         id: 'theme', category: 'Overlay', title: 'Toggle Wplace theme',
-        description: 'L switches Wplace between its native light and dark themes.',
-        rows: [{ key: 'L', label: 'Light / dark theme' }], keyboardKeys: ['KeyL'],
+        description: 'N switches Wplace between its native light and dark themes.',
+        rows: [{ key: 'N', label: 'Light / dark theme' }], keyboardKeys: ['KeyN'],
+      },
+      {
+        id: 'claim', category: 'Overlay', title: 'Claim a region',
+        description: 'M opens the claim tool with a rectangle, L with an ellipse. Drag to draw, click one of your claims to edit it, Enter saves, Delete removes, Escape leaves.',
+        rows: [{ key: 'M', label: 'Rectangle claim' }, { key: 'L', label: 'Ellipse claim' }], keyboardKeys: ['KeyM', 'KeyL'],
       },
       {
         id: 'rings', category: 'Overlay', title: 'Toggle contrast rings',
