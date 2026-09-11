@@ -31,6 +31,7 @@ the template layer as low-opacity tinted rects so finished art covers them. Ever
 - Region selection reuses what the painter already has: the current viewport or the draft bounds. No new drag gesture.
 - Codex runs with `gpt-6-astra` on the backend while I build the userscript side. It does not commit; I review the diff and commit it.
 - The userscript has its own `ServerInfo` parser in `server-manifest.ts`; the `presence` flag had to be added there as well as in shared, or the capability was dropped on read.
+- Mia's review: viewports must not hide under the art; only drafts and claims do. Two custom layers now share one program: `caelestis-presence` below the outline and pixel art, `caelestis-presence-viewports` above the markers and below Wplace's crosshair.
 - Presence is world-surface only in this slice. Alliance artboards are a separate canvas and keep no presence socket yet.
 - Validation so far: shared presence tests (7), userscript presence client (10) and geometry (8) tests, plus state, layer, manifest, panel, and main suites; userscript `tsc` and ui `svelte-check` clean.
 - Codex backend report, verified locally: wire-schema 180 tests, backend 628 tests, backend `tsc`, and biome all pass. Full userscript suite 1340 tests, ui 140 tests, frontend `svelte-check` clean.
