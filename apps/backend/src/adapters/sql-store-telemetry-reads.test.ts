@@ -270,7 +270,7 @@ describe.each(sqlStoreAdapters)('$name telemetry read contract', ({ make }) => {
     await store.reserveTileBlobUpload(first.hash, first.hash, 'first', now, millis(now + 10000))
     expect(
       await store.commitTileBlobReservation('first', now, first, [status], true),
-    ).not.toBeNull()
+    ).toMatchObject({ statusChanges: [{ published: true, current: status }] })
     const older = { ...first, hash: 'e'.repeat(64), observedAt: millis(now - 1000) }
     await store.reserveTileBlobUpload(older.hash, older.hash, 'older', now, millis(now + 10000))
     expect(

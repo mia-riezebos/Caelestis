@@ -1975,7 +1975,7 @@ export class RelationalSqlStore implements SqlStore {
                      (SELECT coalesce(max(held.observed_at_ms), 0) FROM template_tile_statuses AS held
                        WHERE held.template_id = incoming.template_id
                          AND held.version_id = incoming.version_id) AS previous_template_observed_at_ms,
-                     template.published_at IS NOT NULL AS published,
+                     CASE WHEN template.published_at IS NOT NULL THEN 1 ELSE 0 END AS published,
                      version.total_pixels,
                      version.colour_totals_json
                    FROM incoming
