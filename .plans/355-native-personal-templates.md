@@ -14,8 +14,8 @@ Make Wplace own personal template artwork and placement. Derive Caelestis's loca
 
 ## TODOs
 
-- [~] Add a native-store adapter based on Wplace's current APIs, with focused contract tests.
-- [ ] Integrate native ownership, resumable migration, and derived local records with storage tests.
+- [x] Add a native-store adapter based on Wplace's current APIs, with focused contract tests.
+- [~] Integrate native ownership, resumable migration, and derived local records with storage tests.
 - [ ] Validate native interaction and recovery, add release notes, and run project checks.
 
 ## Notes
@@ -28,6 +28,7 @@ Make Wplace own personal template artwork and placement. Derive Caelestis's loca
 - The native blob API emits save/delete events after transaction completion. Its renderer reloads sources only for saves with origin `remote`.
 - Native templates with `serverManaged` are excluded from personal persistence. Preserve this distinction.
 - Native imports use original image dimensions plus geographic bounds, palette mode, quantizer, dithering, tags, visibility, and placement state.
-- Wplace's personal store only represents world-map bounds. Asked Mia whether alliance-local templates should retain Caelestis storage.
+- Wplace's personal store only represents world-map bounds. Mia requested a wrapper around the alliance template path, preserving Caelestis ownership and avoiding native alliance limits.
 - Chromium initially ran without CDP. Mia authorized restarting it with debugging. Native API inspection uses an isolated browser context with no personal templates.
 - Downloaded deployed Wplace modules to `/tmp/caelestis-355-native`; verified their exports in the actual Wplace page.
+- Adapter validation: 10 focused tests and userscript typecheck pass. Actual Wplace APIs created, renamed, moved, rendered, and deleted a 2x2 fixture in the isolated context; native locks survived metadata edits.
