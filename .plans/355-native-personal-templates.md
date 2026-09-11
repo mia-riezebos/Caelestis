@@ -17,7 +17,7 @@ Make Wplace own personal template artwork and placement. Derive Caelestis's loca
 
 - [x] Add a native-store adapter based on Wplace's current APIs, with focused contract tests.
 - [x] Integrate native ownership, resumable migration, derived local records, and the alliance wrapper with storage tests.
-- [~] Validate native interaction and recovery, add release notes, and run project checks.
+- [x] Validate native interaction and recovery, add release notes, and run project checks.
 
 ## Notes
 
@@ -37,4 +37,7 @@ Make Wplace own personal template artwork and placement. Derive Caelestis's loca
 - Real panel rename and visibility edits updated native metadata and survived reload under the same local identity.
 - Native alliance fixtures validate exact HQ/draft placement, ownership, independent copies, and discarded responses after canvas changes. The actual tree component renders the wrapper at desktop and phone widths; Copy to Local preserves the Wplace source.
 - The isolated browser has no authenticated alliance account. Native alliance response contracts were inspected in deployed code; authenticated server reads remain a manual verification item.
+- Wplace does not refresh its metadata singleton across tabs. The adapter refuses stale metadata reads/writes after another tab changes storage; reloading Wplace restores that tab. Native artwork hashes still detect shared image changes.
+- Final workspace typechecks, lint, userscript build, and 37 release-workflow checks pass. The parallel workspace test run hit the existing dense social-render test's 5-second timeout; its isolated retry passed in 584 ms. The final userscript run passes all 1,352 tests across 118 files.
+- Rebased onto current `origin/main` with no changes needed. Repeated the actual Wplace migration/edit/delete roundtrip after adding the stale-tab guard; every check passed.
 - Focused adapter, ownership, alliance wrapper, and tree tests pass (32 tests). Prior full userscript run passed 1,346 tests; its file-watcher timeout passed on an isolated retry.

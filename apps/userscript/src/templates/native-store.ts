@@ -149,17 +149,33 @@ const metadataToken = (template: NativeTemplate | undefined): string | undefined
 
 /** Wrap the native APIs without changing their limits or ownership rules. */
 export class NativeTemplates {
+  private persisted: string | null | undefined
+
   constructor(
     readonly metadata: NativeMetadataStore,
     private readonly images: NativeImageStore,
     readonly alliance?: NativeAllianceApi,
-  ) {}
+    private readonly readPersisted?: () => string | null,
+  ) {
+    this.persisted = readPersisted?.()
+  }
+
+  // Wplace does not refresh its singleton across tabs. Never persist a stale tab over newer metadata.
+  private assertFresh(): void {
+    const persisted = this.readPersisted?.()
+    if (persisted === this.persisted) return
+    if (persisted !== JSON.stringify(this.metadata.templates.filter((row) => !row.serverManaged)))
+      throw new Error('Wplace templates changed in another tab. Reload Wplace before editing.')
+    this.persisted = persisted
+  }
 
   ids(): readonly string[] {
+    this.assertFresh()
     return this.metadata.templates.filter((template) => !template.serverManaged).map(({ id }) => id)
   }
 
   async read(id: string): Promise<NativeSnapshot | null> {
+    this.assertFresh()
     const current = this.metadata.getById(id)
     if (current === undefined || current.serverManaged) return null
     // Svelte records are proxies. Snapshot before an await so concurrent edits cannot mutate it.
@@ -186,6 +202,7 @@ export class NativeTemplates {
     if (image === undefined) throw new Error(`Wplace image is unavailable for ${template.name}`)
     if (image.size > MAX_NATIVE_IMAGE_BYTES) throw new Error('Wplace source image is too large')
     const digest = await hash(await image.arrayBuffer())
+    this.assertFresh()
     const latest = this.metadata.getById(id)
     if (latest === undefined || metadataToken(latest) !== serialized) throw new NativeConflict()
     return { template, image, token: `${serialized}\n${digest}` }
@@ -238,6 +255,7 @@ export class NativeTemplates {
       throw new NativeConflict()
     if (current === null && image === undefined) throw new Error('A native template needs artwork')
     if (image !== undefined) await this.images.save(id, image, 'remote')
+    this.assertFresh()
     // Image storage yields. A native metadata edit during that write must win.
     if (metadataToken(this.metadata.getById(id)) !== metadataToken(current?.template))
       throw new NativeConflict()
@@ -475,5 +493,6 @@ export const connectNativeTemplates = async (): Promise<NativeTemplates> => {
       },
     },
     alliance,
+    () => page.localStorage.getItem('template-overlays'),
   )
 }

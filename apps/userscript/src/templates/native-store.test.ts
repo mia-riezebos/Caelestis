@@ -190,4 +190,21 @@ describe('native personal templates', () => {
     dispose()
     expect(metadata.persist).toBe(original)
   })
+
+  it('accepts this tab’s native persistence but refuses to overwrite newer metadata from another tab', async () => {
+    const { create, metadata, images } = fixture()
+    await create()
+    let persisted = JSON.stringify(metadata.templates)
+    const guarded = new NativeTemplates(metadata, images, undefined, () => persisted)
+    metadata.update('one', { name: 'This tab' })
+    persisted = JSON.stringify(metadata.templates)
+    const snapshot = await guarded.read('one')
+    expect(snapshot?.template.name).toBe('This tab')
+    persisted = JSON.stringify(metadata.templates.map((row) => ({ ...row, name: 'Another tab' })))
+    await expect(guarded.save('one', { name: 'Stale edit' }, snapshot)).rejects.toThrow(
+      'another tab',
+    )
+    expect(metadata.getById('one')?.name).toBe('This tab')
+    expect(images.save).toHaveBeenCalledTimes(1)
+  })
 })
