@@ -1,0 +1,266 @@
+import { decodePng, TRANSPARENT_INDEX } from '@caelestis/shared'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { NativeImageStore, NativeMetadataStore, NativeTemplate } from './native-store.js'
+import type { StoredTemplate } from './persist.js'
+
+beforeEach(() => {
+  vi.resetModules()
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+const local = (overrides: Partial<StoredTemplate> = {}): StoredTemplate => ({
+  id: 'local-art',
+  name: 'Artwork',
+  source: 'wplace',
+  originX: 100,
+  originY: 100,
+  width: 2,
+  height: 2,
+  indices: new Uint8Array([0, 5, 10, TRANSPARENT_INDEX]),
+  moved: 0,
+  opaque: 3,
+  visible: true,
+  everPlaced: true,
+  revision: 0,
+  folderId: 'folder-a',
+  owns: ['markers'],
+  ...overrides,
+})
+
+const fixture = async () => {
+  const rows = new Map<string, NativeTemplate>()
+  const blobs = new Map<string, Blob>()
+  const metadata: NativeMetadataStore = {
+    get templates() {
+      return [...rows.values()]
+    },
+    placementSession: false,
+    getById: (id) => rows.get(id),
+    add: (row) => {
+      rows.set(row.id, row)
+    },
+    update: (id, patch) => {
+      const before = rows.get(id)
+      if (before) rows.set(id, { ...before, ...patch })
+    },
+    remove: (id) => {
+      rows.delete(id)
+    },
+    persist: vi.fn(),
+    commitPendingChanges: vi.fn(),
+    subscribeChange: () => () => {},
+  }
+  const images: NativeImageStore = {
+    read: async (id) => blobs.get(id),
+    save: vi.fn(async (id, blob) => {
+      blobs.set(id, blob)
+    }),
+    remove: async (id) => {
+      blobs.delete(id)
+    },
+    subscribe: () => () => {},
+    render: async (blob) => {
+      const decoded = await decodePng(new Uint8Array(await blob.arrayBuffer()))
+      return {
+        width: decoded.width,
+        height: decoded.height,
+        data: new Uint8ClampedArray(decoded.pixels),
+        colorSpace: 'srgb',
+      }
+    },
+  }
+  const adapter = await import('./native-store.js')
+  const api = new adapter.NativeTemplates(metadata, images)
+  const disk = await import('./persist.js')
+  const personal = await import('./personal-store.js')
+  personal.connectPersonalStore(api)
+  const read = async (id = 'local-art') => {
+    const loaded = await disk.loadTemplate(id)
+    if (loaded.status !== 'loaded') throw new Error(loaded.status)
+    return loaded.template as StoredTemplate
+  }
+  const seed = async (template = local()) => {
+    expect(await disk.saveTemplate(template, null)).toMatchObject({ status: 'saved' })
+    await personal.synchronizePersonalTemplates()
+    return await read(template.id)
+  }
+  return { rows, blobs, metadata, images, adapter, api, disk, personal, read, seed }
+}
+
+describe('personal template ownership', () => {
+  it('migrates without changing local identity, artwork, placement, or Caelestis metadata', async () => {
+    const { seed, read, api, personal } = await fixture()
+    const migrated = await seed()
+    expect(migrated).toMatchObject({
+      ...local(),
+      revision: 3,
+      native: { status: 'linked' },
+    })
+    expect(api.ids()).toHaveLength(1)
+    await personal.synchronizePersonalTemplates()
+    expect(await read()).toEqual(migrated)
+    expect(api.ids()).toHaveLength(1)
+  })
+
+  it('resumes migration after a native image write fails without duplicating artwork', async () => {
+    const { images, personal, seed, read, api } = await fixture()
+    vi.mocked(images.save).mockRejectedValueOnce(new Error('quota'))
+    const pending = await seed()
+    expect(pending.native?.status).toBe('pending')
+    expect(pending.indices).toEqual(local().indices)
+    await personal.synchronizePersonalTemplates()
+    expect((await read()).native?.id).toBe(pending.native?.id)
+    expect((await read()).native?.status).toBe('linked')
+    expect(api.ids()).toHaveLength(1)
+  })
+
+  it('resumes after native creation but before the derived cache commits', async () => {
+    const { seed, disk, personal, read, api } = await fixture()
+    const linked = await seed()
+    const id = linked.native?.id
+    if (!id) throw new Error('missing ID')
+    await disk.saveTemplate({ ...linked, native: { id, status: 'pending' } }, linked.revision)
+    await personal.synchronizePersonalTemplates()
+    expect((await read()).native?.status).toBe('linked')
+    expect(api.ids()).toEqual([id])
+  })
+
+  it('mirrors native creates and edits into one stable local record', async () => {
+    const { api, adapter, personal, read, metadata } = await fixture()
+    await api.save(
+      'native-art',
+      {
+        ...adapter.nativeMetadata(local()),
+        originalWidth: 2,
+        originalHeight: 2,
+      },
+      null,
+      await adapter.nativeImage(local()),
+    )
+    await personal.synchronizePersonalTemplates()
+    const id = await adapter.nativeLocalId('native-art')
+    const before = await read(id)
+    metadata.update('native-art', {
+      ...adapter.nativeMetadata(local({ originX: 150 })),
+      name: 'Renamed natively',
+    })
+    await personal.synchronizePersonalTemplates()
+    expect(await read(id)).toMatchObject({
+      id,
+      originX: 150,
+      name: 'Renamed natively',
+      revision: before.revision + 1,
+    })
+  })
+
+  it('keeps a failed migration projection under its original identity until rendering recovers', async () => {
+    const { images, seed, disk, personal, api, read } = await fixture()
+    const render = vi.spyOn(images, 'render').mockRejectedValueOnce(new Error('worker unavailable'))
+    const pending = await seed()
+    expect(pending.native?.status).toBe('pending')
+    expect(api.ids()).toHaveLength(1)
+    expect(await disk.loadTemplates()).toHaveLength(1)
+    render.mockRestore()
+    await personal.synchronizePersonalTemplates()
+    expect((await read()).native?.status).toBe('linked')
+    expect(await disk.loadTemplates()).toHaveLength(1)
+    expect(api.ids()).toHaveLength(1)
+  })
+
+  it('applies Caelestis moves through the native store without rewriting source artwork', async () => {
+    const { seed, personal, read, api, images } = await fixture()
+    const template = await seed()
+    const saved = await personal.saveTemplate({ ...template, originX: 300 }, template.revision)
+    expect(saved.status).toBe('saved')
+    expect((await read()).originX).toBe(300)
+    expect((await api.read(template.native?.id ?? ''))?.template.bounds).not.toEqual(local())
+    expect(images.save).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets native edits win over stale local changes', async () => {
+    const { seed, personal, metadata, read } = await fixture()
+    const before = await seed()
+    metadata.update(before.native?.id ?? '', { name: 'Native wins' })
+    expect(
+      await personal.saveTemplate({ ...before, name: 'Stale local' }, before.revision),
+    ).toEqual({ status: 'conflict' })
+    expect((await read()).name).toBe('Native wins')
+  })
+
+  it('does not restore deleted native templates from their old cache', async () => {
+    const { seed, personal, api, disk } = await fixture()
+    const before = await seed()
+    const snapshot = await api.read(before.native?.id ?? '')
+    if (!snapshot) throw new Error('missing native snapshot')
+    await api.remove(snapshot)
+    await personal.synchronizePersonalTemplates()
+    expect(await disk.loadTemplate(before.id)).toEqual({ status: 'missing' })
+    await personal.synchronizePersonalTemplates()
+    expect(api.ids()).toEqual([])
+  })
+
+  it('retains artwork and metadata when the native image is temporarily unavailable', async () => {
+    const { seed, personal, blobs, read } = await fixture()
+    const before = await seed()
+    blobs.clear()
+    await personal.synchronizePersonalTemplates()
+    expect(await read()).toEqual(before)
+    expect(await personal.saveTemplate({ ...before, name: 'Edit' }, before.revision)).toEqual({
+      status: 'unavailable',
+    })
+  })
+
+  it('archives old artwork before publishing a local replacement to Wplace', async () => {
+    const { seed, personal, read, disk } = await fixture()
+    const before = await seed()
+    const indices = new Uint8Array([5, 0, 10, TRANSPARENT_INDEX])
+    expect(
+      (await personal.saveTemplate({ ...before, indices }, before.revision, true)).status,
+    ).toBe('saved')
+    expect((await read()).indices).toEqual(indices)
+    const db = await disk.openTemplateDatabase()
+    const archived = await new Promise<unknown>((resolve) => {
+      const request = db
+        .transaction('local-template-versions')
+        .objectStore('local-template-versions')
+        .get([before.id, before.revision])
+      request.onsuccess = () => resolve(request.result)
+    })
+    db.close()
+    expect(archived).toMatchObject({ id: before.id, revision: before.revision })
+  })
+
+  it('keeps alliance templates in Caelestis storage without creating native personal copies', async () => {
+    const { personal, api, disk } = await fixture()
+    for (const kind of ['alliance-headquarters', 'alliance-picture', 'alliance-banner'] as const) {
+      const template = local({
+        id: kind,
+        originX: 0,
+        originY: 0,
+        surface: { kind, allianceId: 42 },
+      })
+      expect((await personal.saveTemplate(template, null)).status).toBe('saved')
+      expect((await disk.loadTemplate(kind)).status).toBe('loaded')
+    }
+    await personal.synchronizePersonalTemplates()
+    expect(api.ids()).toEqual([])
+  })
+
+  it('leaves native artwork intact when its archive cannot reserve space', async () => {
+    const { seed, personal, disk, images, api } = await fixture()
+    const before = await seed()
+    const snapshot = await api.read(before.native?.id ?? '')
+    vi.spyOn(disk, 'saveTemplate').mockResolvedValueOnce({ status: 'limit' })
+    expect(
+      await personal.saveTemplate({ ...before, indices: new Uint8Array(4) }, before.revision, true),
+    ).toEqual({ status: 'limit' })
+    expect(images.save).toHaveBeenCalledTimes(1)
+    expect((await api.read(before.native?.id ?? ''))?.token).toBe(snapshot?.token)
+  })
+})

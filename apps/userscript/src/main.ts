@@ -58,11 +58,11 @@ import {
   localTemplates,
   onLocalChange,
   onLocalPreviewChange,
-  restoreLocalTemplates,
   templateIndexMemoryBytes,
 } from './templates/local-store.js'
 import { pixelAccounting } from './templates/mismatch.js'
 import { mismatchWorkerMemoryBytes } from './templates/mismatch-worker.js'
+import { installPersonalTemplates } from './templates/personal-sync.js'
 import { installServerSync } from './templates/server-sync.js'
 import {
   capturedPixelMemoryBytes,
@@ -342,7 +342,7 @@ const main = (): void => {
    */
   step('settings', () => void loadState())
   // Templates outlive a page load, which is what makes navigating to one survivable at all.
-  step('local templates', () => void restoreLocalTemplates())
+  step('local templates', () => void installPersonalTemplates())
   // Server templates do not: they are re-fetched, because the server is where they live and a copy
   // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
   step('server templates', installServerSync)

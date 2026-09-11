@@ -39,6 +39,7 @@ import {
 } from './import.js'
 import {
   deleteTemplate,
+  discardTemplate,
   loadTemplate,
   loadTemplates,
   type SaveResult,
@@ -47,7 +48,7 @@ import {
   saveTemplateFolders,
   type TemplateLoadBatch,
   type TemplateLoadFailure,
-} from './persist.js'
+} from './personal-store.js'
 import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './server-nodes.js'
 
 /**
@@ -59,6 +60,7 @@ import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './serv
  */
 
 export interface PlacedTemplate extends ImportedTemplate {
+  readonly native?: NonNullable<StoredTemplate['native']>
   /** Last local content or placement edit; absent on legacy records and server render copies. */
   readonly updatedAt?: number
   /** Drawing surface this placement belongs to. Legacy browser-owned templates are world-scoped. */
@@ -506,7 +508,9 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
 export const appearanceOf = (template: PlacedTemplate): Appearance => {
   const global = getSurfaceAppearance(template.surface ?? WORLD_TEMPLATE_SURFACE)
   const own = template.appearance
-  if (own === null || template.owns.length === 0) return global
+  const nativeOpacity = template.native?.status === 'linked' ? template.native.opacity : undefined
+  if (own === null || template.owns.length === 0)
+    return nativeOpacity === undefined ? global : { ...global, opacity: nativeOpacity }
 
   // Field by field, from whichever side owns that field's group. A template that has taken over its
   // markers still follows the global sliders for its shape, which is the whole point of splitting
@@ -515,6 +519,7 @@ export const appearanceOf = (template: PlacedTemplate): Appearance => {
   for (const group of template.owns) {
     for (const field of GROUP_FIELDS[group]) composed[field] = own[field]
   }
+  if (nativeOpacity !== undefined) composed.opacity = nativeOpacity
   return composed as unknown as Appearance
 }
 
@@ -668,6 +673,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     revision,
     folderId,
     updatedAt,
+    native,
   } = value
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) {
     throw new RangeError('template id is invalid')
@@ -686,7 +692,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     !Number.isSafeInteger(moved) ||
     !Number.isSafeInteger(opaque) ||
     (moved as number) < 0 ||
-    (opaque as number) <= 0 ||
+    ((opaque as number) <= 0 && !((opaque as number) === 0 && native !== undefined)) ||
     (moved as number) > (opaque as number) ||
     (opaque as number) > indices.length
   ) {
@@ -714,6 +720,20 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     throw new RangeError('template folder is invalid')
   }
   if (
+    native !== undefined &&
+    (!isRecord(native) ||
+      typeof native.id !== 'string' ||
+      native.id.length === 0 ||
+      !['pending', 'linked'].includes(String(native.status)) ||
+      (native.status === 'linked' && typeof native.token !== 'string') ||
+      (native.opacity !== undefined &&
+        (typeof native.opacity !== 'number' ||
+          !Number.isFinite(native.opacity) ||
+          native.opacity < 0 ||
+          native.opacity > 1)))
+  )
+    throw new RangeError('native template link is invalid')
+  if (
     owns !== undefined &&
     (!Array.isArray(owns) ||
       owns.some((group) => !APPEARANCE_GROUPS.includes(group as AppearanceGroup)) ||
@@ -722,6 +742,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     throw new RangeError('template appearance ownership is invalid')
   }
   const normalised: StoredTemplate = {
+    ...(native === undefined ? {} : { native: native as NonNullable<StoredTemplate['native']> }),
     id,
     name,
     source: source as StoredTemplate['source'],
@@ -886,7 +907,7 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       return
     }
     if (loaded.status === 'invalid') {
-      const deleted = await deleteTemplate(id, loaded.revision)
+      const deleted = await discardTemplate(id, loaded.revision)
       if (deleted.status === 'saved') {
         removeStaleLocalState(existing)
         return
@@ -905,7 +926,7 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       const raw = isRecord(loaded.template) ? loaded.template : {}
       const revision =
         Number.isSafeInteger(raw.revision) && Number(raw.revision) >= 0 ? Number(raw.revision) : 0
-      const deleted = await deleteTemplate(id, revision)
+      const deleted = await discardTemplate(id, revision)
       if (deleted.status === 'saved') {
         removeStaleLocalState(existing)
         return
@@ -931,7 +952,7 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       try {
         tiles = await paintedTileKeys(winner)
       } catch (error) {
-        const deleted = await deleteTemplate(id, winner.revision)
+        const deleted = await discardTemplate(id, winner.revision)
         if (deleted.status === 'saved') {
           removeStaleLocalState(existing)
           return
@@ -1387,7 +1408,7 @@ const restoreStoredTemplates = async (): Promise<void> => {
         if ('id' in rawTemplate) seenRevisions.set(rawTemplate.id, rawTemplate.revision)
         if (rawTemplate.status === 'invalid') {
           const key = 'id' in rawTemplate ? rawTemplate.id : rawTemplate.key
-          const deleted = await deleteTemplate(key, rawTemplate.revision)
+          const deleted = await discardTemplate(key, rawTemplate.revision)
           if (deleted.status === 'conflict' && 'id' in rawTemplate) {
             seenRevisions.delete(rawTemplate.id)
           }
@@ -1490,7 +1511,7 @@ const restoreStoredTemplates = async (): Promise<void> => {
             ? (rawTemplate.revision as number)
             : 0
         if (id !== null) {
-          const deleted = await deleteTemplate(id, revision)
+          const deleted = await discardTemplate(id, revision)
           if (deleted.status === 'conflict') seenRevisions.delete(id)
           retryAfterGap = true
         }
@@ -1520,6 +1541,17 @@ export const restoreLocalTemplates = (): Promise<void> => {
     },
   )
   return restoring
+}
+
+/** Apply native projections through the same serialized reconciliation used by local edit conflicts. */
+export const refreshPersonalTemplates = async (): Promise<void> => {
+  if (restoreInFlight !== null) await restoreInFlight
+  for (const template of [...templates.values()]) {
+    if (isServerTemplate(template) || isPendingImage(template)) continue
+    if ((template.surface ?? WORLD_TEMPLATE_SURFACE).kind !== 'world') continue
+    await writeInOrder(template.id, async () => await reconcileConflict(template.id))
+  }
+  await restoreLocalTemplates()
 }
 
 interface MoveWaiter {

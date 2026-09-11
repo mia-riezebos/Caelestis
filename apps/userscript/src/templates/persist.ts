@@ -60,6 +60,13 @@ const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
 }
 
 export interface StoredTemplate extends ImportedTemplate {
+  /** Native identity and last derived snapshot. Pending records are resumable migration journals. */
+  readonly native?: {
+    readonly id: string
+    readonly status: 'pending' | 'linked'
+    readonly token?: string
+    readonly opacity?: number
+  }
   readonly updatedAt?: number
   /** Exact drawing surface. Records written before alliance support are world-scoped. */
   readonly surface?: TemplateSurface
@@ -129,6 +136,41 @@ const normaliseRevision = (value: unknown): number =>
 
 /** Share the existing database upgrade and blocked-connection handling with tag persistence. */
 export { open as openTemplateDatabase }
+
+/** Read native identity links without hydrating artwork, including records outside the rendering budget. */
+export const loadNativeTemplateIds = async (): Promise<ReadonlyMap<string, string>> => {
+  const db = await open()
+  try {
+    return await new Promise((resolve, reject) => {
+      const links = new Map<string, string>()
+      const transaction = db.transaction(STORE, 'readonly')
+      const request = transaction.objectStore(STORE).openCursor()
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (cursor === null) return
+        const value: unknown = cursor.value
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'id' in value &&
+          typeof value.id === 'string' &&
+          'native' in value &&
+          typeof value.native === 'object' &&
+          value.native !== null &&
+          'id' in value.native &&
+          typeof value.native.id === 'string'
+        )
+          links.set(value.native.id, value.id)
+        cursor.continue()
+      }
+      transaction.oncomplete = () => resolve(links)
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally {
+    db.close()
+  }
+}
 
 const writeVersioned = async (
   id: IDBValidKey,
@@ -261,11 +303,12 @@ export type SaveResult =
   | { readonly status: 'limit' }
   | { readonly status: 'unavailable' }
 
-/** Save metadata, or atomically archive the current image and install new artwork. */
+/** Save metadata, archive and replace artwork, or replace a derived image after its history was reserved. */
 export const saveTemplate = async (
   template: StoredTemplate,
   expectedRevision: number | null,
   archiveCurrent = false,
+  replaceArtwork = false,
 ): Promise<SaveResult> => {
   const { indices, ...metadata } = template
   return await writeVersioned(
@@ -283,6 +326,7 @@ export const saveTemplate = async (
           : undefined
       const reusable =
         !archiveCurrent &&
+        !replaceArtwork &&
         hasCurrentPalette(current) &&
         (isUint8Array(currentIndices) || isStoredBlob(currentIndices)) &&
         candidateIndexPixels(current) === indices.length
@@ -455,7 +499,7 @@ const boundedStoredCandidate = (
     !Number.isSafeInteger(record.moved) ||
     Number(record.moved) < 0 ||
     !Number.isSafeInteger(record.opaque) ||
-    Number(record.opaque) <= 0 ||
+    (Number(record.opaque) <= 0 && !(Number(record.opaque) === 0 && record.native !== undefined)) ||
     Number(record.moved) > Number(record.opaque) ||
     Number(record.opaque) > indexPixels ||
     typeof record.visible !== 'boolean' ||

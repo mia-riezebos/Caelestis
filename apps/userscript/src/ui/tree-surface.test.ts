@@ -79,6 +79,51 @@ afterEach(() => {
 })
 
 describe('surface-scoped template tree', () => {
+  it('shows native alliance rows as Wplace-owned, with an independent copy action', () => {
+    scoped.drawn = [
+      {
+        id: 'native-alliance-art',
+        name: 'Native alliance art',
+        surface,
+        serverUrl: 'https://backend.wplace.live',
+        serverTemplateId: '42',
+        serverNodeId: null,
+        serverVersion: '1',
+        source: 'wplace',
+        originX: 0,
+        originY: 0,
+        width: 1,
+        height: 1,
+        indices: new Uint8Array(1),
+        moved: 0,
+        opaque: 1,
+        tiles: new Set(),
+        visible: true,
+        everPlaced: true,
+        appearance: null,
+        revision: 0,
+        owns: [],
+        folderId: null,
+      },
+    ]
+    setState({ servers: [], collapsed: [], filters: EMPTY_TEMPLATE_FILTERS })
+    const rows = templateTreeAdapter(callbacks, vi.fn(), '', surface).model.entries.filter(
+      (entry) => entry.type === 'row',
+    )
+    const group = rows.find((row) => row.key === 'native-alliance')
+    const artwork = rows.find((row) => row.key === 'native:native-alliance-art')
+    expect(group?.name).toBe('Wplace')
+    expect(artwork?.name).toBe('Native alliance art')
+    expect(artwork?.canReparent).not.toBe(true)
+    expect(artwork?.renamable).not.toBe(true)
+    expect(artwork?.actions?.map((action) => action.label)).toEqual(['Copy to Local'])
+    expect(
+      templateTreeAdapter(callbacks, vi.fn(), '', WORLD_TEMPLATE_SURFACE).model.entries.some(
+        (entry) => entry.type === 'row' && entry.name === 'Native alliance art',
+      ),
+    ).toBe(false)
+  })
+
   it('filters local templates by inherited visibility within the current canvas', () => {
     scoped.drawn = ['Hidden', 'Visible', 'Other canvas'].map((name, index) => ({
       id: String(index),

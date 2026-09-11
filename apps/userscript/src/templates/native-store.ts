@@ -8,7 +8,7 @@ import {
   WORLD_PIXELS,
 } from '@caelestis/shared'
 import { pageWindow } from '../page-world.js'
-import { ownedColours } from '../wplace-account.js'
+import { loadAccount, ownedColours } from '../wplace-account.js'
 import type { ImportedTemplate } from './import.js'
 
 /** Wplace owns these fields. Caelestis folders, appearance, and history stay in its own database. */
@@ -28,7 +28,7 @@ export interface NativeTemplate {
   readonly dithering: boolean
   readonly useLegacyColors?: boolean
   readonly colorPaletteMode?: 'all' | 'free' | 'template' | 'unlocked'
-  readonly templateColorIdxs?: readonly number[]
+  readonly templateColorIdxs?: readonly number[] | undefined
   readonly serverManaged?: boolean
 }
 
@@ -37,10 +37,20 @@ interface NativeChange {
   readonly kind: string
 }
 
+export interface NativeAllianceTarget {
+  readonly target: 'headquarters' | 'draft'
+  readonly draftId?: number
+}
+
+export interface NativeAllianceApi {
+  getAllianceTemplates(target?: NativeAllianceTarget): Promise<unknown>
+}
+
 /** The deployed singleton, obtained from Wplace's already-loaded module graph. */
 export interface NativeMetadataStore {
   readonly templates: readonly NativeTemplate[]
   readonly placementSession: boolean
+  readonly suppressPersist?: boolean
   getById(id: string): NativeTemplate | undefined
   add(template: NativeTemplate): void
   update(id: string, patch: Partial<NativeTemplate>): void
@@ -55,7 +65,7 @@ export interface NativeImageStore {
   save(id: string, blob: Blob, origin: 'remote'): Promise<void>
   remove(id: string): Promise<void>
   subscribe(listener: (change: NativeChange) => void): () => void
-  render(blob: Blob, template: NativeTemplate): Promise<ImageData>
+  render(blob: Blob, template: NativeTemplate, deriveTemplatePalette?: boolean): Promise<ImageData>
 }
 
 export interface NativeSnapshot {
@@ -142,6 +152,7 @@ export class NativeTemplates {
   constructor(
     readonly metadata: NativeMetadataStore,
     private readonly images: NativeImageStore,
+    readonly alliance?: NativeAllianceApi,
   ) {}
 
   ids(): readonly string[] {
@@ -156,6 +167,14 @@ export class NativeTemplates {
     const template: NativeTemplate = JSON.parse(serialized)
     nativePlacement(template)
     if (
+      typeof template.name !== 'string' ||
+      template.name.length > 256 ||
+      !Number.isSafeInteger(template.order) ||
+      typeof template.visible !== 'boolean' ||
+      typeof template.hasPlaced !== 'boolean' ||
+      !Number.isFinite(template.opacity) ||
+      template.opacity < 0 ||
+      template.opacity > 1 ||
       !Number.isSafeInteger(template.originalWidth) ||
       !Number.isSafeInteger(template.originalHeight) ||
       template.originalWidth <= 0 ||
@@ -172,10 +191,10 @@ export class NativeTemplates {
     return { template, image, token: `${serialized}\n${digest}` }
   }
 
-  async pixels(snapshot: NativeSnapshot): Promise<ImportedTemplate> {
+  async pixels(snapshot: NativeSnapshot, deriveTemplatePalette = false): Promise<ImportedTemplate> {
     const { template, image } = snapshot
     const placement = nativePlacement(template)
-    const rendered = await this.images.render(image, template)
+    const rendered = await this.images.render(image, template, deriveTemplatePalette)
     if (rendered.width !== placement.width || rendered.height !== placement.height)
       throw new Error('Wplace returned unexpected template dimensions')
     const palette = new Map(
@@ -213,7 +232,7 @@ export class NativeTemplates {
     expected: NativeSnapshot | null,
     image?: Blob,
   ): Promise<NativeSnapshot> {
-    if (this.metadata.placementSession) throw new NativeConflict()
+    if (this.metadata.placementSession || this.metadata.suppressPersist) throw new NativeConflict()
     const current = await this.read(id)
     if (current?.token !== expected?.token || this.metadata.getById(id)?.serverManaged)
       throw new NativeConflict()
@@ -243,13 +262,21 @@ export class NativeTemplates {
       })
     } else this.metadata.update(id, patch)
     this.metadata.commitPendingChanges()
+    const committed = metadataToken(this.metadata.getById(id))
     const saved = await this.read(id)
-    if (saved === null) throw new NativeConflict()
+    const intendedImage = image ?? current?.image
+    if (
+      saved === null ||
+      intendedImage === undefined ||
+      metadataToken(saved.template) !== committed ||
+      !saved.token.endsWith(`\n${await hash(await intendedImage.arrayBuffer())}`)
+    )
+      throw new NativeConflict()
     return saved
   }
 
   async remove(expected: NativeSnapshot): Promise<void> {
-    if (this.metadata.placementSession) throw new NativeConflict()
+    if (this.metadata.placementSession || this.metadata.suppressPersist) throw new NativeConflict()
     const current = await this.read(expected.template.id)
     if (current?.token !== expected.token) throw new NativeConflict()
     this.metadata.remove(expected.template.id)
@@ -298,6 +325,8 @@ export const connectNativeTemplates = async (): Promise<NativeTemplates> => {
   const visited = new Set<string>()
   let metadataModule: NativeModule | undefined
   let imageModule: NativeModule | undefined
+  let imageModuleSource = ''
+  let allianceModule: NativeModule | undefined
   while (candidates.size > 0 && visited.size < 384 && (!metadataModule || !imageModule)) {
     const batch = [...candidates].slice(0, 6)
     for (const url of batch) candidates.delete(url)
@@ -319,8 +348,12 @@ export const connectNativeTemplates = async (): Promise<NativeTemplates> => {
         if (
           source.includes('wplace-templates') &&
           source.includes('Template blob change listener failed.')
-        )
+        ) {
+          imageModuleSource = source
           imageModule = await import(/* @vite-ignore */ parsed.href)
+        }
+        if (source.includes('async getAllianceTemplates('))
+          allianceModule = await import(/* @vite-ignore */ parsed.href)
         for (const match of source.matchAll(/["']((?:\.\.\/|\.\/)[^"']+\.js)["']/g)) {
           const dependency = new URL(match[1] ?? '', parsed).href
           if (!visited.has(dependency)) candidates.add(dependency)
@@ -360,45 +393,87 @@ export const connectNativeTemplates = async (): Promise<NativeTemplates> => {
     (source) =>
       source.includes('Unexpected overlay worker response.') && source.includes('displayPixels:'),
   )
-  return new NativeTemplates(store, {
-    read,
-    save,
-    remove,
-    subscribe,
-    async render(blob, template) {
-      let source: ImageData
-      if (template.useLegacyColors) {
-        const bitmap = await createImageBitmap(blob)
-        try {
-          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
-          const context = canvas.getContext('2d')
-          if (!context) throw new Error('Canvas 2D is unavailable')
-          context.drawImage(bitmap, 0, 0)
-          source = context.getImageData(0, 0, bitmap.width, bitmap.height)
-        } finally {
-          bitmap.close()
-        }
-      } else source = await decode(blob)
-      const { width, height } = nativePlacement(template)
-      const free = Array.from({ length: 31 }, (_, index) => index + 1)
-      const allowedColorIdxs =
-        template.colorPaletteMode === 'free'
-          ? free
-          : template.colorPaletteMode === 'unlocked'
-            ? [...free, ...[...(ownedColours() ?? [])].map((index) => index + 1)]
-            : template.colorPaletteMode === 'template'
-              ? template.templateColorIdxs
-              : undefined
-      const pending = render({
-        source: { pixels: source.data, width: source.width, height: source.height },
-        targetWidth: width,
-        targetHeight: height,
-        colorMetric: template.colorMetric,
-        dithering: template.dithering,
-        allowedColorIdxs,
-      })
-      if (!pending) throw new Error('Wplace image processing is unavailable')
-      return (await pending).displayPixels
+  const paletteForSource = nativeFunction<
+    (source: ImageData, metric: NativeTemplate['colorMetric']) => number[]
+  >(
+    imageModule,
+    (source) =>
+      source.includes('new Set') && source.includes('data.length') && source.includes('return[...'),
+  )
+  const removeEditorRecord = (name: string) => {
+    const variable = imageModuleSource.match(new RegExp(`(\\w+)=[\x60"']${name}[\x60"']`))?.[1]
+    if (variable === undefined) throw new Error('Wplace editor storage API changed')
+    return nativeFunction<(id: string) => Promise<void>>(
+      nativeImageModule,
+      (source) => source.includes(`transaction(${variable},`) && source.includes('.delete('),
+    )
+  }
+  const nativeImageModule = imageModule
+  const removeDraft = removeEditorRecord('editor-drafts')
+  const removeDocument = removeEditorRecord('editor-documents')
+  const clearEditor = async (id: string): Promise<void> => {
+    await removeDraft(id)
+    await removeDocument(id)
+  }
+  const alliance = Object.values(allianceModule ?? {}).find(
+    (value): value is NativeAllianceApi =>
+      typeof value === 'object' &&
+      value !== null &&
+      'getAllianceTemplates' in value &&
+      typeof value.getAllianceTemplates === 'function',
+  )
+  return new NativeTemplates(
+    store,
+    {
+      read,
+      async save(id, blob, origin) {
+        await save(id, blob, origin)
+        await clearEditor(id)
+      },
+      async remove(id) {
+        await remove(id)
+        await clearEditor(id)
+      },
+      subscribe,
+      async render(blob, template, deriveTemplatePalette) {
+        let source: ImageData
+        if (template.useLegacyColors) {
+          const bitmap = await createImageBitmap(blob)
+          try {
+            const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+            const context = canvas.getContext('2d')
+            if (!context) throw new Error('Canvas 2D is unavailable')
+            context.drawImage(bitmap, 0, 0)
+            source = context.getImageData(0, 0, bitmap.width, bitmap.height)
+          } finally {
+            bitmap.close()
+          }
+        } else source = await decode(blob)
+        const { width, height } = nativePlacement(template)
+        const free = Array.from({ length: 31 }, (_, index) => index + 1)
+        if (template.colorPaletteMode === 'unlocked') await loadAccount()
+        const allowedColorIdxs =
+          template.colorPaletteMode === 'free'
+            ? free
+            : template.colorPaletteMode === 'unlocked'
+              ? [...free, ...[...(ownedColours() ?? [])].map((index) => index + 1)]
+              : template.colorPaletteMode === 'template'
+                ? deriveTemplatePalette
+                  ? paletteForSource(source, template.colorMetric)
+                  : template.templateColorIdxs
+                : undefined
+        const pending = render({
+          source: { pixels: source.data, width: source.width, height: source.height },
+          targetWidth: width,
+          targetHeight: height,
+          colorMetric: template.colorMetric,
+          dithering: template.dithering,
+          allowedColorIdxs,
+        })
+        if (!pending) throw new Error('Wplace image processing is unavailable')
+        return (await pending).displayPixels
+      },
     },
-  })
+    alliance,
+  )
 }
