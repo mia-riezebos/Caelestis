@@ -207,7 +207,7 @@
             data-caelestis-shortcut={action.id}
             aria-label={keyControlName(action.label, action.id)}
             data-caelestis-key-capture={isRecording ? '' : undefined}
-            onclick={() => { recording = action.id }}
+            onclick={(event) => { recording = action.id; event.currentTarget.focus() }}
             onkeydown={(event) => recordKey(event, action.id)}
             onblur={() => { if (recording === action.id) recording = null }}
           >
