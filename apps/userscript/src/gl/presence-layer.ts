@@ -6,7 +6,7 @@ import {
   regionShapePixels,
   TILE_SIZE,
 } from '@caelestis/shared'
-import { claimToolEditingId, claimToolShape } from '../claim-tool.js'
+import { claimToolEditingId, claimToolShape, isClaimToolActive } from '../claim-tool.js'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { presenceView } from '../presence-client.js'
@@ -31,6 +31,8 @@ import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
  * Every rect is drawn on the tile grid, and every draft and claim is a whole-pixel mask sampled
  * with nearest filtering: the tint stops exactly at a pixel edge, never half way across one. A
  * claim's edge pixels carry a stronger value so the outline stays crisp without any smoothing.
+ * Your own claims draw as that outline alone while the claim tool is closed; other painters' claims
+ * keep their fill, since those are the ones you need to steer around.
  * Everything arrives and leaves on the shared fade ramp so a painter closing their tab does not
  * blink out.
  */
@@ -98,6 +100,16 @@ const STYLES: Record<Kind, Style> = {
   draft: { fill: 0.1, border: 0.6, borderWidth: 1.5, dash: 0, maskAlpha: 0.5, maskEdge: 0.5 },
   region: { fill: 0, border: 0, borderWidth: 0, dash: 0, maskAlpha: 0.1, maskEdge: 0.5 },
   tool: { fill: 0, border: 0, borderWidth: 0, dash: 0, maskAlpha: 0.22, maskEdge: 0.85 },
+}
+
+/** Your own saved claims while the tool is closed: the edge pixels only. */
+const OWN_REGION_IDLE: Style = {
+  fill: 0,
+  border: 0,
+  borderWidth: 0,
+  dash: 0,
+  maskAlpha: 0,
+  maskEdge: 0.5,
 }
 
 interface Item {
@@ -405,6 +417,7 @@ class PresenceLayer {
         const bufferWidth = gl.drawingBufferWidth
         const bufferHeight = gl.drawingBufferHeight
         const deviceScale = Math.max(1, window.devicePixelRatio || 1)
+        const toolOpen = isClaimToolActive()
         gl.useProgram(program)
         gl.bindVertexArray(vao)
         gl.bindBuffer(gl.ARRAY_BUFFER, quad)
@@ -412,9 +425,12 @@ class PresenceLayer {
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
         gl.disable(gl.DEPTH_TEST)
         for (const { item, fade } of drawn) {
-          const style = STYLES[item.kind]
+          // Your own claims are a reminder, not a tint: outline only, until the claim tool is
+          // open and they become things to pick up and edit.
+          const own = item.kind === 'region' && item.mine
+          const style = own && !toolOpen ? OWN_REGION_IDLE : STYLES[item.kind]
           const texture = this.maskTexture(gl, item)
-          const emphasis = item.mine && item.kind === 'region' ? 1.4 : 1
+          const emphasis = own && toolOpen ? 1.4 : 1
           gl.uniform3f(this.uniform(gl, 'u_colour'), item.colour[0], item.colour[1], item.colour[2])
           gl.uniform1f(this.uniform(gl, 'u_fill'), style.fill * emphasis * fade)
           gl.uniform1f(this.uniform(gl, 'u_border'), Math.min(1, style.border * emphasis) * fade)
