@@ -17,7 +17,7 @@ shortcut help and every displayed key hint follow the active bindings.
 - [x] Userscript matcher and persistence: `shortcutFor` takes resolved bindings, state stores overrides, the key map resolves peek release and recording capture from bindings, with tests.
 - [x] Settings UI: a Keyboard shortcuts section with a per-action key recorder, clear, reset, and conflict notice, with tests.
 - [x] Shortcut help: rows, prose, and the keyboard map derive from the active bindings, with a full alphanumeric keyboard, with tests.
-- [ ] Userscript wiring: settings model and intents, key hints in tooltips and palette labels, help model, refresh after a change, with tests.
+- [x] Userscript wiring: settings model and intents, key hints in tooltips and palette labels, help model, refresh after a change, with tests.
 - [ ] Changeset, design notes, full validation, and browser inspection of the settings section and help dialog.
 
 ## Notes

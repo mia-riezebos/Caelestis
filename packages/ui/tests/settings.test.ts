@@ -146,9 +146,12 @@ describe('settings panel', () => {
       ...model,
       shortcuts: {
         platform: 'windows-linux',
-        bindings: resolveShortcutBindings({ 'toggle-rings': [] }),
+        bindings: resolveShortcutBindings({
+          'toggle-rings': [],
+          'toggle-panel': [{ key: 'r', code: 'KeyR', command: false, shift: false, alt: false }],
+        }),
         customised: true,
-        message: 'R was removed from Toggle contrast rings.',
+        lastChange: { id: 'toggle-panel', displaced: ['toggle-rings'] },
       },
     }
     const component = mount(SettingsPanel, {
@@ -180,7 +183,7 @@ describe('settings panel', () => {
       document.querySelector('[data-caelestis-shortcut="undo-paint"]')?.textContent?.trim(),
     ).toBe('Ctrl+Z')
     expect(document.querySelector('[role="status"].shortcut-status')?.textContent).toBe(
-      'R was removed from Toggle contrast rings.',
+      'R was taken from Toggle contrast rings, which now has no key.',
     )
 
     const reset = document.querySelector<HTMLButtonElement>(

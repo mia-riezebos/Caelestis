@@ -2,12 +2,36 @@
 
 import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { setState } from '../state.js'
 import { toggleShortcutHelp } from './shortcut-help.js'
 
 beforeAll(() => registerCaelestisUi())
-beforeEach(() => document.body.replaceChildren())
+beforeEach(() => {
+  document.body.replaceChildren()
+  setState({ shortcutOverrides: {} })
+})
 
 describe('shortcut help adapter', () => {
+  it('shows the chords in force rather than the defaults', async () => {
+    setState({
+      shortcutOverrides: {
+        'toggle-panel': [{ key: 'p', code: 'KeyP', command: false, shift: true, alt: false }],
+      },
+    })
+
+    toggleShortcutHelp('mac')
+    await new Promise<void>((resolve) => queueMicrotask(resolve))
+
+    const keys = [
+      ...(document
+        .querySelector('caelestis-shortcut-help')
+        ?.shadowRoot?.querySelectorAll('.caelestis-shortcut-list kbd') ?? []),
+    ].map((key) => key.textContent)
+    expect(keys).toContain('Shift+P')
+    expect(keys).not.toContain('C')
+    toggleShortcutHelp('mac')
+  })
+
   it('mounts the shared help element and restores focus when toggled closed', async () => {
     const trigger = document.createElement('button')
     document.body.appendChild(trigger)

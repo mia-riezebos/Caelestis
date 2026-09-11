@@ -5,7 +5,7 @@
   import SettingRow from '../foundations/SettingRow.svelte'
   import Toggle from '../foundations/Toggle.svelte'
   import { keyBindingFromStroke, keyBindingLabel, type ShortcutId, shortcutLabel } from '@caelestis/shared'
-  import { SHORTCUT_ACTIONS, type ShortcutCategory } from '../shortcut-help/actions.js'
+  import { SHORTCUT_ACTIONS, type ShortcutCategory, shortcutActionLabel } from '../shortcut-help/actions.js'
   import type { AccessTokenScope, SettingsIntent, SettingsModel, SettingsServerModel } from '../types.js'
 
   let { model, onIntent }: { model: SettingsModel; onIntent?: (intent: SettingsIntent) => void } = $props()
@@ -16,10 +16,16 @@
    * userscript's key map treats like a text field so no shortcut fires from the recorded key.
    */
   let recording = $state<ShortcutId | null>(null)
+  const displacedNotice = (): string => {
+    const change = model.shortcuts.lastChange
+    if (change === undefined || change.displaced.length === 0) return ''
+    const key = shortcutLabel(model.shortcuts.bindings[change.id], model.shortcuts.platform)
+    const from = change.displaced.map(shortcutActionLabel).join(' and ')
+    const verb = change.displaced.length === 1 ? 'has' : 'have'
+    return `${key} was taken from ${from}, which now ${verb} no key.`
+  }
   const shortcutStatus = $derived(
-    recording !== null
-      ? 'Press the new key. Esc keeps the current one.'
-      : (model.shortcuts.message ?? ''),
+    recording !== null ? 'Press the new key. Esc keeps the current one.' : displacedNotice(),
   )
   const recordKey = (event: KeyboardEvent, id: ShortcutId): void => {
     if (recording !== id) return

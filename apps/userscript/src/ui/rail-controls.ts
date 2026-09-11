@@ -1,5 +1,6 @@
 import type { CaelestisRailControl, RailControlIntent } from '@caelestis/ui/elements'
 import { redraw } from '../main.js'
+import { shortcutHint } from '../shortcut-bindings.js'
 import { getState, setState } from '../state.js'
 import { applyWplaceTheme } from './theme.js'
 
@@ -10,7 +11,7 @@ export const syncMismatchModeState = (): void => {
   if (button === null) return
   const on = getState().appearance.markMismatch
   const label = on ? 'Hide global mismatch markers' : 'Show global mismatch markers'
-  button.model = { id: 'mismatch', label: `${label} (W)`, pressed: on }
+  button.model = { id: 'mismatch', label: `${label}${shortcutHint('toggle-markers')}`, pressed: on }
 }
 
 /** The always-reachable switch for the global marker default. */

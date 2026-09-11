@@ -276,8 +276,11 @@ export interface ShortcutSettingsModel {
   readonly bindings: import('@caelestis/shared').ShortcutBindings
   /** Whether any action differs from its default, which is when reset does something. */
   readonly customised: boolean
-  /** What the last change did beyond the obvious, such as which action lost its key. */
-  readonly message?: string
+  /** The last recorded chord and the actions it was taken from, so the panel can say so. */
+  readonly lastChange?: {
+    readonly id: import('@caelestis/shared').ShortcutId
+    readonly displaced: readonly import('@caelestis/shared').ShortcutId[]
+  }
 }
 
 export type ShortcutHelpIntent = { readonly type: 'close' }

@@ -3,6 +3,7 @@ import {
   SHORTCUT_HELP_TAG,
   type ShortcutHelpIntent,
 } from '@caelestis/ui/elements'
+import { activeShortcutBindings } from '../shortcut-bindings.js'
 import { currentShortcutPlatform, type ShortcutPlatform } from '../shortcuts.js'
 import { applyWplaceTheme } from './theme.js'
 
@@ -26,7 +27,7 @@ export const toggleShortcutHelp = (
   }
 
   const help = document.createElement(SHORTCUT_HELP_TAG)
-  help.model = { platform }
+  help.model = { platform, bindings: activeShortcutBindings() }
   help.setAttribute('data-caelestis-shortcut-help', '')
   applyWplaceTheme(help)
   restoreTargets.set(
