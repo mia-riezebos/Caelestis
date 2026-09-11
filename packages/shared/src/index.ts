@@ -21,6 +21,7 @@ export {
   PngError,
   type RgbaImage,
 } from './png.js'
+export * from './presence.js'
 export {
   OPAQUE_ALPHA_THRESHOLD,
   type QuantiseReport,
