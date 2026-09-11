@@ -81,12 +81,19 @@ export const shortcutFor = (
   if (isTypingEvent(event)) return null
   const pressed = keyBindingFromStroke(event, platform)
   if (pressed === null) return null
-  for (const id of SHORTCUT_IDS) {
-    if (!bindings[id].some((binding) => keyBindingMatches(binding, pressed))) continue
-    // Repeats are intentional for undo and redo: holding the chord walks Wplace's per-pixel
-    // history. Every other shortcut remains single-shot.
-    if (event.repeat === true && !REPEATING_SHORTCUTS.has(id)) return null
-    return id
+  // A recorded physical key outranks a default character: after a layout change the same physical
+  // key can start reporting a default's character, and the user's own choice must keep winning.
+  for (const physical of [true, false]) {
+    for (const id of SHORTCUT_IDS) {
+      const matched = bindings[id].some(
+        (binding) => (binding.code !== '') === physical && keyBindingMatches(binding, pressed),
+      )
+      if (!matched) continue
+      // Repeats are intentional for undo and redo: holding the chord walks Wplace's per-pixel
+      // history. Every other shortcut remains single-shot.
+      if (event.repeat === true && !REPEATING_SHORTCUTS.has(id)) return null
+      return id
+    }
   }
   return null
 }

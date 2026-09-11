@@ -120,6 +120,17 @@ describe('shortcutFor', () => {
     ).toBeNull()
   })
 
+  it('lets a recorded physical key outrank a default whose character it now reports', () => {
+    // Recorded on QWERTY as KeyQ; after switching to AZERTY that key reports "a".
+    const bindings = resolveShortcutBindings({
+      'toggle-panel': [{ key: 'q', code: 'KeyQ', command: false, shift: false, alt: false }],
+    })
+    expect(shortcutFor(keydown('a', { code: 'KeyQ' }), 'mac', bindings)).toBe('toggle-panel')
+    expect(shortcutFor(keydown('a', { code: 'KeyA' }), 'mac', bindings)).toBe(
+      'cycle-colour-previous',
+    )
+  })
+
   it('maps the physical help keys even when the layout reports a dead key', () => {
     expect(shortcutFor(keydown('Dead', { code: 'Slash', shiftKey: true }))).toBe(
       'show-shortcut-help',
