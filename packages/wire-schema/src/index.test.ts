@@ -18,6 +18,11 @@ import {
   PaintEvent,
   PaintPixels,
   PaintTile,
+  PresenceClientEvent,
+  PresenceDraft,
+  PresenceRect,
+  PresenceServerEvent,
+  RegionClaimRequest,
   ServerInfo,
   StatusDelta,
   StatusResponse,
@@ -30,6 +35,56 @@ import {
 } from './index.js'
 
 const HASH = 'a'.repeat(64)
+
+describe('presence schemas', () => {
+  it('accepts safe rects and the shared bounded draft mask format', () => {
+    const rect = { x: 0, y: 8, w: 8, h: 1 }
+    expect(Schema.decodeUnknownSync(PresenceRect)(rect)).toEqual(rect)
+    expect(Schema.decodeUnknownSync(PresenceDraft)({ rect, pixels: 1, mask: 'gA==' })).toEqual({
+      rect,
+      pixels: 1,
+      mask: 'gA==',
+    })
+    expect(
+      Schema.decodeUnknownSync(PresenceClientEvent)({ type: 'presence-update', draft: null }),
+    ).toEqual({ type: 'presence-update', draft: null })
+  })
+  it('rejects invalid coordinates, sizes, unsafe integers, and masks', () => {
+    const rect = { x: 0, y: 0, w: 8, h: 1 }
+    for (const invalid of [
+      { ...rect, x: -1 },
+      { ...rect, w: 0 },
+      { ...rect, y: 0.5 },
+      { ...rect, x: Number.MAX_SAFE_INTEGER + 1 },
+    ])
+      expect(() => Schema.decodeUnknownSync(PresenceRect)(invalid)).toThrow()
+    for (const mask of ['!', 'gA=', 'gA======', 'g!=='])
+      expect(() => Schema.decodeUnknownSync(PresenceDraft)({ rect, pixels: 1, mask })).toThrow()
+    expect(() =>
+      Schema.decodeUnknownSync(PresenceDraft)({
+        rect: { ...rect, w: 32_769 },
+        pixels: 1,
+        mask: 'gA==',
+      }),
+    ).toThrow()
+    expect(() =>
+      Schema.decodeUnknownSync(RegionClaimRequest)({
+        templateId: 'not-a-uuid',
+        rect,
+        label: '',
+        actor: { wplaceUserId: 1, displayName: 'Mia' },
+      }),
+    ).toThrow()
+    expect(() =>
+      Schema.decodeUnknownSync(PresenceServerEvent)({
+        type: 'presence-delta',
+        online: -1,
+        upsert: [],
+        remove: [],
+      }),
+    ).toThrow()
+  })
+})
 const SECONDS = 1_750_000_000
 const MILLIS = millis(SECONDS * 1_000)
 

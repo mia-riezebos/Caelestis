@@ -1,7 +1,13 @@
 import type * as Shared from '@caelestis/shared'
 import {
+  isPresenceDraft,
   MAX_LIVE_PROJECTIONS,
   MAX_LIVE_TEMPLATE_IDS,
+  MAX_PRESENCE_PEERS,
+  MAX_PRESENCE_REGION_LABEL,
+  MAX_PRESENCE_REGION_PIXELS,
+  MAX_PRESENCE_REGIONS,
+  MAX_PRESENCE_SUBSCRIBERS,
   MAX_TILE_OFFERS,
   PALETTE_SIZE,
   parseTemplateTags,
@@ -153,6 +159,87 @@ const TemplateSurface = Schema.Union([
   }),
 ])
 
+export const PresenceRect = Schema.Struct({
+  x: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  y: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  w: integerBetween(1, Number.MAX_SAFE_INTEGER),
+  h: integerBetween(1, Number.MAX_SAFE_INTEGER),
+})
+
+export const PresenceDraft = Schema.Struct({
+  rect: PresenceRect,
+  mask: Schema.optionalKey(Schema.String),
+  pixels: integerBetween(0, Number.MAX_SAFE_INTEGER),
+}).pipe(Schema.check(booleanFilter(isPresenceDraft, 'invalid presence draft mask')))
+
+const PresenceIdentity = Schema.Struct({
+  wplaceUserId: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  displayName: boundedString(128),
+})
+const PresenceSessionId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/))
+
+export const PresenceClientEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal('presence-heartbeat') }),
+  Schema.Struct({
+    type: Schema.Literal('presence-update'),
+    viewport: Schema.optionalKey(Schema.NullOr(PresenceRect)),
+    draft: Schema.optionalKey(Schema.NullOr(PresenceDraft)),
+  }),
+])
+
+export const PresencePeer = Schema.Struct({
+  sessionId: PresenceSessionId,
+  painter: PresenceIdentity,
+  viewport: Schema.NullOr(PresenceRect),
+  draft: Schema.NullOr(PresenceDraft),
+})
+
+const RegionRect = PresenceRect.check(
+  booleanFilter(
+    (rect) => rect.w * rect.h <= MAX_PRESENCE_REGION_PIXELS,
+    'region area exceeds limit',
+  ),
+)
+const RegionLabel = Schema.String.check(Schema.isMaxLength(MAX_PRESENCE_REGION_LABEL))
+
+export const RegionClaim = Schema.Struct({
+  id: Identifier,
+  season: Season,
+  surface: TemplateSurface,
+  templateId: Identifier,
+  claimant: PresenceIdentity,
+  rect: RegionRect,
+  label: RegionLabel,
+  createdAt: integerBetween(0, Number.MAX_SAFE_INTEGER),
+})
+
+export const RegionClaimRequest = Schema.Struct({
+  templateId: Identifier,
+  rect: RegionRect,
+  label: RegionLabel,
+  actor: PresenceIdentity,
+})
+
+export const PresenceServerEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal('presence-ready'),
+    sessionId: PresenceSessionId,
+    online: integerBetween(0, MAX_PRESENCE_SUBSCRIBERS),
+    peers: boundedArray(PresencePeer, MAX_PRESENCE_PEERS),
+    regions: boundedArray(RegionClaim, MAX_PRESENCE_REGIONS),
+  }),
+  Schema.Struct({
+    type: Schema.Literal('presence-delta'),
+    online: integerBetween(0, MAX_PRESENCE_SUBSCRIBERS),
+    upsert: boundedArray(PresencePeer, MAX_PRESENCE_PEERS),
+    remove: boundedArray(PresenceSessionId, MAX_PRESENCE_PEERS),
+  }),
+  Schema.Struct({
+    type: Schema.Literal('regions'),
+    regions: boundedArray(RegionClaim, MAX_PRESENCE_REGIONS),
+  }),
+])
+
 const BoundingBoxStruct = Schema.Struct({
   minX: integerBetween(0, WORLD_PIXELS - 1),
   // Redundant, like maxY below: `minY < maxY <= WORLD_PIXELS` already implies it. Stated for
@@ -194,6 +281,7 @@ export const ServerInfo = Schema.Struct({
   liveSync: Schema.optionalKey(Schema.Literals([1, 2])),
   liveSyncMax: Schema.optionalKey(Schema.Literals([1, 2])),
   liveTileOffers: Schema.optionalKey(Schema.Literal(1)),
+  presence: Schema.optionalKey(Schema.Literal(1)),
 }).pipe(
   Schema.check(
     booleanFilter(
@@ -1158,6 +1246,20 @@ assertExact<Exact<Schema.Schema.Type<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Schema.Type<typeof LiveTileOffer>, Shared.LiveTileOffer>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceRect>, Shared.PresenceRect>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceRect>, Shared.PresenceRect>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceDraft>, Shared.PresenceDraft>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceDraft>, Shared.PresenceDraft>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceClientEvent>, Shared.PresenceClientEvent>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceClientEvent>, Shared.PresenceClientEvent>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresencePeer>, Shared.PresencePeer>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresencePeer>, Shared.PresencePeer>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionClaim>, Shared.RegionClaim>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionClaim>, Shared.RegionClaim>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceServerEvent>, Shared.PresenceServerEvent>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceServerEvent>, Shared.PresenceServerEvent>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionClaimRequest>, Shared.RegionClaimRequest>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionClaimRequest>, Shared.RegionClaimRequest>>()
 assertExact<Exact<Schema.Schema.Type<typeof LiveTileOfferBatch>, Shared.LiveTileOfferBatch>>()
 assertExact<
   Exact<Schema.Schema.Type<typeof LiveDashboardSubscription>, Shared.LiveDashboardSubscription>

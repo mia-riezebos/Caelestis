@@ -13,6 +13,7 @@ export const mergeServerInfo = (
     ...(base.liveSync === undefined ? {} : { liveSync: base.liveSync }),
     ...(base.liveSyncMax === undefined ? {} : { liveSyncMax: base.liveSyncMax }),
     ...(base.liveTileOffers === undefined ? {} : { liveTileOffers: base.liveTileOffers }),
+    ...(base.presence === undefined ? {} : { presence: base.presence }),
   }
   return description === undefined || description === null ? resolved : { ...resolved, description }
 }

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from 'effect'
 import type { BlobStore, CounterStore, SqlStore } from '../ports/index.js'
+import type { PresencePort } from '../presence/port.js'
 import { DirectStatusReadModel, type StatusReadModelPort } from '../status-read-model/port.js'
 
 export class BlobStoreService extends Context.Service<BlobStoreService, BlobStore>()(
@@ -20,22 +21,31 @@ export class StatusReadModelService extends Context.Service<
 >()('@caelestis/backend/StatusReadModel') {}
 
 export type BackendServices =
+  | PresenceService
   | BlobStoreService
   | SqlStoreService
   | CounterStoreService
   | StatusReadModelService
 export type BackendContext = Context.Context<BackendServices>
 
+export class PresenceService extends Context.Service<PresenceService, PresencePort>()(
+  '@caelestis/backend/Presence',
+) {}
+
+const noPresence: PresencePort = { publishRegions: async () => {} }
+
 export const makeBackendContext = (
   blobs: BlobStore,
   sql: SqlStore,
   counters: CounterStore,
   statusReadModel: StatusReadModelPort = new DirectStatusReadModel(sql),
+  presence: PresencePort = noPresence,
 ): BackendContext =>
   Context.make(BlobStoreService, blobs).pipe(
     Context.add(SqlStoreService, sql),
     Context.add(CounterStoreService, counters),
     Context.add(StatusReadModelService, statusReadModel),
+    Context.add(PresenceService, presence),
   )
 
 export const makeBackendLayer = (
@@ -43,8 +53,9 @@ export const makeBackendLayer = (
   sql: SqlStore,
   counters: CounterStore,
   statusReadModel: StatusReadModelPort = new DirectStatusReadModel(sql),
+  presence: PresencePort = noPresence,
 ): Layer.Layer<BackendServices> =>
-  Layer.succeedContext(makeBackendContext(blobs, sql, counters, statusReadModel))
+  Layer.succeedContext(makeBackendContext(blobs, sql, counters, statusReadModel, presence))
 
 export interface BackendRuntime {
   readonly context: BackendContext

@@ -5,10 +5,13 @@ import {
   templateSurface,
   type WorkMutation,
 } from '@caelestis/shared'
+import { RegionClaimRequest } from '@caelestis/wire-schema'
+import { Schema } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScopeEffect } from '../auth/middleware.js'
 import type { BackendRuntime } from '../runtime/backend-runtime.js'
 import { runBackendHttp } from '../runtime/hono.js'
+import { deleteRegion, listRegions, putRegion } from '../work/regions.js'
 import { listWork, mutateWork, workHistory } from '../work/use-cases.js'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -48,6 +51,77 @@ const parseMutation = (body: unknown): WorkMutation | null => {
 export const createWorkRoutes = (runtime: BackendRuntime, auth: AuthOptions) => {
   const routes = new Hono()
   routes.use('/*', requireScopeEffect(runtime, auth, 'read'))
+  routes.get('/regions', (c) => {
+    const season = natural(c.req.query('season'))
+    const allianceId = c.req.query('allianceId')
+    const surface = templateSurface(
+      c.req.query('surface') ?? 'world',
+      allianceId === undefined ? null : natural(allianceId),
+    )
+    const templateId = c.req.query('templateId')
+    if (
+      season === null ||
+      surface === null ||
+      (allianceId !== undefined && natural(allianceId) === null) ||
+      (templateId !== undefined && !uuid.test(templateId))
+    )
+      return c.json({ error: 'Invalid drawing scope or template ID' }, 400)
+    return runBackendHttp(c, runtime, listRegions(season, surface, templateId), (regions) =>
+      c.json({ regions }),
+    )
+  })
+  routes.put('/regions/:id', requireScopeEffect(runtime, auth, 'report'), async (c) => {
+    const id = c.req.param('id')
+    const season = natural(c.req.query('season'))
+    const allianceId = c.req.query('allianceId')
+    const surface = templateSurface(
+      c.req.query('surface') ?? 'world',
+      allianceId === undefined ? null : natural(allianceId),
+    )
+    if (
+      !uuid.test(id) ||
+      season === null ||
+      surface === null ||
+      (allianceId !== undefined && natural(allianceId) === null)
+    )
+      return c.json({ error: 'Invalid region ID or drawing scope' }, 400)
+    const text = await c.req.text()
+    if (text.length > 16_384) return c.json({ error: 'Region request is too large' }, 413)
+    let request: Schema.Schema.Type<typeof RegionClaimRequest>
+    try {
+      request = Schema.decodeUnknownSync(RegionClaimRequest)(JSON.parse(text))
+    } catch {
+      return c.json({ error: 'Invalid region request' }, 400)
+    }
+    return runBackendHttp(
+      c,
+      runtime,
+      putRegion(id, season, surface, request, c.get('caller')),
+      (region) => c.json(region),
+    )
+  })
+  routes.delete('/regions/:id', requireScopeEffect(runtime, auth, 'report'), async (c) => {
+    const id = c.req.param('id')
+    if (!uuid.test(id)) return c.json({ error: 'Invalid region ID' }, 400)
+    const text = await c.req.text()
+    if (text.length > 16_384) return c.json({ error: 'Region request is too large' }, 413)
+    let body: unknown
+    try {
+      body = JSON.parse(text)
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400)
+    }
+    if (
+      typeof body !== 'object' ||
+      body === null ||
+      !('actor' in body) ||
+      !isWorkIdentity(body.actor)
+    )
+      return c.json({ error: 'Invalid painter identity' }, 400)
+    return runBackendHttp(c, runtime, deleteRegion(id, body.actor, c.get('caller')), (result) =>
+      c.json(result),
+    )
+  })
   routes.get('/', (c) => {
     const season = natural(c.req.query('season'))
     const surface = templateSurface(

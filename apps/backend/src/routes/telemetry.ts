@@ -1,12 +1,15 @@
 import {
+  isWorkIdentity,
   MAX_TILE_OFFERS,
   millis,
   type PaintEvent as PaintEventValue,
+  PRESENCE_PROTOCOL_V1,
   parseTileKey,
   type Seconds,
   type StatusDelta,
   seconds,
   type TileOfferBatch as TileOfferBatchValue,
+  templateSurface,
   WORLD_TILES,
 } from '@caelestis/shared'
 import { PaintEvent, TileOfferBatch } from '@caelestis/wire-schema'
@@ -26,6 +29,7 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   TILE_HISTORY_RESOLUTIONS,
 } from '../ports/index.js'
+import type { ConnectPresence } from '../presence/port.js'
 import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
 import { runBackendHttp, runBackendMiddleware } from '../runtime/hono.js'
 import {
@@ -91,10 +95,13 @@ const decodeLiveCredential = (encoded: string): string | null => {
 const liveAuthorization = (
   header: string | undefined,
   authorizationHeader?: string,
+  presence = false,
 ): { readonly authorization?: string; readonly protocol: 1 | 2 } | null => {
   if (header === undefined) return null
   const protocols = header.split(',').map((protocol) => protocol.trim())
-  const selected = LIVE_PROTOCOLS.find((protocol) => protocols.includes(protocol))
+  const selected = presence
+    ? protocols.find((protocol) => protocol === PRESENCE_PROTOCOL_V1)
+    : LIVE_PROTOCOLS.find((protocol) => protocols.includes(protocol))
   if (selected === undefined) return null
   const credentials = protocols.filter((protocol) => protocol.startsWith(LIVE_AUTH_PREFIX))
   if (credentials.length > 1) return null
@@ -216,6 +223,7 @@ export const createTelemetryRoutes = (
   auth: AuthOptions,
   options: {
     readonly currentSeason: number
+    readonly connectPresence?: ConnectPresence
     readonly connectStatusLive?: (
       request: Request,
       connection: {
@@ -235,6 +243,75 @@ export const createTelemetryRoutes = (
   },
 ) => {
   const routes = new Hono()
+
+  routes.get(
+    '/presence',
+    async (c, next) => {
+      if (c.req.header('upgrade')?.toLowerCase() !== 'websocket')
+        return c.json({ error: 'websocket upgrade required' }, 426)
+      const credentials = liveAuthorization(
+        c.req.header('sec-websocket-protocol'),
+        c.req.header('authorization'),
+        true,
+      )
+      if (credentials === null) return c.json({ error: 'invalid websocket protocol' }, 400)
+      return runBackendMiddleware(
+        c,
+        runtime,
+        authenticateRequest(credentials.authorization, auth, 'read'),
+        async (caller) => {
+          c.set('caller', caller)
+          await next()
+        },
+      )
+    },
+    async (c) => {
+      if (options.connectPresence === undefined) return c.json({ error: 'not found' }, 404)
+      const season = wholeNumber(c.req.query('season'))
+      if (season === null || season !== options.currentSeason)
+        return c.json({ error: 'season is not served by this live endpoint' }, 404)
+      const allianceId = c.req.query('allianceId')
+      const surface = templateSurface(
+        c.req.query('surface') ?? 'world',
+        allianceId === undefined ? null : wholeNumber(allianceId),
+      )
+      const painter = {
+        wplaceUserId: wholeNumber(c.req.query('painterId')),
+        displayName: c.req.query('painterName'),
+      }
+      if (
+        surface === null ||
+        (allianceId !== undefined && wholeNumber(allianceId) === null) ||
+        !isWorkIdentity(painter)
+      )
+        return c.json({ error: 'invalid drawing surface or painter identity' }, 400)
+      const caller = c.get('caller')
+      const anonymous = caller.token === null && caller.scope === 'read'
+      let clientHash = caller.tokenHash
+      if (anonymous) {
+        const clientId = c.req.query('clientId')
+        if (clientId === undefined || !UUID_V7.test(clientId))
+          return c.json({ error: 'clientId must be a UUID' }, 400)
+        clientHash = await hashToken(`${caller.tokenHash}\u0000${clientId}`)
+      }
+      const metricClient = normalizeMetricClientIdentity(
+        c.req.query('client') ?? 'unknown',
+        c.req.query('clientVersion') ?? 'unknown',
+      )
+      return options.connectPresence(c.req.raw, {
+        season,
+        surface,
+        painter,
+        credentialScope: caller.scope,
+        tokenHash: caller.tokenHash,
+        clientHash,
+        anonymous,
+        revocable: caller.token !== null,
+        metricClient: metricClient.client,
+        metricClientVersion: metricClient.clientVersion,
+      })
+    },
+  )
 
   routes.get(
     '/live',

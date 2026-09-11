@@ -20,6 +20,7 @@ import {
   sha256Hex,
   type TileCoord,
   templateSurface,
+  templateSurfaceKey,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import {
@@ -617,6 +618,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
       liveSync: 1,
       liveSyncMax: 2,
       liveTileOffers: 1,
+      presence: 1,
     }
   }
 
@@ -1192,6 +1194,18 @@ export class StatusReadModelObject extends DurableObject<Env> {
     await this.sendDashboardSnapshot(socket, updated, event.subscription)
   }
 
+  /** Persist routing before presence attachment so revocation also reaches hibernating rooms. */
+  async registerPresenceSurface(
+    season: number,
+    tokenHash: string,
+    surface: TemplateSurface,
+  ): Promise<void> {
+    this.model(season)
+    const key = `presence:${tokenHash}:${templateSurfaceKey(surface)}`
+    if ((await this.objectState.storage.get(key)) === undefined)
+      await this.objectState.storage.put(key, surface)
+  }
+
   async closeCredential(season: number, tokenHash: string): Promise<void> {
     this.model(season)
     await this.liveSessions.revoke(() => {
@@ -1205,6 +1219,15 @@ export class StatusReadModelObject extends DurableObject<Env> {
         socket.close(1008, 'credential revoked')
       }
     })
+    const rooms = await this.objectState.storage.list<TemplateSurface>({
+      prefix: `presence:${tokenHash}:`,
+    })
+    for (const [key, surface] of rooms) {
+      await this.bindings.PRESENCE.getByName(
+        `${season}:${templateSurfaceKey(surface)}`,
+      ).closeCredential(tokenHash)
+      await this.objectState.storage.delete(key)
+    }
   }
 
   override async fetch(request: Request): Promise<Response> {

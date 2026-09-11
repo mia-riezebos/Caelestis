@@ -15,6 +15,34 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core'
 
+/** Persistent painter claims on canvas regions. */
+export const workRegions = sqliteTable(
+  'work_regions',
+  {
+    id: text('id').primaryKey(),
+    season: integer('season').notNull(),
+    surfaceKind: text('surface_kind').$type<TemplateSurfaceKind>().notNull(),
+    allianceId: integer('alliance_id'),
+    templateId: text('template_id').notNull(),
+    claimantUserId: integer('claimant_user_id').notNull(),
+    claimantName: text('claimant_name').notNull(),
+    x: integer('x').notNull(),
+    y: integer('y').notNull(),
+    w: integer('w').notNull(),
+    h: integer('h').notNull(),
+    label: text('label').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    index('work_regions_scope_idx').on(
+      table.season,
+      table.surfaceKind,
+      table.allianceId,
+      table.templateId,
+    ),
+  ],
+)
+
 /** Versioned coordination records; deleted artwork remains identifiable in activity snapshots. */
 export const workItems = sqliteTable(
   'work_items',

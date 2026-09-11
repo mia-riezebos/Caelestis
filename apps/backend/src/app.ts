@@ -3,6 +3,7 @@ import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { BackfillClients } from './backfill/port.js'
+import type { ConnectPresence } from './presence/port.js'
 import { createArchiveRoutes, createBackfillAdminRoutes } from './routes/backfill.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
@@ -24,6 +25,7 @@ import { runBackendHttp } from './runtime/hono.js'
  * @see https://github.com/mia-riezebos/wplace-template-server/issues/12
  */
 export interface AppOptions {
+  readonly connectPresence?: ConnectPresence
   readonly backfillClients?: BackfillClients
   /**
    * The operator's bootstrap credential. Absent means the server has no bootstrap path, which is
@@ -83,6 +85,7 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
       'serverName',
     ),
     auth: options.openAccess === true ? 'none' : 'access_token',
+    ...(options.connectPresence === undefined ? {} : { presence: 1 as const }),
     ...(options.connectStatusLive === undefined
       ? {}
       : { liveSync: 1 as const, liveSyncMax: 2 as const, liveTileOffers: 1 as const }),
@@ -139,6 +142,9 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
     '/telemetry',
     createTelemetryRoutes(runtime, auth, {
       currentSeason,
+      ...(options.connectPresence === undefined
+        ? {}
+        : { connectPresence: options.connectPresence }),
       ...(options.connectStatusLive === undefined
         ? {}
         : { connectStatusLive: options.connectStatusLive }),

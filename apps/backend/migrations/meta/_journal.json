@@ -148,6 +148,13 @@
       "when": 1788996768313,
       "tag": "0020_tidy_micromacro",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1789136408775,
+      "tag": "0021_amazing_blindfold",
+      "breakpoints": true
     }
   ]
 }
