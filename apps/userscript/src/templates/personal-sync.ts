@@ -1,4 +1,4 @@
-import { onActiveAllianceSurfaceChange } from '../alliance-surface.js'
+import { activeAllianceSurface, onActiveAllianceSurfaceChange } from '../alliance-surface.js'
 import { warn } from '../debug.js'
 import { refreshPersonalTemplates, restoreLocalTemplates } from './local-store.js'
 import { installNativeAllianceTemplates } from './native-alliance.js'
@@ -23,20 +23,50 @@ export const installPersonalTemplates = async (): Promise<void> => {
     installNativeAllianceTemplates(native)
     if (native.alliance === undefined) {
       let discovering = false
-      const stop = onActiveAllianceSurfaceChange((active) => {
-        if (active === null || discovering) return
+      let requested = false
+      let found = false
+      const discover = (): void => {
+        if (found || activeAllianceSurface() === null) return
+        if (discovering) {
+          requested = true
+          return
+        }
         discovering = true
+        requested = false
         void connectNativeTemplates()
           .then((available) => {
             if (available.alliance === undefined) return
+            found = true
             installNativeAllianceTemplates(available)
             stop()
+            observer?.disconnect()
           })
           .catch((error) => warn('install', 'native alliance discovery failed', String(error)))
           .finally(() => {
             discovering = false
+            if (requested) discover()
           })
-      })
+      }
+      const stop = onActiveAllianceSurfaceChange(discover)
+      const observer =
+        typeof PerformanceObserver === 'undefined'
+          ? null
+          : new PerformanceObserver((list) => {
+              if (
+                list
+                  .getEntriesByType('resource')
+                  .some(
+                    (entry) =>
+                      'initiatorType' in entry &&
+                      (entry.initiatorType === 'script' || entry.initiatorType === 'link') &&
+                      entry.name.includes('/_app/immutable/') &&
+                      entry.name.endsWith('.js'),
+                  )
+              )
+                discover()
+            })
+      observer?.observe({ type: 'resource', buffered: true })
+      discover()
     }
     let queued: ReturnType<typeof setTimeout> | undefined
     let syncing = false

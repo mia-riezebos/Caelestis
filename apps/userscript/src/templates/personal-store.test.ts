@@ -278,6 +278,24 @@ describe('personal template ownership', () => {
     expect(store.appearanceOf(row).opacity).toBe(0.7)
   })
 
+  it('keeps global shape inheritance when native opacity changes', async () => {
+    const { seed, api, personal, read } = await fixture()
+    const state = await import('../state.js')
+    const { DEFAULT_APPEARANCE } = await import('./appearance.js')
+    const migrated = await seed()
+    const snapshot = await api.read(migrated.native?.id ?? '')
+    if (!snapshot) throw new Error('Missing native template')
+    await api.save(snapshot.template.id, { opacity: 0.25 }, snapshot)
+    await personal.synchronizePersonalTemplates()
+    const store = await import('./local-store.js')
+    await store.restoreLocalTemplates()
+    const row = store.templateById(migrated.id)
+    if (!row) throw new Error('Missing local template')
+    state.setState({ appearance: { ...DEFAULT_APPEARANCE, size: 1.5 } })
+    expect(store.appearanceOf(row)).toMatchObject({ opacity: 0.25, size: 1.5 })
+    expect((await read()).owns).toEqual(migrated.owns)
+  })
+
   it('retains signed alliance copies after reload and commits their placed state once', async () => {
     const { disk } = await fixture()
     const store = await import('./local-store.js')

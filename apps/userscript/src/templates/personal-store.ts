@@ -77,19 +77,15 @@ const project = async (
     everPlaced: snapshot.template.hasPlaced,
     updatedAt: snapshot.template.updatedAt,
     surface: WORLD_TEMPLATE_SURFACE,
-    appearance: nativeOpacityChanged
-      ? {
-          ...(previous?.appearance ?? getSurfaceAppearance(WORLD_TEMPLATE_SURFACE)),
-          opacity: snapshot.template.opacity,
-        }
-      : (previous?.appearance ?? null),
-    owns: nativeOpacityChanged ? [...new Set([...owns, 'pixels' as const])] : owns,
+    appearance: previous?.appearance ?? null,
+    owns,
     folderId: previous?.folderId ?? null,
     native: {
       id: snapshot.template.id,
       status: 'linked',
       token: snapshot.token,
       opacity: snapshot.template.opacity,
+      opacityOverride: nativeOpacityChanged || previous?.native?.opacityOverride === true,
     },
   }
   const artworkChanged = previous !== null && !samePixels(previous, template)
@@ -300,6 +296,7 @@ export const saveTemplate = async (
           status: 'linked',
           token: saved.token,
           opacity: saved.template.opacity,
+          opacityOverride: !opacityChanged && linked.native?.opacityOverride === true,
         },
       }
       // A native write may finish even if this derived cache cannot. Reconciliation reads the native winner.

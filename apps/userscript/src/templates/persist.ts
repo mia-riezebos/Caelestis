@@ -72,6 +72,8 @@ export interface StoredTemplate extends ImportedTemplate {
     readonly status: 'pending' | 'linked'
     readonly token?: string
     readonly opacity?: number
+    /** A native opacity edit overrides only opacity, without owning the whole pixels appearance. */
+    readonly opacityOverride?: boolean
   }
   readonly updatedAt?: number
   /** Exact drawing surface. Records written before alliance support are world-scoped. */

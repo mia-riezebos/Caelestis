@@ -511,12 +511,13 @@ export const appearanceOf = (template: PlacedTemplate): Appearance => {
   const global = getSurfaceAppearance(template.surface ?? WORLD_TEMPLATE_SURFACE)
   const own = template.appearance
   const nativeOpacity =
-    template.native?.status === 'linked' && template.owns.includes('pixels')
+    template.native?.status === 'linked' && template.native.opacityOverride === true
       ? template.native.opacity
       : undefined
   const inherited =
     template.sourceOpacity === undefined ? global : { ...global, opacity: template.sourceOpacity }
-  if (own === null || template.owns.length === 0) return inherited
+  if (own === null || template.owns.length === 0)
+    return nativeOpacity === undefined ? inherited : { ...inherited, opacity: nativeOpacity }
 
   // Field by field, from whichever side owns that field's group. A template that has taken over its
   // markers still follows the global sliders for its shape, which is the whole point of splitting
