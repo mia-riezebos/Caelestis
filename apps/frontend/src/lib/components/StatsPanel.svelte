@@ -20,6 +20,7 @@
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import { archiveContributionDays, combineArchiveSamples } from '$lib/archive-history'
   import { combineProgressSamples } from '$lib/progress-history'
+  import { completionPace } from '$lib/completion-pace'
   import {
     defaultVisiblePainters,
     MAX_PAINTER_OPTIONS,
@@ -32,7 +33,6 @@
     PACE_WINDOWS,
     type PaceHistorySource,
     type PainterHistorySource,
-    averagePace,
   } from '$lib/components/charts/progress-pace'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
@@ -363,25 +363,30 @@
   })
 
   const estimatePeriods = [
-    { key: '1d', seconds: DAY_SECONDS, label: 'day' },
-    { key: '3d', seconds: 3 * DAY_SECONDS, label: '3 days' },
-    { key: '7d', seconds: 7 * DAY_SECONDS, label: '7 days' },
-    { key: '30d', seconds: 30 * DAY_SECONDS, label: '30 days' },
-    { key: '1y', seconds: 365 * DAY_SECONDS, label: 'year' },
+    { key: '1d', seconds: DAY_SECONDS, label: 'last day' },
+    { key: '3d', seconds: 3 * DAY_SECONDS, label: 'last 3 days' },
+    { key: '7d', seconds: 7 * DAY_SECONDS, label: 'last 7 days' },
+    { key: '30d', seconds: 30 * DAY_SECONDS, label: 'last 30 days' },
+    { key: '1y', seconds: 365 * DAY_SECONDS, label: 'last year' },
+    { key: 'all', seconds: null, label: 'all' },
   ] as const
   const storedEstimatePeriod = persisted<string>('caelestis:estimate-period', '7d')
   const estimatePeriod = $derived(estimatePeriods.find((period) => period.key === storedEstimatePeriod.value) ?? estimatePeriods[2])
   // The 1d source already includes the entire retention ladder, including its permanent tier.
   const pace = $derived.by(() => {
     const history = paceHistories?.find((candidate) => candidate.window === '1d')?.history
-    return history == null ? null : averagePace(history, to, estimatePeriod.seconds)
+    if (estimatePeriod.key === 'all') {
+      if (archives === null || progressSamples === null) return null
+      // Prefer native progress when both sources observed the same timestamp.
+      const first = [...progressSamples, ...archiveSamples]
+        .filter(sample => sample.correct !== null && sample.at < to)
+        .sort((a, b) => a.at - b.at)[0]
+      if (first?.correct == null) return null
+      const hours = (to - first.at) / 3_600
+      return { correct: (progress.completed - first.correct) / hours, hours }
+    }
+    return completionPace(history, archiveSamples, progressSamples ?? [], to, estimatePeriod.seconds)
   })
-
-  const estimateCoverage = $derived(
-    pace !== null && pace.hours < estimatePeriod.seconds / 3_600 - 1
-      ? `${(pace.hours >= 48 ? pace.hours / 24 : pace.hours).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${pace.hours >= 48 ? 'd' : 'h'} of data`
-      : null,
-  )
 
   const eta = $derived.by(() => {
     if (pace === null || pace.correct <= 0 || remainingPixels <= 0) return null
@@ -413,13 +418,10 @@
           based on
           <select class="select select-xs w-auto" aria-label="Completion estimate pace period" value={estimatePeriod.key} onchange={(event) => { storedEstimatePeriod.value = event.currentTarget.value }}>
             {#each estimatePeriods as period (period.key)}
-              <option value={period.key}>last {period.label}</option>
+              <option value={period.key}>{period.label}</option>
             {/each}
           </select>
         </label>
-        {#if estimateCoverage !== null}
-          <span>({estimateCoverage})</span>
-        {/if}
       </div>
     </div>
     {#if failed}
