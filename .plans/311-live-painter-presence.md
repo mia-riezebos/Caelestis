@@ -17,12 +17,12 @@ the template layer as low-opacity tinted rects so finished art covers them. Ever
 - [ ] Traffic stays bounded: one upstream message per 2 s at most while panning, 1 s while drafting, a 30 s heartbeat otherwise; each downstream tick carries at most 64 nearby peers.
 
 ## TODOs
-- [ ] Shared presence contract: types, limits, rect helpers, and mask encoding in `packages/shared/src/presence.ts` with tests.
-- [ ] Backend (Codex): `PresenceObject` Durable Object with hibernating sockets, `/telemetry/presence` upgrade route, wire-schema events, interest-managed 1 s broadcast tick, region claim table plus `/work/regions` routes, tests.
-- [ ] Userscript presence client: open the socket per connected server, throttle viewport and draft publishing, keep peer state, and reconnect.
-- [ ] Userscript presence GL layer: draw peer viewports, drafts, and region claims beneath the template layer.
-- [ ] Userscript controls: share and show toggles in the panel, claim and release region actions, claimant labels.
-- [ ] Changesets for backend and userscript; run backend, userscript, and shared tests, typecheck, and lint.
+- [x] Shared presence contract: types, limits, rect helpers, and mask encoding in `packages/shared/src/presence.ts` with tests.
+- [x] Backend (Codex): `PresenceObject` Durable Object with hibernating sockets, `/telemetry/presence` upgrade route, wire-schema events, interest-managed 1 s broadcast tick, region claim table plus `/work/regions` routes, tests.
+- [x] Userscript presence client: open the socket per connected server, throttle viewport and draft publishing, keep peer state, and reconnect.
+- [x] Userscript presence GL layer: draw peer viewports, drafts, and region claims beneath the template layer.
+- [x] Userscript controls: share and show toggles in the panel, claim and release region actions, claimant labels.
+- [x] Changesets for backend and userscript; run backend, userscript, and shared tests, typecheck, and lint.
 
 ## Notes
 - The existing `/telemetry/live` socket in `StatusReadModelObject` is capped at 256 subscribers per season and already carries tile uploads. Presence gets its own Durable Object keyed by season and surface so it can hold thousands of hibernating sockets without touching the status model.
@@ -30,3 +30,11 @@ the template layer as low-opacity tinted rects so finished art covers them. Ever
 - Draft masks live only in Durable Object memory. After hibernation the 30 s client heartbeat restores them; attachments carry rects only, keeping under the 2 KiB attachment limit.
 - Region selection reuses what the painter already has: the current viewport or the draft bounds. No new drag gesture.
 - Codex runs with `gpt-6-astra` on the backend while I build the userscript side. It does not commit; I review the diff and commit it.
+- The userscript has its own `ServerInfo` parser in `server-manifest.ts`; the `presence` flag had to be added there as well as in shared, or the capability was dropped on read.
+- Presence is world-surface only in this slice. Alliance artboards are a separate canvas and keep no presence socket yet.
+- Validation so far: shared presence tests (7), userscript presence client (10) and geometry (8) tests, plus state, layer, manifest, panel, and main suites; userscript `tsc` and ui `svelte-check` clean.
+- Codex backend report, verified locally: wire-schema 180 tests, backend 628 tests, backend `tsc`, and biome all pass. Full userscript suite 1340 tests, ui 140 tests, frontend `svelte-check` clean.
+- Codex flagged two contract limits: `PresenceRect` cannot express negative alliance HQ coordinates, and read-scoped credentials never see peers because their updates are ignored. Both are acceptable for this world-only slice; alliance presence needs a signed rect later.
+- Revocation reaches hibernating presence rooms through the status object: connecting a revocable token records the room key there, and `closeCredential` fans out to it.
+- The D1 migration `0021_amazing_blindfold.sql` creates `work_regions`; it applies on deploy and has not run in production yet.
+- Not verified in a browser: no running Wplace session with a presence-capable server exists yet. First real check after deploy: two tabs, same server, each should draw the other's dashed viewport and see the headcount in the In progress drawer.
