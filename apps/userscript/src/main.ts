@@ -3,6 +3,7 @@ import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { installAlarmNotifications } from './alarms.js'
 import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
 import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
+import { onClaimToolChange, syncClaimToolFrame } from './claim-tool.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -394,7 +395,9 @@ const main = (): void => {
       repaintPresence()
       repaint()
     })
+    onClaimToolChange(repaintPresence)
     onFrame(observePresenceFrame, 'Presence viewport')
+    onFrame(syncClaimToolFrame, 'Claim tool handles')
     onFrame((frame) => {
       if (activeAllianceSurface() === null) renderPresenceLabels(frame)
     }, 'Presence labels')

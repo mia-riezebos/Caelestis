@@ -121,19 +121,45 @@ export interface PresenceSummaryModel {
   readonly online: number
   readonly connected: boolean
   readonly regions: readonly RegionClaimRowModel[]
+  /** Whether the claim tool can start: signed in, connected, and not already open. */
   readonly canClaim: boolean
-  /** Name of the template a viewport claim would land on, or null when there is none. */
-  readonly claimViewport: string | null
-  /** Name of the template a draft claim would land on, or null when nothing is drafted on one. */
-  readonly claimDraft: string | null
   readonly pending?: boolean
   readonly message?: string
 }
 
+export type ClaimShapeKind = 'rectangle' | 'ellipse' | 'polygon' | 'star'
+
+/** The floating claim tool: pick a shape, draw it on the map, claim it; or edit a saved claim. */
+export interface ClaimToolModel {
+  readonly kind: ClaimShapeKind
+  readonly sides: number
+  readonly points: number
+  readonly minCorners: number
+  readonly maxCorners: number
+  /** True once a shape has been drawn or selected and can be saved. */
+  readonly drawn: boolean
+  /** True while the shape is a saved claim being edited rather than a new one. */
+  readonly editing: boolean
+  /** The template the shape lands on, or null when it touches none. */
+  readonly template: string | null
+  /** Pixels the shape covers. */
+  readonly pixels: number
+  readonly pending: boolean
+  readonly message?: string
+}
+
+export type ClaimToolIntent =
+  | { readonly type: 'set-kind'; readonly kind: ClaimShapeKind }
+  | { readonly type: 'set-sides'; readonly sides: number }
+  | { readonly type: 'set-points'; readonly points: number }
+  | { readonly type: 'claim' }
+  | { readonly type: 'delete' }
+  | { readonly type: 'cancel' }
+
 export type PanelIntent =
   | { readonly type: 'work-retry' }
   | { readonly type: 'work-visibility'; readonly showOtherClaims: boolean }
-  | { readonly type: 'region-claim'; readonly mode: 'viewport' | 'draft' }
+  | { readonly type: 'region-claim' }
   | { readonly type: 'region-release'; readonly id: string }
   | { readonly type: 'work-tree'; readonly intent: TemplateTreeIntent }
   | { readonly type: 'navigate'; readonly view: PanelView }

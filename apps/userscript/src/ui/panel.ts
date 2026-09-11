@@ -122,11 +122,7 @@ import {
   PanelSessions,
   type PanelView,
 } from './panel-scope.js'
-import {
-  claimPresenceRegion,
-  presenceSummaryModel,
-  releasePresenceRegion,
-} from './presence-actions.js'
+import { openClaimTool, presenceSummaryModel, releasePresenceRegion } from './presence-actions.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
@@ -1094,7 +1090,7 @@ const buildSveltePanel = (): CaelestisPanel => {
         rerenderTree()
         break
       case 'region-claim':
-        claimPresenceRegion(intent.mode, rerenderTree)
+        openClaimTool(undefined, rerenderTree)
         break
       case 'region-release':
         releasePresenceRegion(intent.id, rerenderTree)

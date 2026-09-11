@@ -19,7 +19,7 @@
     onretry: () => void
     showOtherClaims?: boolean
     onshowothers: (show: boolean) => void
-    onclaimregion?: (mode: 'viewport' | 'draft') => void
+    onclaimregion?: () => void
     onreleaseregion?: (id: string) => void
   } = $props()
   const count = $derived(model.tree.entries.length)
@@ -64,24 +64,16 @@
                 Painters offline
               {/if}
             </p>
-            {#if presence.canClaim}
-              <div class="claim-actions">
-                <Button
-                  label={presence.claimViewport === null ? 'Claim view' : `Claim view of ${presence.claimViewport}`}
-                  size="compact"
-                  kind="ghost"
-                  disabled={presence.claimViewport === null || presence.pending === true}
-                  onclick={() => onclaimregion?.('viewport')}
-                />
-                <Button
-                  label={presence.claimDraft === null ? 'Claim draft' : `Claim draft on ${presence.claimDraft}`}
-                  size="compact"
-                  kind="ghost"
-                  disabled={presence.claimDraft === null || presence.pending === true}
-                  onclick={() => onclaimregion?.('draft')}
-                />
-              </div>
-            {/if}
+            <div class="claim-actions">
+              <Button
+                label="Claim a region"
+                title="Draw a rectangle, ellipse, polygon, or star on the map (M or L)"
+                size="compact"
+                kind="ghost"
+                disabled={!presence.canClaim || presence.pending === true}
+                onclick={() => onclaimregion?.()}
+              />
+            </div>
             {#if presence.message}
               <p class="notice" role="alert">{presence.message}</p>
             {/if}
