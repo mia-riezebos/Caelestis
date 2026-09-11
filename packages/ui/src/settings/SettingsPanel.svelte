@@ -19,10 +19,20 @@
   const displacedNotice = (): string => {
     const change = model.shortcuts.lastChange
     if (change === undefined || change.displaced.length === 0) return ''
-    const key = shortcutLabel(model.shortcuts.bindings[change.id], model.shortcuts.platform)
-    const from = change.displaced.map(shortcutActionLabel).join(' and ')
-    const verb = change.displaced.length === 1 ? 'has' : 'have'
-    return `${key} was taken from ${from}, which now ${verb} no key.`
+    const { bindings, platform } = model.shortcuts
+    const key = shortcutLabel(bindings[change.id], platform)
+    const sentences = [`${key} was taken from ${change.displaced.map(shortcutActionLabel).join(' and ')}.`]
+    // An action can hold several chords; losing one is not the same as losing its key.
+    const emptied = change.displaced.filter((id) => bindings[id].length === 0)
+    if (emptied.length > 0) {
+      const verb = emptied.length === 1 ? 'has' : 'have'
+      sentences.push(`${emptied.map(shortcutActionLabel).join(' and ')} now ${verb} no key.`)
+    }
+    for (const id of change.displaced) {
+      if (bindings[id].length === 0) continue
+      sentences.push(`${shortcutActionLabel(id)} still has ${shortcutLabel(bindings[id], platform)}.`)
+    }
+    return sentences.join(' ')
   }
   const shortcutStatus = $derived(
     recording !== null ? 'Press the new key. Esc keeps the current one.' : displacedNotice(),

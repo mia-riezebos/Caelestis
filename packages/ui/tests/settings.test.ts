@@ -183,7 +183,7 @@ describe('settings panel', () => {
       document.querySelector('[data-caelestis-shortcut="undo-paint"]')?.textContent?.trim(),
     ).toBe('Ctrl+Z')
     expect(document.querySelector('[role="status"].shortcut-status')?.textContent).toBe(
-      'R was taken from Toggle contrast rings, which now has no key.',
+      'R was taken from Toggle contrast rings. Toggle contrast rings now has no key.',
     )
 
     const reset = document.querySelector<HTMLButtonElement>(
@@ -192,6 +192,30 @@ describe('settings panel', () => {
     expect(reset?.disabled).toBe(false)
     reset?.click()
     expect(onIntent).toHaveBeenCalledExactlyOnceWith({ type: 'reset-shortcut-bindings' })
+    void unmount(component)
+  })
+
+  it('says an action keeps its other chord when only one was taken', () => {
+    const [, helpChord] = resolveShortcutBindings()['show-shortcut-help']
+    const partial: SettingsModel = {
+      ...model,
+      shortcuts: {
+        platform: 'mac',
+        bindings: resolveShortcutBindings({
+          'show-shortcut-help': [helpChord as NonNullable<typeof helpChord>],
+          'toggle-panel': [
+            { key: '`', code: 'Backquote', command: false, shift: false, alt: false },
+          ],
+        }),
+        customised: true,
+        lastChange: { id: 'toggle-panel', displaced: ['show-shortcut-help'] },
+      },
+    }
+    const component = mount(SettingsPanel, { target: document.body, props: { model: partial } })
+    flushSync()
+    expect(document.querySelector('[role="status"].shortcut-status')?.textContent).toBe(
+      '` was taken from Keyboard shortcuts. Keyboard shortcuts still has Shift+/.',
+    )
     void unmount(component)
   })
 
