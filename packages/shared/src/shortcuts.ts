@@ -99,6 +99,12 @@ export const DEFAULT_SHORTCUT_BINDINGS: ShortcutBindings = Object.freeze({
   'show-shortcut-help': [physical('Backquote'), physical('Slash', { shift: true })],
 })
 
+/**
+ * Marks the settings control that is recording a replacement binding. A keystroke aimed at it is
+ * the new chord, so no shortcut may fire from it.
+ */
+export const KEY_CAPTURE_ATTRIBUTE = 'data-caelestis-key-capture'
+
 /** Holding the chord repeats the action. Every other action fires once per press. */
 export const REPEATING_SHORTCUTS: ReadonlySet<ShortcutId> = new Set(['undo-paint', 'redo-paint'])
 

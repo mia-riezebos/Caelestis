@@ -1,4 +1,5 @@
 import {
+  KEY_CAPTURE_ATTRIBUTE,
   keyBindingFromStroke,
   keyBindingMatches,
   REPEATING_SHORTCUTS,
@@ -29,11 +30,7 @@ export const currentShortcutPlatform = (): ShortcutPlatform =>
     ? 'windows-linux'
     : shortcutPlatformFor(navigator as Navigator & ShortcutPlatformSource)
 
-/**
- * Marks the settings control that is recording a replacement binding. A keystroke aimed at it is
- * the new chord, so no shortcut may fire from it.
- */
-export const KEY_CAPTURE_ATTRIBUTE = 'data-caelestis-key-capture'
+export { KEY_CAPTURE_ATTRIBUTE }
 
 /**
  * Whether a keystroke belongs to something else on the page.

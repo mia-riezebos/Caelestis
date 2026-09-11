@@ -13,10 +13,10 @@ shortcut help and every displayed key hint follow the active bindings.
 - [ ] A key assigned to one action never triggers a second action.
 
 ## TODOs
-- [ ] Shared key model: shortcut ids, default bindings, normalisation, overrides, conflict assignment, labels and keyboard codes, with tests.
-- [ ] Userscript matcher and persistence: `shortcutFor` takes resolved bindings, state stores overrides, the key map resolves peek release and recording capture from bindings, with tests.
-- [ ] Settings UI: a Keyboard shortcuts section with a per-action key recorder, clear, reset, and conflict notice, with tests.
-- [ ] Shortcut help: rows, prose, and the keyboard map derive from the active bindings, with a full alphanumeric keyboard, with tests.
+- [x] Shared key model: shortcut ids, default bindings, normalisation, overrides, conflict assignment, labels and keyboard codes, with tests.
+- [x] Userscript matcher and persistence: `shortcutFor` takes resolved bindings, state stores overrides, the key map resolves peek release and recording capture from bindings, with tests.
+- [x] Settings UI: a Keyboard shortcuts section with a per-action key recorder, clear, reset, and conflict notice, with tests.
+- [x] Shortcut help: rows, prose, and the keyboard map derive from the active bindings, with a full alphanumeric keyboard, with tests.
 - [ ] Userscript wiring: settings model and intents, key hints in tooltips and palette labels, help model, refresh after a change, with tests.
 - [ ] Changeset, design notes, full validation, and browser inspection of the settings section and help dialog.
 
@@ -30,4 +30,11 @@ shortcut help and every displayed key hint follow the active bindings.
   new actions gain their default without migration. Reset clears the overrides map.
 - Assigning a chord already used by another action unassigns that action and reports it.
 - Recording: the recorder button carries `data-caelestis-key-capture` while active; the matcher
-  treats it like a typing target, so no shortcut fires while a key is recorded.
+  treats it like a typing target, so no shortcut fires while a key is recorded. Escape cancels a
+  recording, so Escape itself cannot be recorded; Reset restores it for cancel-paint.
+- An action may hold several chords (the help reference keeps both `` ` `` and Shift+/). Recording
+  replaces them with one; taking one chord off a two-chord action leaves the other in place.
+- The settings and help UIs share one commit: the help model and the settings model changed in the
+  same `types.ts`, and each half alone would not typecheck.
+- Validation so far: 14 shared tests, 144 userscript tests across the touched files, 143 UI tests,
+  tsc for shared and userscript, svelte-check 0 errors, biome clean.

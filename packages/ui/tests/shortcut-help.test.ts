@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resolveShortcutBindings, type ShortcutOverrides } from '@caelestis/shared'
 import { flushSync, mount, unmount } from 'svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ShortcutHelp from '../src/shortcut-help/ShortcutHelp.svelte'
@@ -7,16 +8,64 @@ import type { ShortcutHelpPlatform } from '../src/types.js'
 
 beforeEach(() => document.body.replaceChildren())
 
-const mountHelp = (platform: ShortcutHelpPlatform = 'mac', onIntent = vi.fn()) => {
+const mountHelp = (
+  platform: ShortcutHelpPlatform = 'mac',
+  onIntent = vi.fn(),
+  overrides: ShortcutOverrides = {},
+) => {
   const component = mount(ShortcutHelp, {
     target: document.body,
-    props: { model: { platform }, onIntent },
+    props: { model: { platform, bindings: resolveShortcutBindings(overrides) }, onIntent },
   })
   flushSync()
   return { component, onIntent }
 }
 
 describe('shortcut help', () => {
+  it('shows rebound and unassigned keys in the list, the map, and the explanation', () => {
+    const { component } = mountHelp('mac', vi.fn(), {
+      'toggle-panel': [{ key: 'p', code: 'KeyP', command: false, shift: true, alt: false }],
+      'cycle-colour-previous': [],
+      'set-opacity-20': [{ key: 'q', code: 'KeyQ', command: false, shift: false, alt: false }],
+    })
+    const dialog = document.querySelector<HTMLDialogElement>('dialog')
+    const keys = [...(dialog?.querySelectorAll('.caelestis-shortcut-list kbd') ?? [])].map(
+      (key) => key.textContent,
+    )
+    expect(keys).toContain('Shift+P')
+    expect(keys).not.toContain('C')
+    expect(keys).toContain('Not set')
+    expect(keys).toContain('Q')
+    expect(keys).not.toContain('1–5')
+    expect(dialog?.textContent).toContain('Overlay opacity 20%')
+
+    const map = document.querySelector<HTMLElement>('.caelestis-keymap')
+    expect(map?.querySelector('[data-keyboard-key="KeyC"]')).not.toBeInstanceOf(HTMLButtonElement)
+    expect(map?.querySelector('[data-keyboard-key="KeyA"]')).not.toBeInstanceOf(HTMLButtonElement)
+    expect(map?.querySelector<HTMLElement>('[data-keyboard-key="KeyP"]')?.dataset.shortcutSet).toBe(
+      'panel',
+    )
+    expect(
+      map?.querySelector<HTMLElement>('[data-keyboard-key="ShiftLeft"]')?.dataset.shortcutSets,
+    ).toBe('history panel help')
+
+    map?.querySelector<HTMLButtonElement>('[data-keyboard-key="KeyP"]')?.focus()
+    flushSync()
+    expect(map?.querySelector('[data-keyboard-key="ShiftLeft"]')?.hasAttribute('data-active')).toBe(
+      true,
+    )
+    expect(map?.querySelector('[data-keyboard-key="Slash"]')?.hasAttribute('data-active')).toBe(
+      false,
+    )
+
+    map?.querySelector<HTMLButtonElement>('[data-keyboard-key="KeyD"]')?.focus()
+    flushSync()
+    const detail = map?.querySelector('.caelestis-keymap-callout-detail')?.textContent
+    expect(detail).toContain('D selects the next unfinished colour.')
+    expect(detail).not.toContain('previous')
+    void unmount(component)
+  })
+
   it('renders the complete reference in a native dialog', () => {
     const { component } = mountHelp('mac')
     const dialog = document.querySelector<HTMLDialogElement>('dialog')
@@ -108,7 +157,7 @@ describe('shortcut help', () => {
     },
     {
       platform: 'windows-linux' as const,
-      legends: ['Ctrl', 'Win / Meta', 'Alt', 'Space'],
+      legends: ['Ctrl', 'Win', 'Alt', 'Space'],
       historyKey: 'Ctrl+Z',
       activeModifier: 'ControlLeft',
       inactiveModifier: 'MetaLeft',

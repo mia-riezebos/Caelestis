@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resolveShortcutBindings } from '@caelestis/shared'
 import { tick } from 'svelte'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
@@ -28,7 +29,7 @@ describe('@caelestis/ui', () => {
 
   it('renders shortcut help through the registered shared element', async () => {
     const help = new CaelestisShortcutHelp()
-    help.model = { platform: 'mac' }
+    help.model = { platform: 'mac', bindings: resolveShortcutBindings() }
     document.body.append(help)
     await tick()
 
