@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
 import gifenc from '../apps/frontend/node_modules/gifenc/dist/gifenc.js'
 import { stampMapAttribution } from '../apps/frontend/src/lib/social-attribution.ts'
+import { encodeTimelapseGif } from '../apps/frontend/src/lib/social-gif.ts'
 
 const { GIFEncoder, quantize, applyPalette } = gifenc
 const output = resolve('.scratch/social-images/benchmark-357')
@@ -172,7 +173,9 @@ async function runCase(scene, width, strategy, colors) {
             delay: frames.map((_, i) => delayAt(i)),
           })
           .toBuffer()
-      : encode(frames, width, height, strategy, colors)
+      : strategy === 'selected'
+        ? encodeTimelapseGif(frames, width, height)
+        : encode(frames, width, height, strategy, colors)
   if (strategy === 'baseline') {
     let selected = frames
     while (gif.length > 4_500_000) {
@@ -231,6 +234,9 @@ if (process.argv[2] === '--case') {
       [320, 'shared-delta', 128],
       [640, 'shared-delta', 64],
       [640, 'sharp', 128],
+      [640, 'selected', 128],
+      [480, 'selected', 128],
+      [320, 'selected', 128],
     ]) {
       const result = JSON.parse(
         execFileSync(

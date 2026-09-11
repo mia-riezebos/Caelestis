@@ -15,7 +15,7 @@ current renderer. Ship the smallest useful representation with measured local pr
 ## TODOs
 
 - [x] Add a reproducible local benchmark comparing dimensions and GIF encoding strategies.
-- [ ] Implement the selected optimization with decoded-pixel and playback regression coverage.
+- [x] Implement the selected optimization with decoded-pixel and playback regression coverage.
 - [ ] Record benchmark samples and tradeoffs, run final checks, and file the PR.
 
 ## Notes
@@ -31,3 +31,10 @@ Keep 640x360 and per-frame quantization. Smaller dimensions visibly remove fine 
 Shared palettes save another 10-20%, but sampled colors can omit rare pixels. Sharp used roughly
 665 MiB peak process RSS and 4.5-5 seconds encoding, without smaller files than gifenc deltas.
 Initial benchmark lint passes; inspected 640- and 320-pixel final-state PNGs and attribution.
+
+Implemented opaque first frames, unchanged-history coalescing, transparent unchanged pixels with
+disposal 1, all 128 quantized artwork colors, and a separate final hold. Identical final canvases use
+a one-pixel transparent frame. Source histories, capture dimensions, and size fallback stay intact.
+The supplied branch now reports `t3code/reduce-timelapse-gif-size`; no branch rename was performed.
+Validation: 13 Node renderer tests and 172 frontend tests pass. Frontend check/build and repository
+lint pass. Tests caught gifenc ignoring typed-array offsets; normalize views at that library boundary.
