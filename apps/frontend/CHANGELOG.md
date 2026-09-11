@@ -1,5 +1,14 @@
 # @caelestis/frontend
 
+## 0.5.5
+
+### Patch Changes
+
+- 56b4833: Include backfilled net progress in completion estimates without double-counting reported history or treating coverage gaps as inactivity.
+- 06b1492: Remove the data-coverage note beside completion estimates.
+- e409100: Calculate all-time completion pace from the change between the earliest observed progress and current progress.
+- 9ad827d: Add an all-time completion estimate based on current progress and the full elapsed history, including backfill.
+
 ## 0.5.4
 
 ### Patch Changes
