@@ -2,7 +2,7 @@
 
 ## Summary
 
-Make Wplace own personal template artwork and placement. Derive Caelestis's local rendering records from native templates. Preserve Caelestis metadata and server ownership.
+Synchronize world templates bidirectionally with Wplace's normal personal gallery. Mirror built-in alliance templates only from Wplace into Caelestis. Keep Caelestis HQ, banner, and avatar templates separate; never put them in Wplace's alliance gallery.
 
 ## Acceptance criteria
 
@@ -11,13 +11,15 @@ Make Wplace own personal template artwork and placement. Derive Caelestis's loca
 - [x] Existing local artwork, placement, metadata, and version history survive migration and interruption.
 - [x] Server templates retain server ownership and the existing publish/copy workflow.
 - [x] Unsupported native data and storage failures preserve existing artwork.
-- [x] Placed native alliance templates remain Wplace-owned; independent Caelestis copies and extra templates use existing local storage.
+- [x] Placed native alliance templates mirror one-way into Caelestis and retain Wplace ownership.
+- [x] Caelestis HQ, banner, and avatar templates keep separate storage and never enter Wplace's alliance gallery.
 
 ## TODOs
 
 - [x] Add a native-store adapter based on Wplace's current APIs, with focused contract tests.
 - [x] Integrate native ownership, resumable migration, derived local records, and the alliance wrapper with storage tests.
 - [x] Validate native interaction and recovery, add release notes, and run project checks.
+- [x] Confirm two-way normal-gallery sync and one-way alliance-to-Caelestis mirroring.
 
 ## Notes
 
@@ -29,7 +31,7 @@ Make Wplace own personal template artwork and placement. Derive Caelestis's loca
 - The native blob API emits save/delete events after transaction completion. Its renderer reloads sources only for saves with origin `remote`.
 - Native templates with `serverManaged` are excluded from personal persistence. Preserve this distinction.
 - Native imports use original image dimensions plus geographic bounds, palette mode, quantizer, dithering, tags, visibility, and placement state.
-- Wplace's personal store only represents world-map bounds. Mia requested a wrapper around the alliance template path, preserving Caelestis ownership and avoiding native alliance limits.
+- Final scope clarification: two-way sync applies only to the normal personal gallery. Keep built-in alliance templates visible in Caelestis, with no reverse sync or changes to Wplace's alliance gallery. The existing implementation already follows this direction.
 - Chromium initially ran without CDP. Mia authorized restarting it with debugging. Native API inspection uses an isolated browser context with no personal templates.
 - Downloaded deployed Wplace modules to `/tmp/caelestis-355-native`; verified their exports in the actual Wplace page.
 - Adapter validation: 10 focused tests and userscript typecheck pass. Actual Wplace APIs created, renamed, moved, rendered, and deleted a 2x2 fixture in the isolated context; native locks survived metadata edits.
