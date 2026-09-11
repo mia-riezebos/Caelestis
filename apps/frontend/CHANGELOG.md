@@ -1,5 +1,11 @@
 # @caelestis/frontend
 
+## 0.5.6
+
+### Patch Changes
+
+- dd910b3: Reduce timelapse GIF sizes by combining unchanged history frames and preserving unchanged pixels between frames.
+
 ## 0.5.5
 
 ### Patch Changes
