@@ -147,7 +147,17 @@ try {
                   'node',
                   '--input-type=module',
                   '-e',
-                  `import {createRequire} from 'node:module'; const {S3Client,CreateBucketCommand}=createRequire(import.meta.resolve('@caelestis/storage/s3'))('@aws-sdk/client-s3'); const client=new S3Client({endpoint:'http://s3:9000',region:'us-east-1',forcePathStyle:true}); await client.send(new CreateBucketCommand({Bucket:'caelestis'})); client.destroy();`,
+                  `import {createRequire} from 'node:module';
+                  import {setTimeout} from 'node:timers/promises';
+                  const deadline=Date.now()+60000;
+                  for(;;) {
+                    try { if((await fetch('http://s3:9000/minio/health/ready',{signal:AbortSignal.timeout(3000)})).ok) break; } catch {}
+                    if(Date.now()>deadline) throw new Error('MinIO service routing did not become ready');
+                    await setTimeout(1000);
+                  }
+                  const {S3Client,CreateBucketCommand}=createRequire(import.meta.resolve('@caelestis/storage/s3'))('@aws-sdk/client-s3');
+                  const client=new S3Client({endpoint:'http://s3:9000',region:'us-east-1',forcePathStyle:true});
+                  await client.send(new CreateBucketCommand({Bucket:'caelestis'})); client.destroy();`,
                 ],
               },
             ],
