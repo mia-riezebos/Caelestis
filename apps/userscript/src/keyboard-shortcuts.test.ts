@@ -104,9 +104,9 @@ vi.mock('./wplace-paint.js', () => ({
   cancelPaintDraft: harness.cancelPaint,
   performPaintAction: harness.paintAction,
   redoPaintDraft: harness.redoPaint,
-  toggleWplaceTheme: harness.toggleTheme,
   undoPaintDraft: harness.undoPaint,
 }))
+vi.mock('./wplace-theme.js', () => ({ toggleWplaceTheme: harness.toggleTheme }))
 
 let dispose: (() => void) | null = null
 

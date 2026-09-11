@@ -172,16 +172,6 @@ export const cancelPaintDraft = (root: ParentNode = document): boolean => {
   return true
 }
 
-/** Toggle Wplace's own theme state through the exact native control kept in its settings DOM. */
-export const toggleWplaceTheme = (): boolean => {
-  const button = document.querySelector<HTMLButtonElement>(
-    'button[aria-label="Dark mode"], button[aria-label="Light mode"]',
-  )
-  if (button === null || button.disabled) return false
-  button.click()
-  return true
-}
-
 export const onPaintSelectionChange = (listener: () => void): void => {
   listeners.push(listener)
 }

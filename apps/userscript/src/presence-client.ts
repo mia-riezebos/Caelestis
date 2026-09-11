@@ -363,7 +363,8 @@ const open = (connection: Connection): void => {
   socket.addEventListener('open', () => {
     if (connection.socket !== socket) return
     if (socket.protocol !== PRESENCE_PROTOCOL_V1) {
-      socket.close(1002, 'presence protocol not negotiated')
+      // Browsers only allow 1000 or 3000..4999 from a page; anything else throws instead of closing.
+      socket.close(4002, 'presence protocol not negotiated')
       return
     }
     connection.attempts = 0
@@ -383,11 +384,11 @@ const open = (connection: Connection): void => {
     try {
       parsed = JSON.parse(message.data)
     } catch {
-      socket.close(1002, 'invalid presence event')
+      socket.close(4002, 'invalid presence event')
       return
     }
     if (!applyServerEvent(connection, parsed)) {
-      socket.close(1002, 'invalid presence event')
+      socket.close(4002, 'invalid presence event')
       return
     }
     notify()

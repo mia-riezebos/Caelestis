@@ -30,9 +30,9 @@ import {
   cancelPaintDraft,
   performPaintAction,
   redoPaintDraft,
-  toggleWplaceTheme,
   undoPaintDraft,
 } from './wplace-paint.js'
+import { toggleWplaceTheme } from './wplace-theme.js'
 
 const triggerMapRepaint = (): void => {
   const map = getMap() as { triggerRepaint?: () => void } | null
