@@ -1,6 +1,8 @@
 import {
   isWorkFields,
   isWorkIdentity,
+  MAX_RASTER_BITS,
+  MAX_REGION_ITEMS,
   MAX_WORK_ITEMS,
   templateSurface,
   type WorkMutation,
@@ -15,6 +17,10 @@ import { deleteRegion, listRegions, putRegion } from '../work/regions.js'
 import { listWork, mutateWork, workHistory } from '../work/use-cases.js'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+// Keep the existing document budget plus room for every item's largest packed mask.
+const MAX_REGION_REQUEST_LENGTH =
+  16_384 + MAX_REGION_ITEMS * Math.ceil(Math.ceil(MAX_RASTER_BITS / 8) / 3) * 4
+
 const natural = (text: string | undefined): number | null => {
   if (text === undefined || !/^(0|[1-9]\d*)$/.test(text)) return null
   const value = Number(text)
@@ -86,7 +92,8 @@ export const createWorkRoutes = (runtime: BackendRuntime, auth: AuthOptions) => 
     )
       return c.json({ error: 'Invalid region ID or drawing scope' }, 400)
     const text = await c.req.text()
-    if (text.length > 16_384) return c.json({ error: 'Region request is too large' }, 413)
+    if (text.length > MAX_REGION_REQUEST_LENGTH)
+      return c.json({ error: 'Region request is too large' }, 413)
     let request: Schema.Schema.Type<typeof RegionClaimRequest>
     try {
       request = Schema.decodeUnknownSync(RegionClaimRequest)(JSON.parse(text))

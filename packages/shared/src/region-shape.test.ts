@@ -5,6 +5,7 @@ import {
   isRegionShape,
   type RegionDocument,
   type RegionShape,
+  rasterShapeFrom,
   regionDocumentBounds,
   regionDocumentContainsPixel,
   regionDocumentPixels,
@@ -266,5 +267,33 @@ describe('regionPixelComponents', () => {
       { x: 0, y: 0, w: 4, h: 3 },
       { x: 5, y: 0, w: 4, h: 3 },
     ])
+  })
+})
+
+describe('raster shapes', () => {
+  it('round-trips a pixel set through a trimmed raster shape', () => {
+    const mask = new Uint8Array(6 * 4)
+    mask[1 * 6 + 2] = 1
+    mask[2 * 6 + 3] = 1
+    mask[2 * 6 + 4] = 1
+    const shape = rasterShapeFrom({ rect: { x: 10, y: 20, w: 6, h: 4 }, mask, count: 3 })
+    expect(shape).not.toBeNull()
+    expect(shape).toMatchObject({ kind: 'pixels', x: 12, y: 21, w: 3, h: 2 })
+    expect(isRegionShape(shape)).toBe(true)
+    const pixels = regionShapePixels(shape as RegionShape)
+    expect(pixels.count).toBe(3)
+    expect(Array.from(pixels.mask)).toEqual([1, 0, 0, 0, 1, 1])
+    expect(regionShapeContainsPixel(shape as RegionShape, 12, 21)).toBe(true)
+    expect(regionShapeContainsPixel(shape as RegionShape, 13, 21)).toBe(false)
+    expect(translateRegionShape(shape as RegionShape, 5, -1)).toMatchObject({ x: 17, y: 20 })
+    expect(
+      rasterShapeFrom({ rect: { x: 0, y: 0, w: 2, h: 2 }, mask: new Uint8Array(4), count: 0 }),
+    ).toBeNull()
+  })
+
+  it('rejects a raster whose mask does not fit its box', () => {
+    expect(isRegionShape({ kind: 'pixels', x: 0, y: 0, w: 8, h: 1, mask: 'AA==' })).toBe(true)
+    expect(isRegionShape({ kind: 'pixels', x: 0, y: 0, w: 8, h: 1, mask: 'AAAAAAAA' })).toBe(false)
+    expect(isRegionShape({ kind: 'pixels', x: 0, y: 0, w: 600, h: 600, mask: '' })).toBe(false)
   })
 })

@@ -26,8 +26,11 @@
       case 'pen':
         return 'Click to add corners, drag to add curves. Click the first anchor to close, Enter to finish open, Escape to drop the path.'
       case 'pencil':
+        return 'Drag to draw pixels. Strokes join the selected drawing; the eraser rubs them out.'
       case 'brush':
-        return 'Drag to draw a stroke.'
+        return 'Drag to paint a vector stroke of the chosen width; it stays editable.'
+      case 'eraser':
+        return 'Drag to erase. Pixels are rubbed out; vector shapes are cut into pieces, each editable on its own.'
       default:
         return model.tool === 'rectangle' || model.tool === 'ellipse'
           ? 'Drag corner to corner. Shapes stay editable with the selection tool.'
@@ -35,7 +38,9 @@
     }
   })
   const hasCorners = $derived(model.tool === 'polygon' || model.tool === 'star')
-  const hasWidth = $derived(model.tool === 'pen' || model.tool === 'pencil' || model.tool === 'brush')
+  const hasWidth = $derived(
+    model.tool === 'pen' || model.tool === 'pencil' || model.tool === 'brush' || model.tool === 'eraser',
+  )
   const deleteLabel = $derived(
     model.selectedCount > 1 ? `Delete ${model.selectedCount} shapes` : 'Delete shape',
   )

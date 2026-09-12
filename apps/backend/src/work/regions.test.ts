@@ -1,6 +1,8 @@
 import {
   MAX_PRESENCE_REGIONS,
+  MAX_RASTER_BITS,
   millis,
+  packBits,
   type RegionClaim,
   type RegionDocument,
   type RegionShape,
@@ -195,6 +197,58 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
       error: 'Template is missing or belongs to another drawing surface',
     })
     expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([])
+    expect(h.publishRegions).not.toHaveBeenCalled()
+  })
+
+  it('saves and updates a raster document with its mask and derived bounds', async () => {
+    const h = await setup(adapter)
+    const id = uuidV7()
+    for (const shape of [
+      {
+        kind: 'pixels',
+        x: 10,
+        y: 20,
+        w: 3,
+        h: 3,
+        mask: packBits(Uint8Array.of(1, 0, 1, 0, 1, 0, 1, 0, 1)),
+      },
+      {
+        kind: 'pixels',
+        x: 30,
+        y: 40,
+        w: 512,
+        h: 512,
+        mask: packBits(new Uint8Array(MAX_RASTER_BITS).fill(1)),
+      },
+    ] as const) {
+      const document = documentOf(shape)
+      const response = await h.call('PUT', id, { ...h.body, document })
+      expect(response.status).toBe(200)
+      const region = Schema.decodeUnknownSync(RegionClaimSchema)(await response.json())
+      expect(region).toMatchObject({
+        document,
+        rect: { x: shape.x, y: shape.y, w: shape.w, h: shape.h },
+      })
+      expect(await h.sql.regions.readRegion(id)).toEqual(region)
+      const list = await h.app.request('/v1/work/regions?season=0', {
+        headers: { authorization: 'Bearer read' },
+      })
+      expect(list.status).toBe(200)
+      expect(await list.json()).toEqual({ regions: [region] })
+    }
+    expect(h.publishRegions).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects a raster document with a wrong-length mask', async () => {
+    const h = await setup(adapter)
+    const id = uuidV7()
+    const response = await h.call('PUT', id, {
+      ...h.body,
+      document: documentOf({ kind: 'pixels', x: 10, y: 20, w: 8, h: 8, mask: 'gA==' }),
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'Invalid region request' })
+    expect(await h.sql.regions.readRegion(id)).toBeNull()
     expect(h.publishRegions).not.toHaveBeenCalled()
   })
 

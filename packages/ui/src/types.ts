@@ -135,6 +135,7 @@ export type ClaimTool =
   | 'pen'
   | 'pencil'
   | 'brush'
+  | 'eraser'
   | 'rectangle'
   | 'ellipse'
   | 'polygon'

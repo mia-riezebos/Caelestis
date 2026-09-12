@@ -12,6 +12,7 @@ import {
   MAX_PRESENCE_REGION_PIXELS,
   MAX_PRESENCE_REGIONS,
   MAX_PRESENCE_SUBSCRIBERS,
+  MAX_RASTER_BITS,
   MAX_REGION_ITEMS,
   MAX_REGION_SHAPE_CORNERS,
   MAX_REGION_SHAPE_EXTENT,
@@ -243,6 +244,11 @@ export const PathNode = Schema.Struct({
 
 /** Editable shapes with the same structural limits as the shared contract. */
 export const RegionShape = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('pixels'),
+    ...RegionBox,
+    mask: boundedString(Math.ceil(Math.ceil(MAX_RASTER_BITS / 8) / 3) * 4),
+  }),
   Schema.Struct({ kind: Schema.Literal('rectangle'), ...RegionBox }),
   Schema.Struct({ kind: Schema.Literal('ellipse'), ...RegionBox }),
   Schema.Struct({ kind: Schema.Literal('polygon'), ...RegionRadial, sides: RegionCorners }),

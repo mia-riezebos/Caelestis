@@ -3,12 +3,14 @@ import {
   isRegionItem,
   isRegionShape,
   MAX_PATH_NODES,
+  MAX_RASTER_BITS,
   MAX_REGION_ITEMS,
   MAX_REGION_SHAPE_CORNERS,
   MAX_REGION_SHAPE_EXTENT,
   MAX_STROKE_WIDTH,
   MIN_REGION_SHAPE_CORNERS,
   millis,
+  packBits,
   tileKey,
   WORLD_PIXELS,
   WORLD_TILES,
@@ -74,6 +76,14 @@ describe('presence schemas', () => {
     expect(Schema.decodeUnknownSync(RegionClaimRequest)(request)).toEqual(request)
   })
   const shapes = [
+    {
+      kind: 'pixels',
+      x: 10,
+      y: 20,
+      w: 3,
+      h: 3,
+      mask: packBits(Uint8Array.of(1, 0, 1, 0, 1, 0, 1, 0, 1)),
+    },
     { kind: 'rectangle', x: 0, y: 1, w: 1, h: MAX_REGION_SHAPE_EXTENT },
     { kind: 'ellipse', x: 1, y: 0, w: MAX_REGION_SHAPE_EXTENT, h: 1 },
     { kind: 'polygon', cx: 0, cy: 1, r: 1, sides: MIN_REGION_SHAPE_CORNERS, rotation: 0 },
@@ -145,6 +155,26 @@ describe('presence schemas', () => {
         else expect(() => Schema.decodeUnknownSync(RegionShape)(candidate)).toThrow()
       }
     }
+  })
+  it('accepts the largest raster mask and rejects invalid masks and oversized boxes', () => {
+    const shape = {
+      kind: 'pixels',
+      x: 0,
+      y: 0,
+      w: 512,
+      h: 512,
+      mask: packBits(new Uint8Array(MAX_RASTER_BITS).fill(1)),
+    }
+    expect(shape.mask).toHaveLength(43_692)
+    expect(Schema.decodeUnknownSync(RegionShape)(shape)).toEqual(shape)
+    for (const candidate of [
+      { ...shape, mask: shape.mask.slice(4) },
+      { ...shape, mask: `${shape.mask}AAAA` },
+      { ...shape, mask: `!${shape.mask.slice(1)}` },
+      { ...shape, h: 513, mask: packBits(new Uint8Array(512 * 513)) },
+      { ...shape, w: 350, h: 749, mask: packBits(new Uint8Array(350 * 749)) },
+    ])
+      expect(() => Schema.decodeUnknownSync(RegionShape)(candidate)).toThrow()
   })
   it('rejects a star whose inner radius equals its radius', () => {
     expect(() =>

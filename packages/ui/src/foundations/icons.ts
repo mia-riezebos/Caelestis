@@ -34,6 +34,7 @@ import folder from '@iconify-icons/material-symbols/folder'
 import gridView from '@iconify-icons/material-symbols/grid-view'
 import image from '@iconify-icons/material-symbols/image'
 import info from '@iconify-icons/material-symbols/info'
+import inkEraser from '@iconify-icons/material-symbols/ink-eraser'
 import inkPen from '@iconify-icons/material-symbols/ink-pen'
 import keyboardArrowDown from '@iconify-icons/material-symbols/keyboard-arrow-down'
 import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
@@ -120,6 +121,7 @@ export const ICONS = define({
   toolPen: inkPen,
   toolPencil: editGlyph,
   toolBrush: brushGlyph,
+  toolEraser: inkEraser,
   toolRectangle: rectangleGlyph,
   toolEllipse: circleGlyph,
   toolPolygon: pentagonGlyph,

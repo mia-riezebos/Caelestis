@@ -28,6 +28,8 @@ import {
   type ClaimToolEntry,
   type ClaimToolGroupId,
 } from '@caelestis/ui/elements'
+import { eraseFromRaster, mergeRasters, PixelSet, rasterTouches } from './claim-raster.js'
+import { splitItem, strokeArea } from './claim-split.js'
 import { warn } from './debug.js'
 import { canvasPixelAt, isMapInteractionTarget, screenProjection } from './main.js'
 import { getMap } from './map-handle.js'
@@ -80,6 +82,7 @@ export const CLAIM_TOOLS: readonly ClaimToolEntry[] = [
   { tool: 'pen', group: 'pen', label: 'Pen', key: 'P', icon: 'toolPen' },
   { tool: 'pencil', group: 'pencil', label: 'Pencil', key: 'N', icon: 'toolPencil' },
   { tool: 'brush', group: 'pencil', label: 'Paintbrush', key: 'B', icon: 'toolBrush' },
+  { tool: 'eraser', group: 'pencil', label: 'Eraser', key: 'E', icon: 'toolEraser' },
   { tool: 'rectangle', group: 'shape', label: 'Rectangle', key: 'M', icon: 'toolRectangle' },
   { tool: 'ellipse', group: 'shape', label: 'Ellipse', key: 'L', icon: 'toolEllipse' },
   { tool: 'polygon', group: 'shape', label: 'Polygon', key: '', icon: 'toolPolygon' },
@@ -102,6 +105,7 @@ const TOOL_KEYS: Record<string, ClaimTool> = {
   p: 'pen',
   n: 'pencil',
   b: 'brush',
+  e: 'eraser',
   m: 'rectangle',
   l: 'ellipse',
   h: 'hand',
@@ -130,6 +134,8 @@ type DragKind =
   | 'marquee'
   | 'lasso'
   | 'rotate'
+  | 'raster'
+  | 'erase'
 
 interface Drag {
   readonly kind: DragKind
@@ -174,6 +180,9 @@ let sides = 6
 let points = 5
 let inner = DEFAULT_INNER
 let width = 8
+/** The pencil's tip and the eraser's, in pixels; each tool keeps its own. */
+let pencilWidth = 1
+let eraserWidth = 8
 let subtract = false
 let items: RegionItem[] = []
 /** Selected item ids, in selection order. Handles appear only for a selection of one. */
@@ -196,6 +205,12 @@ let pen: PathNode[] | null = null
 let stroke: Point[] | null = null
 /** The shape under construction with a shape tool. */
 let drawing: RegionShape | null = null
+/** The pixels the pencil has laid down so far in this stroke. */
+let raster: PixelSet | null = null
+/** What the eraser has covered so far: the pixels, and the path for cutting vector shapes. */
+let erasing: { readonly set: PixelSet; line: Point[] } | null = null
+/** The last pixel a pencil or eraser stamped, so a fast move still leaves an unbroken line. */
+let lastStamp: Point | null = null
 let pending = false
 let message: string | undefined
 /** Whether the working document differs from what was loaded or saved. */
@@ -255,6 +270,19 @@ export const claimEditorEditingIds = (): readonly string[] => (active ? editingI
 /** The shape being drawn right now, as a temporary item, so previews rasterise like the rest. */
 const previewItem = (): RegionItem | null => {
   if (drawing !== null) return { id: 'preview', shape: drawing, op: subtract ? 'subtract' : 'add' }
+  if (raster !== null) {
+    const shape = raster.shape()
+    if (shape !== null) return { id: 'preview', shape, op: subtract ? 'subtract' : 'add' }
+  }
+  if (erasing !== null && erasing.line.length >= 1) {
+    // What the eraser will take is shown taken while it moves.
+    const line = erasing.line.length === 1 ? [...erasing.line, ...erasing.line] : erasing.line
+    return {
+      id: 'preview',
+      shape: { kind: 'path', closed: false, width: eraserWidth, nodes: line },
+      op: 'subtract',
+    }
+  }
   if (stroke !== null && stroke.length >= 2)
     return {
       id: 'preview',
@@ -300,8 +328,8 @@ export const claimModeModel = (): ClaimModeModel => ({
   options: {
     ...(tool === 'polygon' ? { sides } : {}),
     ...(tool === 'star' ? { points, inner } : {}),
-    ...(tool === 'pen' || tool === 'pencil' || tool === 'brush'
-      ? { width: tool === 'pencil' ? 1 : width }
+    ...(tool === 'pen' || tool === 'pencil' || tool === 'brush' || tool === 'eraser'
+      ? { width: tool === 'pencil' ? pencilWidth : tool === 'eraser' ? eraserWidth : width }
       : {}),
     minCorners: MIN_REGION_SHAPE_CORNERS,
     maxCorners: MAX_REGION_SHAPE_CORNERS,
@@ -476,6 +504,83 @@ const finishStroke = (): void => {
       nodes,
     })
   else bump()
+  notify()
+}
+
+/** A pencil stroke joins the one selected drawing when there is one; otherwise it is a new one. */
+const finishRaster = (): void => {
+  if (raster === null) return
+  const shape = raster.shape()
+  raster = null
+  lastStamp = null
+  if (shape === null) {
+    message = 'That drawing is too large for one raster; draw it in parts.'
+    bump()
+    notify()
+    return
+  }
+  const op = subtract ? 'subtract' : 'add'
+  const selected = selectedItem()
+  if (selected !== null && selected.shape.kind === 'pixels' && selected.op === op) {
+    const merged = mergeRasters(selected.shape, shape)
+    if (merged !== null) {
+      replaceItem(selected.id, merged)
+      notify()
+      return
+    }
+  }
+  addItem(shape)
+  notify()
+}
+
+/**
+ * The eraser is done: pixels it covered leave every raster, and every vector shape it crossed
+ * is cut into the pieces it leaves behind, each its own editable path.
+ */
+const finishErase = (): void => {
+  if (erasing === null) return
+  const { set, line } = erasing
+  erasing = null
+  lastStamp = null
+  if (set.size === 0) {
+    bump()
+    notify()
+    return
+  }
+  let area: ReturnType<typeof strokeArea> | null = null
+  const next: RegionItem[] = []
+  let changed = false
+  let overflow = false
+  for (const item of items) {
+    if (item.shape.kind === 'pixels') {
+      const left = eraseFromRaster(item.shape, set)
+      if (left === item.shape) next.push(item)
+      else {
+        changed = true
+        if (left !== null) next.push({ ...item, shape: left })
+      }
+      continue
+    }
+    if (!rasterTouches(item.shape, set)) {
+      next.push(item)
+      continue
+    }
+    area ??= strokeArea(line, eraserWidth)
+    const pieces = splitItem(item, area, nextItemId)
+    if (next.length + pieces.length + (items.length - next.length) > MAX_REGION_ITEMS + 1) {
+      overflow = true
+      next.push(item)
+      continue
+    }
+    changed = true
+    next.push(...pieces)
+  }
+  if (overflow) message = `A claim holds at most ${MAX_REGION_ITEMS} shapes; a cut was skipped.`
+  if (changed) {
+    items = next
+    select([])
+    touch()
+  } else bump()
   notify()
 }
 
@@ -775,7 +880,27 @@ const onPointerDown = (event: PointerEvent): void => {
       notify()
       return
     }
-    case 'pencil':
+    case 'pencil': {
+      consume(event)
+      raster = new PixelSet()
+      raster.stamp(px, py, pencilWidth)
+      lastStamp = { x: px, y: py }
+      startDrag('raster', event, { x: px, y: py }, null)
+      bump()
+      notify()
+      return
+    }
+    case 'eraser': {
+      consume(event)
+      const set = new PixelSet()
+      set.stamp(px, py, eraserWidth)
+      erasing = { set, line: [{ x: point.x, y: point.y }] }
+      lastStamp = { x: px, y: py }
+      startDrag('erase', event, { x: px, y: py }, null)
+      bump()
+      notify()
+      return
+    }
     case 'brush':
       consume(event)
       select([])
@@ -943,6 +1068,23 @@ const onPointerMove = (event: PointerEvent): void => {
       setCursor(ROTATE_CURSOR)
       break
     }
+    case 'raster': {
+      if (raster === null) return
+      raster.line(lastStamp ?? { x: px, y: py }, { x: px, y: py }, pencilWidth)
+      lastStamp = { x: px, y: py }
+      bump()
+      break
+    }
+    case 'erase': {
+      if (erasing === null) return
+      erasing.set.line(lastStamp ?? { x: px, y: py }, { x: px, y: py }, eraserWidth)
+      lastStamp = { x: px, y: py }
+      const last = erasing.line[erasing.line.length - 1] as Point
+      if (Math.hypot(point.x - last.x, point.y - last.y) >= 1)
+        erasing.line = [...erasing.line, { x: point.x, y: point.y }]
+      bump()
+      break
+    }
     case 'stroke': {
       if (stroke === null) return
       const last = stroke[stroke.length - 1] as Point
@@ -989,6 +1131,12 @@ const onPointerEnd = (event: PointerEvent): void => {
       break
     case 'stroke':
       finishStroke()
+      return
+    case 'raster':
+      finishRaster()
+      return
+    case 'erase':
+      finishErase()
       return
     case 'marquee':
     case 'lasso':
@@ -1154,7 +1302,11 @@ export const handleClaimModeIntent = (intent: ClaimModeIntent): void => {
       if (intent.option === 'points')
         points = clampInt(value, MIN_REGION_SHAPE_CORNERS, MAX_REGION_SHAPE_CORNERS)
       if (intent.option === 'inner') inner = clampInt(value, 5, 95)
-      if (intent.option === 'width') width = clampInt(value, 0, MAX_STROKE_WIDTH)
+      if (intent.option === 'width') {
+        if (tool === 'pencil') pencilWidth = clampInt(value, 1, MAX_STROKE_WIDTH)
+        else if (tool === 'eraser') eraserWidth = clampInt(value, 1, MAX_STROKE_WIDTH)
+        else width = clampInt(value, 0, MAX_STROKE_WIDTH)
+      }
       // The selected shape follows the option, so a count or width is also an edit.
       const selected = selectedItem()
       if (selected !== null) {
@@ -1408,6 +1560,19 @@ const syncOverlay = (): void => {
       }),
     )
   }
+  if (erasing !== null && erasing.line.length > 1) {
+    root.appendChild(
+      svg('path', {
+        d: pathData(erasing.line.map(project), false),
+        fill: 'none',
+        stroke: 'rgb(255 90 90)',
+        'stroke-width': 1.5,
+        'stroke-dasharray': '4 3',
+        'stroke-linecap': 'round',
+        'data-gesture': 'erase',
+      }),
+    )
+  }
   if (stroke !== null && stroke.length > 1) {
     root.appendChild(
       svg('path', {
@@ -1470,6 +1635,9 @@ export const startClaimMode = (initialTool?: ClaimTool): void => {
   select([])
   marquee = null
   lasso = null
+  raster = null
+  erasing = null
+  lastStamp = null
   dirty = false
   drag = null
   pen = null
@@ -1490,6 +1658,9 @@ export const stopClaimMode = (): void => {
   select([])
   marquee = null
   lasso = null
+  raster = null
+  erasing = null
+  lastStamp = null
   handHeldFrom = null
   editingIds = []
   drag = null
@@ -1532,6 +1703,8 @@ export const resetClaimEditor = (): void => {
   points = 5
   inner = DEFAULT_INNER
   width = 8
+  pencilWidth = 1
+  eraserWidth = 8
   subtract = false
   pixelCache = null
   overlay?.remove()

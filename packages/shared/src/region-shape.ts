@@ -1,3 +1,4 @@
+import { isPackedBits, packBits, unpackBits } from './bitmask.js'
 import type { PresenceRect } from './presence.js'
 
 /**
@@ -71,6 +72,18 @@ export type RegionShape =
       /** Stroke width in pixels. Zero means fill only, which needs a closed path. */
       readonly width: number
     }
+  | {
+      /**
+       * A raster: whole pixels drawn or erased one by one, what the pencil makes. Nothing to
+       * vectorise here; `mask` is a row-major bitmask over the box, base64, MSB first.
+       */
+      readonly kind: 'pixels'
+      readonly x: number
+      readonly y: number
+      readonly w: number
+      readonly h: number
+      readonly mask: string
+    }
 
 export type RegionShapeKind = RegionShape['kind']
 
@@ -86,6 +99,7 @@ export interface RegionDocument {
 }
 
 export const REGION_SHAPE_KINDS: readonly RegionShapeKind[] = [
+  'pixels',
   'rectangle',
   'ellipse',
   'polygon',
@@ -98,6 +112,8 @@ export const MAX_REGION_SHAPE_CORNERS = 12
 export const MAX_REGION_SHAPE_EXTENT = 2_000
 export const MAX_REGION_ITEMS = 64
 export const MAX_PATH_NODES = 256
+/** Pixels one raster item may span (its box, not its set bits): 512 by 512. */
+export const MAX_RASTER_BITS = 262_144
 export const MAX_STROKE_WIDTH = 200
 /** Pixels a whole document may span; matches the presence region area limit. */
 export const MAX_REGION_DOCUMENT_PIXELS = 4_000_000
@@ -160,6 +176,12 @@ export const isRegionShape = (value: unknown): value is RegionShape => {
     case 'rectangle':
     case 'ellipse':
       return validBox(shape)
+    case 'pixels':
+      return (
+        validBox(shape) &&
+        Number(shape.w) * Number(shape.h) <= MAX_RASTER_BITS &&
+        isPackedBits(shape.mask, Number(shape.w) * Number(shape.h))
+      )
     case 'polygon':
       return (
         int(shape.cx) &&
@@ -273,6 +295,7 @@ export const flattenPath = (nodes: readonly PathNode[], closed: boolean): readon
 export const regionShapeOutline = (shape: RegionShape): readonly Point[] => {
   switch (shape.kind) {
     case 'rectangle':
+    case 'pixels':
       return [
         { x: shape.x, y: shape.y },
         { x: shape.x + shape.w, y: shape.y },
@@ -308,7 +331,7 @@ export const regionShapeOutline = (shape: RegionShape): readonly Point[] => {
 }
 
 export const regionShapeCentre = (shape: RegionShape): Point => {
-  if (shape.kind === 'rectangle' || shape.kind === 'ellipse')
+  if (shape.kind === 'rectangle' || shape.kind === 'ellipse' || shape.kind === 'pixels')
     return { x: shape.x + shape.w / 2, y: shape.y + shape.h / 2 }
   if (shape.kind === 'path') {
     const bounds = regionShapeBounds(shape)
@@ -341,7 +364,7 @@ const boundsOf = (points: readonly Point[], pad = 0): PresenceRect => {
 
 /** The whole-pixel bounding box, clamped at the canvas origin. Interest checks use this. */
 export const regionShapeBounds = (shape: RegionShape): PresenceRect => {
-  if (shape.kind === 'rectangle' || shape.kind === 'ellipse')
+  if (shape.kind === 'rectangle' || shape.kind === 'ellipse' || shape.kind === 'pixels')
     return { x: shape.x, y: shape.y, w: shape.w, h: shape.h }
   if (shape.kind === 'path') {
     const handles = shape.nodes.flatMap((node) => [
@@ -380,7 +403,7 @@ export const regionDocumentBounds = (document: RegionDocument): PresenceRect | n
 export const translateRegionShape = (shape: RegionShape, dx: number, dy: number): RegionShape => {
   const mx = Math.round(dx)
   const my = Math.round(dy)
-  if (shape.kind === 'rectangle' || shape.kind === 'ellipse')
+  if (shape.kind === 'rectangle' || shape.kind === 'ellipse' || shape.kind === 'pixels')
     return { ...shape, x: Math.max(0, shape.x + mx), y: Math.max(0, shape.y + my) }
   if (shape.kind === 'path') {
     const move = (point: Point): Point => ({ x: point.x + mx, y: point.y + my })
@@ -462,7 +485,10 @@ export const regionShapePixels = (shape: RegionShape): RegionShapePixels => {
     mask.fill(1)
     return { rect, mask, count: mask.length }
   }
-  if (shape.kind === 'ellipse') {
+  if (shape.kind === 'pixels') {
+    const bits = unpackBits(shape.mask, rect.w * rect.h)
+    if (bits !== null) mask.set(bits)
+  } else if (shape.kind === 'ellipse') {
     const rx = shape.w / 2
     const ry = shape.h / 2
     for (let row = 0; row < shape.h; row++) {
@@ -481,6 +507,37 @@ export const regionShapePixels = (shape: RegionShape): RegionShapePixels => {
   let count = 0
   for (const bit of mask) if (bit !== 0) count++
   return { rect, mask, count }
+}
+
+/**
+ * A raster shape from a pixel set, trimmed to the box its set pixels occupy. Null when nothing is
+ * set or the trimmed box is larger than a raster may be.
+ */
+export const rasterShapeFrom = (pixels: RegionShapePixels): RegionShape | null => {
+  const { rect, mask } = pixels
+  let left = rect.w
+  let top = rect.h
+  let right = -1
+  let bottom = -1
+  for (let row = 0; row < rect.h; row++) {
+    for (let column = 0; column < rect.w; column++) {
+      if (mask[row * rect.w + column] !== 1) continue
+      if (column < left) left = column
+      if (column > right) right = column
+      if (row < top) top = row
+      if (row > bottom) bottom = row
+    }
+  }
+  if (right < 0) return null
+  const w = right - left + 1
+  const h = bottom - top + 1
+  if (w * h > MAX_RASTER_BITS) return null
+  const trimmed = new Uint8Array(w * h)
+  for (let row = 0; row < h; row++) {
+    for (let column = 0; column < w; column++)
+      trimmed[row * w + column] = mask[(top + row) * rect.w + left + column] as number
+  }
+  return { kind: 'pixels', x: rect.x + left, y: rect.y + top, w, h, mask: packBits(trimmed) }
 }
 
 /** Whether a whole canvas pixel belongs to the shape; consistent with `regionShapePixels`. */
