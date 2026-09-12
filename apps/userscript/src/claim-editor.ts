@@ -50,6 +50,7 @@ import { canvasPixelAt, isMapInteractionTarget, screenProjection } from './main.
 import { getMap } from './map-handle.js'
 import type { TileFrame } from './tile-transform.js'
 import { applyWplaceTheme } from './ui/theme.js'
+import { dismissWplacePixelCard } from './wplace-pixel-card.js'
 
 /**
  * Claim mode: a small vector editor over the map.
@@ -242,6 +243,11 @@ let raster: PixelSet | null = null
 let erasing: { readonly set: PixelSet; line: Point[] } | null = null
 /** The last pixel a pencil or eraser stamped, so a fast move still leaves an unbroken line. */
 let lastStamp: Point | null = null
+/**
+ * A press the editor consumed without starting a drag. Its release and the click that follows
+ * are consumed too, or Wplace would still treat the click as a pixel selection.
+ */
+let consumedPress: number | null = null
 let pending = false
 let message: string | undefined
 /** Whether the working document differs from what was loaded or saved. */
@@ -712,6 +718,7 @@ const isMapPress = (event: PointerEvent): boolean => {
 const consume = (event: Event): void => {
   event.preventDefault()
   event.stopPropagation()
+  if (event.type === 'pointerdown') consumedPress = (event as PointerEvent).pointerId
 }
 
 /** Eat the click that follows a consumed press, so Wplace never sees it as a pixel placement. */
@@ -1420,7 +1427,17 @@ const onPointerMove = (event: PointerEvent): void => {
 }
 
 const onPointerEnd = (event: PointerEvent): void => {
-  if (drag === null || event.pointerId !== drag.pointerId) return
+  if (drag === null) {
+    if (consumedPress === event.pointerId) {
+      // A click the editor answered (a selection, an anchor) never reaches Wplace.
+      consumedPress = null
+      consume(event)
+      swallowNextClick()
+    }
+    return
+  }
+  if (event.pointerId !== drag.pointerId) return
+  consumedPress = null
   consume(event)
   swallowNextClick()
   const ended = drag
@@ -2014,6 +2031,8 @@ export const startClaimMode = (initialTool?: ClaimTool): void => {
   active = true
   tool = initialTool ?? 'select'
   shown = { ...defaultShown(), [groupOf(tool)]: tool }
+  // Whatever pixel Wplace had selected is stale now that clicks belong to the editor.
+  dismissWplacePixelCard()
   const saved = host.myRegions()
   items = saved.flatMap((region) => region.document.items)
   editingIds = saved.map((region) => region.id)
@@ -2050,6 +2069,7 @@ export const stopClaimMode = (): void => {
   lastStamp = null
   penContinued = null
   hover = null
+  consumedPress = null
   handHeldFrom = null
   editingIds = []
   drag = null

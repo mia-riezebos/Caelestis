@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
   template: 'Mural' as string | null,
   map: null as HTMLElement | null,
   panned: [] as [number, number][],
+  dismissCard: vi.fn(() => true),
 }))
 
 vi.mock('./main.js', () => ({
@@ -27,6 +28,7 @@ vi.mock('./map-handle.js', () => ({
 }))
 vi.mock('./debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('./ui/theme.js', () => ({ applyWplaceTheme: vi.fn() }))
+vi.mock('./wplace-pixel-card.js', () => ({ dismissWplacePixelCard: harness.dismissCard }))
 vi.mock('@caelestis/ui/elements', () => ({ CLAIM_MODE_TAG: 'caelestis-claim-mode' }))
 
 const host = () => ({
@@ -108,6 +110,7 @@ beforeEach(() => {
   harness.removed = []
   harness.saveError = null
   harness.template = 'Mural'
+  harness.dismissCard.mockClear()
   document.body.innerHTML = ''
   const canvas = document.createElement('canvas')
   canvas.className = 'maplibregl-canvas'
@@ -246,6 +249,37 @@ describe('claim editor', () => {
     expect(editor.claimModeModel().selected).toBe(true)
     drag(55, 55, 65, 58)
     expect(editor.claimEditorPixels()?.rect).toEqual({ x: 60, y: 53, w: 10, h: 10 })
+  })
+
+  it('keeps a selection click from Wplace and closes the pixel card on entering claim mode', async () => {
+    const editor = await setup('rectangle')
+    expect(harness.dismissCard).toHaveBeenCalledOnce()
+    drag(50, 50, 69, 69)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    // The press selects the shape and starts no drag; the release and the click are still eaten.
+    expect(pointer('pointerdown', 60, 60).defaultPrevented).toBe(true)
+    expect(pointer('pointerup', 60, 60).defaultPrevented).toBe(true)
+    const click_ = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 60,
+      clientY: 60,
+    })
+    map().dispatchEvent(click_)
+    expect(click_.defaultPrevented).toBe(true)
+    expect(editor.claimModeModel().selectedCount).toBe(1)
+    // The hand tool leaves everything to the map, click included.
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'hand' })
+    expect(pointer('pointerdown', 60, 60).defaultPrevented).toBe(false)
+    expect(pointer('pointerup', 60, 60).defaultPrevented).toBe(false)
+    const passed = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 60,
+      clientY: 60,
+    })
+    map().dispatchEvent(passed)
+    expect(passed.defaultPrevented).toBe(false)
   })
 
   it('resizes a rectangle from a corner handle and keeps the opposite corner', async () => {
