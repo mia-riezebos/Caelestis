@@ -10,6 +10,18 @@ preview_urls = false
 pattern = "caelestis.mia.cx/backend/*"
 zone_name = "mia.cx"
 
+[[routes]]
+pattern = "backend.caelest.is"
+custom_domain = true
+
+[[routes]]
+pattern = "caelest.is/backend"
+zone_name = "caelest.is"
+
+[[routes]]
+pattern = "caelest.is/backend/*"
+zone_name = "caelest.is"
+
 [[r2_buckets]]
 binding = "BLOBS"
 bucket_name = "caelestis-blobs"
@@ -68,6 +80,8 @@ SEASON = "0"
 OPEN_ACCESS = "false"
 # Mount the runtime adapter here while keeping the portable Hono app root-relative.
 BASE_PATH = "/backend"
+# The dedicated backend hostname also serves the API without the shared-site prefix.
+ROOT_HOST = "backend.caelest.is"
 # The first production rollout only inventories candidates. Change this only after its logs have
 # been reviewed; `delete` enables fenced physical R2 reclamation.
 TILE_BLOB_GC_MODE = "dry-run"
