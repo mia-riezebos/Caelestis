@@ -1,4 +1,5 @@
 export * from './backfill.js'
+export * from './bitmask.js'
 export * from './client-metrics.js'
 export * from './count.js'
 export { sha256Hex } from './hash.js'

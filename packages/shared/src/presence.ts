@@ -1,4 +1,5 @@
-import type { RegionShape } from './region-shape.js'
+import { bytesToBase64, unpackBits } from './bitmask.js'
+import type { RegionDocument } from './region-shape.js'
 import type { PainterIdentity } from './telemetry.js'
 import type { TemplateSurface } from './template-surface.js'
 
@@ -86,7 +87,8 @@ export interface RegionClaim {
   readonly surface: TemplateSurface
   readonly templateId: string | null
   readonly claimant: PainterIdentity
-  readonly shape: RegionShape
+  /** The editable vector document; `rect` is its rasterised bounding box. */
+  readonly document: RegionDocument
   readonly rect: PresenceRect
   readonly label: string
   readonly createdAt: number
@@ -111,7 +113,7 @@ export type PresenceServerEvent =
 export interface RegionClaimRequest {
   /** The template the shape was drawn over, if any. Optional and unenforced. */
   readonly templateId?: string | null
-  readonly shape: RegionShape
+  readonly document: RegionDocument
   readonly label: string
   readonly actor: PainterIdentity
 }
@@ -171,48 +173,6 @@ export const rectCentreDistance = (a: PresenceRect, b: PresenceRect): number => 
 export const peerRect = (peer: PresencePeer): PresenceRect | null =>
   peer.draft?.rect ?? peer.viewport
 
-const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-const BASE64_INDEX = new Map(Array.from(BASE64, (char, index) => [char, index]))
-
-const bytesToBase64 = (bytes: Uint8Array): string => {
-  let out = ''
-  for (let i = 0; i < bytes.length; i += 3) {
-    const a = bytes[i] ?? 0
-    const b = bytes[i + 1] ?? 0
-    const c = bytes[i + 2] ?? 0
-    const triple = (a << 16) | (b << 8) | c
-    out += BASE64[(triple >> 18) & 63] ?? ''
-    out += BASE64[(triple >> 12) & 63] ?? ''
-    out += i + 1 < bytes.length ? (BASE64[(triple >> 6) & 63] ?? '') : '='
-    out += i + 2 < bytes.length ? (BASE64[triple & 63] ?? '') : '='
-  }
-  return out
-}
-
-const base64ToBytes = (text: string): Uint8Array | null => {
-  if (text.length % 4 !== 0) return null
-  const padding = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0
-  const bytes = new Uint8Array((text.length / 4) * 3 - padding)
-  let at = 0
-  for (let i = 0; i < text.length; i += 4) {
-    const values = [0, 1, 2, 3].map((offset) => {
-      const char = text[i + offset]
-      if (char === '=') return 0
-      return char === undefined ? -1 : (BASE64_INDEX.get(char) ?? -1)
-    })
-    if (values.some((value) => value < 0)) return null
-    const triple =
-      ((values[0] ?? 0) << 18) |
-      ((values[1] ?? 0) << 12) |
-      ((values[2] ?? 0) << 6) |
-      (values[3] ?? 0)
-    if (at < bytes.length) bytes[at++] = (triple >> 16) & 255
-    if (at < bytes.length) bytes[at++] = (triple >> 8) & 255
-    if (at < bytes.length) bytes[at++] = triple & 255
-  }
-  return bytes
-}
-
 /**
  * Pack drafted canvas pixels into a bounded draft. Beyond `MAX_PRESENCE_MASK_BITS` the mask is
  * omitted and peers only see the rect; the count still tells them how much is drafted.
@@ -248,13 +208,7 @@ export const decodePresenceDraftMask = (draft: PresenceDraft): Uint8Array | null
   if (draft.mask === undefined) return null
   const bits = draft.rect.w * draft.rect.h
   if (bits > MAX_PRESENCE_MASK_BITS) return null
-  const bytes = base64ToBytes(draft.mask)
-  if (bytes === null || bytes.length !== Math.ceil(bits / 8)) return null
-  const pixels = new Uint8Array(bits)
-  for (let bit = 0; bit < bits; bit++) {
-    if (((bytes[bit >> 3] ?? 0) & (128 >> (bit & 7))) !== 0) pixels[bit] = 1
-  }
-  return pixels
+  return unpackBits(draft.mask, bits)
 }
 
 export const isPresenceDraft = (value: unknown): value is PresenceDraft => {

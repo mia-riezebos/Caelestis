@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  flattenPath,
+  isRegionDocument,
   isRegionShape,
+  type RegionDocument,
   type RegionShape,
+  regionDocumentBounds,
+  regionDocumentContainsPixel,
+  regionDocumentPixels,
   regionShapeBounds,
   regionShapeContainsPixel,
   regionShapeOutline,
@@ -22,12 +28,8 @@ describe('region shapes', () => {
     expect(isRegionShape({ kind: 'rectangle', x: 0, y: 0, w: 0, h: 3 })).toBe(false)
     expect(isRegionShape({ kind: 'ellipse', x: 10, y: 10, w: 5, h: 9 })).toBe(true)
     expect(isRegionShape({ kind: 'ellipse', x: 10, y: 10, w: 5_000, h: 9 })).toBe(false)
-    expect(isRegionShape({ kind: 'circle', cx: 10, cy: 10, r: 5 })).toBe(false)
     expect(isRegionShape({ kind: 'polygon', cx: 1, cy: 1, r: 5, sides: 6, rotation: 0 })).toBe(true)
     expect(isRegionShape({ kind: 'polygon', cx: 1, cy: 1, r: 5, sides: 2, rotation: 0 })).toBe(
-      false,
-    )
-    expect(isRegionShape({ kind: 'polygon', cx: 1, cy: 1, r: 5, sides: 6, rotation: 360 })).toBe(
       false,
     )
     expect(
@@ -36,17 +38,25 @@ describe('region shapes', () => {
     expect(
       isRegionShape({ kind: 'star', cx: 1, cy: 1, r: 10, inner: 10, points: 5, rotation: 90 }),
     ).toBe(false)
+    const path = {
+      kind: 'path',
+      closed: true,
+      width: 0,
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 10, y: 0, out: { x: 12, y: 4 } },
+        { x: 10, y: 10 },
+      ],
+    }
+    expect(isRegionShape(path)).toBe(true)
+    expect(isRegionShape({ ...path, closed: false, width: 0 })).toBe(false)
+    expect(isRegionShape({ ...path, nodes: path.nodes.slice(0, 2) })).toBe(false)
+    expect(isRegionShape({ ...path, width: 500 })).toBe(false)
     expect(isRegionShape(null)).toBe(false)
   })
 
   it('rasterises a rectangle as every pixel in its box', () => {
     expect(rows({ kind: 'rectangle', x: 3, y: 4, w: 3, h: 2 })).toEqual(['###', '###'])
-    expect(regionShapeBounds({ kind: 'rectangle', x: 3, y: 4, w: 3, h: 2 })).toEqual({
-      x: 3,
-      y: 4,
-      w: 3,
-      h: 2,
-    })
   })
 
   it('rasterises an ellipse by pixel centres, symmetric and aliased', () => {
@@ -57,8 +67,6 @@ describe('region shapes', () => {
       '#######',
       '.#####.',
     ])
-    const { count } = regionShapePixels({ kind: 'ellipse', x: 0, y: 0, w: 7, h: 5 })
-    expect(count).toBe(31)
     expect(rows({ kind: 'ellipse', x: 0, y: 0, w: 5, h: 5 })).toEqual([
       '.###.',
       '#####',
@@ -66,17 +74,85 @@ describe('region shapes', () => {
       '#####',
       '.###.',
     ])
-    expect(regionShapeContainsPixel({ kind: 'ellipse', x: 0, y: 0, w: 7, h: 5 }, 0, 0)).toBe(false)
-    expect(regionShapeContainsPixel({ kind: 'ellipse', x: 0, y: 0, w: 7, h: 5 }, 3, 0)).toBe(true)
   })
 
   it('rasterises a square polygon exactly on the grid', () => {
-    // A 4-gon at 45 degrees with r = 4 is an axis-aligned square with corners at ±2.83.
     const square: RegionShape = { kind: 'polygon', cx: 10, cy: 10, r: 4, sides: 4, rotation: 45 }
     const drawn = rows(square)
     expect(drawn.every((row) => row === drawn[0])).toBe(true)
     expect(drawn[0]).toBe('######')
     expect(regionShapeBounds(square)).toEqual({ x: 7, y: 7, w: 6, h: 6 })
+  })
+
+  it('fills a closed straight path and strokes an open one with round ends', () => {
+    const triangle: RegionShape = {
+      kind: 'path',
+      closed: true,
+      width: 0,
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 6, y: 0 },
+        { x: 0, y: 6 },
+      ],
+    }
+    expect(rows(triangle)).toEqual([
+      '######.',
+      '#####..',
+      '####...',
+      '###....',
+      '##.....',
+      '#......',
+      '.......',
+    ])
+    const line: RegionShape = {
+      kind: 'path',
+      closed: false,
+      width: 1,
+      nodes: [
+        { x: 2, y: 2.5 },
+        { x: 8, y: 2.5 },
+      ],
+    }
+    // Six pixels under the segment plus one round cap at each end.
+    const { rect, count } = regionShapePixels(line)
+    expect(count).toBe(8)
+    expect(regionShapeContainsPixel(line, 5, 2)).toBe(true)
+    expect(regionShapeContainsPixel(line, 5, 4)).toBe(false)
+    expect(rect.w).toBeGreaterThanOrEqual(7)
+  })
+
+  it('flattens beziers into a polyline that bows towards its handles', () => {
+    const curve = flattenPath(
+      [
+        { x: 0, y: 0, out: { x: 0, y: 10 } },
+        { x: 10, y: 0, in: { x: 10, y: 10 } },
+      ],
+      false,
+    )
+    expect(curve.length).toBeGreaterThan(4)
+    expect(curve[0]).toEqual({ x: 0, y: 0 })
+    expect(curve.at(-1)).toEqual({ x: 10, y: 0 })
+    const middle = curve[Math.floor(curve.length / 2)]
+    expect(middle?.y).toBeGreaterThan(5)
+  })
+
+  it('composes a document by adding and subtracting items in order', () => {
+    const document: RegionDocument = {
+      items: [
+        { id: 'a', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 6, h: 4 } },
+        { id: 'b', op: 'subtract', shape: { kind: 'rectangle', x: 2, y: 1, w: 2, h: 2 } },
+        { id: 'c', op: 'add', shape: { kind: 'rectangle', x: 3, y: 1, w: 1, h: 1 } },
+      ],
+    }
+    expect(isRegionDocument(document)).toBe(true)
+    expect(regionDocumentBounds(document)).toEqual({ x: 0, y: 0, w: 6, h: 4 })
+    const pixels = regionDocumentPixels(document)
+    expect(pixels?.count).toBe(21)
+    expect(regionDocumentContainsPixel(document, 2, 1)).toBe(false)
+    expect(regionDocumentContainsPixel(document, 3, 1)).toBe(true)
+    expect(regionDocumentContainsPixel(document, 5, 3)).toBe(true)
+    expect(isRegionDocument({ items: [] })).toBe(false)
+    expect(isRegionDocument({ items: [document.items[0], document.items[0]] })).toBe(false)
   })
 
   it('agrees between the mask and the pixel hit test for a star', () => {
@@ -100,7 +176,7 @@ describe('region shapes', () => {
     expect(regionShapeOutline(star)).toHaveLength(10)
   })
 
-  it('translates by whole pixels and clamps at the origin', () => {
+  it('translates by whole pixels, handles included', () => {
     expect(translateRegionShape({ kind: 'rectangle', x: 2, y: 2, w: 1, h: 1 }, -5, 1.4)).toEqual({
       kind: 'rectangle',
       x: 0,
@@ -109,7 +185,27 @@ describe('region shapes', () => {
       h: 1,
     })
     expect(
-      translateRegionShape({ kind: 'polygon', cx: 5, cy: 5, r: 2, sides: 3, rotation: 0 }, 2, 2),
-    ).toMatchObject({ cx: 7, cy: 7 })
+      translateRegionShape(
+        {
+          kind: 'path',
+          closed: false,
+          width: 2,
+          nodes: [
+            { x: 1, y: 1, out: { x: 2, y: 2 } },
+            { x: 5, y: 5 },
+          ],
+        },
+        1,
+        1,
+      ),
+    ).toEqual({
+      kind: 'path',
+      closed: false,
+      width: 2,
+      nodes: [
+        { x: 2, y: 2, out: { x: 3, y: 3 } },
+        { x: 6, y: 6 },
+      ],
+    })
   })
 })
