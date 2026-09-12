@@ -16,31 +16,21 @@
     if (model.message) return model.message
     switch (model.tool) {
       case 'select':
-        return 'Click selects, Shift-click adds, drag moves, drag empty canvas for a marquee. Corners scale, the grip or just outside a corner rotates.'
-      case 'direct':
-        return 'Drag any anchor or handle. A rectangle, ellipse, polygon, or star becomes a path as you do.'
+        return 'Shift-click adds to the selection. Drag empty canvas to select several.'
       case 'lasso':
-        return 'Draw a loop around shapes to select them. Shift adds.'
+        return 'Shift adds to the selection.'
       case 'hand':
-        return 'Drag to pan. Scroll pans, Shift+scroll sideways, Alt or Ctrl+scroll zooms. Space holds the hand from any tool.'
+        return 'Hold Space for the hand from any tool.'
       case 'pen':
-        return 'Click for corners, drag for curves. Click the first anchor to close, Enter to finish. On a selected path: an end continues, a segment adds, an anchor deletes.'
-      case 'add-anchor':
-        return 'Click a segment to add an anchor. The curve does not change.'
-      case 'delete-anchor':
-        return 'Click an anchor to remove it.'
+        return 'Click the first anchor to close. Enter finishes an open path.'
       case 'anchor':
-        return 'Drag out of a corner for handles, click a smooth anchor for a corner, drag one handle to break the pair.'
+        return 'Drag out of a corner for handles. Click a smooth anchor for a corner.'
       case 'pencil':
-        return 'Drag to draw pixels. Strokes join the selected drawing.'
-      case 'brush':
-        return 'Drag to paint a stroke of the chosen width. It stays editable.'
+        return 'Strokes join the selected drawing.'
       case 'eraser':
-        return 'Drag to erase. Pixels are rubbed out; vector shapes are cut into pieces.'
+        return 'Cuts vector shapes into separate pieces.'
       default:
-        return model.tool === 'rectangle' || model.tool === 'ellipse'
-          ? 'Drag corner to corner.'
-          : 'Drag from the centre outward.'
+        return ''
     }
   })
   const current = $derived(
@@ -201,7 +191,6 @@
         <span class="count">{model.items} {model.items === 1 ? 'shape' : 'shapes'}</span>
         <span class="dot" aria-hidden="true"></span>
         <span class="count">{model.pixels.toLocaleString()} px</span>
-        {#if model.template}<span class="dot" aria-hidden="true"></span><span class="where">on {model.template}</span>{/if}
         <span class="delete" class:hidden={!model.selected}>
           <Button label={deleteLabel} size="compact" kind="ghost" disabled={model.pending || !model.selected} onclick={() => onIntent({ type: 'delete-item' })} />
         </span>
@@ -328,12 +317,16 @@
     opacity: 0.7;
   }
   .bar {
+    /* Centred with auto margins rather than a 50% offset: an absolutely positioned box offset
+       to the middle only gets half the viewport as available width, which would cap fit-content
+       at half the screen and clip the row. */
     position: absolute;
     inset-block-start: 12px;
-    inset-inline-start: 50%;
-    transform: translateX(-50%);
+    inset-inline: 8rem;
+    margin-inline: auto;
     box-sizing: border-box;
-    inline-size: min(64rem, calc(100vw - 8rem));
+    inline-size: fit-content;
+    max-inline-size: calc(100vw - 16rem);
     padding: 0.5rem 0.75rem 0.45rem;
     border: 1px solid var(--caelestis-border);
     border-radius: var(--caelestis-box-radius, 1rem);
@@ -344,7 +337,7 @@
   /* One row, three groups, one height: the tool and its options, the claims, the actions. */
   .row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: max-content auto auto;
     align-items: center;
     gap: 1rem;
     min-block-size: 2.25rem;
@@ -370,10 +363,9 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    min-inline-size: 0;
-    overflow: hidden;
   }
   .option {
+    flex: none;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
@@ -403,17 +395,13 @@
     min-inline-size: 4.5ch;
     text-align: end;
   }
-  .where {
-    max-inline-size: 12rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
   .dot {
-    inline-size: 3px;
-    block-size: 3px;
+    flex: none;
+    inline-size: 4px;
+    block-size: 4px;
     border-radius: 50%;
     background: currentColor;
-    opacity: 0.6;
+    opacity: 0.5;
   }
   /* The delete control keeps its place whether or not anything is selected. */
   .delete {
@@ -441,6 +429,8 @@
   /* One line, always the same height; the full text is the title. */
   .hint {
     margin: 0.3rem 0 0;
+    inline-size: 0;
+    min-inline-size: 100%;
     block-size: 1.1rem;
     overflow: hidden;
     color: var(--caelestis-muted-text);
