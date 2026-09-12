@@ -123,7 +123,7 @@ describe('takenLocalFolderNames', () => {
   it('keeps surfaces apart and treats legacy records as world-scoped', () => {
     const folders = [
       folder('a', null, 'Shared'),
-      folder('b', null, 'Legacy', undefined),
+      { id: 'b', parentId: null, name: 'Legacy', visible: true },
       folder('c', null, 'Shared', alliance),
       folder('d', null, 'HQ', alliance),
     ]
