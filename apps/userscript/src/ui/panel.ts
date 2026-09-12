@@ -128,8 +128,10 @@ import { openClaimEditor, openClaimTool, presenceSummaryModel } from './presence
 import {
   claimToolButton,
   mismatchModeButton,
+  presenceModeButton,
   syncClaimToolState,
   syncMismatchModeState,
+  syncPresenceModeState,
 } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
@@ -585,6 +587,8 @@ const settingsModel = (): SettingsModel => {
     shareTiles: state.shareTiles,
     sharePresence: state.sharePresence,
     showPresence: state.showPresence,
+    showPresenceViewports: state.showPresenceViewports,
+    showPresenceClaims: state.showPresenceClaims,
     notifyRegressions: state.notifyRegressions,
     notifyGriefing: state.notifyGriefing,
     notifyUpdates: state.notifyUpdates,
@@ -1493,13 +1497,21 @@ export const installPanel = (): void => {
   void refreshStoredServers(refreshView)
   installServerConnectionRetry(refreshView)
   const rail = railContainer()
-  rail.append(railButton(), colourModeButton(), mismatchModeButton(), claimToolButton())
+  rail.append(
+    railButton(),
+    colourModeButton(),
+    mismatchModeButton(),
+    presenceModeButton(),
+    claimToolButton(),
+  )
   syncRailButtonState()
   syncColourModeState()
   syncMismatchModeState()
+  syncPresenceModeState()
   syncClaimToolState()
   onClaimEditorChange(syncClaimToolState)
   onPresenceChange(syncClaimToolState)
+  onStateChange(syncPresenceModeState)
   positionRail()
   log('install', 'rail installed beside wplace’s')
 
@@ -1509,6 +1521,7 @@ export const installPanel = (): void => {
       railButton(),
       colourModeButton(),
       mismatchModeButton(),
+      presenceModeButton(),
       claimToolButton(),
     ]) {
       if (!rail.contains(button)) rail.appendChild(button)

@@ -47,6 +47,7 @@ import {
   refreshPaintPaletteFocus,
 } from './paint-palette.js'
 import { installPresence, observePresenceFrame, onPresenceChange } from './presence-client.js'
+import { onPresenceHoverChange } from './presence-hover.js'
 import { renderPresenceLabels } from './presence-labels.js'
 import {
   configureProfileRun,
@@ -416,6 +417,7 @@ const main = (): void => {
       repaint()
     })
     onClaimEditorChange(repaintPresence)
+    onPresenceHoverChange(repaintPresence)
     installClaimToolHost()
     onFrame(observePresenceFrame, 'Presence viewport')
     onFrame(syncClaimEditorFrame, 'Claim editor overlay')

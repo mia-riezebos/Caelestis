@@ -32,6 +32,7 @@ import fitScreen from '@iconify-icons/material-symbols/fit-screen'
 import flag from '@iconify-icons/material-symbols/flag'
 import folder from '@iconify-icons/material-symbols/folder'
 import gridView from '@iconify-icons/material-symbols/grid-view'
+import groups from '@iconify-icons/material-symbols/groups'
 import image from '@iconify-icons/material-symbols/image'
 import info from '@iconify-icons/material-symbols/info'
 import inkEraser from '@iconify-icons/material-symbols/ink-eraser'
@@ -102,6 +103,7 @@ export const ICONS = define({
   expandMore: keyboardArrowDown,
   extension,
   eye: visibility,
+  painters: groups,
   eyeOff: visibilityOff,
   filter: filterAltOutline,
   fitScreen,

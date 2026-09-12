@@ -149,7 +149,9 @@
 
   <SectionHeader title="Painters" icon="share" />
   <SettingRow label="Share where I am" hint="Other painters on the same server see the area you are looking at and the pixels you have drafted, while this tab is open. Nothing is stored.">{#snippet children()}<Toggle label="Share where I am" checked={model.sharePresence} onChange={(value) => emit({ type: 'set-boolean', key: 'sharePresence', value })} />{/snippet}</SettingRow>
-  <SettingRow label="Show other painters" hint="Draws their viewports, drafts, and claimed regions over the artwork, see-through. Q toggles this.">{#snippet children()}<Toggle label="Show other painters" checked={model.showPresence} onChange={(value) => emit({ type: 'set-boolean', key: 'showPresence', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Show other painters" hint="The painters button on the rail and Q switch this too.">{#snippet children()}<Toggle label="Show other painters" checked={model.showPresence} onChange={(value) => emit({ type: 'set-boolean', key: 'showPresence', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Show painters' viewports" hint="Where they are looking and what they have drafted.">{#snippet children()}<Toggle label="Show painters' viewports" checked={model.showPresenceViewports} disabled={!model.showPresence} onChange={(value) => emit({ type: 'set-boolean', key: 'showPresenceViewports', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Show region claims" hint="Yours and theirs. Your own claim's fill steps aside while the pointer is inside it.">{#snippet children()}<Toggle label="Show region claims" checked={model.showPresenceClaims} disabled={!model.showPresence} onChange={(value) => emit({ type: 'set-boolean', key: 'showPresenceClaims', value })} />{/snippet}</SettingRow>
 
   <SectionHeader title="Diagnostics" icon="bug" />
   <SettingRow label="Debug logging" hint="Verbose console output for bug reports">{#snippet children()}<Toggle label="Debug logging" checked={model.debugLogging} onChange={(value) => emit({ type: 'set-boolean', key: 'debugLogging', value })} />{/snippet}</SettingRow>

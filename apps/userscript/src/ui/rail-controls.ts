@@ -8,6 +8,36 @@ import { applyWplaceTheme } from './theme.js'
 
 export const MISMATCH_MODE_ID = 'caelestis-mismatch-mode'
 export const CLAIM_TOOL_ID = 'caelestis-claim-tool-mode'
+export const PRESENCE_MODE_ID = 'caelestis-presence-mode'
+
+export const syncPresenceModeState = (): void => {
+  const button = document.getElementById(PRESENCE_MODE_ID) as CaelestisRailControl | null
+  if (button === null) return
+  const on = getState().showPresence
+  button.model = {
+    id: 'presence',
+    label: on ? 'Hide other painters and claims (Q)' : 'Show other painters and claims (Q)',
+    pressed: on,
+  }
+}
+
+/** The always-reachable switch for other painters, so it works where there is no keyboard. */
+export const presenceModeButton = (): CaelestisRailControl => {
+  const existing = document.getElementById(PRESENCE_MODE_ID)
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
+  button.id = PRESENCE_MODE_ID
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id !== 'presence') return
+    setState({ showPresence: !getState().showPresence })
+    syncPresenceModeState()
+    redraw()
+  })
+  syncPresenceModeState()
+  return button
+}
 
 export const syncClaimToolState = (): void => {
   const button = document.getElementById(CLAIM_TOOL_ID) as CaelestisRailControl | null

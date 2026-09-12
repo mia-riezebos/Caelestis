@@ -14,6 +14,7 @@ import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { presenceView } from '../presence-client.js'
 import { presenceRgb } from '../presence-colour.js'
+import { hoveredPresenceRegions } from '../presence-hover.js'
 import { getState } from '../state.js'
 import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
 import { ramps } from './fade.js'
@@ -183,6 +184,8 @@ interface Item {
   readonly colour: readonly [number, number, number]
   /** A draft's base64 bitmask, or a claim's pixels; either becomes a nearest-sampled texture. */
   readonly mask: string | RegionShapePixels | null
+  /** Your own claim: its fill steps aside while the pointer is inside it, so you can paint. */
+  readonly mine?: boolean
 }
 
 interface MaskTexture {
@@ -277,6 +280,7 @@ const currentItems = (): Item[] => {
       rect: pixels.rect,
       colour: presenceRgb(region.claimant.wplaceUserId),
       mask: pixels,
+      mine: view.me !== null && region.claimant.wplaceUserId === view.me.wplaceUserId,
     })
   }
   for (const id of documentPixels.keys()) if (!seen.has(id)) documentPixels.delete(id)
@@ -312,6 +316,8 @@ class PresenceLayer {
   private readonly masks = new Map<string, MaskTexture>()
   private readonly retained = new Map<string, Item>()
   private readonly fades = ramps()
+  /** How far each of your own claims has stepped aside under the pointer, 0 to 1. */
+  private readonly hovers = ramps()
   private readonly motions = new Map<string, Motion>()
   private readonly corners = new Float32Array(4 * 6)
 
@@ -489,9 +495,16 @@ class PresenceLayer {
     const { program, vao, quad } = this
     if (program === null || vao === null || quad === null) return
     const now = performance.now()
-    const shown = getState().showPresence
+    const state = getState()
+    const shown = state.showPresence
     // The editor's own claim shows even with other painters hidden; it is the user's own work.
-    const items = currentItems().filter((item) => shown || item.kind === 'tool')
+    const items = currentItems().filter(
+      (item) =>
+        item.kind === 'tool' ||
+        (shown &&
+          (item.kind === 'region' ? state.showPresenceClaims : state.showPresenceViewports)),
+    )
+    const hovered = hoveredPresenceRegions()
     const keys = new Set<string>()
     for (const item of items) {
       keys.add(item.key)
@@ -517,6 +530,7 @@ class PresenceLayer {
       if (fade.value > 0) drawn.push({ item, fade: fade.value })
     }
     this.fades.prune(new Set(this.retained.keys()))
+    this.hovers.prune(new Set(this.retained.keys()))
     this.releaseMasks(
       gl,
       new Set(drawn.filter(({ item }) => item.mask !== null).map(({ item }) => item.key)),
@@ -537,14 +551,24 @@ class PresenceLayer {
         for (const { item, fade } of drawn) {
           const style = STYLES[item.kind]
           const texture = this.maskTexture(gl, item)
+          // Your own claim under the pointer: the fill and stripes fade out over the shared ramp
+          // and the outline stays, so the pixels underneath show in their true colours.
+          let aside = 0
+          if (item.mine === true) {
+            const target = hovered.has(item.key.slice('region:'.length)) ? 1 : 0
+            const ramp = this.hovers.advance(item.key, target, now)
+            aside = ramp.value
+            if (!ramp.done) animating = true
+          }
+          const fill = 1 - aside
           gl.uniform3f(this.uniform(gl, 'u_colour'), item.colour[0], item.colour[1], item.colour[2])
           gl.uniform1f(this.uniform(gl, 'u_fill'), style.fill * fade)
           gl.uniform1f(this.uniform(gl, 'u_border'), style.border * fade)
           gl.uniform1f(this.uniform(gl, 'u_borderWidth'), style.borderWidth * deviceScale)
           gl.uniform1f(this.uniform(gl, 'u_dash'), style.dash * deviceScale)
-          gl.uniform1f(this.uniform(gl, 'u_maskAlpha'), style.maskAlpha * fade)
+          gl.uniform1f(this.uniform(gl, 'u_maskAlpha'), style.maskAlpha * fade * fill)
           gl.uniform1i(this.uniform(gl, 'u_pattern'), style.pattern)
-          gl.uniform1f(this.uniform(gl, 'u_patternAlpha'), style.patternAlpha * fade)
+          gl.uniform1f(this.uniform(gl, 'u_patternAlpha'), style.patternAlpha * fade * fill)
           gl.uniform1i(this.uniform(gl, 'u_hasMask'), texture === null ? 0 : 1)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, texture)

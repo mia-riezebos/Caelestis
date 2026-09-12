@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   peers: [] as unknown[],
   regions: [] as unknown[],
   showPresence: true,
+  flags: {} as Record<string, boolean>,
   displayed: new Map<string, { x: number; y: number; w: number; h: number }>(),
 }))
 
@@ -26,7 +27,9 @@ vi.mock('./gl/presence-layer.js', () => ({
   regionPixelsFor: (_id: string, document: Parameters<typeof regionDocumentPixels>[0]) =>
     regionDocumentPixels(document),
 }))
-vi.mock('./state.js', () => ({ getState: () => ({ showPresence: harness.showPresence }) }))
+vi.mock('./state.js', () => ({
+  getState: () => ({ showPresence: harness.showPresence, ...harness.flags }),
+}))
 vi.mock('./tile-transform.js', () => ({ isDrawingTiles: () => true }))
 
 const rect = (x: number, y: number, w: number, h: number) => ({
@@ -72,12 +75,15 @@ beforeEach(() => {
   harness.peers = []
   harness.regions = []
   harness.showPresence = true
+  harness.flags = {}
   harness.displayed = new Map()
 })
 
 afterEach(async () => {
   const { resetPresenceLabels } = await import('./presence-labels.js')
+  const { resetPresenceHover } = await import('./presence-hover.js')
   resetPresenceLabels()
+  resetPresenceHover()
   document.body.innerHTML = ''
   vi.resetModules()
 })
@@ -276,6 +282,37 @@ describe('renderPresenceLabels', () => {
     const y = Number((match as RegExpExecArray)[2])
     // Not in the 21 px band above y 130, which Ada's claim (y 100..120) occupies; above hers instead.
     expect(y + 17).toBeLessThanOrEqual(100)
+  })
+
+  it('publishes which of the claims the pointer is over, for the layer to fade', async () => {
+    harness.regions = [twoPieces]
+    const { renderPresenceLabels } = await import('./presence-labels.js')
+    const { hoveredPresenceRegions } = await import('./presence-hover.js')
+    const canvas = canvasAt()
+    const frame = frameAt(1, canvas)
+    renderPresenceLabels(frame)
+    hover(canvas, 5, 5)
+    renderPresenceLabels(frame)
+    expect([...hoveredPresenceRegions()]).toEqual(['r1'])
+    hover(canvas, 300, 300)
+    renderPresenceLabels(frame)
+    expect(hoveredPresenceRegions().size).toBe(0)
+  })
+
+  it('leaves out viewports or claims when their own switch is off', async () => {
+    harness.regions = [twoPieces]
+    harness.peers = [
+      {
+        sessionId: 'a',
+        painter: { wplaceUserId: 3, displayName: 'Kim' },
+        viewport: { x: 0, y: 0, w: 100, h: 100 },
+        draft: null,
+      },
+    ]
+    harness.flags = { showPresenceClaims: false }
+    expect((await tagsAt(frameAt(4), 5, 5)).map((tag) => tag.key)).toEqual(['peer:a:viewport'])
+    harness.flags = { showPresenceViewports: false }
+    expect((await tagsAt(frameAt(4), 5, 5)).map((tag) => tag.key)).toEqual(['region:r1'])
   })
 
   it('hides every chip while other painters are hidden', async () => {

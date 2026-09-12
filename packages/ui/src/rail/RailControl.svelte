@@ -10,6 +10,7 @@
     colour: 'palette',
     mismatch: 'bug',
     claim: 'shapes',
+    presence: 'painters',
     'overlay-menu': 'kebab',
     'overlay-finished': 'check',
     'overlay-frozen': 'snowflake',

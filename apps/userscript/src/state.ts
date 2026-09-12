@@ -228,8 +228,12 @@ export interface State {
   readonly shareTiles: boolean
   /** Publish this tab's viewport and draft to other painters on the same server. */
   readonly sharePresence: boolean
-  /** Draw other painters' viewports, drafts, and region claims under the artwork. */
+  /** Draw other painters at all: the rail button and Q. */
   readonly showPresence: boolean
+  /** With `showPresence`: their viewports and drafts. */
+  readonly showPresenceViewports: boolean
+  /** With `showPresence`: region claims, theirs and yours. */
+  readonly showPresenceClaims: boolean
   readonly notifyRegressions: boolean
   readonly notifyGriefing: boolean
   readonly notifyUpdates: boolean
@@ -257,6 +261,8 @@ const DEFAULT_STATE: State = {
   shareTiles: true,
   sharePresence: true,
   showPresence: true,
+  showPresenceViewports: true,
+  showPresenceClaims: true,
   notifyRegressions: false,
   notifyGriefing: false,
   notifyUpdates: true,
@@ -592,6 +598,8 @@ export const loadState = (): State => {
       shareTiles: stored.shareTiles !== false,
       sharePresence: stored.sharePresence !== false,
       showPresence: stored.showPresence !== false,
+      showPresenceViewports: stored.showPresenceViewports !== false,
+      showPresenceClaims: stored.showPresenceClaims !== false,
       notifyRegressions: stored.notifyRegressions === true,
       notifyGriefing: stored.notifyGriefing === true,
       notifyUpdates: stored.notifyUpdates !== false,

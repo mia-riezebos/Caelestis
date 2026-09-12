@@ -10,6 +10,7 @@ import { displayedPresenceRect, regionPixelsFor } from './gl/presence-layer.js'
 import { presenceView } from './presence-client.js'
 import { presenceCss } from './presence-colour.js'
 import { canvasPixelAt, rectOnScreen } from './presence-geometry.js'
+import { setHoveredPresenceRegions } from './presence-hover.js'
 import { getState } from './state.js'
 import { isDrawingTiles, type TileFrame } from './tile-transform.js'
 
@@ -232,7 +233,8 @@ export const presenceTagsAt = (
 ): PresenceTag[] => {
   const view = presenceView()
   const tags: PresenceTag[] = []
-  for (const peer of view.peers) {
+  const flags = getState()
+  for (const peer of flags.showPresenceViewports === false ? [] : view.peers) {
     const colour = presenceCss(peer.painter.wplaceUserId, 0.85)
     const painting = peer.draft !== null
     const text = painting
@@ -251,7 +253,7 @@ export const presenceTagsAt = (
   }
   const editing = new Set(claimEditorEditingIds())
   const seen = new Set<string>()
-  for (const region of view.regions) {
+  for (const region of flags.showPresenceClaims === false ? [] : view.regions) {
     seen.add(region.id)
     if (editing.has(region.id)) continue
     const held = piecesFor(region.id, region.document)
@@ -291,6 +293,7 @@ export const otherClaimPieces = (except: string): PresenceRect[] => {
 const removeAll = (): void => {
   for (const node of nodes.values()) node.remove()
   nodes.clear()
+  setHoveredPresenceRegions(new Set())
 }
 
 const measureWith =
@@ -338,6 +341,13 @@ export const renderPresenceLabels = (frame: TileFrame): void => {
   }
   const container = ensureHost(document)
   const wanted = presenceTagsAt(frame, at, measureWith(document, container), ratioX)
+  setHoveredPresenceRegions(
+    new Set(
+      wanted
+        .filter((tag) => tag.key.startsWith('region:'))
+        .map((tag) => tag.key.slice('region:'.length)),
+    ),
+  )
   if (wanted.length === 0 && nodes.size === 0) return
   const placed: Placed[] = []
   for (const tag of wanted) {

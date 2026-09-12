@@ -237,6 +237,8 @@ export type SettingsBooleanKey =
   | 'shareTiles'
   | 'sharePresence'
   | 'showPresence'
+  | 'showPresenceViewports'
+  | 'showPresenceClaims'
   | 'debugLogging'
   | 'performanceProfiling'
   | 'notifyRegressions'
@@ -294,6 +296,8 @@ export interface SettingsModel {
   readonly shareTiles: boolean
   readonly sharePresence: boolean
   readonly showPresence: boolean
+  readonly showPresenceViewports: boolean
+  readonly showPresenceClaims: boolean
   readonly debugLogging: boolean
   readonly performanceProfiling: boolean
   readonly notifyRegressions: boolean
@@ -340,6 +344,7 @@ export type RailControlId =
   | 'colour'
   | 'mismatch'
   | 'claim'
+  | 'presence'
   | 'overlay-menu'
   | 'overlay-finished'
   | 'overlay-frozen'
