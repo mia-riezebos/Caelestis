@@ -1,5 +1,7 @@
 import type * as Shared from '@caelestis/shared'
 import {
+  MAX_LIVE_MESSAGE_BYTES,
+  MAX_LIVE_PAINT_PARTS,
   MAX_LIVE_PROJECTIONS,
   MAX_LIVE_TEMPLATE_IDS,
   MAX_TILE_OFFERS,
@@ -194,6 +196,7 @@ export const ServerInfo = Schema.Struct({
   liveSync: Schema.optionalKey(Schema.Literals([1, 2])),
   liveSyncMax: Schema.optionalKey(Schema.Literals([1, 2])),
   liveTileOffers: Schema.optionalKey(Schema.Literal(1)),
+  livePaintParts: Schema.optionalKey(Schema.Literal(1)),
 }).pipe(
   Schema.check(
     booleanFilter(
@@ -694,6 +697,20 @@ export const LiveTileUpload = Schema.Struct({
 })
 
 export const LiveSyncClientEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal('paint-part'),
+    requestId: Identifier,
+    transferId: Identifier,
+    eventId: Identifier,
+    season: Season,
+    index: integerBetween(0, MAX_LIVE_PAINT_PARTS - 1),
+    total: integerBetween(1, MAX_LIVE_PAINT_PARTS),
+    chunk: boundedString(MAX_LIVE_MESSAGE_BYTES),
+  }).pipe(
+    Schema.check(
+      booleanFilter((part) => part.index < part.total, 'paint part index must be below total'),
+    ),
+  ),
   Schema.Struct({
     type: Schema.Literal('state-vector'),
     requestId: Identifier,

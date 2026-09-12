@@ -911,7 +911,15 @@ const deliverPaint = async (
         dedupe.active.add(eventId)
         void deliverPaint(server, dedupe, eventId, event).catch(reportTelemetryError)
       }, 1_000)
-    } else dedupe.values.delete(eventId)
+    } else {
+      dedupe.values.delete(eventId)
+      if (result?.error !== undefined)
+        warn('install', 'telemetry paint report was rejected', {
+          server: server.url,
+          eventId,
+          error: result.error,
+        })
+    }
     return
   }
   const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/paints'), {
