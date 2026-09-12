@@ -16,33 +16,39 @@
     if (model.message) return model.message
     switch (model.tool) {
       case 'select':
-        return 'Click a shape to select it, Shift-click to add, drag to move, drag empty canvas for a marquee. Corner handles resize (Shift keeps proportions); the grip above, or just outside a corner, rotates (Shift snaps to 15°). Delete removes the selection.'
+        return 'Click selects, Shift-click adds, drag moves, drag empty canvas for a marquee. Corners scale, the grip or just outside a corner rotates.'
       case 'direct':
-        return 'Click a shape, then drag any anchor or bezier handle; a rectangle, ellipse, polygon, or star becomes a path as you do.'
+        return 'Drag any anchor or handle. A rectangle, ellipse, polygon, or star becomes a path as you do.'
       case 'lasso':
-        return 'Draw a loop around shapes to select them. Shift adds to the selection.'
+        return 'Draw a loop around shapes to select them. Shift adds.'
       case 'hand':
-        return 'Drag to pan. Scroll pans too, Shift+scroll sideways; Alt/Option or Ctrl/Cmd+scroll zooms. Hold Space for the hand from any tool.'
+        return 'Drag to pan. Scroll pans, Shift+scroll sideways, Alt or Ctrl+scroll zooms. Space holds the hand from any tool.'
       case 'pen':
-        return 'Click to add corners, drag to add curves; the band shows the next segment. Click the first anchor to close, Enter to finish open, Escape to drop. On a selected path: click an end to continue it, a segment to add an anchor, an anchor to delete it.'
+        return 'Click for corners, drag for curves. Click the first anchor to close, Enter to finish. On a selected path: an end continues, a segment adds, an anchor deletes.'
       case 'add-anchor':
-        return 'Click a path segment to add an anchor there. The curve does not change.'
+        return 'Click a segment to add an anchor. The curve does not change.'
       case 'delete-anchor':
         return 'Click an anchor to remove it.'
       case 'anchor':
-        return 'Drag out of a corner anchor to give it handles; click a smooth anchor to make it a corner; drag one handle to move it on its own.'
+        return 'Drag out of a corner for handles, click a smooth anchor for a corner, drag one handle to break the pair.'
       case 'pencil':
-        return 'Drag to draw pixels. Strokes join the selected drawing; the eraser rubs them out.'
+        return 'Drag to draw pixels. Strokes join the selected drawing.'
       case 'brush':
-        return 'Drag to paint a vector stroke of the chosen width; it stays editable.'
+        return 'Drag to paint a stroke of the chosen width. It stays editable.'
       case 'eraser':
-        return 'Drag to erase. Pixels are rubbed out; vector shapes are cut into pieces, each editable on its own.'
+        return 'Drag to erase. Pixels are rubbed out; vector shapes are cut into pieces.'
       default:
         return model.tool === 'rectangle' || model.tool === 'ellipse'
-          ? 'Drag corner to corner. Shapes stay editable with the selection tool.'
-          : 'Drag from the centre outward. Shapes stay editable with the selection tool.'
+          ? 'Drag corner to corner.'
+          : 'Drag from the centre outward.'
     }
   })
+  const current = $derived(
+    model.tools.find((entry) => entry.tool === model.tool) ?? (model.tools[0] as ClaimToolEntry),
+  )
+  const hasSubtract = $derived(
+    !['select', 'direct', 'lasso', 'hand', 'add-anchor', 'delete-anchor', 'anchor', 'eraser'].includes(model.tool),
+  )
   const hasCorners = $derived(model.tool === 'polygon' || model.tool === 'star')
   const hasWidth = $derived(
     model.tool === 'pen' || model.tool === 'pencil' || model.tool === 'brush' || model.tool === 'eraser',
@@ -154,46 +160,60 @@
 
   <div class="bar" role="toolbar" aria-label="Claims">
     <div class="row">
-      <strong class="title">Claims</strong>
-      {#if hasCorners}
-        <label class="option">
-          {model.tool === 'polygon' ? 'Corners' : 'Points'}
-          <input
-            type="number"
-            min={model.options.minCorners}
-            max={model.options.maxCorners}
-            value={model.tool === 'polygon' ? model.options.sides : model.options.points}
-            disabled={model.pending}
-            onchange={(event) => onIntent({ type: 'set-option', option: model.tool === 'polygon' ? 'sides' : 'points', value: clamp(Number(event.currentTarget.value), model.options.minCorners, model.options.maxCorners) })}
-          />
-        </label>
-      {/if}
-      {#if model.tool === 'star'}
-        <label class="option">
-          Inner %
-          <input type="number" min="5" max="95" value={model.options.inner} disabled={model.pending} onchange={(event) => onIntent({ type: 'set-option', option: 'inner', value: clamp(Number(event.currentTarget.value), 5, 95) })} />
-        </label>
-      {/if}
-      {#if hasWidth}
-        <label class="option">
-          Width
-          <input type="number" min={model.tool === 'pen' ? 0 : 1} max={model.options.maxWidth} value={model.options.width} disabled={model.pending} onchange={(event) => onIntent({ type: 'set-option', option: 'width', value: clamp(Number(event.currentTarget.value), model.tool === 'pen' ? 0 : 1, model.options.maxWidth) })} />
-        </label>
-      {/if}
-      <label class="option">
-        <Toggle label="Subtract" compact checked={model.subtract} onChange={(subtract) => onIntent({ type: 'set-subtract', subtract })} />
-        Subtract
-      </label>
-      <span class="stats">{model.items} {model.items === 1 ? 'shape' : 'shapes'} · {model.pixels.toLocaleString()} px{#if model.template} · on {model.template}{/if}{#if model.dirty} · unsaved{/if}</span>
-      <div class="actions">
-        {#if model.selected}
-          <Button label={deleteLabel} size="compact" kind="ghost" disabled={model.pending} onclick={() => onIntent({ type: 'delete-item' })} />
-        {/if}
+      <div class="group tool-group" aria-label="Tool">
+        <span class="tool-name"><Icon name={current.icon} size="1rem" />{current.label}</span>
+        <div class="options">
+          {#if hasCorners}
+            <label class="option">
+              <span>{model.tool === 'polygon' ? 'Corners' : 'Points'}</span>
+              <input
+                type="number"
+                min={model.options.minCorners}
+                max={model.options.maxCorners}
+                value={model.tool === 'polygon' ? model.options.sides : model.options.points}
+                disabled={model.pending}
+                onchange={(event) => onIntent({ type: 'set-option', option: model.tool === 'polygon' ? 'sides' : 'points', value: clamp(Number(event.currentTarget.value), model.options.minCorners, model.options.maxCorners) })}
+              />
+            </label>
+          {/if}
+          {#if model.tool === 'star'}
+            <label class="option">
+              <span>Inner %</span>
+              <input type="number" min="5" max="95" value={model.options.inner} disabled={model.pending} onchange={(event) => onIntent({ type: 'set-option', option: 'inner', value: clamp(Number(event.currentTarget.value), 5, 95) })} />
+            </label>
+          {/if}
+          {#if hasWidth}
+            <label class="option">
+              <span>Width</span>
+              <input type="number" min={model.tool === 'pen' ? 0 : 1} max={model.options.maxWidth} value={model.options.width} disabled={model.pending} onchange={(event) => onIntent({ type: 'set-option', option: 'width', value: clamp(Number(event.currentTarget.value), model.tool === 'pen' ? 0 : 1, model.options.maxWidth) })} />
+            </label>
+          {/if}
+          {#if hasSubtract}
+            <label class="option">
+              <Toggle label="Subtract" compact checked={model.subtract} onChange={(subtract) => onIntent({ type: 'set-subtract', subtract })} />
+              <span>Subtract</span>
+            </label>
+          {/if}
+        </div>
+      </div>
+
+      <div class="group status" aria-label="Claims">
+        <span class="count">{model.items} {model.items === 1 ? 'shape' : 'shapes'}</span>
+        <span class="dot" aria-hidden="true"></span>
+        <span class="count">{model.pixels.toLocaleString()} px</span>
+        {#if model.template}<span class="dot" aria-hidden="true"></span><span class="where">on {model.template}</span>{/if}
+        <span class="delete" class:hidden={!model.selected}>
+          <Button label={deleteLabel} size="compact" kind="ghost" disabled={model.pending || !model.selected} onclick={() => onIntent({ type: 'delete-item' })} />
+        </span>
+      </div>
+
+      <div class="group actions">
+        <span class="unsaved" class:visible={model.dirty} aria-live="polite">{model.dirty ? 'Unsaved' : ''}</span>
         <Button label="Cancel" size="compact" kind="ghost" disabled={model.pending} onclick={() => onIntent({ type: 'cancel' })} />
         <Button label="Save claims" size="compact" kind="primary" disabled={model.pending || !model.dirty} onclick={() => onIntent({ type: 'confirm' })} />
       </div>
     </div>
-    <p class="hint" role="status">{hint}</p>
+    <p class="hint" class:message={model.message !== undefined} role="status" title={hint}>{hint}</p>
   </div>
 </div>
 
@@ -313,51 +333,124 @@
     inset-inline-start: 50%;
     transform: translateX(-50%);
     box-sizing: border-box;
-    max-inline-size: calc(100vw - 6rem);
-    padding: 0.5rem 0.75rem;
+    inline-size: min(64rem, calc(100vw - 8rem));
+    padding: 0.5rem 0.75rem 0.45rem;
     border: 1px solid var(--caelestis-border);
     border-radius: var(--caelestis-box-radius, 1rem);
     background: var(--caelestis-surface, white);
     box-shadow: var(--caelestis-popover-shadow, 0 10px 24px -6px rgb(0 0 0 / 0.28));
     pointer-events: auto;
   }
+  /* One row, three groups, one height: the tool and its options, the claims, the actions. */
   .row {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 0.5rem 0.75rem;
+    gap: 1rem;
+    min-block-size: 2.25rem;
   }
-  .title {
+  .group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-inline-size: 0;
+  }
+  .tool-group {
+    gap: 0.75rem;
+  }
+  .tool-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: none;
     font-weight: 600;
+    white-space: nowrap;
+  }
+  .options {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-inline-size: 0;
+    overflow: hidden;
   }
   .option {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.35rem;
     color: var(--caelestis-muted-text);
+    white-space: nowrap;
   }
   .option input {
-    inline-size: 3.5rem;
-    min-block-size: 2rem;
+    inline-size: 3.25rem;
+    block-size: 1.75rem;
     padding: 0 0.4rem;
     border: 1px solid var(--caelestis-border);
     border-radius: var(--caelestis-radius, 0.5rem);
     background: var(--caelestis-raised-surface, #eee);
     color: var(--caelestis-text);
     font: inherit;
-  }
-  .stats {
-    color: var(--caelestis-muted-text);
     font-variant-numeric: tabular-nums;
   }
-  .actions {
-    display: flex;
-    gap: 0.25rem;
-    margin-inline-start: auto;
+  .status {
+    gap: 0.4rem;
+    padding-inline: 0.75rem;
+    border-inline: 1px solid var(--caelestis-border);
+    color: var(--caelestis-muted-text);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
-  .hint {
-    margin: 0.35rem 0 0;
+  .count {
+    min-inline-size: 4.5ch;
+    text-align: end;
+  }
+  .where {
+    max-inline-size: 12rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dot {
+    inline-size: 3px;
+    block-size: 3px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+  }
+  /* The delete control keeps its place whether or not anything is selected. */
+  .delete {
+    margin-inline-start: 0.25rem;
+  }
+  .delete.hidden {
+    visibility: hidden;
+  }
+  .actions {
+    gap: 0.35rem;
+  }
+  .unsaved {
+    min-inline-size: 4rem;
     color: var(--caelestis-muted-text);
     font-size: 0.72rem;
+    text-align: end;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+  .unsaved.visible {
+    opacity: 1;
+  }
+  /* One line, always the same height; the full text is the title. */
+  .hint {
+    margin: 0.3rem 0 0;
+    block-size: 1.1rem;
+    overflow: hidden;
+    color: var(--caelestis-muted-text);
+    font-size: 0.72rem;
+    line-height: 1.1rem;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .hint.message {
+    color: var(--caelestis-text);
+    font-weight: 500;
   }
 </style>
