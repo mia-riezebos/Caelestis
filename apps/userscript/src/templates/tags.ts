@@ -8,6 +8,9 @@ import {
 } from '@caelestis/shared'
 import { leaseLocalFolder } from '../local-folders.js'
 import { getState, MAX_LOCAL_FOLDERS } from '../state.js'
+import type { NativeTemplates } from './native-store.js'
+import { reconcileNativeTags } from './native-tags.js'
+import type { StoredTemplate } from './persist.js'
 import { openTemplateDatabase } from './persist.js'
 import { LOCAL_TAG_STORE } from './tag-schema.js'
 
@@ -35,6 +38,25 @@ export type LocalTagMutation =
 
 let snapshot: readonly LocalTag[] = []
 let hydration: Promise<readonly LocalTag[]> | undefined
+let synchronize: (() => Promise<void>) | undefined
+const listeners = new Set<() => void>()
+
+/** Follow native and local tag edits while a tag manager is open. */
+export const onLocalTags = (listener: () => void): (() => void) => {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+const updateSnapshot = (tags: readonly LocalTag[]): void => {
+  const changed = JSON.stringify(snapshot) !== JSON.stringify(tags)
+  snapshot = tags
+  if (changed) for (const listener of listeners) listener()
+}
+
+/** Schedule personal tag mirroring after a durable local edit. */
+export const connectLocalTagSync = (sync: () => Promise<void>): void => {
+  synchronize = sync
+}
 
 /** Catalog snapshot for filter choices after local tag hydration. */
 export const localTagCatalog = (): readonly LocalTag[] => snapshot
@@ -89,7 +111,7 @@ export const readLocalTags = async (): Promise<readonly LocalTag[]> => {
       transaction.onabort = () =>
         reject(transaction.error ?? new Error('Could not load local tags.'))
     })
-    snapshot = tags
+    updateSnapshot(tags)
     return tags
   } finally {
     database.close()
@@ -100,7 +122,7 @@ export const readLocalTags = async (): Promise<readonly LocalTag[]> => {
 export const ensureLocalTags = (): Promise<readonly LocalTag[]> => (hydration ??= readLocalTags())
 
 /** Serialize tag lifecycle and assignment checks in one IndexedDB transaction. */
-export const mutateLocalTag = async (mutation: LocalTagMutation): Promise<readonly LocalTag[]> => {
+const mutateStoredTag = async (mutation: LocalTagMutation): Promise<readonly LocalTag[]> => {
   const name = 'name' in mutation ? tagName(mutation.name) : undefined
   if (name === null) throw new Error('Use 1–64 characters without control characters.')
   const database = await openTemplateDatabase()
@@ -180,10 +202,91 @@ export const mutateLocalTag = async (mutation: LocalTagMutation): Promise<readon
       transaction.onabort = () =>
         reject(failure ?? transaction.error ?? new Error('Could not save local tags.'))
     })
-    snapshot = tags
+    updateSnapshot(tags)
     return tags
   } finally {
     releaseFolder?.()
+    database.close()
+  }
+}
+
+/** Save locally first so interrupted or unavailable native writes can be retried. */
+export const mutateLocalTag = async (mutation: LocalTagMutation): Promise<readonly LocalTag[]> => {
+  await mutateStoredTag(mutation)
+  await synchronize?.()
+  return snapshot
+}
+
+/** Commit assignments and their comparison baseline together, without rewriting artwork revisions. */
+export const synchronizeLocalTemplateTags = async (
+  templateId: string,
+  native: NativeTemplates,
+): Promise<boolean> => {
+  const database = await openTemplateDatabase()
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const transaction = database.transaction([LOCAL_TAG_STORE, 'local-templates'], 'readwrite')
+      const store = transaction.objectStore(LOCAL_TAG_STORE)
+      const templates = transaction.objectStore('local-templates')
+      const tagsRequest = store.getAll()
+      const templateRequest = templates.get(templateId)
+      let failure: unknown
+      let next: readonly LocalTag[] | undefined
+      let changed = false
+      templateRequest.onsuccess = () => {
+        try {
+          const template = templateRequest.result as StoredTemplate | undefined
+          if (template?.native === undefined || (template.surface?.kind ?? 'world') !== 'world')
+            return
+          const tags = parseStoredTags(tagsRequest.result)
+          const baseline = parseTemplateTags(template.nativeTags ?? [])
+          if (baseline === null) throw new Error('Stored tag mirror could not be read.')
+          const retired = (native.metadata.tagCatalog ?? [])
+            .filter(
+              (entry) =>
+                baseline.some((tag) => tagNameKey(tag.name) === tagNameKey(entry.name)) &&
+                !tags.some((tag) => tagNameKey(tag.name) === tagNameKey(entry.name)) &&
+                !native.metadata.templates.some(
+                  (row) =>
+                    row.id !== template.native?.id &&
+                    row.tags?.some((name) => tagNameKey(name) === tagNameKey(entry.name)),
+                ),
+            )
+            .map((tag) => tag.name)
+          changed = native.reconcileTags(
+            template.native.id,
+            (current, catalog) => {
+              const result = reconcileNativeTags(templateId, tags, baseline, current, catalog)
+              next = result.local
+              for (const tag of tags) {
+                if (!next.some((remaining) => remaining.id === tag.id)) store.delete(tag.id)
+              }
+              for (const tag of next) {
+                if (JSON.stringify(tag) !== JSON.stringify(tags.find((old) => old.id === tag.id)))
+                  store.put(tag)
+              }
+              if (JSON.stringify(baseline) !== JSON.stringify(result.mirrored))
+                templates.put({ ...template, nativeTags: result.mirrored })
+              return {
+                tags: result.names,
+                tagColorIdxs: result.colours,
+              }
+            },
+            retired,
+          )
+        } catch (error) {
+          failure = error
+          transaction.abort()
+        }
+      }
+      transaction.oncomplete = () => {
+        if (next !== undefined) updateSnapshot(next)
+        resolve(changed)
+      }
+      transaction.onabort = () =>
+        reject(failure ?? transaction.error ?? new Error('Could not mirror local tags.'))
+    })
+  } finally {
     database.close()
   }
 }

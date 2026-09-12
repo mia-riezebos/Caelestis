@@ -11,7 +11,7 @@ import {
   mutateServerTag,
   onServerContents,
 } from '../state.js'
-import { mutateLocalTag, readLocalTags } from '../templates/tags.js'
+import { mutateLocalTag, onLocalTags, readLocalTags } from '../templates/tags.js'
 import { applyWplaceTheme } from './theme.js'
 import type { TreeTarget } from './tree.js'
 
@@ -121,9 +121,17 @@ export const openTagManager = (target: TreeTarget, rerender: () => void): void =
     reloadPending = true
     reloadIfPending()
   })
+  const unsubscribeLocal =
+    server === null
+      ? onLocalTags(() => {
+          reloadPending = true
+          reloadIfPending()
+        })
+      : undefined
   const close = (): void => {
     closed = true
     unsubscribe()
+    unsubscribeLocal?.()
     manager.remove()
     if (restoreFocus?.isConnected) restoreFocus.focus()
     if (closeManager === close) closeManager = undefined

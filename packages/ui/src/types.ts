@@ -655,14 +655,10 @@ export interface OverlayControlsModel {
     readonly griefed: boolean
   }
   readonly failures: readonly OverlayFailureModel[]
-  readonly confirmingDelete: boolean
-  readonly deleting: boolean
   readonly appearance: AppearanceEditorModel
 }
 
 export type OverlayControlsIntent =
   | { readonly type: 'close' }
   | { readonly type: 'update-artwork' }
-  | { readonly type: 'cancel-delete' }
-  | { readonly type: 'confirm-delete' }
   | { readonly type: 'appearance'; readonly intent: AppearanceEditorIntent }

@@ -1,4 +1,11 @@
-import { type TemplateSurface, WORLD_PIXELS } from '@caelestis/shared'
+import {
+  type TemplateSurface,
+  type TemplateTag,
+  templateSurface,
+  templateSurfaceBounds,
+  WORLD_PIXELS,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { warn } from '../debug.js'
 import { isStoredBlob, isUint8Array, type StoredBlob } from '../page-world.js'
 import type { Appearance, AppearanceGroup } from './appearance.js'
@@ -60,6 +67,17 @@ const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
 }
 
 export interface StoredTemplate extends ImportedTemplate {
+  /** Last mirrored tag assignments; owned by the tag transaction, not artwork edits. */
+  readonly nativeTags?: readonly TemplateTag[]
+  /** Native identity and last derived snapshot. Pending records are resumable migration journals. */
+  readonly native?: {
+    readonly id: string
+    readonly status: 'pending' | 'linked'
+    readonly token?: string
+    readonly opacity?: number
+    /** A native opacity edit overrides only opacity, without owning the whole pixels appearance. */
+    readonly opacityOverride?: boolean
+  }
   readonly updatedAt?: number
   /** Exact drawing surface. Records written before alliance support are world-scoped. */
   readonly surface?: TemplateSurface
@@ -129,6 +147,41 @@ const normaliseRevision = (value: unknown): number =>
 
 /** Share the existing database upgrade and blocked-connection handling with tag persistence. */
 export { open as openTemplateDatabase }
+
+/** Read native identity links without hydrating artwork, including records outside the rendering budget. */
+export const loadNativeTemplateIds = async (): Promise<ReadonlyMap<string, string>> => {
+  const db = await open()
+  try {
+    return await new Promise((resolve, reject) => {
+      const links = new Map<string, string>()
+      const transaction = db.transaction(STORE, 'readonly')
+      const request = transaction.objectStore(STORE).openCursor()
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (cursor === null) return
+        const value: unknown = cursor.value
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'id' in value &&
+          typeof value.id === 'string' &&
+          'native' in value &&
+          typeof value.native === 'object' &&
+          value.native !== null &&
+          'id' in value.native &&
+          typeof value.native.id === 'string'
+        )
+          links.set(value.native.id, value.id)
+        cursor.continue()
+      }
+      transaction.oncomplete = () => resolve(links)
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally {
+    db.close()
+  }
+}
 
 const writeVersioned = async (
   id: IDBValidKey,
@@ -261,17 +314,25 @@ export type SaveResult =
   | { readonly status: 'limit' }
   | { readonly status: 'unavailable' }
 
-/** Save metadata, or atomically archive the current image and install new artwork. */
+/** Save metadata, archive and replace artwork, or replace a derived image after its history was reserved. */
 export const saveTemplate = async (
   template: StoredTemplate,
   expectedRevision: number | null,
   archiveCurrent = false,
+  replaceArtwork = false,
 ): Promise<SaveResult> => {
   const { indices, ...metadata } = template
   return await writeVersioned(
     template.id,
     expectedRevision,
     (templates, revision, current) => {
+      const savedMetadata = {
+        ...metadata,
+        nativeTags:
+          typeof current === 'object' && current !== null && 'nativeTags' in current
+            ? current.nativeTags
+            : metadata.nativeTags,
+      }
       // IndexedDB can inspect a Blob's size without first allocating an equally large typed array.
       // Legacy Uint8Array records remain readable; all new writes use this bounded representation.
       const currentIndices =
@@ -283,6 +344,7 @@ export const saveTemplate = async (
           : undefined
       const reusable =
         !archiveCurrent &&
+        !replaceArtwork &&
         hasCurrentPalette(current) &&
         (isUint8Array(currentIndices) || isStoredBlob(currentIndices)) &&
         candidateIndexPixels(current) === indices.length
@@ -290,7 +352,11 @@ export const saveTemplate = async (
         // Metadata-only mutations keep the already-cloned durable value. Re-wrapping a multi-MB
         // ArrayBuffer in a Blob copies it and makes every move/toggle/appearance change rewrite all
         // pixels even though this PR has no pixel-editing mutation.
-        const record: Record<string, unknown> = { ...metadata, revision, indices: currentIndices }
+        const record: Record<string, unknown> = {
+          ...savedMetadata,
+          revision,
+          indices: currentIndices,
+        }
         delete record.paletteMigration
         if (typeof current === 'object' && current !== null && 'paletteMigration' in current) {
           record.paletteMigration = current.paletteMigration
@@ -301,7 +367,9 @@ export const saveTemplate = async (
           indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
             ? (indices.buffer as ArrayBuffer)
             : indices.slice().buffer
-        templates.put(markCurrentPalette({ ...metadata, revision, indices: new Blob([bytes]) }))
+        templates.put(
+          markCurrentPalette({ ...savedMetadata, revision, indices: new Blob([bytes]) }),
+        )
       }
     },
     true,
@@ -444,9 +512,7 @@ const boundedStoredCandidate = (
     typeof record.source !== 'string' ||
     !['wplace', 'marble', 'image'].includes(record.source) ||
     !Number.isSafeInteger(record.originX) ||
-    Number(record.originX) < 0 ||
     !Number.isSafeInteger(record.originY) ||
-    Number(record.originY) < 0 ||
     !Number.isSafeInteger(record.width) ||
     Number(record.width) <= 0 ||
     !Number.isSafeInteger(record.height) ||
@@ -455,7 +521,7 @@ const boundedStoredCandidate = (
     !Number.isSafeInteger(record.moved) ||
     Number(record.moved) < 0 ||
     !Number.isSafeInteger(record.opaque) ||
-    Number(record.opaque) <= 0 ||
+    (Number(record.opaque) <= 0 && !(Number(record.opaque) === 0 && record.native !== undefined)) ||
     Number(record.moved) > Number(record.opaque) ||
     Number(record.opaque) > indexPixels ||
     typeof record.visible !== 'boolean' ||
@@ -468,11 +534,28 @@ const boundedStoredCandidate = (
   const height = Number(record.height)
   const originX = Number(record.originX)
   const originY = Number(record.originY)
+  const rawSurface = record.surface
+  const surface =
+    rawSurface === undefined
+      ? WORLD_TEMPLATE_SURFACE
+      : typeof rawSurface === 'object' && rawSurface !== null && 'kind' in rawSurface
+        ? templateSurface(
+            rawSurface.kind,
+            'allianceId' in rawSurface ? rawSurface.allianceId : undefined,
+          )
+        : null
+  if (surface === null) return false
+  const bounds = templateSurfaceBounds(surface) ?? {
+    minX: 0,
+    minY: 0,
+    maxX: WORLD_PIXELS,
+    maxY: WORLD_PIXELS,
+  }
   if (
-    width > WORLD_PIXELS ||
-    height > WORLD_PIXELS ||
-    originX > WORLD_PIXELS - width ||
-    originY > WORLD_PIXELS - height ||
+    originX < bounds.minX ||
+    originY < bounds.minY ||
+    originX > bounds.maxX - width ||
+    originY > bounds.maxY - height ||
     indexPixels !== width * height ||
     (record.source === 'image' && record.everPlaced === false)
   ) {

@@ -136,23 +136,51 @@ it('forwards the configured identity, season and open access to the app', async 
   })
 })
 
-it('mounts the runtime app beneath its configured base path', async () => {
+it.each(['example.com', 'caelestis.mia.cx', 'caelest.is'])(
+  'mounts the runtime app beneath its configured base path on %s',
+  async (host) => {
+    const configured = {
+      ...env(),
+      BASE_PATH: '/backend',
+      ROOT_HOST: 'backend.caelest.is',
+    } as unknown as Env
+
+    const mounted = await worker.fetch(new Request(`https://${host}/backend/health`), configured)
+    const versioned = await worker.fetch(
+      new Request(`https://${host}/backend/v1/server`),
+      configured,
+    )
+    const outside = await worker.fetch(new Request(`https://${host}/health`), configured)
+
+    expect(mounted.status).toBe(200)
+    await expect(mounted.json()).resolves.toEqual({ ok: true })
+    expect(versioned.status).toBe(200)
+    expect(outside.status).toBe(404)
+  },
+)
+
+it.each(['', '/backend'])('serves the dedicated backend hostname at %s', async (prefix) => {
   const configured = {
     ...env(),
     BASE_PATH: '/backend',
+    ROOT_HOST: 'backend.caelest.is',
   } as unknown as Env
-
-  const mounted = await worker.fetch(new Request('https://example.com/backend/health'), configured)
-  const versioned = await worker.fetch(
-    new Request('https://example.com/backend/v1/server'),
+  const health = await worker.fetch(
+    new Request(`https://backend.caelest.is${prefix}/health`),
     configured,
   )
-  const outside = await worker.fetch(new Request('https://example.com/health'), configured)
+  const server = await worker.fetch(
+    new Request(`https://backend.caelest.is${prefix}/v1/server`),
+    configured,
+  )
+  const protectedRead = await worker.fetch(
+    new Request(`https://backend.caelest.is${prefix}/v1/manifest`),
+    configured,
+  )
 
-  expect(mounted.status).toBe(200)
-  await expect(mounted.json()).resolves.toEqual({ ok: true })
-  expect(versioned.status).toBe(200)
-  expect(outside.status).toBe(404)
+  await expect(health.json()).resolves.toEqual({ ok: true })
+  expect(server.status).toBe(200)
+  expect(protectedRead.status).toBe(401)
 })
 
 it('reuses one prepared app and Effect runtime for the same Worker environment', async () => {

@@ -8,12 +8,11 @@
   let { model, onIntent }: { model: OverlayControlsModel; onIntent?: (intent: OverlayControlsIntent) => void } = $props()
   const emit = (intent: OverlayControlsIntent): void => onIntent?.(intent)
   const onAppearance = (intent: AppearanceEditorIntent): void => emit({ type: 'appearance', intent })
-  const question = $derived(`Delete “${model.name}”? This cannot be undone.`)
 
   const onKeydown = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
     event.preventDefault()
-    emit({ type: model.confirmingDelete && !model.deleting ? 'cancel-delete' : 'close' })
+    emit({ type: 'close' })
   }
 </script>
 
@@ -29,16 +28,6 @@
     </div>
     <Button label="Close" kind="ghost" size="compact" iconOnly control="close" onclick={() => emit({ type: 'close' })}><Icon name="close" /></Button>
   </header>
-
-  {#if model.confirmingDelete || model.deleting}
-    <div class="confirm" data-caelestis-confirm role="alertdialog" aria-label={question} tabindex="-1">
-      <span>{question}</span>
-      <div class="confirm-actions">
-        <Button label="Cancel delete" kind="ghost" size="compact" control="cancel-delete" ariaDisabled={model.deleting} onclick={() => emit({ type: 'cancel-delete' })}>Cancel</Button>
-        <Button label="Confirm delete" kind="danger" size="compact" control="confirm-delete" ariaDisabled={model.deleting} onclick={() => emit({ type: 'confirm-delete' })}>{model.deleting ? 'Deleting…' : 'Delete'}</Button>
-      </div>
-    </div>
-  {/if}
 
   {#each model.failures as failure (failure.id)}
     <div class="failure" data-caelestis-error role={failure.announce ? 'alert' : undefined}>{failure.message}</div>
@@ -60,10 +49,8 @@
   .title { display: flex; flex: 1; min-inline-size: 0; align-items: center; gap: 0.25rem; }
   header strong { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
   .lifecycle { display: inline-flex; flex-shrink: 0; align-items: center; min-inline-size: 1rem; min-block-size: 1rem; }
-  .failure, .confirm { margin: 0.35rem 0 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
+  .failure { margin: 0.35rem 0 0; border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   .failure { padding: 0.45rem 0.55rem; background: color-mix(in oklch, var(--caelestis-danger) 14%, var(--caelestis-raised-surface)); color: var(--caelestis-danger); }
-  .confirm { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.55rem 0.65rem; background: color-mix(in oklch, var(--caelestis-warning) 16%, var(--caelestis-raised-surface)); }
-  .confirm-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
   .artwork-action { margin-block-start: 0.5rem; }
   .artwork-action :global(button) { inline-size: 100%; block-size: auto; min-block-size: 2rem; padding-block: 0.5rem; line-height: 1.35; }
 </style>

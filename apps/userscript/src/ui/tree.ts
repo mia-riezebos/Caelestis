@@ -69,6 +69,11 @@ import {
   type TemplateColourProgress,
   type TemplateProgress,
 } from '../templates/mismatch.js'
+import {
+  copyNativeAllianceTemplate,
+  NATIVE_ALLIANCE_OWNER,
+  NATIVE_ALLIANCE_TREE_KEY,
+} from '../templates/native-alliance.js'
 import { nodeChainVisible, nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { localFolderTags, localTagCatalog, localTemplateTags } from '../templates/tags.js'
@@ -113,6 +118,7 @@ export const templateTreeKeyFor = (
   servers: readonly ConnectedServer[],
 ): string | undefined => {
   if (template === null) return undefined
+  if (template.serverUrl === NATIVE_ALLIANCE_OWNER) return `native:${template.id}`
   if (template.serverUrl === undefined) return `local:${template.id}`
   if (template.serverTemplateId === undefined) return undefined
   const server = servers.find((candidate) => candidate.url === template.serverUrl)
@@ -1181,6 +1187,97 @@ const buildTree = <Result>(
     }
   }
 
+  const nativeTemplates = drawnTemplates.filter(
+    (template) => template.serverUrl === NATIVE_ALLIANCE_OWNER,
+  )
+  if (nativeTemplates.length > 0) {
+    const source = groupedSource(
+      nativeTemplates.map((template) => ({
+        parentId: null,
+        item: {
+          key: `native:${template.id}`,
+          name: template.name,
+          kind: 'image',
+          childrenOf: null,
+          meta: `${template.width}×${template.height}`,
+          preview: {
+            width: template.width,
+            height: template.height,
+            indices: template.indices,
+            ownership: 'Wplace',
+          },
+          filterFacts: { source: 'server', visible: isTemplateVisible(template), tags: [] },
+          totalPixels: template.opaque,
+          progress: drawnProgress(template),
+          progressReader: () => drawnProgress(template),
+          colourProgress: () => drawnColourProgress(template),
+          visible: template.visible,
+          setVisible: (on: boolean) => setLocalVisible(template.id, on),
+          canReparent: false,
+          leadingActions: [
+            {
+              icon: 'search',
+              label: 'Go to',
+              returnToCanvas: true,
+              run: () => goToLocalTemplate(template.id),
+            },
+          ],
+          actions: [
+            {
+              icon: 'download',
+              label: 'Copy to Local',
+              run: () => {
+                void copyNativeAllianceTemplate(template.id).then(rerender, (error) =>
+                  reportTreeError(String(error)),
+                )
+              },
+            },
+          ],
+        } satisfies TreeItem,
+      })),
+    )
+    const matches = matcherFor(source, needle, filters)
+    if (source.children(null).some(matches)) {
+      hasFilteredMatches = true
+      const scope = `server:${NATIVE_ALLIANCE_OWNER}`
+      output.row({
+        key: NATIVE_ALLIANCE_TREE_KEY,
+        name: 'Wplace',
+        kind: 'server',
+        depth: 0,
+        container: true,
+        forceExpanded: reveal,
+        siblings: [],
+        parentKey: null,
+        canReparent: false,
+        rerender,
+        onError: reportTreeError,
+        checked: isScopeVisible(scope),
+        onToggleChecked: (on) => {
+          setScopeVisible(scope, on)
+          rerender()
+        },
+      })
+      if (includeCollapsed || reveal || isExpanded(NATIVE_ALLIANCE_TREE_KEY))
+        renderLevel(
+          output,
+          source,
+          null,
+          1,
+          NATIVE_ALLIANCE_TREE_KEY,
+          [],
+          rerender,
+          reveal,
+          rank,
+          matches,
+          budget,
+          reportTreeError,
+          siblingLevels,
+          includeCollapsed,
+        )
+    }
+  }
+
   if (filtering && !hasFilteredMatches)
     output.notice('No templates match your search and filters.', 0)
   if (budget.truncated) {
@@ -1222,6 +1319,7 @@ const actionIcon = (name: string): TreeActionModel['icon'] => {
     case 'uploadFile':
     case 'extension':
     case 'palette':
+    case 'download':
       return name
     default:
       return 'kebab'

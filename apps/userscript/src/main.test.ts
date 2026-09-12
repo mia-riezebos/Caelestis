@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('./templates/personal-sync.js', () => ({ installPersonalTemplates: vi.fn() }))
+
 const harness = vi.hoisted(() => ({
   tileFrame: null as ((frame: unknown) => void) | null,
   localListeners: [] as Array<() => void>,

@@ -250,6 +250,25 @@ const menuRoot = async (): Promise<ParentNode> => {
   return menu().shadowRoot ?? menu()
 }
 
+const deleteDialog = async (): Promise<HTMLDialogElement> => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const dialog = document
+    .querySelector('caelestis-notifications')
+    ?.shadowRoot?.querySelector('dialog')
+  if (dialog === null || dialog === undefined) throw new Error('no deletion dialog')
+  return dialog
+}
+
+const answerDelete = async (confirmed: boolean): Promise<void> => {
+  const dialog = await deleteDialog()
+  const button = [...dialog.querySelectorAll('button')].find(
+    (button) => button.textContent?.trim() === (confirmed ? 'Delete' : 'Cancel'),
+  )
+  if (button === undefined) throw new Error('no confirmation button')
+  button.click()
+  await settle()
+}
+
 const byKey = async (key: string): Promise<HTMLElement> => {
   const selector = `[data-caelestis-control="${key}"]`
   let candidate = document.querySelector(selector)
@@ -1115,7 +1134,7 @@ describe('controls are reconciled against the templates that exist', () => {
     gear('a').click()
     rerender()
     ;(await byKey('delete')).click()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
     await settle()
 
     expect(harness.removeTreeStateKeys).toHaveBeenCalledWith(new Set(['local:a']))
@@ -1130,7 +1149,7 @@ describe('refused writes are reported rather than swallowed', () => {
     gear('a').click()
     rerender()
     ;(await byKey('delete')).click()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
     await settle()
 
     expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
@@ -1894,7 +1913,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
     gear('a').click()
     rerender()
     ;(await byKey('delete')).click()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
 
     gear('b').click()
     rerender()
@@ -1903,21 +1922,6 @@ describe('deferred work stays tied to the template that asked for it', () => {
 
     expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
     expect(menu().dataset.caelestisTemplate).toBe('b')
-  })
-
-  it('keeps a carried delete question naming the template as it is now', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    ;(await byKey('delete')).click()
-
-    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
-    rerender()
-
-    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')?.textContent).toContain(
-      'renamed.png',
-    )
   })
 
   it('lets the latest visibility request own the intent through an ABA sequence', async () => {
@@ -2009,10 +2013,14 @@ describe('focus goes somewhere deliberate', () => {
     rerender()
     ;(await byKey('delete')).click()
 
-    byText(await menuRoot(), 'Cancel').click()
+    await answerDelete(false)
     rerender()
 
     expect(await focusedControl()).toBe('delete')
+    expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
+    expect(
+      document.querySelector('caelestis-notifications')?.shadowRoot?.querySelector('dialog'),
+    ).toBeNull()
   })
 
   it('announces the destructive question rather than a bare Delete', async () => {
@@ -2023,9 +2031,12 @@ describe('focus goes somewhere deliberate', () => {
 
     ;(await byKey('delete')).click()
 
-    const box = (await menuRoot()).querySelector('[data-caelestis-confirm]')
-    expect(box?.getAttribute('role')).toBe('alertdialog')
-    expect(box?.getAttribute('aria-label')).toContain('This cannot be undone')
+    const box = await deleteDialog()
+    expect(box.querySelector('h2')?.textContent).toBe('Delete template?')
+    expect(box.textContent).toContain('alpha.png will be permanently removed.')
+    expect(box.textContent).toContain('It is stored in this browser only.')
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
   })
 })
 
@@ -2157,14 +2168,12 @@ describe('a delete already under way cannot be re-asked', () => {
     rerender()
     ;(await byKey('delete')).click()
     rerender()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
     rerender()
 
-    // Disabling the question's own buttons is not enough while this one can raise a new question
-    // with a fresh, live Cancel over a delete that is already running.
+    // Once confirmed, the modal closes and the rail shows the running deletion.
     expect((await byKey('delete')).getAttribute('aria-disabled')).toBe('true')
-    expect((await byKey('cancel-delete')).getAttribute('aria-disabled')).toBe('true')
-    expect((await byKey('confirm-delete')).textContent).toBe('Deleting…')
+    expect((await byKey('delete')).getAttribute('aria-busy')).toBe('true')
   })
 })
 
@@ -2413,7 +2422,7 @@ describe('the menu is ours and has a keyboard exit', () => {
 
     ;(await byKey('delete')).click()
     rerender()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
     await settle()
 
     expect(harness.deleteServerTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a', {
@@ -2474,7 +2483,7 @@ describe('a delete under way owns the template', () => {
     rerender()
     ;(await byKey('delete')).click()
     rerender()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
 
     expect(harness.removeLocalTemplate).toHaveBeenCalledWith('a')
   })
@@ -2487,7 +2496,7 @@ describe('a delete under way owns the template', () => {
     rerender()
     ;(await byKey('delete')).click()
     rerender()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
     rerender()
 
     // Starting a placement for a record that is about to stop existing strands the placement bar.
@@ -2497,22 +2506,24 @@ describe('a delete under way owns the template', () => {
 })
 
 describe('interaction outranks a repaint', () => {
-  it('does not arm a focus jump when the question is already open', async () => {
+  it('keeps one shared confirmation across repeated requests and repaints', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
     ;(await byKey('delete')).click()
     rerender()
-    ;(await byKey('close')).focus()
+    const dialog = await deleteDialog()
 
     ;(await byKey('delete')).click()
     rerender()
-    // An unrelated rebuild later on must not consume a leftover request and jump to Delete.
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect(await focusedControl()).not.toBe('confirm-delete')
+    expect(await deleteDialog()).toBe(dialog)
+    await answerDelete(false)
+    expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
+    expect(await focusedControl()).toBe('delete')
   })
 })
 
@@ -2639,24 +2650,6 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     expect(await errorText()).toBeNull()
   })
 
-  it('keeps focus on the confirm button once the delete starts', async () => {
-    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    ;(await byKey('delete')).click()
-    rerender()
-
-    ;(await byKey('confirm-delete')).click()
-    rerender()
-
-    // A `disabled` button cannot hold focus, so confirming from the keyboard would drop it to the
-    // document at the exact moment a destructive action is running.
-    expect(await focusedControl()).toBe('confirm-delete')
-    expect((await byKey('confirm-delete')).getAttribute('aria-disabled')).toBe('true')
-  })
-
   it('stops offering the appearance controls while the delete runs', async () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
@@ -2665,10 +2658,10 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     rerender()
     ;(await byKey('delete')).click()
     rerender()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
     rerender()
 
-    // The store refuses these anyway, leaving a meaningless banner beside "Deleting…".
+    // The store refuses these anyway, so keep the controls disabled during deletion.
     // `readonly` does nothing to a range in any browser, so the lock has to refuse the gesture.
     const opacity = (await byKey('opacity')) as HTMLInputElement
     expect(opacity.getAttribute('aria-disabled')).toBe('true')
@@ -2676,24 +2669,6 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     opacity.dispatchEvent(press)
     expect(press.defaultPrevented).toBe(true)
     expect((await byKey('swatch:1')).getAttribute('aria-disabled')).toBe('true')
-  })
-})
-
-describe('the delete question is retracted by the gestures that dismiss it', () => {
-  it('does not come back armed after the menu is closed', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    ;(await byKey('delete')).click()
-    rerender()
-
-    ;(await byKey('close')).click()
-    rerender()
-    gear('a').click()
-    rerender()
-
-    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 })
 
@@ -2799,7 +2774,7 @@ describe('a delete owns the template whichever surface started it', () => {
     expect((await byKey('delete')).getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('keeps the progress box when the menu is closed mid-delete', async () => {
+  it('keeps the delete rail busy when the menu is closed mid-delete', async () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -2807,7 +2782,7 @@ describe('a delete owns the template whichever surface started it', () => {
     rerender()
     ;(await byKey('delete')).click()
     rerender()
-    ;(await byKey('confirm-delete')).click()
+    await answerDelete(true)
     rerender()
 
     ;(await byKey('close')).click()
@@ -2815,8 +2790,7 @@ describe('a delete owns the template whichever surface started it', () => {
     gear('a').click()
     rerender()
 
-    // Without it the controls are all disabled with nothing on screen explaining why.
-    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).not.toBeNull()
+    expect((await byKey('delete')).getAttribute('aria-busy')).toBe('true')
   })
 
   it('opens onto a control that can take focus while a delete runs', async () => {
@@ -3122,24 +3096,6 @@ describe('a slider keeps tracking the store after every kind of gesture', () => 
 })
 
 describe('the menu belongs to us, and to one template at a time', () => {
-  it('retracts a delete question when another template is opened', async () => {
-    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
-    rerender()
-    gear('a').click()
-    rerender()
-    ;(await byKey('delete')).click()
-    rerender()
-
-    gear('b').click()
-    rerender()
-    gear('a').click()
-    rerender()
-
-    // ✕ and Escape both retract it; walking away via another gear must not be the one that leaves
-    // a live destructive button waiting.
-    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
-  })
-
   it('does not flip a swatch back while its own write is landing', async () => {
     // `setAppearance` publishes and repaints from inside its transaction, before the promise
     // resolves and the intent is released.
@@ -3162,7 +3118,7 @@ describe('the menu belongs to us, and to one template at a time', () => {
 })
 
 describe('a condemned template is condemned everywhere', () => {
-  it('renders the progress box as soon as the store says so', async () => {
+  it('marks the delete rail busy as soon as the store says so', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -3173,27 +3129,7 @@ describe('a condemned template is condemned everywhere', () => {
     harness.isDeletingLocal.mockReturnValue(true)
     rerender()
 
-    expect((await byKey('confirm-delete')).textContent).toBe('Deleting…')
-  })
-
-  it('does not resurrect a dismissed question when an external delete fails', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    ;(await byKey('delete')).click()
-    rerender()
-
-    harness.isDeletingLocal.mockReturnValue(true)
-    rerender()
-    ;(await byKey('close')).click()
-    rerender()
-    // The panel's delete fails and drops the guard.
-    harness.isDeletingLocal.mockReturnValue(false)
-    gear('a').click()
-    rerender()
-
-    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect((await byKey('delete')).getAttribute('aria-busy')).toBe('true')
   })
 })
 
@@ -3416,7 +3352,7 @@ describe('more than one thing can be happening at once', () => {
     opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
     await settle()
 
-    expect((await byKey('confirm-delete')).textContent).toBe('Deleting…')
+    expect((await byKey('delete')).getAttribute('aria-busy')).toBe('true')
   })
 
   it('announces a second refusal of the same control', async () => {
@@ -3583,7 +3519,7 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
 })
 
 describe('an action waits for the state it depends on', () => {
-  it('answers the delete question first on Escape from outside the menu', async () => {
+  it('leaves Escape to the shared modal and preserves the display options', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -3592,10 +3528,14 @@ describe('an action waits for the state it depends on', () => {
     rerender()
 
     window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))
+    // Happy DOM does not synthesize the native dialog close event from Escape.
+    ;(await deleteDialog()).close()
+    await settle()
     rerender()
 
     expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
-    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
+    expect(await focusedControl()).toBe('delete')
   })
 
   it('still exits when another page listener prevented the Escape', async () => {

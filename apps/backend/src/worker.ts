@@ -32,7 +32,11 @@ const parseSeason = (value: string | undefined): number | undefined => {
   return season
 }
 
-const requestAtBasePath = (request: Request, configured: string | undefined): Request | null => {
+const requestAtBasePath = (
+  request: Request,
+  configured: string | undefined,
+  rootHost: string | undefined,
+): Request | null => {
   if (configured === undefined || configured === '' || configured === '/') return request
   if (!configured.startsWith('/') || configured.endsWith('/') || /[?#]/.test(configured)) {
     throw new Error(
@@ -40,7 +44,9 @@ const requestAtBasePath = (request: Request, configured: string | undefined): Re
     )
   }
   const url = new URL(request.url)
-  if (url.pathname !== configured && !url.pathname.startsWith(`${configured}/`)) return null
+  if (url.pathname !== configured && !url.pathname.startsWith(`${configured}/`)) {
+    return url.hostname === rootHost ? request : null
+  }
   url.pathname = url.pathname.slice(configured.length) || '/'
   return new Request(url, request)
 }
@@ -98,7 +104,7 @@ export default {
       throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
     }
 
-    const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
+    const mountedRequest = requestAtBasePath(request, env.BASE_PATH, env.ROOT_HOST)
     if (mountedRequest === null) {
       return measureRequest(
         env.REQUEST_METRICS,
