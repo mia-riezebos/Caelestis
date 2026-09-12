@@ -1,4 +1,5 @@
 import {
+  flattenPath,
   MAX_PATH_NODES,
   MAX_RASTER_BITS,
   MAX_REGION_ITEMS,
@@ -31,6 +32,17 @@ import {
   type ClaimToolEntry,
   type ClaimToolGroupId,
 } from '@caelestis/ui/elements'
+import {
+  cornerAnchor,
+  insertAnchor,
+  isSmooth,
+  nearestOnPath,
+  orientToContinue,
+  type PathHit,
+  removeAnchor,
+  rubberBand,
+  smoothAnchor,
+} from './claim-path.js'
 import { eraseFromRaster, mergeRasters, PixelSet, rasterTouches } from './claim-raster.js'
 import { splitItem, strokeArea } from './claim-split.js'
 import { warn } from './debug.js'
@@ -83,6 +95,15 @@ export const CLAIM_TOOLS: readonly ClaimToolEntry[] = [
   { tool: 'direct', group: 'selection', label: 'Direct selection', key: 'A', icon: 'toolDirect' },
   { tool: 'lasso', group: 'selection', label: 'Lasso', key: 'Q', icon: 'toolLasso' },
   { tool: 'pen', group: 'pen', label: 'Pen', key: 'P', icon: 'toolPen' },
+  { tool: 'add-anchor', group: 'pen', label: 'Add anchor', key: '+', icon: 'toolAddAnchor' },
+  {
+    tool: 'delete-anchor',
+    group: 'pen',
+    label: 'Delete anchor',
+    key: '−',
+    icon: 'toolDeleteAnchor',
+  },
+  { tool: 'anchor', group: 'pen', label: 'Anchor point', key: 'Shift+C', icon: 'toolAnchor' },
   { tool: 'pencil', group: 'pencil', label: 'Pencil', key: 'N', icon: 'toolPencil' },
   { tool: 'brush', group: 'pencil', label: 'Paintbrush', key: 'B', icon: 'toolBrush' },
   { tool: 'eraser', group: 'pencil', label: 'Eraser', key: 'E', icon: 'toolEraser' },
@@ -140,6 +161,8 @@ type DragKind =
   | 'raster'
   | 'erase'
   | 'scale'
+  | 'handle-solo'
+  | 'anchor-pull'
 
 interface Drag {
   readonly kind: DragKind
@@ -205,6 +228,10 @@ let editingIds: readonly string[] = []
 let drag: Drag | null = null
 /** The pen path under construction. */
 let pen: PathNode[] | null = null
+/** When the pen continues a saved path, the item it came from, restored on commit. */
+let penContinued: RegionItem | null = null
+/** Where the pointer is over the map, in canvas coordinates, for the pen's rubber band. */
+let hover: Point | null = null
 /** The stroke under construction, as raw points. */
 let stroke: Point[] | null = null
 /** The shape under construction with a shape tool. */
@@ -485,15 +512,100 @@ const penStartClient = (): Point | null => {
 const commitPen = (closed: boolean): void => {
   if (pen === null) return
   const nodes = pen
+  const continued = penContinued
   pen = null
+  penContinued = null
   if (nodes.length < (closed ? 3 : 2)) {
-    bump()
+    if (continued !== null) {
+      items = [...items, continued]
+      bump()
+    } else bump()
+    notify()
+    return
+  }
+  if (continued !== null && continued.shape.kind === 'path') {
+    // The path picks up where it left off, under its own id and width.
+    const shape: RegionShape = { ...continued.shape, closed, nodes }
+    items = [...items, { ...continued, shape }]
+    select([continued.id])
+    touch()
     notify()
     return
   }
   const strokeWidth = closed ? width : Math.max(1, width)
-  addItem({ kind: 'path', closed, width: closed ? strokeWidth : strokeWidth, nodes })
+  addItem({ kind: 'path', closed, width: strokeWidth, nodes })
   notify()
+}
+
+/** Canvas pixels per CSS pixel of hit radius, so hit tests scale with the zoom. */
+const hitRadiusCanvas = (): number => {
+  const projection = screenProjection()
+  const scale = projection?.pixelsPerCanvasPixel.x ?? 1
+  return HIT_RADIUS_CSS / Math.max(scale, 1e-6)
+}
+
+/** The topmost item whose path passes within reach of a canvas point, as a path. */
+const pathNear = (
+  point: Point,
+): { readonly item: RegionItem; readonly path: PathShape; readonly hit: PathHit } | null => {
+  const radius = hitRadiusCanvas()
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index] as RegionItem
+    if (item.shape.kind === 'pixels') continue
+    const path = toPath(item.shape)
+    const hit = nearestOnPath(path.nodes, path.closed, point)
+    if (hit !== null && hit.distance <= radius) return { item, path, hit }
+  }
+  return null
+}
+
+/** Make an item a path in place (a no-op for one already), returning the path. */
+const ensurePath = (item: RegionItem): PathShape => {
+  if (item.shape.kind === 'path') return item.shape
+  const path = toPath(item.shape)
+  replaceItem(item.id, path)
+  return path
+}
+
+const addAnchorAt = (point: Point): boolean => {
+  const near = pathNear(point)
+  if (near === null) return false
+  if (near.path.nodes.length >= MAX_PATH_NODES) {
+    message = `A path holds at most ${MAX_PATH_NODES} anchors.`
+    return true
+  }
+  ensurePath(near.item)
+  replaceItem(near.item.id, {
+    ...near.path,
+    nodes: insertAnchor(near.path.nodes, near.hit.index, near.hit.t),
+  })
+  select([near.item.id])
+  return true
+}
+
+/** Remove one anchor of a path item; a path left too short goes altogether. */
+const deleteAnchorOf = (item: RegionItem, index: number): void => {
+  const path = ensurePath(item)
+  const nodes = removeAnchor(path.nodes, index)
+  if (nodes.length < (path.closed ? 3 : 2)) {
+    items = items.filter((held) => held.id !== item.id)
+    select([])
+    touch()
+    return
+  }
+  replaceItem(item.id, { ...path, nodes })
+}
+
+/** The pen picks up an open path at one of its ends. */
+const continuePathFrom = (item: RegionItem, index: number): boolean => {
+  if (item.shape.kind !== 'path' || item.shape.closed) return false
+  if (index !== 0 && index !== item.shape.nodes.length - 1) return false
+  pen = orientToContinue(item.shape.nodes, index)
+  penContinued = item
+  items = items.filter((held) => held.id !== item.id)
+  select([])
+  bump()
+  return true
 }
 
 const finishStroke = (): void => {
@@ -870,8 +982,24 @@ const onHandlePress = (event: PointerEvent, target: Element): boolean => {
     (shape.kind === 'polygon' || shape.kind === 'star')
   ) {
     startDrag(kind, event, { x: shape.cx, y: shape.cy }, item)
+  } else if (kind === 'node' && shape.kind === 'path' && tool === 'pen') {
+    // The pen on a selected path: continue from an end, otherwise delete the anchor.
+    if (!continuePathFrom(item, index)) deleteAnchorOf(item, index)
+  } else if (kind === 'node' && shape.kind === 'path' && tool === 'delete-anchor') {
+    if (part === 'anchor') deleteAnchorOf(item, index)
+  } else if (kind === 'node' && shape.kind === 'path' && tool === 'add-anchor') {
+    // Nothing to add on an anchor itself; segments are hit on the map.
+  } else if (kind === 'node' && shape.kind === 'path' && tool === 'anchor') {
+    if (part === 'anchor') startDrag('anchor-pull', event, { x: 0, y: 0 }, item, index, 'anchor')
+    else startDrag('handle-solo', event, { x: 0, y: 0 }, item, index, part as Drag['part'])
   } else if (kind === 'node' && shape.kind === 'path') {
     startDrag('node', event, { x: 0, y: 0 }, item, index, (part as Drag['part']) ?? 'anchor')
+  } else if (kind === 'anchor' && shape.kind !== 'path' && tool === 'delete-anchor') {
+    deleteAnchorOf(item, index)
+  } else if (kind === 'anchor' && shape.kind !== 'path' && tool === 'anchor') {
+    const converted: RegionItem = { ...item, shape: toPath(shape) }
+    replaceItem(item.id, converted.shape)
+    startDrag('anchor-pull', event, { x: 0, y: 0 }, converted, index, 'anchor')
   } else if (kind === 'anchor' && shape.kind !== 'path') {
     // Editing one anchor of a rectangle, ellipse, polygon, or star turns it into a path first.
     const converted: RegionItem = { ...item, shape: toPath(shape) }
@@ -949,8 +1077,32 @@ const onPointerDown = (event: PointerEvent): void => {
     case 'hand':
       // The one tool that leaves the press to the map, so dragging pans.
       return
+    case 'add-anchor': {
+      consume(event)
+      if (!addAnchorAt(point)) select([])
+      notify()
+      return
+    }
+    case 'delete-anchor':
+    case 'anchor': {
+      // Anchors are SVG handles and arrive through onHandlePress; the map itself just selects.
+      consume(event)
+      const near = pathNear(point)
+      select(near === null ? [] : [near.item.id])
+      notify()
+      return
+    }
     case 'pen': {
       consume(event)
+      if (pen === null) {
+        // Not drawing: a click on a selected path's segment adds an anchor there instead.
+        const near = pathNear(point)
+        if (near !== null && isSelected(near.item.id)) {
+          addAnchorAt(point)
+          notify()
+          return
+        }
+      }
       const start = penStartClient()
       if (
         pen !== null &&
@@ -1053,6 +1205,10 @@ const onPointerMove = (event: PointerEvent): void => {
     if (!isMapPress(event)) {
       setCursor('')
       return
+    }
+    if (tool === 'pen' && pen !== null) {
+      hover = canvasPixelAt(event.clientX, event.clientY)
+      syncOverlay()
     }
     if (isSelectionTool(tool)) {
       const point = canvasPixelAt(event.clientX, event.clientY)
@@ -1204,6 +1360,32 @@ const onPointerMove = (event: PointerEvent): void => {
       bump()
       break
     }
+    case 'anchor-pull': {
+      if (base?.shape.kind !== 'path' || !drag.moved) return
+      // Dragging out of an anchor gives it a pair of handles pointing along the drag.
+      const current = selectedItem()
+      if (current?.shape.kind !== 'path') return
+      const index = drag.index
+      const node = current.shape.nodes[index] as PathNode
+      const nodes = current.shape.nodes.map((held, at) =>
+        at === index ? smoothAnchor(node, { x: point.x, y: point.y }) : held,
+      )
+      replaceItem(base.id, { ...current.shape, nodes })
+      break
+    }
+    case 'handle-solo': {
+      if (base?.shape.kind !== 'path') return
+      // One handle on its own: the other stays, which breaks the smooth pair into a cusp.
+      const current = selectedItem()
+      if (current?.shape.kind !== 'path') return
+      const index = drag.index
+      const part = drag.part
+      const nodes = current.shape.nodes.map((held, at) =>
+        at === index ? { ...held, [part]: { x: point.x, y: point.y } } : held,
+      )
+      replaceItem(base.id, { ...current.shape, nodes })
+      break
+    }
     case 'stroke': {
       if (stroke === null) return
       const last = stroke[stroke.length - 1] as Point
@@ -1251,6 +1433,23 @@ const onPointerEnd = (event: PointerEvent): void => {
     case 'stroke':
       finishStroke()
       return
+    case 'anchor-pull': {
+      const base = ended.base
+      if (!ended.moved && base?.shape.kind === 'path') {
+        const current = selectedItem()
+        if (current?.shape.kind === 'path') {
+          const node = current.shape.nodes[ended.index] as PathNode
+          if (isSmooth(node))
+            replaceItem(base.id, {
+              ...current.shape,
+              nodes: current.shape.nodes.map((held, at) =>
+                at === ended.index ? cornerAnchor(held) : held,
+              ),
+            })
+        }
+      }
+      break
+    }
     case 'raster':
       finishRaster()
       return
@@ -1295,7 +1494,10 @@ const onKeydown = (event: KeyboardEvent): void => {
   if (key === 'escape') {
     consume(event)
     if (pen !== null) {
+      // Dropping the pen gives a continued path back as it was.
       pen = null
+      if (penContinued !== null) items = [...items, penContinued]
+      penContinued = null
       bump()
       notify()
     } else if (selectedIds.length > 0) {
@@ -1313,6 +1515,21 @@ const onKeydown = (event: KeyboardEvent): void => {
   if (key === 'delete' || key === 'backspace') {
     consume(event)
     deleteSelected()
+    return
+  }
+  if (key === '+' || key === '=') {
+    consume(event)
+    setTool('add-anchor')
+    return
+  }
+  if (key === '-' || key === '_') {
+    consume(event)
+    setTool('delete-anchor')
+    return
+  }
+  if (key === 'c' && event.shiftKey) {
+    consume(event)
+    setTool('anchor')
     return
   }
   const next = TOOL_KEYS[key]
@@ -1623,12 +1840,18 @@ const syncOverlay = (): void => {
       const rotateGrip = root.lastElementChild as SVGElement | null
       if (rotateGrip !== null) rotateGrip.style.cursor = ROTATE_CURSOR
     }
-    if (tool === 'direct' && shape.kind !== 'path') {
+    const anchorTool =
+      tool === 'direct' ||
+      tool === 'anchor' ||
+      tool === 'add-anchor' ||
+      tool === 'delete-anchor' ||
+      (tool === 'pen' && pen === null)
+    if (anchorTool && shape.kind !== 'path') {
       // Every shape has anchors under direct selection; dragging one makes it a path.
       for (const [index, anchor] of anchorsOf(shape).entries())
         handle(project(anchor), `anchor:${index}`, accent)
     }
-    if (tool === 'direct' && shape.kind === 'path') {
+    if (anchorTool && shape.kind === 'path') {
       shape.nodes.forEach((node, index) => {
         const anchor = project(node)
         for (const part of ['in', 'out'] as const) {
@@ -1718,22 +1941,51 @@ const syncOverlay = (): void => {
     )
   }
   if (pen !== null && pen.length > 0) {
-    const flat = pen.map(project)
+    // The path so far as the curve it is, with every anchor and handle, as any vector editor.
+    const curve = flattenPath(pen, false).map(project)
     root.appendChild(
-      svg('path', { d: pathData(flat, false), fill: 'none', stroke: accent, 'stroke-width': 1.5 }),
+      svg('path', { d: pathData(curve, false), fill: 'none', stroke: accent, 'stroke-width': 1.5 }),
     )
-    for (const node of pen) {
-      const anchor = project(node)
+    const last = pen[pen.length - 1] as PathNode
+    if (hover !== null && drag === null) {
+      // The rubber band: where the next segment would go from the last anchor.
       root.appendChild(
-        svg('circle', { cx: anchor.x, cy: anchor.y, r: 3.5, fill: accent, stroke: '#fff' }),
+        svg('path', {
+          d: pathData(rubberBand(last, hover).map(project), false),
+          fill: 'none',
+          stroke: accent,
+          'stroke-width': 1,
+          'stroke-dasharray': '3 3',
+          'data-gesture': 'rubber-band',
+        }),
       )
-      if (node.out !== undefined) {
-        const out = project(node.out)
-        root.appendChild(
-          svg('line', { x1: anchor.x, y1: anchor.y, x2: out.x, y2: out.y, stroke: accent }),
-        )
-      }
     }
+    const drawn = pen
+    drawn.forEach((node, index) => {
+      const anchor = project(node)
+      for (const part of ['in', 'out'] as const) {
+        const control = node[part]
+        if (control === undefined) continue
+        const at = project(control)
+        root.appendChild(
+          svg('line', { x1: anchor.x, y1: anchor.y, x2: at.x, y2: at.y, stroke: accent }),
+        )
+        root.appendChild(svg('circle', { cx: at.x, cy: at.y, r: 3, fill: '#fff', stroke: accent }))
+      }
+      const size = 7
+      root.appendChild(
+        svg('rect', {
+          x: anchor.x - size / 2,
+          y: anchor.y - size / 2,
+          width: size,
+          height: size,
+          fill: index === drawn.length - 1 ? accent : '#fff',
+          stroke: accent,
+          'stroke-width': 1.5,
+          'data-pen-anchor': index,
+        }),
+      )
+    })
   }
 }
 
@@ -1771,6 +2023,8 @@ export const startClaimMode = (initialTool?: ClaimTool): void => {
   raster = null
   erasing = null
   lastStamp = null
+  penContinued = null
+  hover = null
   dirty = false
   drag = null
   pen = null
@@ -1794,6 +2048,8 @@ export const stopClaimMode = (): void => {
   raster = null
   erasing = null
   lastStamp = null
+  penContinued = null
+  hover = null
   handHeldFrom = null
   editingIds = []
   drag = null

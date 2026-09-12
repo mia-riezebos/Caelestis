@@ -24,7 +24,13 @@
       case 'hand':
         return 'Drag to pan. Scroll pans too, Shift+scroll sideways; Alt/Option or Ctrl/Cmd+scroll zooms. Hold Space for the hand from any tool.'
       case 'pen':
-        return 'Click to add corners, drag to add curves. Click the first anchor to close, Enter to finish open, Escape to drop the path.'
+        return 'Click to add corners, drag to add curves; the band shows the next segment. Click the first anchor to close, Enter to finish open, Escape to drop. On a selected path: click an end to continue it, a segment to add an anchor, an anchor to delete it.'
+      case 'add-anchor':
+        return 'Click a path segment to add an anchor there. The curve does not change.'
+      case 'delete-anchor':
+        return 'Click an anchor to remove it.'
+      case 'anchor':
+        return 'Drag out of a corner anchor to give it handles; click a smooth anchor to make it a corner; drag one handle to move it on its own.'
       case 'pencil':
         return 'Drag to draw pixels. Strokes join the selected drawing; the eraser rubs them out.'
       case 'brush':

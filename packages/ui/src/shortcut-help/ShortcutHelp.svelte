@@ -172,7 +172,7 @@
       },
       {
         id: 'claim', category: 'Overlay', title: 'Claim mode',
-        description: 'M enters claim mode with the rectangle tool. Inside, the keys follow Illustrator: V selection (drag empty canvas for a marquee; rotate from the grip or just outside a corner), A direct selection (anchors on every shape), Q lasso, P pen, N pencil (pixels), B paintbrush, E eraser, M rectangle, L ellipse, H hand or hold Space to pan; scroll pans, Alt/Option or Ctrl/Cmd+scroll zooms; Enter saves your claims, Delete removes the selection, Escape leaves. Hold or right-click a drawer button for its other tools.',
+        description: 'M enters claim mode with the rectangle tool. Inside, the keys follow Illustrator: V selection (drag empty canvas for a marquee; rotate from the grip or just outside a corner), A direct selection (anchors on every shape), Q lasso, P pen (on a selected path: click an end to continue, a segment to add an anchor, an anchor to delete it), + and − add or delete anchors, Shift+C the anchor-point tool, N pencil (pixels), B paintbrush, E eraser, M rectangle, L ellipse, H hand or hold Space to pan; scroll pans, Alt/Option or Ctrl/Cmd+scroll zooms; Enter saves your claims, Delete removes the selection, Escape leaves. Hold or right-click a drawer button for its other tools.',
         rows: [{ key: 'M', label: 'Claim mode' }], keyboardKeys: ['KeyM'],
       },
       {

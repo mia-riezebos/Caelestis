@@ -397,6 +397,89 @@ describe('claim editor', () => {
     expect(pixels?.count).toBeGreaterThan(400)
   })
 
+  it('shows the pen path as a curve with anchors, handles, and a rubber band to the pointer', async () => {
+    await setup('pen')
+    click(0, 0)
+    pointer('pointerdown', 40, 0)
+    pointer('pointermove', 60, 30)
+    pointer('pointerup', 60, 30)
+    const overlay = '#caelestis-claim-overlay'
+    expect(document.querySelectorAll(`${overlay} [data-pen-anchor]`)).toHaveLength(2)
+    // The dragged anchor got both handles, drawn as lines with round ends.
+    expect(document.querySelectorAll(`${overlay} line`)).toHaveLength(2)
+    pointer('pointermove', 80, 40)
+    expect(document.querySelector(`${overlay} [data-gesture="rubber-band"]`)).not.toBeNull()
+  })
+
+  it('lets the pen continue an open path, add an anchor on a segment, and delete one', async () => {
+    const editor = await setup('pen')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 2 })
+    click(0, 50)
+    click(40, 50)
+    key('Enter')
+    expect(editor.claimModeModel()).toMatchObject({ items: 1, selectedCount: 1 })
+    // A click on the segment of the selected path adds an anchor there.
+    click(20, 50)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(3)
+    // Continue from the last end: click its anchor, then place another point.
+    pointer('pointerdown', 40, 50, handle('node:2:anchor'))
+    pointer('pointerup', 40, 50)
+    click(80, 50)
+    key('Enter')
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(4)
+    expect(editor.claimEditorPixels()).not.toBeNull()
+    // The pen on a middle anchor deletes it.
+    pointer('pointerdown', 20, 50, handle('node:1:anchor'))
+    pointer('pointerup', 20, 50)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(3)
+  })
+
+  it('has add, delete, and anchor-point tools with Illustrator keys', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 49, 29)
+    key('+')
+    expect(editor.claimEditorTool()).toBe('add-anchor')
+    // A click on the rectangle's edge makes it a five-anchor path.
+    click(30, 10)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(5)
+    key('-')
+    expect(editor.claimEditorTool()).toBe('delete-anchor')
+    pointer('pointerdown', 30, 10, handle('node:1:anchor'))
+    pointer('pointerup', 30, 10)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(4)
+    const shifted = new KeyboardEvent('keydown', {
+      key: 'C',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    document.dispatchEvent(shifted)
+    expect(editor.claimEditorTool()).toBe('anchor')
+    // Dragging out of a corner gives it handles; clicking it again makes it a corner.
+    pointer('pointerdown', 10, 10, handle('node:0:anchor'))
+    pointer('pointermove', 25, 0)
+    pointer('pointerup', 25, 0)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle="node:0:out"]'),
+    ).toHaveLength(1)
+    pointer('pointerdown', 10, 10, handle('node:0:anchor'))
+    pointer('pointerup', 10, 10)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle="node:0:out"]'),
+    ).toHaveLength(0)
+  })
+
   it('finishes an open pen path with Enter as a stroke and drops one with Escape', async () => {
     const editor = await setup('pen')
     editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 3 })

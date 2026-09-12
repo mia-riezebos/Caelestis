@@ -41,6 +41,7 @@ import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
 import labelOutline from '@iconify-icons/material-symbols/label-outline'
 import lassoSelect from '@iconify-icons/material-symbols/lasso-select'
 import lightMode from '@iconify-icons/material-symbols/light-mode'
+import lineCurve from '@iconify-icons/material-symbols/line-curve'
 import moreVert from '@iconify-icons/material-symbols/more-vert'
 import nearMe from '@iconify-icons/material-symbols/near-me'
 import notifications from '@iconify-icons/material-symbols/notifications-outline'
@@ -119,6 +120,9 @@ export const ICONS = define({
   toolLasso: lassoSelect,
   toolHand: panTool,
   toolPen: inkPen,
+  toolAddAnchor: add,
+  toolDeleteAnchor: remove,
+  toolAnchor: lineCurve,
   toolPencil: editGlyph,
   toolBrush: brushGlyph,
   toolEraser: inkEraser,
