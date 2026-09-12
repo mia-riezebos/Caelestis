@@ -521,6 +521,71 @@ export const regionDocumentPixels = (document: RegionDocument): RegionShapePixel
   return { rect, mask, count }
 }
 
+export interface RegionPixelComponents {
+  /** Bounding box of each self-contained piece, in canvas pixels, largest first. */
+  readonly boxes: readonly PresenceRect[]
+  /** Row-major over `pixels.rect`: `0` outside, else one plus the index into `boxes`. */
+  readonly labels: Uint16Array
+}
+
+/**
+ * The self-contained pieces of a claim: pixels that touch, including at corners, belong to the
+ * same piece, so one shape, a brush stroke, or several overlapping shapes make one piece and two
+ * shapes with a gap between them make two. Each piece can then carry its own name tag.
+ */
+export const regionPixelComponents = (pixels: RegionShapePixels): RegionPixelComponents => {
+  const { rect, mask } = pixels
+  const labels = new Uint16Array(mask.length)
+  const found: { x0: number; y0: number; x1: number; y1: number; size: number }[] = []
+  const stack: number[] = []
+  for (let seed = 0; seed < mask.length; seed++) {
+    if (mask[seed] !== 1 || labels[seed] !== 0 || found.length >= 0xffff) continue
+    const box = { x0: rect.w, y0: rect.h, x1: -1, y1: -1, size: 0 }
+    const label = found.length + 1
+    found.push(box)
+    labels[seed] = label
+    stack.push(seed)
+    while (stack.length > 0) {
+      const at = stack.pop() as number
+      const x = at % rect.w
+      const y = (at - x) / rect.w
+      box.size++
+      if (x < box.x0) box.x0 = x
+      if (x > box.x1) box.x1 = x
+      if (y < box.y0) box.y0 = y
+      if (y > box.y1) box.y1 = y
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy
+        if (ny < 0 || ny >= rect.h) continue
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx
+          if (nx < 0 || nx >= rect.w) continue
+          const next = ny * rect.w + nx
+          if (mask[next] !== 1 || labels[next] !== 0) continue
+          labels[next] = label
+          stack.push(next)
+        }
+      }
+    }
+  }
+  // Largest first, so a cap on tags keeps the pieces that matter; relabel to match.
+  const order = found.map((box, index) => ({ box, index })).sort((a, b) => b.box.size - a.box.size)
+  const remap = new Uint16Array(found.length + 1)
+  order.forEach(({ index }, position) => {
+    remap[index + 1] = position + 1
+  })
+  for (let at = 0; at < labels.length; at++) labels[at] = remap[labels[at] as number] as number
+  return {
+    boxes: order.map(({ box }) => ({
+      x: rect.x + box.x0,
+      y: rect.y + box.y0,
+      w: box.x1 - box.x0 + 1,
+      h: box.y1 - box.y0 + 1,
+    })),
+    labels,
+  }
+}
+
 /** Whether a whole canvas pixel is claimed by the document. */
 export const regionDocumentContainsPixel = (
   document: RegionDocument,

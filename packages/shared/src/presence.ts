@@ -22,7 +22,8 @@ import type { TemplateSurface } from './template-surface.js'
 
 export const PRESENCE_PROTOCOL_V1 = 'caelestis.presence.v1'
 
-export const PRESENCE_VIEWPORT_MIN_MS = 2_000
+/** One viewport a second while panning: peers glide between updates, so this is what they feel. */
+export const PRESENCE_VIEWPORT_MIN_MS = 1_000
 export const PRESENCE_DRAFT_MIN_MS = 1_000
 export const PRESENCE_HEARTBEAT_MS = 30_000
 export const PRESENCE_TICK_MS = 1_000

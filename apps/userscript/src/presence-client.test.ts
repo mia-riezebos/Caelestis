@@ -222,7 +222,13 @@ describe('presence client', () => {
       templateId: null,
       claimant: { wplaceUserId: 9, displayName: 'Sam' },
       document: {
-        items: [{ id: 'a', op: 'add', shape: { kind: 'rectangle', x: 5, y: 5, w: 10, h: 10 } }],
+        items: [
+          {
+            id: 'a',
+            op: 'add' as const,
+            shape: { kind: 'rectangle' as const, x: 5, y: 5, w: 10, h: 10 },
+          },
+        ],
       },
       rect: { x: 5, y: 5, w: 10, h: 10 },
       label: '',
@@ -285,7 +291,7 @@ describe('presence client', () => {
     expect(socket.readyState).toBe(1)
   })
 
-  it('publishes the first viewport at once and later ones at most every two seconds', async () => {
+  it('publishes the first viewport at once and later ones at most once a second', async () => {
     const { client, socket } = await connect()
     client.observePresenceFrame(frame([tileAt(10, 20)]))
     await vi.advanceTimersByTimeAsync(0)

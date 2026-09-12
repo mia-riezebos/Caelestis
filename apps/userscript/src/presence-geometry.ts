@@ -88,3 +88,19 @@ export const rectOnScreen = (
     return null
   return { x, y, width, height }
 }
+
+/** The canvas pixel under a point on the map canvas, in device pixels, or null with no tiles. */
+export const canvasPixelAt = (
+  frame: TileFrame,
+  deviceX: number,
+  deviceY: number,
+): { readonly x: number; readonly y: number } | null => {
+  const reference = frame.quads[0]
+  if (reference === undefined || reference.width <= 0 || reference.height <= 0) return null
+  const scaleX = TILE_SIZE / reference.width
+  const scaleY = TILE_SIZE / reference.height
+  return {
+    x: Math.floor(reference.tile.x * TILE_SIZE + (deviceX - reference.x) * scaleX),
+    y: Math.floor(reference.tile.y * TILE_SIZE + (deviceY - reference.y) * scaleY),
+  }
+}

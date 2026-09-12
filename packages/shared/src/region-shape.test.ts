@@ -8,6 +8,7 @@ import {
   regionDocumentBounds,
   regionDocumentContainsPixel,
   regionDocumentPixels,
+  regionPixelComponents,
   regionShapeBounds,
   regionShapeContainsPixel,
   regionShapeOutline,
@@ -207,5 +208,63 @@ describe('region shapes', () => {
         { x: 6, y: 6 },
       ],
     })
+  })
+})
+
+describe('regionPixelComponents', () => {
+  const doc = (...shapes: RegionShape[]): RegionDocument => ({
+    items: shapes.map((shape, index) => ({ id: `s${index}`, op: 'add' as const, shape })),
+  })
+
+  it('finds one piece per self-contained group of pixels, largest first', () => {
+    const pixels = regionDocumentPixels(
+      doc(
+        { kind: 'rectangle', x: 0, y: 0, w: 3, h: 3 },
+        { kind: 'rectangle', x: 2, y: 2, w: 3, h: 3 },
+        { kind: 'rectangle', x: 10, y: 0, w: 2, h: 2 },
+      ),
+    )
+    expect(pixels).not.toBeNull()
+    const { boxes, labels } = regionPixelComponents(pixels as NonNullable<typeof pixels>)
+    expect(boxes).toEqual([
+      { x: 0, y: 0, w: 5, h: 5 },
+      { x: 10, y: 0, w: 2, h: 2 },
+    ])
+    const at = (x: number, y: number): number => labels[y * 12 + x] as number
+    expect(at(0, 0)).toBe(1)
+    expect(at(4, 4)).toBe(1)
+    expect(at(11, 1)).toBe(2)
+    expect(at(6, 0)).toBe(0)
+  })
+
+  it('joins pixels that only touch at a corner and separates ones with a gap', () => {
+    const corner = regionDocumentPixels(
+      doc(
+        { kind: 'rectangle', x: 0, y: 0, w: 2, h: 2 },
+        { kind: 'rectangle', x: 2, y: 2, w: 2, h: 2 },
+      ),
+    )
+    expect(regionPixelComponents(corner as NonNullable<typeof corner>).boxes).toHaveLength(1)
+    const gap = regionDocumentPixels(
+      doc(
+        { kind: 'rectangle', x: 0, y: 0, w: 2, h: 2 },
+        { kind: 'rectangle', x: 3, y: 3, w: 2, h: 2 },
+      ),
+    )
+    expect(regionPixelComponents(gap as NonNullable<typeof gap>).boxes).toHaveLength(2)
+  })
+
+  it('splits a shape that a subtraction cuts in two', () => {
+    const pixels = regionDocumentPixels({
+      items: [
+        { id: 'a', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 9, h: 3 } },
+        { id: 'b', op: 'subtract', shape: { kind: 'rectangle', x: 4, y: 0, w: 1, h: 3 } },
+      ],
+    })
+    const { boxes } = regionPixelComponents(pixels as NonNullable<typeof pixels>)
+    expect(boxes).toEqual([
+      { x: 0, y: 0, w: 4, h: 3 },
+      { x: 5, y: 0, w: 4, h: 3 },
+    ])
   })
 })

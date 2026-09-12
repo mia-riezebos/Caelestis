@@ -50,7 +50,7 @@ import { accountIdentity, loadAccount } from './wplace-account.js'
  * every few minutes. Saving and releasing a claim is HTTP on every server.
  *
  * Everything that leaves this module is throttled, because the socket's cost on the server is
- * counted per incoming message. A pan produces one viewport rect every two seconds at most, a
+ * counted per incoming message. A pan produces one viewport rect a second at most, a
  * draft one mask a second, and a quiet tab one heartbeat every thirty. What arrives is already
  * filtered to the peers near this viewport, so the layer only has to draw what it is given.
  *

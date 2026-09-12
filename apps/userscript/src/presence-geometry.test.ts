@@ -1,6 +1,7 @@
 import { TILE_SIZE, WORLD_PIXELS } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import {
+  canvasPixelAt,
   draftIn,
   MAX_PUBLISHED_DRAFT_PIXELS,
   rectOnScreen,
@@ -89,5 +90,16 @@ describe('rectOnScreen', () => {
 
   it('answers null when the rect is entirely off screen', () => {
     expect(rectOnScreen(held, { x: 0, y: 0, w: 10, h: 10 })).toBeNull()
+  })
+})
+
+describe('canvasPixelAt', () => {
+  it('maps a device pixel back onto the canvas through a drawn tile', () => {
+    const held = frame({ width: 800, height: 600 }, [
+      { tile: { x: 10, y: 20 }, x: 100, y: 50, width: TILE_SIZE / 2, height: TILE_SIZE / 2 },
+    ])
+    expect(canvasPixelAt(held, 105, 70)).toEqual({ x: 10 * TILE_SIZE + 10, y: 20 * TILE_SIZE + 40 })
+    expect(canvasPixelAt(held, 99, 50)).toEqual({ x: 10 * TILE_SIZE - 2, y: 20 * TILE_SIZE })
+    expect(canvasPixelAt(frame({ width: 800, height: 600 }, []), 1, 1)).toBeNull()
   })
 })

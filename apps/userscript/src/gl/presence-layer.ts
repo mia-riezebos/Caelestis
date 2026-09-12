@@ -1,10 +1,12 @@
 import {
   decodePresenceDraftMask,
+  PRESENCE_VIEWPORT_MIN_MS,
   type PresenceRect,
   type RegionDocument,
   type RegionShapePixels,
   rectsIntersect,
   regionDocumentPixels,
+  sameRect,
   TILE_SIZE,
 } from '@caelestis/shared'
 import { claimEditorEditingId, claimEditorPixels } from '../claim-editor.js'
@@ -188,10 +190,33 @@ interface MaskTexture {
   readonly texture: WebGLTexture
 }
 
+/** A rect gliding from `from` to `to`, started at `since`. */
+interface Motion {
+  readonly from: PresenceRect
+  readonly to: PresenceRect
+  readonly since: number
+}
+
+/** A glide lasts one publish interval, so a steadily panning peer never quite stops. */
+export const PRESENCE_MOTION_MS = PRESENCE_VIEWPORT_MIN_MS
+
+const motionProgress = (elapsed: number): number => {
+  const t = Math.min(1, Math.max(0, elapsed / PRESENCE_MOTION_MS))
+  // Ease out: quick to leave, gentle to arrive, so successive updates chain smoothly.
+  return 1 - (1 - t) * (1 - t)
+}
+
+const lerpRect = (from: PresenceRect, to: PresenceRect, t: number): PresenceRect => ({
+  x: from.x + (to.x - from.x) * t,
+  y: from.y + (to.y - from.y) * t,
+  w: from.w + (to.w - from.w) * t,
+  h: from.h + (to.h - from.h) * t,
+})
+
 /** Rasterised claim documents, kept per region so a redraw does not rasterise again. */
 const documentPixels = new Map<string, { document: RegionDocument; pixels: RegionShapePixels }>()
 
-const pixelsFor = (id: string, document: RegionDocument): RegionShapePixels | null => {
+export const regionPixelsFor = (id: string, document: RegionDocument): RegionShapePixels | null => {
   const held = documentPixels.get(id)
   if (held?.document === document) return held.pixels
   const pixels = regionDocumentPixels(document)
@@ -244,7 +269,7 @@ const currentItems = (): Item[] => {
     seen.add(region.id)
     // The claim being edited is drawn by the editor instead, so its stored copy steps aside.
     if (region.id === editing) continue
-    const pixels = pixelsFor(region.id, region.document)
+    const pixels = regionPixelsFor(region.id, region.document)
     if (pixels === null) continue
     items.push({
       key: `region:${region.id}`,
@@ -287,7 +312,39 @@ class PresenceLayer {
   private readonly masks = new Map<string, MaskTexture>()
   private readonly retained = new Map<string, Item>()
   private readonly fades = ramps()
+  private readonly motions = new Map<string, Motion>()
   private readonly corners = new Float32Array(4 * 6)
+
+  /**
+   * Where a rect is drawn this frame. A viewport that moved glides from where it was to where it
+   * is over one publish interval, so peers are seen moving rather than jumping; anything with a
+   * mask snaps, because its texture is cut to its rect.
+   */
+  displayRect(item: Item, now: number): { rect: PresenceRect; moving: boolean } {
+    if (item.mask !== null) {
+      this.motions.delete(item.key)
+      return { rect: item.rect, moving: false }
+    }
+    const motion = this.motions.get(item.key)
+    if (motion === undefined) {
+      this.motions.set(item.key, { from: item.rect, to: item.rect, since: now })
+      return { rect: item.rect, moving: false }
+    }
+    if (!sameRect(motion.to, item.rect)) {
+      const from = lerpRect(motion.from, motion.to, motionProgress(now - motion.since))
+      this.motions.set(item.key, { from, to: item.rect, since: now })
+      return { rect: from, moving: true }
+    }
+    const t = motionProgress(now - motion.since)
+    return { rect: t >= 1 ? motion.to : lerpRect(motion.from, motion.to, t), moving: t < 1 }
+  }
+
+  /** The rect a keyed item is drawn at right now, for name tags that follow the motion. */
+  displayedRect(key: string): PresenceRect | null {
+    const item = this.retained.get(key)
+    if (item === undefined) return null
+    return this.displayRect(item, performance.now()).rect
+  }
 
   private uniform(gl: WebGL2RenderingContext, name: string): WebGLUniformLocation | null {
     if (!this.uniforms.has(name)) {
@@ -492,11 +549,15 @@ class PresenceLayer {
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, texture)
           gl.uniform1i(this.uniform(gl, 'u_mask'), 0)
-          this.drawRect(gl, item.rect, tiles, bufferWidth, bufferHeight)
+          const shown = this.displayRect(item, now)
+          if (shown.moving) animating = true
+          this.drawRect(gl, shown.rect, tiles, bufferWidth, bufferHeight)
         }
         gl.bindVertexArray(null)
       }
     }
+    for (const key of [...this.motions.keys()])
+      if (!this.retained.has(key)) this.motions.delete(key)
     if (animating) {
       const map = getMap() as { triggerRepaint?: () => void } | null
       map?.triggerRepaint?.()
@@ -505,6 +566,10 @@ class PresenceLayer {
 }
 
 export const presenceLayer = new PresenceLayer()
+
+/** Where a peer's viewport or draft is drawn right now, mid-glide included. */
+export const displayedPresenceRect = (key: string): PresenceRect | null =>
+  presenceLayer.displayedRect(key)
 
 /** Ask MapLibre for a frame after presence data changed while the map is idle. */
 export const repaintPresence = (): void => {
