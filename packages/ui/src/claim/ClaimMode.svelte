@@ -447,4 +447,31 @@
     color: var(--caelestis-text);
     font-weight: 500;
   }
+  /* Narrow screens: the groups stack, each on its own line, and the actions stay reachable at
+     the end. The bar spans the width between Wplace's controls instead of sizing to content. */
+  @media (max-width: 56rem) {
+    .bar {
+      inset-inline: 3.5rem 4.5rem;
+      inline-size: auto;
+      max-inline-size: none;
+    }
+    .row {
+      grid-template-columns: 1fr;
+      gap: 0.35rem;
+      min-block-size: 0;
+    }
+    .group {
+      min-block-size: 2.25rem;
+    }
+    .tool-group {
+      flex-wrap: wrap;
+    }
+    .status {
+      padding-inline: 0;
+      border-inline: 0;
+    }
+    .actions {
+      justify-content: flex-end;
+    }
+  }
 </style>
