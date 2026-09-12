@@ -257,6 +257,8 @@ let lastStamp: Point | null = null
  */
 let consumedPress: number | null = null
 let pending = false
+/** Counts claim-mode sessions, so a request from an earlier one cannot act on a later one. */
+let session = 0
 let message: string | undefined
 /** Whether the working document differs from what was loaded or saved. */
 let dirty = false
@@ -482,13 +484,20 @@ const box = (
   ay: number,
   bx: number,
   by: number,
-): RegionShape => ({
-  kind,
-  x: Math.min(ax, bx),
-  y: Math.min(ay, by),
-  w: clampInt(Math.abs(bx - ax) + 1, 1, MAX_REGION_SHAPE_EXTENT),
-  h: clampInt(Math.abs(by - ay) + 1, 1, MAX_REGION_SHAPE_EXTENT),
-})
+): RegionShape => {
+  // The moving corner is capped relative to the anchor, so a box dragged too far still
+  // contains the pixel the gesture started on.
+  const reach = MAX_REGION_SHAPE_EXTENT - 1
+  const cx = Math.max(ax - reach, Math.min(ax + reach, bx))
+  const cy = Math.max(ay - reach, Math.min(ay + reach, by))
+  return {
+    kind,
+    x: Math.min(ax, cx),
+    y: Math.min(ay, cy),
+    w: Math.abs(cx - ax) + 1,
+    h: Math.abs(cy - ay) + 1,
+  }
+}
 
 const round = (
   kind: 'polygon' | 'star',
@@ -500,7 +509,9 @@ const round = (
 ): RegionShape => {
   const dx = x - cx
   const dy = y - cy
-  const r = clampInt(Math.hypot(dx, dy), 1, MAX_REGION_SHAPE_EXTENT / 2)
+  // A star's inner radius must sit strictly inside its outer one, so a star is never smaller
+  // than two pixels; a polygon can be one.
+  const r = clampInt(Math.hypot(dx, dy), kind === 'star' ? 2 : 1, MAX_REGION_SHAPE_EXTENT / 2)
   const rotation = degrees(dx, dy)
   if (kind === 'polygon')
     return { kind, cx, cy, r, sides: base?.kind === 'polygon' ? base.sides : sides, rotation }
@@ -1727,6 +1738,7 @@ const confirm = async (): Promise<void> => {
   }
   const document: RegionDocument = { items }
   const [primary, ...others] = editingIds
+  const mine = session
   pending = true
   message = undefined
   notify()
@@ -1746,6 +1758,8 @@ const confirm = async (): Promise<void> => {
       }
     }
   }
+  // Escape during the wait ends this session; whatever opened since is not this request's.
+  if (session !== mine) return
   pending = false
   if (!isClaimModeActive()) return
   if (error === null) stopClaimMode()
@@ -2146,6 +2160,7 @@ export const startClaimMode = (initialTool?: ClaimTool): void => {
     return
   }
   active = true
+  session++
   tool = initialTool ?? 'select'
   shown = { ...defaultShown(), [groupOf(tool)]: tool }
   // Whatever pixel Wplace had selected is stale now that clicks belong to the editor.

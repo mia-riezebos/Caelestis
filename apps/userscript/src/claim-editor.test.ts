@@ -284,6 +284,50 @@ describe('claim editor', () => {
     expect(passed.defaultPrevented).toBe(false)
   })
 
+  it('keeps a box on its anchor when dragged past the largest size', async () => {
+    const editor = await setup('rectangle')
+    drag(5_000, 5_000, 0, 0)
+    // Capped at the extent, measured from the anchor: the box still holds the press pixel.
+    expect(editor.claimEditorBounds()).toEqual({ x: 3_001, y: 3_001, w: 2_000, h: 2_000 })
+  })
+
+  it('never makes a star too small to have an inner radius', async () => {
+    await setup('star')
+    click(100, 100)
+    key('Enter')
+    await Promise.resolve()
+    const shape = harness.saved[0]?.document.items[0]?.shape
+    expect(shape?.kind).toBe('star')
+    expect(shape?.kind === 'star' ? shape.r > shape.inner : false).toBe(true)
+  })
+
+  it('lets a save from an abandoned session finish without touching the next one', async () => {
+    let finish: (value: string | null) => void = () => undefined
+    const slow = {
+      ...host(),
+      save: () =>
+        new Promise<string | null>((resolve) => {
+          finish = resolve
+        }),
+    }
+    const editor = await import('./claim-editor.js')
+    editor.installClaimEditor(slow)
+    editor.startClaimMode('rectangle')
+    drag(0, 0, 9, 9)
+    key('Enter')
+    expect(editor.claimModeModel().pending).toBe(true)
+    // Escape ends the session mid-save; a new session begins with new work.
+    editor.stopClaimMode()
+    editor.startClaimMode('rectangle')
+    drag(20, 20, 29, 29)
+    finish(null)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(editor.isClaimModeActive()).toBe(true)
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimModeModel().pending).toBe(false)
+  })
+
   it('resizes a rectangle from a corner handle and keeps the opposite corner', async () => {
     const editor = await setup('rectangle')
     drag(10, 10, 19, 19)

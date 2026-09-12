@@ -195,6 +195,9 @@ interface Item {
 
 interface MaskTexture {
   readonly source: string | RegionShapePixels
+  /** The rect the texels were laid out over; the same bytes over another width mean another texture. */
+  readonly width: number
+  readonly height: number
   readonly texture: WebGLTexture
 }
 
@@ -370,7 +373,13 @@ class PresenceLayer {
   private maskTexture(gl: WebGL2RenderingContext, item: Item): WebGLTexture | null {
     if (item.mask === null) return null
     const held = this.masks.get(item.key)
-    if (held !== undefined && held.source === item.mask) return held.texture
+    if (
+      held !== undefined &&
+      held.source === item.mask &&
+      held.width === item.rect.w &&
+      held.height === item.rect.h
+    )
+      return held.texture
     if (held !== undefined) gl.deleteTexture(held.texture)
     this.masks.delete(item.key)
     let texels: Uint8Array
@@ -398,7 +407,7 @@ class PresenceLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    this.masks.set(item.key, { source: item.mask, texture })
+    this.masks.set(item.key, { source: item.mask, width, height, texture })
     return texture
   }
 
