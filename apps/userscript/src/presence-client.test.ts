@@ -291,7 +291,7 @@ describe('presence client', () => {
     expect(socket.readyState).toBe(1)
   })
 
-  it('publishes the first viewport at once and later ones at most once a second', async () => {
+  it('publishes the first viewport at once, then at most every quarter second while moving, and the last one after', async () => {
     const { client, socket } = await connect()
     client.observePresenceFrame(frame([tileAt(10, 20)]))
     await vi.advanceTimersByTimeAsync(0)
@@ -300,7 +300,7 @@ describe('presence client', () => {
     ])
     // A pan a few frames later waits for the window.
     client.observePresenceFrame(frame([tileAt(10, 20, -100, 0)]))
-    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(PRESENCE_VIEWPORT_MIN_MS / 2)
     expect(socket.events()).toHaveLength(1)
     client.observePresenceFrame(frame([tileAt(10, 20, -300, 0)]))
     await vi.advanceTimersByTimeAsync(PRESENCE_VIEWPORT_MIN_MS)
@@ -309,6 +309,12 @@ describe('presence client', () => {
       type: 'presence-update',
       viewport: { x: 10_296, y: 20_000, w: 808, h: 600 },
     })
+    // Movement stops: the last position lands within one window, and nothing follows on its own.
+    client.observePresenceFrame(frame([tileAt(10, 20, -350, 0)]))
+    await vi.advanceTimersByTimeAsync(PRESENCE_VIEWPORT_MIN_MS)
+    expect(socket.events()).toHaveLength(3)
+    await vi.advanceTimersByTimeAsync(PRESENCE_VIEWPORT_MIN_MS * 20)
+    expect(socket.events()).toHaveLength(3)
   })
 
   it('does not resend an unchanged viewport', async () => {

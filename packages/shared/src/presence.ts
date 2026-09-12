@@ -10,9 +10,10 @@ import type { TemplateSurface } from './template-surface.js'
  *
  * Traffic budget, because this has to hold with hundreds of painters on one artwork:
  *
- * - The client is the throttle. It publishes at most one viewport per `PRESENCE_VIEWPORT_MIN_MS`,
- *   one draft per `PRESENCE_DRAFT_MIN_MS`, and one heartbeat per `PRESENCE_HEARTBEAT_MS`, and only
- *   when something changed (the heartbeat always goes).
+ * - The client is the throttle. Nothing goes on a schedule except the heartbeat: a viewport is
+ *   published only when a pan or zoom changed it, at most once per `PRESENCE_VIEWPORT_MIN_MS`
+ *   while moving and once more when the movement stops; a draft at most once per
+ *   `PRESENCE_DRAFT_MIN_MS` when it changed; a heartbeat every `PRESENCE_HEARTBEAT_MS`.
  * - The server batches every change into one tick per `PRESENCE_TICK_MS` and sends each subscriber
  *   only the peers whose rect intersects that subscriber's viewport padded by one tile, capped at
  *   `MAX_PRESENCE_PEERS` nearest by centre distance.
@@ -22,11 +23,12 @@ import type { TemplateSurface } from './template-surface.js'
 
 export const PRESENCE_PROTOCOL_V1 = 'caelestis.presence.v1'
 
-/** One viewport a second while panning: peers glide between updates, so this is what they feel. */
-export const PRESENCE_VIEWPORT_MIN_MS = 1_000
+/** Four viewports a second while panning; the last one lands when the movement stops. */
+export const PRESENCE_VIEWPORT_MIN_MS = 250
 export const PRESENCE_DRAFT_MIN_MS = 1_000
 export const PRESENCE_HEARTBEAT_MS = 30_000
-export const PRESENCE_TICK_MS = 1_000
+/** The server batches at the same cadence as a moving viewport, so a pan is relayed as it goes. */
+export const PRESENCE_TICK_MS = 250
 /** A peer whose heartbeat is older than this is dropped even if its socket has not closed yet. */
 export const PRESENCE_STALE_MS = 90_000
 export const PRESENCE_RECT_GRID = 8
@@ -37,8 +39,11 @@ export const MAX_PRESENCE_MASK_BITS = 32_768
 export const MAX_PRESENCE_MESSAGE_CODE_UNITS = 16 * 1024
 export const MAX_PRESENCE_SUBSCRIBERS = 2_048
 export const MAX_PRESENCE_SUBSCRIBERS_PER_CLIENT = 4
-/** Incoming messages per socket per second before the server closes it. */
-export const MAX_PRESENCE_MESSAGES_PER_SECOND = 4
+/**
+ * Incoming messages per socket per second before the server closes it: four viewports and one
+ * draft a second is the honest maximum, with room for a heartbeat landing in the same second.
+ */
+export const MAX_PRESENCE_MESSAGES_PER_SECOND = 8
 export const MAX_PRESENCE_REGIONS = 500
 export const MAX_PRESENCE_REGION_PIXELS = 4_000_000
 export const MAX_PRESENCE_REGION_LABEL = 64

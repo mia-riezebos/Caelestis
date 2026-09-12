@@ -1,6 +1,5 @@
 import {
   decodePresenceDraftMask,
-  PRESENCE_VIEWPORT_MIN_MS,
   type PresenceRect,
   type RegionDocument,
   type RegionShapePixels,
@@ -197,8 +196,8 @@ interface Motion {
   readonly since: number
 }
 
-/** A glide lasts one publish interval, so a steadily panning peer never quite stops. */
-export const PRESENCE_MOTION_MS = PRESENCE_VIEWPORT_MIN_MS
+/** How long a rect takes to glide to a new position. */
+export const PRESENCE_MOTION_MS = 300
 
 const motionProgress = (elapsed: number): number => {
   const t = Math.min(1, Math.max(0, elapsed / PRESENCE_MOTION_MS))
@@ -317,7 +316,7 @@ class PresenceLayer {
 
   /**
    * Where a rect is drawn this frame. A viewport that moved glides from where it was to where it
-   * is over one publish interval, so peers are seen moving rather than jumping; anything with a
+   * is over `PRESENCE_MOTION_MS`, so peers are seen moving rather than jumping; anything with a
    * mask snaps, because its texture is cut to its rect.
    */
   displayRect(item: Item, now: number): { rect: PresenceRect; moving: boolean } {

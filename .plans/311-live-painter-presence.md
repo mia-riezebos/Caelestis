@@ -14,7 +14,7 @@ the template layer as low-opacity tinted rects so finished art covers them. Ever
 - [ ] A painter can claim the region they are looking at, or their draft's bounds, and release their own claims.
 - [ ] Indicators disappear within a few seconds of the painter closing the tab or losing the socket.
 - [ ] Sharing my viewport and showing others' indicators are separate toggles that persist.
-- [ ] Traffic stays bounded: one upstream message per 1 s at most while panning, 1 s while drafting, a 30 s heartbeat otherwise; each downstream tick carries at most 64 nearby peers.
+- [ ] Traffic stays bounded: one upstream message per 250 ms at most while panning, only while the viewport changes, 1 s while drafting, a 30 s heartbeat otherwise; each downstream tick carries at most 64 nearby peers.
 
 ## TODOs
 - [x] Shared presence contract: types, limits, rect helpers, and mask encoding in `packages/shared/src/presence.ts` with tests.
