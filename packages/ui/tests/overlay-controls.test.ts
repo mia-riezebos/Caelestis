@@ -13,8 +13,6 @@ const model: OverlayControlsModel = {
   name: 'Forsaken City',
   lifecycle: { finished: true, frozen: false, griefed: true },
   failures: [{ id: 'visibility', message: 'Could not hide Forsaken City.', announce: true }],
-  confirmingDelete: false,
-  deleting: false,
   appearance: {
     values: {
       size: 1,
@@ -117,21 +115,17 @@ describe('overlay controls', () => {
     void unmount(component)
   })
 
-  it('answers the delete question before Escape closes the menu', () => {
+  it('closes the display options on Escape', () => {
     const onIntent = vi.fn()
     const component = mount(OverlayControls, {
       target: document.body,
-      props: { model: { ...model, confirmingDelete: true }, onIntent },
+      props: { model, onIntent },
     })
     flushSync()
 
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
-    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(
-      'Delete “Forsaken City”?',
-    )
     dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    expect(onIntent).toHaveBeenCalledWith({ type: 'cancel-delete' })
-    expect(onIntent).not.toHaveBeenCalledWith({ type: 'close' })
+    expect(onIntent).toHaveBeenCalledWith({ type: 'close' })
     void unmount(component)
   })
 

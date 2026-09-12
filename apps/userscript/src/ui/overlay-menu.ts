@@ -78,6 +78,7 @@ import {
 } from '../templates/move.js'
 import { isPaintOpen } from '../wplace-paint.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
+import { confirmDestructive } from './confirm.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
 import {
   overlayAppearanceState,
@@ -109,14 +110,9 @@ import { findWplaceRightControls } from './wplace-rail.js'
  *
  * ## The menu is a render, not a place to keep things
  *
- * Everything the menu shows — the intended appearance, an unanswered delete question, a refused
- * write — lives in this module's maps, and {@link buildMenu} is a pure function of them. Nothing is
+ * Intended appearance and refused writes live in this module's maps;
+ * {@link buildMenu} is a pure function of them. Nothing is
  * read back out of the DOM and nothing is carried from one menu element to the next.
- *
- * Three rounds of review found the same shape of bug until it worked this way: state parked in the
- * DOM gets destroyed by a rebuild, or worse, *survives* one and ends up attached to a different
- * template — a delete question that migrated from one overlay's menu to another's while its button
- * still deleted the first. Rebuilding from state cannot do that.
  *
  * ## Deferred work belongs to the template that asked for it
  *
@@ -281,7 +277,7 @@ let sequence = 0
  * names the template as it was then, and a rename landing before the refusal puts the old name in a
  * banner under the new heading.
  */
-/** Templates whose delete question is up, and those whose delete is actually running. */
+/** Templates awaiting the shared deletion dialog's answer. */
 const confirming = new Set<string>()
 /** Templates being made visible so they can be placed — one such request at a time each. */
 const showingToMove = new Set<string>()
@@ -832,7 +828,6 @@ const menuSignature = (template: PlacedTemplate): string => {
     appearance.otherOpacity,
     appearance.otherColour,
     [...(template.owns ?? [])].sort().join('.'),
-    confirming.has(id),
     isUpdatingTemplateArtwork(id),
     isDoomed(id),
     // Drawn — it is Delete's `aria-disabled` — so it is a render input like the rest. A placement
@@ -976,8 +971,6 @@ const overlayModel = (template: PlacedTemplate): OverlayControlsModel => {
       message: failure.message,
       announce: failure.announce,
     })),
-    confirmingDelete: confirming.has(template.id),
-    deleting: isDoomed(template.id),
     appearance: overlayAppearanceModel(template),
   }
 }
@@ -1243,8 +1236,9 @@ const activateMove = (id: string, rerender: () => void): void => {
 const requestDelete = (id: string, rerender: () => void): void => {
   if (isDoomed(id)) return
   const current = templateFor(id)
-  const currentServerTarget = current === undefined ? null : serverActionTargetFor(current)
-  if (current !== undefined && isServerTemplate(current)) {
+  if (current === undefined) return
+  const currentServerTarget = serverActionTargetFor(current)
+  if (isServerTemplate(current)) {
     if (currentServerTarget === null) {
       recordFailure(id, 'delete', () => 'Admin access to this server is no longer available.')
       rerender()
@@ -1268,21 +1262,24 @@ const requestDelete = (id: string, rerender: () => void): void => {
   }
   if (confirming.has(id)) return
   confirming.add(id)
-  focusRequest = 'confirm-delete'
-  rerender()
-}
-
-const cancelDelete = (id: string, rerender: () => void): void => {
-  if (isDoomed(id)) return
-  confirming.delete(id)
-  focusRequest = 'delete'
-  rerender()
+  const trigger = railActions.find((action) => action.dataset[CONTROL] === 'delete')
+  void confirmDestructive({
+    title: isServerTemplate(current) ? 'Delete published template?' : 'Delete template?',
+    body: `${current.name} will be permanently removed.`,
+    note: isServerTemplate(current)
+      ? 'Everyone connected to this server will stop seeing it.'
+      : 'It is stored in this browser only.',
+    confirmLabel: 'Delete',
+    restoreFocusTo: trigger?.shadowRoot?.querySelector('button') ?? trigger ?? null,
+  }).then((confirmed) => {
+    confirming.delete(id)
+    if (confirmed) confirmDelete(id, rerender)
+  })
 }
 
 const confirmDelete = (id: string, rerender: () => void): void => {
   if (isDoomed(id)) return
   if (movingId() === id) {
-    confirming.delete(id)
     recordFailure(
       id,
       'delete',
@@ -1293,16 +1290,15 @@ const confirmDelete = (id: string, rerender: () => void): void => {
     return
   }
   const current = templateFor(id)
-  const serverTarget = current === undefined ? null : serverActionTargetFor(current)
-  if (current !== undefined && isServerTemplate(current)) {
+  if (current === undefined) return
+  const serverTarget = serverActionTargetFor(current)
+  if (isServerTemplate(current)) {
     if (serverTarget === null) {
-      confirming.delete(id)
       recordFailure(id, 'delete', () => 'Admin access to this server is no longer available.')
       rerender()
       return
     }
     if (serverTarget.published) {
-      confirming.delete(id)
       recordFailure(id, 'delete', () => 'Unpublish this template before deleting it here.')
       rerender()
       return
@@ -1324,7 +1320,7 @@ const confirmDelete = (id: string, rerender: () => void): void => {
             return false
           }
           await forgetServerTemplate(id)
-          if (current !== undefined) void refreshServerTemplateSurface(serverTarget.server, current)
+          void refreshServerTemplateSurface(serverTarget.server, current)
           return true
         })
   void removal.then(
@@ -1342,7 +1338,6 @@ const confirmDelete = (id: string, rerender: () => void): void => {
         return
       }
       if (serverTarget === null) removeTreeStateKeys(new Set([`local:${id}`]))
-      confirming.delete(id)
       if (openFor === id) closeOverlayMenu()
       rerender()
     },
@@ -1449,6 +1444,7 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
                 : 'Delete this template',
               pressed: false,
               disabled: isDoomed(id) || movingId() === id || serverProtected,
+              busy: isDoomed(id),
               danger: true,
             },
             control: 'delete',
@@ -1478,12 +1474,9 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
     if (event.key !== 'Escape') return
     escapeHandled = event
     if (event.composedPath()[0] !== menu) return
-    if (confirming.has(id) && !isDoomed(id)) cancelDelete(id, rerender)
-    else {
-      closeOverlayMenu()
-      handBack(id)
-      rerender()
-    }
+    closeOverlayMenu()
+    handBack(id)
+    rerender()
     event.preventDefault()
   })
   menu.addEventListener('caelestis-overlay-intent', (event) => {
@@ -1497,13 +1490,6 @@ const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltO
         handBack(template.id)
         rerender()
         break
-      case 'cancel-delete':
-        cancelDelete(id, rerender)
-        break
-      case 'confirm-delete': {
-        confirmDelete(id, rerender)
-        break
-      }
       case 'appearance':
         handleOverlayAppearance(id, intent.intent, rerender)
         break
@@ -1535,9 +1521,6 @@ let escapeListener: ((event: KeyboardEvent) => void) | null = null
 let escapeHandled: KeyboardEvent | null = null
 
 const openOverlayMenu = (id: string, rerender: () => void): void => {
-  // Walking away from a destructive question retracts it, whichever way you walk — ✕ and Escape go
-  // through `closeOverlayMenu`, and opening another template's gear does not.
-  if (openFor !== null && openFor !== id && !isDoomed(openFor)) confirming.delete(openFor)
   openFor = id
   // Hide is disabled while a delete runs, and a disabled control cannot take focus — so reopening a
   // condemned template's menu would leave the keyboard outside the dialog it just opened.
@@ -1551,7 +1534,7 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
   focusRequest = isMoving() ? null : isDoomed(id) ? 'close' : 'hide'
   if (escapeListener === null) {
     escapeListener = (event: KeyboardEvent): void => {
-      // The menu's own handler answers the inner question first; this one is for everywhere else.
+      // The menu's own handler handles Escape inside; this one is for everywhere else.
       if (event.key !== 'Escape' || openFor === null) return
       // Our own marker, not `defaultPrevented` — any other page listener preventing Escape would
       // otherwise read as "this menu handled it" and disable the exit entirely.
@@ -1561,13 +1544,8 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
       if (alreadyAnswered(event)) return
       if (menuNode?.contains(event.target as Node) === true) return
       const id = openFor
-      // The innermost dialog first, exactly as the menu-local handler does.
-      if (confirming.has(id) && !isDoomed(id)) {
-        confirming.delete(id)
-        focusRequest = 'delete'
-        rerender()
-        return
-      }
+      // The native modal owns Escape until its close event settles the answer.
+      if (confirming.size > 0) return
       closeOverlayMenu()
       handBack(id)
       rerender()
@@ -1660,13 +1638,6 @@ const closeOverlayMenu = (): void => {
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
   // sends that release somewhere else.
   if (closing !== null) flushDrafts(closing)
-  // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
-  // gear puts a live Delete button back up that the user thought they had dismissed — but not once
-  // the delete is actually running, where that box is the only progress the user has.
-  // Our own running delete keeps its question, because that box is the only progress it has. An
-  // external one renders its box from `isDoomed` and needs no help — and preserving `confirming` for
-  // it means a panel delete that later *fails* resurrects a question ✕ had already dismissed.
-  if (closing !== null && !deleting.has(closing)) confirming.delete(closing)
   focusRequest = null
   menuNode?.remove()
   menuNode = null
@@ -1736,14 +1707,7 @@ const controlIn = (menu: HTMLElement, key: string): HTMLElement | null => {
     for (const candidate of root.querySelectorAll('[data-caelestis-control]')) {
       if (candidate instanceof HTMLElement && candidate.dataset[CONTROL] === key) return candidate
     }
-    const label =
-      key === 'close'
-        ? 'Close'
-        : key === 'cancel-delete'
-          ? 'Cancel delete'
-          : key === 'confirm-delete'
-            ? 'Confirm delete'
-            : null
+    const label = key === 'close' ? 'Close' : null
     if (label !== null) return root.querySelector<HTMLElement>(`[aria-label="${label}"]`)
   }
   return null
