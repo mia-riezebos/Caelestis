@@ -36,6 +36,8 @@ const SYNC_TIMEOUT_MS = 600
 const SYNC_POLL_MS = 16
 /** Basemap style names by theme, used only when the map's own URL cannot be read. */
 const STYLE_FOR_THEME: Record<string, string> = { [DARK_THEME]: 'fiord', light: 'liberty' }
+/** Where Wplace serves its basemap styles; the fallback when the resource log holds no style. */
+const STYLE_BASE = 'https://maps.wplace.live/styles'
 
 let rememberedLight = DEFAULT_LIGHT_THEME
 let syncing = false
@@ -127,7 +129,7 @@ const styleUrlFor = (theme: string): string | null => {
   const last = lastStyleUrl()
   const wanted = theme === DARK_THEME ? STYLE_FOR_THEME[DARK_THEME] : STYLE_FOR_THEME.light
   if (wanted === undefined) return null
-  if (last === null) return null
+  if (last === null) return `${STYLE_BASE}/${wanted}`
   return last.replace(/\/styles\/[^/?#]+(\/?)$/, `/styles/${wanted}$1`)
 }
 

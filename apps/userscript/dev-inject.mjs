@@ -117,6 +117,21 @@ class Tab {
   #installed = null
   /** Set by the owner; called once when the browser drops this tab's connection. */
   onClose = null
+  #closed = false
+
+  /** The page or its connection is gone: fail every waiting command and tell the owner once. */
+  #gone() {
+    if (this.#closed) return
+    this.#closed = true
+    for (const { reject } of this.#pending.values()) reject(new Error('tab closed'))
+    this.#pending.clear()
+    try {
+      this.#ws.close()
+    } catch {
+      // Already closed.
+    }
+    this.onClose?.()
+  }
 
   static async open() {
     // Start a debuggable Chromium if there is not one already, so this needs no setup by hand.
@@ -158,7 +173,17 @@ class Tab {
         )
       }
     })
-    tab.#ws.addEventListener('close', () => tab.onClose?.(), { once: true })
+    tab.#ws.addEventListener('close', () => tab.#gone(), { once: true })
+    // Closing the page does not close the browser socket; the page's session detaches instead.
+    tab.#ws.addEventListener('message', (event) => {
+      const message = JSON.parse(event.data)
+      if (
+        (message.method === 'Target.detachedFromTarget' &&
+          message.params?.sessionId === tab.#sessionId) ||
+        (message.method === 'Target.targetDestroyed' && message.params?.targetId === tab.target?.id)
+      )
+        tab.#gone()
+    })
     const { targetId } = await tab.send('Target.createTarget', {
       url: 'about:blank',
       background: true,

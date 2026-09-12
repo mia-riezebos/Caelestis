@@ -30,6 +30,8 @@ const CAPTURE_WINDOW_MS = 20_000
 
 let captured: WplaceState | null = null
 let installedRealm: object | null = null
+/** This installation's own wrapper, so a cleanup never restores over another copy's. */
+let installedWrapper: WeakMap<object, unknown>['set'] | null = null
 let original: WeakMap<object, unknown>['set'] | null = null
 let expiry: ReturnType<typeof setTimeout> | null = null
 
@@ -47,11 +49,11 @@ const remove = (): void => {
   const realm = installedRealm as (Window & typeof globalThis) | null
   if (realm !== null && original !== null) {
     const prototype = realm.WeakMap.prototype
-    // Only if it is still ours; someone else's wrapper under this name is theirs to remove.
-    if (prototype.set !== original && (prototype.set as { __caelestis?: true }).__caelestis)
-      prototype.set = original
+    // Only if it is still this installation's own wrapper; another copy's is theirs to remove.
+    if (prototype.set === installedWrapper) prototype.set = original
   }
   installedRealm = null
+  installedWrapper = null
   original = null
 }
 
@@ -83,6 +85,7 @@ export const installWplaceStateCapture = (
     return
   }
   installedRealm = realm
+  installedWrapper = wrapped as typeof prototype.set
   original = native
   expiry = setTimeout(remove, CAPTURE_WINDOW_MS)
 }
