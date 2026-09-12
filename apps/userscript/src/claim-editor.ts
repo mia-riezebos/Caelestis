@@ -1,5 +1,6 @@
 import {
   MAX_PATH_NODES,
+  MAX_RASTER_BITS,
   MAX_REGION_ITEMS,
   MAX_REGION_SHAPE_CORNERS,
   MAX_REGION_SHAPE_EXTENT,
@@ -12,11 +13,13 @@ import {
   type RegionItem,
   type RegionShape,
   type RegionShapePixels,
+  rasterShapeFrom,
   regionDocumentPixels,
   regionShapeBounds,
   regionShapeCentre,
   regionShapeContainsPixel,
   regionShapeOutline,
+  regionShapePixels,
   translateRegionShape,
   WORLD_PIXELS,
 } from '@caelestis/shared'
@@ -136,6 +139,7 @@ type DragKind =
   | 'rotate'
   | 'raster'
   | 'erase'
+  | 'scale'
 
 interface Drag {
   readonly kind: DragKind
@@ -720,6 +724,91 @@ const rotateShape = (shape: RegionShape, centre: Point, radians: number): Region
   return rotatePath(toPath(shape), centre, radians)
 }
 
+/** The box the selection tool's scale handles sit on: the geometry itself, no stroke padding. */
+const scaleBox = (shape: RegionShape): { x0: number; y0: number; x1: number; y1: number } => {
+  if (shape.kind === 'path') {
+    let x0 = Number.POSITIVE_INFINITY
+    let y0 = Number.POSITIVE_INFINITY
+    let x1 = Number.NEGATIVE_INFINITY
+    let y1 = Number.NEGATIVE_INFINITY
+    for (const node of shape.nodes) {
+      for (const point of [node, node.in, node.out]) {
+        if (point === undefined) continue
+        x0 = Math.min(x0, point.x)
+        y0 = Math.min(y0, point.y)
+        x1 = Math.max(x1, point.x)
+        y1 = Math.max(y1, point.y)
+      }
+    }
+    return { x0, y0, x1, y1 }
+  }
+  const bounds = regionShapeBounds(shape)
+  return { x0: bounds.x, y0: bounds.y, x1: bounds.x + bounds.w, y1: bounds.y + bounds.h }
+}
+
+const scaleBoxCorners = (shape: RegionShape): Point[] => {
+  const { x0, y0, x1, y1 } = scaleBox(shape)
+  return [
+    { x: x0, y: y0 },
+    { x: x1, y: y0 },
+    { x: x1, y: y1 },
+    { x: x0, y: y1 },
+  ]
+}
+
+/**
+ * A shape scaled about a fixed point, Illustrator's bounding-box handles. Paths scale their
+ * anchors and handles; a raster is resampled nearest-neighbour into its new box, so its pixels
+ * stay crisp. Anything else has its own handles and never gets here.
+ */
+const scaleShape = (
+  shape: RegionShape,
+  anchor: Point,
+  sx: number,
+  sy: number,
+): RegionShape | null => {
+  if (shape.kind === 'path') {
+    const move = (point: Point): Point => ({
+      x: anchor.x + (point.x - anchor.x) * sx,
+      y: anchor.y + (point.y - anchor.y) * sy,
+    })
+    return {
+      ...shape,
+      nodes: shape.nodes.map((node) => ({
+        ...move(node),
+        ...(node.in === undefined ? {} : { in: move(node.in) }),
+        ...(node.out === undefined ? {} : { out: move(node.out) }),
+      })),
+    }
+  }
+  if (shape.kind !== 'pixels') return null
+  const source = regionShapePixels(shape)
+  const left = anchor.x + (shape.x - anchor.x) * sx
+  const right = anchor.x + (shape.x + shape.w - anchor.x) * sx
+  const top = anchor.y + (shape.y - anchor.y) * sy
+  const bottom = anchor.y + (shape.y + shape.h - anchor.y) * sy
+  const x = Math.max(0, Math.round(Math.min(left, right)))
+  const y = Math.max(0, Math.round(Math.min(top, bottom)))
+  const w = Math.max(1, Math.round(Math.abs(right - left)))
+  const h = Math.max(1, Math.round(Math.abs(bottom - top)))
+  if (w * h > MAX_RASTER_BITS) return null
+  const mask = new Uint8Array(w * h)
+  let count = 0
+  for (let row = 0; row < h; row++) {
+    const sy0 = Math.min(shape.h - 1, Math.floor(((row + 0.5) / h) * shape.h))
+    const srcRow = sy < 0 ? shape.h - 1 - sy0 : sy0
+    for (let column = 0; column < w; column++) {
+      const sx0 = Math.min(shape.w - 1, Math.floor(((column + 0.5) / w) * shape.w))
+      const srcColumn = sx < 0 ? shape.w - 1 - sx0 : sx0
+      if (source.mask[srcRow * shape.w + srcColumn] === 1) {
+        mask[row * w + column] = 1
+        count++
+      }
+    }
+  }
+  return rasterShapeFrom({ rect: { x, y, w, h }, mask, count })
+}
+
 /** The bounding-box corners of a shape, projected to client pixels. */
 const cornersOnScreen = (
   shape: RegionShape,
@@ -790,6 +879,11 @@ const onHandlePress = (event: PointerEvent, target: Element): boolean => {
     startDrag('node', event, { x: 0, y: 0 }, converted, index, 'anchor')
   } else if (kind === 'rotate') {
     startDrag('rotate', event, regionShapeCentre(shape), item)
+  } else if (kind === 'scale' && (shape.kind === 'path' || shape.kind === 'pixels')) {
+    // The opposite corner of the bounding box stays put.
+    const corners = scaleBoxCorners(shape)
+    const opposite = corners[(index + 2) % 4] as Point
+    startDrag('scale', event, opposite, item, index)
   } else return false
   message = undefined
   notify()
@@ -1052,6 +1146,31 @@ const onPointerMove = (event: PointerEvent): void => {
         base.id,
         moveNode(current.shape, drag.index, drag.part, point.x, point.y, base.shape),
       )
+      break
+    }
+    case 'scale': {
+      if (base === null) return
+      const anchor = { x: drag.originX, y: drag.originY }
+      const from = scaleBoxCorners(base.shape)[drag.index] as Point
+      const spanX = from.x - anchor.x
+      const spanY = from.y - anchor.y
+      // A box cannot collapse to nothing: the dragged corner keeps at least half a pixel away.
+      const keep = (value: number, span: number): number =>
+        Math.abs(value) < 0.5 ? (span < 0 ? -0.5 : 0.5) : value
+      let sx = spanX === 0 ? 1 : keep(point.x - anchor.x, spanX) / spanX
+      let sy = spanY === 0 ? 1 : keep(point.y - anchor.y, spanY) / spanY
+      if (event.shiftKey) {
+        // Shift keeps the proportions, following whichever axis was pulled further.
+        const uniform = Math.abs(sx) >= Math.abs(sy) ? Math.abs(sx) : Math.abs(sy)
+        sx = Math.sign(sx) * uniform
+        sy = Math.sign(sy) * uniform
+      }
+      const scaled = scaleShape(base.shape, anchor, sx, sy)
+      if (scaled === null) {
+        message = 'That is too large for one drawing.'
+        break
+      }
+      replaceItem(base.id, scaled)
       break
     }
     case 'rotate': {
@@ -1469,6 +1588,20 @@ const syncOverlay = (): void => {
         if (outer !== undefined) handle(project(outer), 'outer:0', accent)
         if (shape.kind === 'star' && ring[1] !== undefined)
           handle(project(ring[1]), 'inner:0', 'rgb(255 160 40)')
+      } else {
+        // A path or a drawing: Illustrator's bounding box, with a scale handle on each corner.
+        const corners = scaleBoxCorners(shape).map(project)
+        root.appendChild(
+          svg('path', {
+            d: pathData(corners, true),
+            fill: 'none',
+            stroke: accent,
+            'stroke-width': 1,
+            'stroke-dasharray': '3 3',
+            'data-gesture': 'bounds',
+          }),
+        )
+        for (const [index, corner] of corners.entries()) handle(corner, `scale:${index}`, accent)
       }
     }
     if (tool === 'select') {

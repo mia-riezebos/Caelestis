@@ -340,6 +340,47 @@ describe('claim editor', () => {
     expect(bounds?.h).toBeGreaterThan(34)
   })
 
+  it('scales a path and a drawing from bounding-box corner handles with the selection tool', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 29, 29)
+    // Turn it into a path by moving an anchor, then come back to the selection tool.
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(15, 15)
+    const anchor = handle('anchor:2')
+    pointer('pointerdown', 30, 30, anchor)
+    pointer('pointermove', 30, 30)
+    pointer('pointerup', 30, 30)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(15, 15)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle^="scale:"]'),
+    ).toHaveLength(4)
+    // Pull the bottom-right corner out: the top-left stays, the box doubles.
+    const corner = handle('scale:2')
+    pointer('pointerdown', 30, 30, corner)
+    pointer('pointermove', 50, 50)
+    pointer('pointerup', 50, 50)
+    key('Enter')
+    await Promise.resolve()
+    const document_ = harness.saved[0]?.document as RegionDocument
+    expect(regionDocumentContainsPixel(document_, 45, 45)).toBe(true)
+    expect(regionDocumentContainsPixel(document_, 12, 12)).toBe(true)
+    expect(regionDocumentContainsPixel(document_, 55, 55)).toBe(false)
+
+    const again = await setup('pencil')
+    pointer('pointerdown', 100, 100)
+    pointer('pointermove', 103, 100)
+    pointer('pointerup', 103, 100)
+    again.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(101, 100)
+    const grow = handle('scale:2')
+    pointer('pointerdown', 104, 101, grow)
+    pointer('pointermove', 108, 103)
+    pointer('pointerup', 108, 103)
+    expect(again.claimEditorBounds()).toEqual({ x: 100, y: 100, w: 8, h: 3 })
+    expect(again.claimEditorPixels()?.count).toBe(24)
+  })
+
   it('builds a closed path with the pen, curving a segment by dragging', async () => {
     const editor = await setup('pen')
     click(0, 0)

@@ -16,7 +16,7 @@
     if (model.message) return model.message
     switch (model.tool) {
       case 'select':
-        return 'Click a shape to select it, Shift-click to add, drag to move, drag empty canvas for a marquee. Corner handles resize; the grip above, or just outside a corner, rotates (Shift snaps to 15°). Delete removes the selection.'
+        return 'Click a shape to select it, Shift-click to add, drag to move, drag empty canvas for a marquee. Corner handles resize (Shift keeps proportions); the grip above, or just outside a corner, rotates (Shift snaps to 15°). Delete removes the selection.'
       case 'direct':
         return 'Click a shape, then drag any anchor or bezier handle; a rectangle, ellipse, polygon, or star becomes a path as you do.'
       case 'lasso':
