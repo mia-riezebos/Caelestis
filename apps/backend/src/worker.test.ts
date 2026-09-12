@@ -128,6 +128,7 @@ it('forwards the configured identity, season and open access to the app', async 
     liveSync: 1,
     liveSyncMax: 2,
     liveTileOffers: 1,
+    livePaintParts: 1,
   })
   expect(manifest.status).toBe(200)
   await expect(manifest.json()).resolves.toMatchObject({

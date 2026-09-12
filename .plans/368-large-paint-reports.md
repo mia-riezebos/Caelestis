@@ -11,7 +11,7 @@ Frame large paint reports over the live WebSocket, reassemble before accounting,
 - [x] Reconnects, incomplete transfers, and lost acknowledgements preserve exactly-once accounting.
 - [x] Assembly has bounded memory and expiry; invalid, conflicting, or unauthorized parts produce no partial accounting.
 - [x] Capability negotiation preserves small-report compatibility and avoids oversized retries to old peers.
-- [ ] Backend/userscript Changeset and required checks complete.
+- [x] Backend/userscript Changeset and required checks complete.
 
 ## TODOs
 
@@ -19,7 +19,7 @@ Frame large paint reports over the live WebSocket, reassemble before accounting,
 - [x] Accept negotiated paint parts in the backend and verify accounting/retry behavior.
 - [x] Send large reports with acknowledgement backpressure and verify client compatibility/recovery.
 - [x] Keep complete-report memory reservations until accounting finishes, with concurrency coverage.
-- [~] Verify 100k-pixel delivery in Workers, run repository checks, and document results.
+- [x] Verify 100k-pixel delivery in Workers, run repository checks, and document results.
 
 ## Notes
 
@@ -34,3 +34,6 @@ Frame large paint reports over the live WebSocket, reassemble before accounting,
 - Client validation: 88 focused coordinator/manifest/telemetry tests and userscript typecheck pass. The sender serializes transfers per server, waits for each receipt, restarts disconnected events with unchanged event IDs, and rejects unsupported older v2 peers before sending oversized messages. Terminal errors reach existing debug logging.
 - Self-review found that releasing assembly bytes before asynchronous accounting could admit unbounded complete reports. Hold their reservations through validation/accounting; disconnects and inactivity must not release active work.
 - Reservation validation: 13 shared tests and 6 backend tests pass. Four blocked accounting RPCs retain their capacity even after disconnect; the next report is admitted only once accounting finishes.
+- Workers validation: `pnpm test:live-paints` passes with real ephemeral D1, R2, WebSocket, and counter Durable Object bindings. A 100k-pixel event and full replay credit exactly 100k pixels across two templates. Both transfers use 108 frames; the final local sample takes 112 ms and reaches 21.1 MiB sampled heap.
+- Final checks: `pnpm check`, root test prechecks (including the Workers test), `pnpm exec turbo test --concurrency=1` (2,686 package tests), `pnpm lint`, `pnpm build`, and `CHANGESET_BASE_REF=origin/main pnpm test:release` pass. The first full run hit the existing file-watcher test's one-second timeout; that test passed in isolation and the complete package-suite rerun passed without changes.
+- Added the backend/userscript patch Changeset and retained the investigation, reproduction, runtime measurements, and Dawn's diagnostic steps in `docs/research/paint-underreporting-2026-09-11.md`.
