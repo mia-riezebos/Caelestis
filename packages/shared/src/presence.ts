@@ -1,4 +1,4 @@
-import { bytesToBase64, unpackBits } from './bitmask.js'
+import { bytesToBase64, isPackedBits, unpackBits } from './bitmask.js'
 import type { RegionDocument } from './region-shape.js'
 import type { PainterIdentity } from './telemetry.js'
 import type { TemplateSurface } from './template-surface.js'
@@ -227,12 +227,7 @@ export const isPresenceDraft = (value: unknown): value is PresenceDraft => {
   if (!isPresenceRect(draft.rect) || !finiteInt(draft.pixels) || draft.pixels < 0) return false
   if (draft.mask === undefined) return true
   const bits = draft.rect.w * draft.rect.h
-  return (
-    typeof draft.mask === 'string' &&
-    bits <= MAX_PRESENCE_MASK_BITS &&
-    draft.mask.length === Math.ceil(Math.ceil(bits / 8) / 3) * 4 &&
-    /^[A-Za-z0-9+/]*={0,2}$/.test(draft.mask)
-  )
+  return bits <= MAX_PRESENCE_MASK_BITS && isPackedBits(draft.mask, bits)
 }
 
 export interface PresenceColour {

@@ -77,6 +77,10 @@ describe('presence drafts', () => {
     expect(isPresenceDraft({ rect: { x: 0, y: 0, w: 8, h: 1 }, pixels: 1, mask: 'AA==' })).toBe(
       true,
     )
+    // Right length, wrong byte count: two bytes for an eight-bit mask.
+    expect(isPresenceDraft({ rect: { x: 0, y: 0, w: 8, h: 1 }, pixels: 1, mask: 'AAA=' })).toBe(
+      false,
+    )
     expect(isPresenceDraft({ rect: { x: 0, y: 0, w: 8, h: 1 }, pixels: -1 })).toBe(false)
     expect(encodePresenceDraft([])).toBeNull()
   })

@@ -69,4 +69,6 @@ export const unpackBits = (text: string, bits: number): Uint8Array | null => {
 export const isPackedBits = (text: unknown, bits: number): text is string =>
   typeof text === 'string' &&
   text.length === Math.ceil(Math.ceil(bits / 8) / 3) * 4 &&
-  /^[A-Za-z0-9+/]*={0,2}$/.test(text)
+  /^[A-Za-z0-9+/]*={0,2}$/.test(text) &&
+  // The length alone lets `AAA=` (two bytes) through for a one-byte mask; the decode is exact.
+  base64ToBytes(text)?.length === Math.ceil(bits / 8)
