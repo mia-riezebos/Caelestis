@@ -65,11 +65,24 @@ describe('draftIn', () => {
     expect(draft?.mask).toBeDefined()
   })
 
-  it('drops the mask when the scan is cut off', () => {
+  it('drops the mask past the cap but keeps the exact bounds and count of the whole draft', () => {
     const offsets = Array.from({ length: MAX_PUBLISHED_DRAFT_PIXELS + 5 }, (_, i) => i)
-    const draft = draftIn([{ x: 0, y: 0 }], () => offsets)
-    expect(draft?.pixels).toBe(MAX_PUBLISHED_DRAFT_PIXELS)
+    // A second tile far away holds one more pixel: the rect and count still cover it.
+    const draft = draftIn(
+      [
+        { x: 0, y: 0 },
+        { x: 3, y: 4 },
+      ],
+      (tile) => (tile.x === 0 ? offsets : [7 * TILE_SIZE + 9]),
+    )
+    expect(draft?.pixels).toBe(MAX_PUBLISHED_DRAFT_PIXELS + 6)
     expect(draft?.mask).toBeUndefined()
+    expect(draft?.rect).toEqual({
+      x: 0,
+      y: 0,
+      w: 3 * TILE_SIZE + 10,
+      h: 4 * TILE_SIZE + 8,
+    })
   })
 
   it('is null with nothing drafted', () => {

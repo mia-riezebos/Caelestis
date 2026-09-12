@@ -1,4 +1,5 @@
 import type { CaelestisRailControl, RailControlIntent } from '@caelestis/ui/elements'
+import { activeAllianceSurface } from '../alliance-surface.js'
 import { isClaimModeActive, stopClaimMode } from '../claim-editor.js'
 import { redraw } from '../main.js'
 import { presenceView } from '../presence-client.js'
@@ -44,7 +45,8 @@ export const syncClaimToolState = (): void => {
   if (button === null) return
   const active = isClaimModeActive()
   const view = presenceView()
-  const ready = view.connected && view.me !== null
+  // Alliance artboards have no presence room, so claims only exist on the world canvas.
+  const ready = view.connected && view.me !== null && activeAllianceSurface() === null
   button.model = {
     id: 'claim',
     label: active ? 'Leave claim mode (Esc)' : 'Claim a region (M)',
@@ -70,7 +72,12 @@ export const claimToolButton = (): CaelestisRailControl => {
     const intent = (event as CustomEvent<RailControlIntent>).detail
     if (intent.id !== 'claim') return
     if (isClaimModeActive()) stopClaimMode()
-    else openClaimTool()
+    else {
+      // The rail control only looks disabled; the guard is here.
+      const view = presenceView()
+      if (!(view.connected && view.me !== null && activeAllianceSurface() === null)) return
+      openClaimTool()
+    }
     syncClaimToolState()
   })
   syncClaimToolState()

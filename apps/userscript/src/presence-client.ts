@@ -72,6 +72,8 @@ interface Connection {
   regionsTimer: ReturnType<typeof setTimeout> | null
   /** When the claims were last fetched over HTTP; never, for the live connection. */
   regionsAt: number
+  /** The latest HTTP refresh started; an older one that lands later is ignored. */
+  regionsSequence: number
   sessionId: string | null
   peers: Map<string, PresencePeer>
   regions: readonly RegionClaim[]
@@ -102,6 +104,8 @@ let identityRequested = false
 /** The election in flight, if any; its sequence number lets a reset discard a late result. */
 let electing = false
 let electionSequence = 0
+/** Reconciliation asked for an election while one was running; run again when it ends. */
+let electionWanted = false
 let hiddenTab = false
 let pendingViewport: PresenceRect | null = null
 let pendingDraft: PresenceDraft | null = null
@@ -281,6 +285,9 @@ const applyServerEvent = (connection: Connection, value: unknown): boolean => {
     )
       return false
     connection.sessionId = event.sessionId
+    // A server that completes the handshake and then misbehaves keeps its backoff; only a
+    // healthy exchange resets it.
+    connection.attempts = 0
     connection.online = Number(event.online)
     connection.peers = new Map(
       event.peers.filter(isPeer).map((peer) => [peer.sessionId, peer] as const),
@@ -362,12 +369,15 @@ const refreshRegions = async (connection: Connection): Promise<void> => {
   clearRegionsTimer(connection)
   if (connection.live || connection.server.season === null) return
   connection.regionsAt = now()
+  const sequence = ++connection.regionsSequence
   try {
     const { response, body } = await requestServerMetadata(
       scopedEndpoint(connection.server, '/work/regions').toString(),
       { headers: readHeaders(connection.server) },
     )
     const regions = (body as { regions?: unknown } | null)?.regions
+    // Only the newest read counts, and never once the socket carries this server's claims.
+    if (sequence !== connection.regionsSequence || connection.live) return
     if (response.ok && Array.isArray(regions)) {
       connection.regions = regions.filter(isRegion).slice(0, MAX_PRESENCE_REGIONS)
       notify()
@@ -400,7 +410,11 @@ const serverRank = (server: ConnectedServer): string => server.info?.id ?? serve
  * socket is open or pending, so an established connection is never moved.
  */
 const elect = (): void => {
-  if (electing || accountIdentity() === null) return
+  if (electing) {
+    electionWanted = true
+    return
+  }
+  if (accountIdentity() === null) return
   const current = liveConnection()
   if (current !== null && (current.socket !== null || current.reconnectTimer !== null)) return
   const candidates = [...connections.values()]
@@ -419,6 +433,14 @@ const elect = (): void => {
       ({ connection }) =>
         connections.get(serverConnectionIdentity(connection.server)) === connection,
     )
+    // Servers came or went while the probes were out: this snapshot may be stale, so run again.
+    if (electionWanted || alive.length !== probed.length) {
+      electionWanted = false
+      if (alive.length === 0 || alive.length !== probed.length) {
+        elect()
+        return
+      }
+    }
     alive.sort(
       (left, right) =>
         left.online - right.online ||
@@ -498,7 +520,9 @@ const open = (connection: Connection): void => {
   endpoint.searchParams.set('client', 'userscript')
   endpoint.searchParams.set('clientVersion', userscriptVersion)
   const token = activeServerToken(server)
-  if (token === null) endpoint.searchParams.set('clientId', liveClientId(server.url))
+  // Every connection carries this browser's id, so painters sharing one token are not counted
+  // as one client against the per-client socket cap.
+  endpoint.searchParams.set('clientId', liveClientId(server.url))
   const protocols = [PRESENCE_PROTOCOL_V1]
   if (token !== null) protocols.push(liveCredentialProtocol(token))
   let socket: WebSocket
@@ -517,7 +541,6 @@ const open = (connection: Connection): void => {
       socket.close(4002, 'presence protocol not negotiated')
       return
     }
-    connection.attempts = 0
     connection.sentViewport = undefined
     connection.sentDraft = undefined
     connection.sentViewportAt = Number.NEGATIVE_INFINITY
@@ -580,6 +603,7 @@ const reconcile = (): void => {
         socket: null,
         regionsTimer: null,
         regionsAt: Number.NEGATIVE_INFINITY,
+        regionsSequence: 0,
         sessionId: null,
         peers: new Map(),
         regions: [],
@@ -776,6 +800,7 @@ export const resetPresence = (): void => {
   installed = false
   identityRequested = false
   electing = false
+  electionWanted = false
   electionSequence += 1
   hiddenTab = false
   pendingViewport = null

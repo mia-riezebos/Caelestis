@@ -29,6 +29,10 @@ const harness = vi.hoisted(() => ({
   online: new Map<string, number>(),
   /** Region claims per server origin, served to servers without the socket. */
   regions: new Map<string, unknown[]>(),
+  /** When set, the next claims read waits on it before answering. */
+  regionsGate: null as Promise<void> | null,
+  /** When set, every headcount probe waits on it. */
+  onlineGate: null as Promise<void> | null,
 }))
 
 vi.mock('./state.js', () => ({
@@ -54,21 +58,24 @@ vi.mock('./server-transport.js', () => ({
     harness.mutations.push({ url, init })
     return Promise.resolve({ response: new Response(null, { status: 200 }), body: {} })
   },
-  requestServerMetadata: (url: string, init: RequestInit) => {
+  requestServerMetadata: async (url: string, init: RequestInit) => {
     harness.reads.push({ url, init })
     const { origin, pathname } = new URL(url)
     if (pathname.endsWith('/telemetry/presence/online')) {
+      if (harness.onlineGate !== null) await harness.onlineGate
       const online = harness.online.get(origin)
-      return Promise.resolve(
-        online === undefined
-          ? { response: new Response(null, { status: 404 }), body: { error: 'not found' } }
-          : { response: new Response(null, { status: 200 }), body: { online } },
-      )
+      return online === undefined
+        ? { response: new Response(null, { status: 404 }), body: { error: 'not found' } }
+        : { response: new Response(null, { status: 200 }), body: { online } }
     }
-    return Promise.resolve({
-      response: new Response(null, { status: 200 }),
-      body: { regions: harness.regions.get(origin) ?? [] },
-    })
+    // A read may be held back to land after a later one; it answers with what it saw at start.
+    const answer = { regions: harness.regions.get(origin) ?? [] }
+    const gate = harness.regionsGate
+    if (gate !== null) {
+      harness.regionsGate = null
+      await gate
+    }
+    return { response: new Response(null, { status: 200 }), body: answer }
   },
 }))
 vi.mock('./client-metrics.js', () => ({ userscriptVersion: '0.0.0-test' }))
@@ -151,6 +158,8 @@ beforeEach(() => {
   harness.reads = []
   harness.online = new Map([[server.url, 1]])
   harness.regions = new Map()
+  harness.regionsGate = null
+  harness.onlineGate = null
 })
 
 /** Let the election's probes resolve; they are plain promises, not timers. */
@@ -188,6 +197,8 @@ describe('presence client', () => {
     expect(url.searchParams.get('painterName')).toBe('Mia')
     expect(socket.protocols[0]).toBe(PRESENCE_PROTOCOL_V1)
     expect(socket.protocols[1]).toMatch(/^caelestis\.auth\.b64\./)
+    // The browser's own id goes with a token too, so a shared token is not one client.
+    expect(url.searchParams.get('clientId')).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('does not connect to a server without presence support', async () => {
@@ -411,6 +422,96 @@ describe('presence client', () => {
     await vi.advanceTimersByTimeAsync(2_000)
     await settle()
     expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('keeps backing off while a server accepts the socket but never says ready', async () => {
+    const { socket } = await connect()
+    socket.close()
+    await vi.advanceTimersByTimeAsync(1_600)
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    const second = FakeWebSocket.instances[1] as FakeWebSocket
+    second.open()
+    second.close()
+    // The second wait is longer than the first: the open alone did not reset the backoff.
+    await vi.advanceTimersByTimeAsync(1_600)
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(1_500)
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('ignores a claims read that lands after a newer one', async () => {
+    const busy = { ...server, url: 'https://busy.test', info: { ...server.info, id: 'a-busy' } }
+    const quiet = { ...server, url: 'https://quiet.test', info: { ...server.info, id: 'b-quiet' } }
+    harness.state.servers = [busy, quiet]
+    harness.online = new Map([
+      [busy.url, 40],
+      [quiet.url, 3],
+    ])
+    const claim = {
+      id: 'r-busy',
+      season: 3,
+      surface: { kind: 'world', allianceId: null },
+      templateId: null,
+      claimant: { wplaceUserId: 9, displayName: 'Sam' },
+      document: {
+        items: [
+          {
+            id: 'a',
+            op: 'add' as const,
+            shape: { kind: 'rectangle' as const, x: 5, y: 5, w: 10, h: 10 },
+          },
+        ],
+      },
+      rect: { x: 5, y: 5, w: 10, h: 10 },
+      label: '',
+      createdAt: 1,
+    }
+    // The first read is held back and saw no claims; a later read sees the new claim.
+    let release: () => void = () => undefined
+    harness.regionsGate = new Promise((resolve) => {
+      release = resolve
+    })
+    const client = await import('./presence-client.js')
+    client.installPresence()
+    await settle()
+    FakeWebSocket.instances[0]?.open()
+    await settle()
+    harness.regions.set(busy.url, [claim])
+    await client.claimRegion(busy, '0192e7c0-0000-7000-8000-000000000002', {
+      templateId: null,
+      document: claim.document,
+      label: '',
+      actor: { wplaceUserId: 7, displayName: 'Mia' },
+    })
+    await settle()
+    expect(client.presenceView().regions).toEqual([claim])
+    release()
+    await settle()
+    expect(client.presenceView().regions).toEqual([claim])
+  })
+
+  it('runs the election again when the servers change while probes are out', async () => {
+    let release: () => void = () => undefined
+    harness.onlineGate = new Promise((resolve) => {
+      release = resolve
+    })
+    const client = await import('./presence-client.js')
+    client.installPresence()
+    await settle()
+    // Reconciliation swaps the only candidate out for another before the probe answers.
+    const other = { ...server, url: 'https://other.test', info: { ...server.info, id: 'other' } }
+    harness.online.set(other.url, 0)
+    harness.state.servers = [other]
+    harness.listener?.()
+    harness.onlineGate = null
+    release()
+    await settle()
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]?.url.startsWith('wss://other.test')).toBe(true)
   })
 
   it('sends region claims over HTTP with the bearer token', async () => {

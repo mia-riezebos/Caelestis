@@ -79,8 +79,9 @@ void main() {
     inside = !outsideAt(v_uv);
     if (inside) {
       alpha = u_maskAlpha;
-      // A stroke of u_borderWidth device pixels along the boundary, drawn on the inside: a
-      // fragment is on it when anything that far away, in screen space, is outside the mask.
+      // A stroke of u_borderWidth device pixels (a CSS width scaled by the display's ratio)
+      // along the boundary, drawn on the inside: a fragment is on it when anything that far
+      // away, in screen space, is outside the mask.
       if (u_borderWidth > 0.0) {
         vec2 d = vec2(u_borderWidth) / u_size;
         vec2 g = d * 0.7071;
@@ -122,7 +123,11 @@ interface Style {
   readonly border: number
   readonly borderWidth: number
   readonly dash: number
-  /** Fill alpha inside a mask; `border` and `borderWidth` stroke its boundary in device pixels. */
+  /**
+   * Fill alpha inside a mask; `border` and `borderWidth` stroke its boundary. Widths are CSS
+   * pixels, scaled by the device pixel ratio at upload, so a stroke looks the same size on
+   * every display and at every zoom.
+   */
   readonly maskAlpha: number
   /** 0 none, 1 diagonal stripes, 2 dotted grid. */
   readonly pattern: 0 | 1 | 2

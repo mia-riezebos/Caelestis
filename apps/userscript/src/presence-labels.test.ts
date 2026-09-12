@@ -315,6 +315,36 @@ describe('renderPresenceLabels', () => {
     expect((await tagsAt(frameAt(4), 5, 5)).map((tag) => tag.key)).toEqual(['region:r1'])
   })
 
+  it('rechecks other claims after the top-edge clamp moves a chip', async () => {
+    // Mine sits at the very top; its chip has to drop inside the map, where Ada's claim is.
+    harness.regions = [
+      {
+        ...twoPieces,
+        id: 'mine',
+        rect: { x: 100, y: 0, w: 40, h: 4 },
+        document: { items: [{ id: 'a', op: 'add', shape: rect(100, 0, 40, 4) }] },
+      },
+      {
+        ...twoPieces,
+        id: 'theirs',
+        claimant: { wplaceUserId: 2, displayName: 'Ada' },
+        rect: { x: 90, y: 4, w: 60, h: 40 },
+        document: { items: [{ id: 'a', op: 'add', shape: rect(90, 4, 60, 40) }] },
+      },
+    ]
+    const { renderPresenceLabels } = await import('./presence-labels.js')
+    const canvas = canvasAt()
+    const frame = frameAt(1, canvas)
+    renderPresenceLabels(frame)
+    hover(canvas, 120, 2)
+    renderPresenceLabels(frame)
+    const chip = document.querySelector<HTMLElement>('#caelestis-presence-labels span')
+    const match = /translate\((-?\d+)px, (-?\d+)px\)/.exec(chip?.style.transform ?? '')
+    const y = Number((match as RegExpExecArray)[2])
+    // Not over Ada's claim (y 4..44): the clamp put it inside, and the recheck moved it clear.
+    expect(y + 17 <= 4 || y >= 44).toBe(true)
+  })
+
   it('hides every chip while other painters are hidden', async () => {
     harness.regions = [twoPieces]
     harness.showPresence = false

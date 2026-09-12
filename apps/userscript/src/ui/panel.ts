@@ -1511,6 +1511,8 @@ export const installPanel = (): void => {
   syncClaimToolState()
   onClaimEditorChange(syncClaimToolState)
   onPresenceChange(syncClaimToolState)
+  // Headcounts and claims arrive over the socket; the Painters drawer has to follow them.
+  onPresenceChange(rerenderTree)
   onStateChange(syncPresenceModeState)
   positionRail()
   log('install', 'rail installed beside wplace’s')

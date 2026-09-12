@@ -83,12 +83,29 @@ const serverFor = (region: RegionClaim): ConnectedServer | undefined =>
  * The one server claim mode edits: the one carrying the presence socket, else the first that
  * supports claims. Your regions there load together and are saved back as one claim.
  */
-const claimServer = (): ConnectedServer | undefined => presenceLiveServer() ?? presenceServers()[0]
+const claimServer = (): ConnectedServer | undefined => {
+  // Editing a claim from another server edits that server's set, while it is still connected.
+  if (claimServerUrl !== null) {
+    const chosen = presenceServers().find((server) => server.url === claimServerUrl)
+    if (chosen !== undefined) return chosen
+  }
+  return presenceLiveServer() ?? presenceServers()[0]
+}
+
+/** The server whose claims claim mode edits, when the drawer's Edit picked one. */
+let claimServerUrl: string | null = null
+
+/** Pixel counts per document, so a list never rasterises a claim just to label it. */
+const pixelCounts = new WeakMap<RegionDocument, number>()
 
 /** A short description of a document for lists and toasts. */
 export const documentName = (document: RegionDocument): string => {
   const count = document.items.length
-  const pixels = regionDocumentPixels(document)?.count ?? 0
+  let pixels = pixelCounts.get(document)
+  if (pixels === undefined) {
+    pixels = regionDocumentPixels(document)?.count ?? 0
+    pixelCounts.set(document, pixels)
+  }
   const first = document.items[0]?.shape.kind ?? 'shape'
   const kind = count === 1 ? first : `${count} shapes`
   return `${kind} · ${pixels.toLocaleString()} px`
@@ -141,10 +158,17 @@ const host = (): ClaimEditorHost => ({
     if (me === null) return 'Wplace identity unavailable. Sign in, then retry.'
     // Your regions live on the claim server. An overlapping template is only a hint, and only
     // when it lives on that same server.
-    const server = (id === null ? null : presenceRegionServer(id)) ?? claimServer()
-    if (server === undefined) return 'Presence is not connected to any server.'
+    // An existing claim stays on its own server; it is never written elsewhere.
+    const server = id === null ? claimServer() : (presenceRegionServer(id) ?? undefined)
+    if (server === undefined)
+      return id === null
+        ? 'Presence is not connected to any server.'
+        : 'The server holding that claim is not connected.'
     const target = targetFor(regionDocumentBounds(document))
-    const hint = target !== null && target.server.url === server.url ? target.template.id : null
+    const hint =
+      target !== null && target.server.url === server.url
+        ? (target.template.serverTemplateId ?? null)
+        : null
     const error = await claimRegion(server, id ?? uuidV7(), {
       templateId: hint,
       document,
@@ -187,12 +211,28 @@ const ready = (): boolean => {
 export const openClaimTool = (tool?: ClaimTool, rerender?: () => void): boolean => {
   if (rerender !== undefined) rerenderPanel = rerender
   if (!ready()) return false
+  claimServerUrl = null
   message = undefined
   installClaimEditor(host())
   startClaimMode(tool)
   return true
 }
 
-/** Enter claim mode from the drawer's Edit: every one of your regions loads, so the id is moot. */
-export const openClaimEditor = (_id: string, rerender?: () => void): boolean =>
-  openClaimTool('select', rerender)
+/** Enter claim mode from the drawer's Edit, on the server that holds the chosen claim. */
+export const openClaimEditor = (id: string, rerender?: () => void): boolean => {
+  if (rerender !== undefined) rerenderPanel = rerender
+  if (!ready()) return false
+  const region = presenceView().regions.find((held) => held.id === id)
+  const server = region === undefined ? undefined : serverFor(region)
+  if (server === undefined) {
+    message = 'The server holding that claim is not connected.'
+    toast(message, 'error')
+    rerenderPanel?.()
+    return false
+  }
+  claimServerUrl = server.url
+  message = undefined
+  installClaimEditor(host())
+  startClaimMode('select')
+  return true
+}

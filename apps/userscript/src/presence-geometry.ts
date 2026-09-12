@@ -46,24 +46,31 @@ export const draftIn = (
   tiles: readonly TileCoord[],
   offsetsOf: (tile: TileCoord) => Iterable<number>,
 ): PresenceDraft | null => {
+  // The mask stops at the cap, but the bounds and the count cover every drafted pixel: a peer
+  // must see the whole draft's extent even when it only gets a rect.
   const pixels: { x: number; y: number }[] = []
-  let truncated = false
+  let count = 0
+  let left = Number.POSITIVE_INFINITY
+  let top = Number.POSITIVE_INFINITY
+  let right = Number.NEGATIVE_INFINITY
+  let bottom = Number.NEGATIVE_INFINITY
   for (const tile of tiles) {
     const baseX = tile.x * TILE_SIZE
     const baseY = tile.y * TILE_SIZE
     for (const offset of offsetsOf(tile)) {
-      if (pixels.length >= MAX_PUBLISHED_DRAFT_PIXELS) {
-        truncated = true
-        break
-      }
-      pixels.push({ x: baseX + (offset % TILE_SIZE), y: baseY + Math.floor(offset / TILE_SIZE) })
+      const x = baseX + (offset % TILE_SIZE)
+      const y = baseY + Math.floor(offset / TILE_SIZE)
+      count++
+      if (x < left) left = x
+      if (x > right) right = x
+      if (y < top) top = y
+      if (y > bottom) bottom = y
+      if (pixels.length < MAX_PUBLISHED_DRAFT_PIXELS) pixels.push({ x, y })
     }
-    if (truncated) break
   }
-  const draft = encodePresenceDraft(pixels)
-  if (draft === null || !truncated) return draft
-  // A cut-off scan cannot promise the mask is complete; hand peers the rect and a floor count.
-  return { rect: draft.rect, pixels: draft.pixels }
+  if (count === 0) return null
+  if (count <= MAX_PUBLISHED_DRAFT_PIXELS) return encodePresenceDraft(pixels)
+  return { rect: { x: left, y: top, w: right - left + 1, h: bottom - top + 1 }, pixels: count }
 }
 
 /** Where `rect` lands on the canvas this frame, in device pixels, or null when off screen. */
