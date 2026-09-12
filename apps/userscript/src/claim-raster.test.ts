@@ -44,6 +44,38 @@ describe('pixel sets', () => {
     expect(performance.now() - started).toBeLessThan(2_000)
   })
 
+  it('tells whether the eraser touches a vector shape without rasterising it', () => {
+    const big = { kind: 'ellipse' as const, x: 0, y: 0, w: 2_000, h: 2_000 }
+    const inside = new PixelSet()
+    inside.stamp(1_000, 1_000, 1)
+    const corner = new PixelSet()
+    corner.stamp(2, 2, 1)
+    const far = new PixelSet()
+    far.stamp(3_000, 3_000, 1)
+    const started = performance.now()
+    for (let i = 0; i < 64; i++) {
+      expect(rasterTouches(big, inside)).toBe(true)
+      expect(rasterTouches(big, corner)).toBe(false)
+      expect(rasterTouches(big, far)).toBe(false)
+    }
+    expect(performance.now() - started).toBeLessThan(500)
+    const stroke = {
+      kind: 'path' as const,
+      closed: false,
+      width: 4,
+      nodes: [
+        { x: 0, y: 10 },
+        { x: 100, y: 10 },
+      ],
+    }
+    const onLine = new PixelSet()
+    onLine.stamp(50, 11, 1)
+    const offLine = new PixelSet()
+    offLine.stamp(50, 20, 1)
+    expect(rasterTouches(stroke, onLine)).toBe(true)
+    expect(rasterTouches(stroke, offLine)).toBe(false)
+  })
+
   it('merges two rasters and erases from one', () => {
     const a = new PixelSet()
     a.line({ x: 0, y: 0 }, { x: 3, y: 0 }, 1)

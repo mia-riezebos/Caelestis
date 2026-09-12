@@ -225,7 +225,6 @@ export const openClaimTool = (tool?: ClaimTool, rerender?: () => void): boolean 
 /** Enter claim mode from the drawer's Edit, on the server that holds the chosen claim. */
 export const openClaimEditor = (id: string, rerender?: () => void): boolean => {
   if (rerender !== undefined) rerenderPanel = rerender
-  if (!ready()) return false
   const region = presenceView().regions.find((held) => held.id === id)
   const server = region === undefined ? undefined : serverFor(region)
   if (server === undefined) {
@@ -234,7 +233,12 @@ export const openClaimEditor = (id: string, rerender?: () => void): boolean => {
     rerenderPanel?.()
     return false
   }
+  // The claim's server is the one whose readiness and token matter, so it is chosen first.
   claimServerUrl = server.url
+  if (!ready()) {
+    claimServerUrl = null
+    return false
+  }
   message = undefined
   installClaimEditor(host())
   startClaimMode('select')

@@ -5,6 +5,8 @@ import {
   type RegionShape,
   type RegionShapePixels,
   rasterShapeFrom,
+  regionShapeBounds,
+  regionShapeOutline,
   regionShapePixels,
   WORLD_PIXELS,
 } from '@caelestis/shared'
@@ -169,17 +171,69 @@ export const eraseFromRaster = (shape: RegionShape, erased: PixelSet): RegionSha
   return rasterShapeFrom({ rect, mask, count })
 }
 
-/** Whether any pixel of a shape lies under the eraser. */
+const insideRing = (ring: readonly Point[], x: number, y: number): boolean => {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i] as Point
+    const b = ring[j] as Point
+    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
+}
+
+const nearPolyline = (line: readonly Point[], x: number, y: number, radius: number): boolean => {
+  const limit = radius * radius
+  for (let i = 0; i + 1 < line.length; i++) {
+    const a = line[i] as Point
+    const b = line[i + 1] as Point
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const length = dx * dx + dy * dy
+    const t =
+      length === 0 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / length))
+    const px = a.x + t * dx - x
+    const py = a.y + t * dy - y
+    if (px * px + py * py <= limit) return true
+  }
+  return false
+}
+
+/**
+ * Whether any pixel of a shape lies under the eraser. The eraser's own pixels are few; each is
+ * tested against the shape's geometry by its centre, the way the rasteriser decides membership,
+ * so a large shape is never rasterised just to answer this.
+ */
 export const rasterTouches = (shape: RegionShape, erased: PixelSet): boolean => {
   const touched = erased.bounds()
   if (touched === null) return false
-  const { rect, mask } = regionShapePixels(shape)
-  if (!rectsTouch(rect, touched)) return false
-  for (let row = 0; row < rect.h; row++) {
-    for (let column = 0; column < rect.w; column++) {
-      if (mask[row * rect.w + column] === 1 && erased.has(rect.x + column, rect.y + row))
-        return true
+  const bounds = regionShapeBounds(shape)
+  if (!rectsTouch(bounds, touched)) return false
+  const left = Math.max(bounds.x, touched.x)
+  const top = Math.max(bounds.y, touched.y)
+  const right = Math.min(bounds.x + bounds.w, touched.x + touched.w)
+  const bottom = Math.min(bounds.y + bounds.h, touched.y + touched.h)
+  if (shape.kind === 'pixels') {
+    const { rect, mask } = regionShapePixels(shape)
+    for (let y = top; y < bottom; y++) {
+      for (let x = left; x < right; x++) {
+        if (erased.has(x, y) && mask[(y - rect.y) * rect.w + (x - rect.x)] === 1) return true
+      }
     }
+    return false
+  }
+  const outline = regionShapeOutline(shape)
+  const closed = shape.kind !== 'path' || shape.closed
+  const width = shape.kind === 'path' ? shape.width : 0
+  const line = closed && width > 0 ? [...outline, outline[0] as Point] : outline
+  const hit = (x: number, y: number): boolean => {
+    const cx = x + 0.5
+    const cy = y + 0.5
+    if (shape.kind === 'rectangle') return true
+    if (closed && insideRing(outline, cx, cy)) return true
+    return width > 0 && nearPolyline(line, cx, cy, width / 2)
+  }
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) if (erased.has(x, y) && hit(x, y)) return true
   }
   return false
 }
