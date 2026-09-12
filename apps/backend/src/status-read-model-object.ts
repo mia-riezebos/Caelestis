@@ -1052,20 +1052,24 @@ export class StatusReadModelObject extends DurableObject<Env> {
       })
       return
     }
-    const event = (() => {
-      try {
-        return Schema.decodeUnknownSync(PaintEventSchema)(JSON.parse(encoded))
-      } catch {
-        return null
-      }
-    })()
-    if (event === null || event.eventId !== part.eventId || event.season !== part.season)
-      return reject('invalid')
-    await this.handlePaintReport(socket, attachment, {
-      type: 'paint-report',
-      requestId: part.requestId,
-      event,
-    })
+    try {
+      const event = (() => {
+        try {
+          return Schema.decodeUnknownSync(PaintEventSchema)(JSON.parse(encoded))
+        } catch {
+          return null
+        }
+      })()
+      if (event === null || event.eventId !== part.eventId || event.season !== part.season)
+        return reject('invalid')
+      await this.handlePaintReport(socket, attachment, {
+        type: 'paint-report',
+        requestId: part.requestId,
+        event,
+      })
+    } finally {
+      this.paints.finish(socket)
+    }
   }
 
   private async handleTileOffer(

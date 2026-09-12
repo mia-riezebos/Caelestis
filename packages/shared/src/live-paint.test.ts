@@ -124,4 +124,20 @@ describe('paint report framing', () => {
     assembler.push({}, first)
     expect(() => assembler.push({}, { ...first, index: 1 })).toThrow('restart')
   })
+
+  it('retains complete-report reservations through accounting, disconnects, and expiry', () => {
+    const assembler = new LivePaintAssembler()
+    const owners = [{}, {}, {}, {}]
+    const first = owners[0]
+    if (first === undefined) throw new Error('fixture requires an owner')
+    for (const owner of owners)
+      expect(assembler.push(owner, part({ total: 1, chunk: '{}' }), 0)).toBe('{}')
+    assembler.discard(first)
+    expect(() => assembler.push(first, part(), LIVE_PAINT_ASSEMBLY_TTL_MS)).toThrow(
+      'accounting is busy',
+    )
+    expect(() => assembler.push({}, part(), LIVE_PAINT_ASSEMBLY_TTL_MS)).toThrow('assembly is busy')
+    assembler.finish(first)
+    expect(assembler.push({}, part(), LIVE_PAINT_ASSEMBLY_TTL_MS)).toBeNull()
+  })
 })

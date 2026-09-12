@@ -47,13 +47,14 @@ const fixture = async () => {
     setWebSocketAutoResponse: vi.fn(),
     getWebSockets: () => [],
   } as unknown as DurableObjectState
+  const record = vi.fn(async (): Promise<void> => undefined)
   const env = {
     DB: database,
     BLOBS: {
       get: async (key: string) =>
         key === `chunks/${hash}` ? { arrayBuffer: async () => chunk.slice().buffer } : null,
     },
-    TELEMETRY: { getByName: () => ({ record: async () => undefined }) },
+    TELEMETRY: { getByName: () => ({ record }) },
   } as unknown as Env
   const object = new StatusReadModelObject(state, env)
   const socket = (credentialScope = 'report') => ({
@@ -100,7 +101,7 @@ const fixture = async () => {
     }
   }
   const contributions = () => sql.readContributions({ season: 0, includeUnpublished: false })
-  return { object, state, env, socket, event, send, contributions }
+  return { object, state, env, socket, event, send, contributions, record }
 }
 
 it.each([6000, 100000])(
@@ -171,4 +172,36 @@ it('validates complete JSON and event identity before accounting', async () => {
   expect(await f.send(peer, { ...first, chunk: '{}' })).toMatchObject({ error: 'invalid' })
   expect(await f.send(peer, { ...first, eventId: uuidV7() })).toMatchObject({ error: 'invalid' })
   expect(await f.contributions()).toEqual([])
+})
+
+it('bounds complete reports while their accounting RPCs are still pending', async () => {
+  const f = await fixture()
+  let release = () => {}
+  const accounting = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  f.record.mockImplementation(() => accounting)
+  const processing: ReturnType<typeof f.send>[] = []
+  const peers = Array.from({ length: 4 }, () => f.socket())
+  try {
+    for (const [index, peer] of peers.entries()) {
+      for (const part of encodeLivePaintParts(f.event(6000), uuidV7())) {
+        if (part.index === part.total - 1) processing.push(f.send(peer, part))
+        else await f.send(peer, part)
+      }
+      await vi.waitFor(() => expect(f.record).toHaveBeenCalledTimes(index + 1))
+    }
+    const extra = encodeLivePaintParts(f.event(6000), uuidV7())[0]
+    if (extra === undefined) throw new Error('fixture requires parts')
+    expect(await f.send(f.socket(), extra)).toMatchObject({ error: 'unavailable' })
+    for (const peer of peers)
+      f.object.webSocketClose(peer as unknown as WebSocket, 1000, 'disconnect', true)
+    expect(await f.send(f.socket(), extra)).toMatchObject({ error: 'unavailable' })
+  } finally {
+    release()
+    await Promise.all(processing)
+  }
+  const next = encodeLivePaintParts(f.event(6000), uuidV7())[0]
+  if (next === undefined) throw new Error('fixture requires parts')
+  expect(await f.send(f.socket(), next)).toMatchObject({ type: 'paint-part-result' })
 })

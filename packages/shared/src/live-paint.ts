@@ -58,6 +58,7 @@ interface PendingPaint {
   readonly chunks: string[]
   bytes: number
   expiresAt: number
+  complete: boolean
 }
 
 /** Invalid parts are terminal; unavailable assemblies can restart with the original event ID. */
@@ -75,18 +76,30 @@ export class LivePaintAssembler {
   private readonly pending = new Map<object, PendingPaint>()
   private bytes = 0
 
-  /** Release an owner's incomplete report when its socket closes or authorization is lost. */
-  discard(owner: object): void {
+  private release(owner: object): void {
     const held = this.pending.get(owner)
     if (held === undefined) return
     this.bytes -= held.bytes
     this.pending.delete(owner)
   }
 
-  /** Accept a schema-validated part; return JSON only after all parts arrive in order. */
+  /** Drop incomplete transfers; accounting retains its reservation even after a disconnect. */
+  discard(owner: object): void {
+    if (this.pending.get(owner)?.complete) return
+    this.release(owner)
+  }
+
+  /** Release a complete report only after decoding and accounting have finished. */
+  finish(owner: object): void {
+    this.release(owner)
+  }
+
+  /** Accept a validated part; complete JSON reserves its budget until the caller invokes finish. */
   push(owner: object, part: LivePaintPart, now = Date.now()): string | null {
-    for (const [key, held] of this.pending) if (held.expiresAt <= now) this.discard(key)
+    for (const [key, held] of this.pending)
+      if (!held.complete && held.expiresAt <= now) this.discard(key)
     let held = this.pending.get(owner)
+    if (held?.complete) throw new LivePaintAssemblyError('unavailable', 'paint accounting is busy')
     if (held?.transferId !== part.transferId) {
       if (part.index !== 0)
         throw new LivePaintAssemblyError('unavailable', 'paint transfer must restart')
@@ -101,6 +114,7 @@ export class LivePaintAssembler {
         chunks: [],
         bytes: 0,
         expiresAt: now + LIVE_PAINT_ASSEMBLY_TTL_MS,
+        complete: false,
       }
       this.pending.set(owner, held)
     }
@@ -127,8 +141,7 @@ export class LivePaintAssembler {
     held.expiresAt = now + LIVE_PAINT_ASSEMBLY_TTL_MS
     this.bytes += bytes
     if (held.chunks.length !== held.total) return null
-    const encoded = held.chunks.join('')
-    this.discard(owner)
-    return encoded
+    held.complete = true
+    return held.chunks.join('')
   }
 }
