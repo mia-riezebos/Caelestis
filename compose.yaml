@@ -1,0 +1,65 @@
+x-storage: &storage
+  OBJECT_STORAGE: ${OBJECT_STORAGE:-filesystem}
+  OBJECT_DIRECTORY: /objects
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_ENDPOINT: ${S3_ENDPOINT:-}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+x-runtime: &runtime
+  restart: unless-stopped
+  stop_grace_period: 35s
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+
+services:
+  backend:
+    <<: *runtime
+    image: ${CAELESTIS_BACKEND_IMAGE:-miacx/caelestis-backend:local}
+    build:
+      context: .
+      target: backend
+      args:
+        CAELESTIS_BUILD_ID: ${CAELESTIS_BUILD_ID:-development}
+    env_file: ${CAELESTIS_ENV_FILE:-.env}
+    environment:
+      <<: *storage
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env}
+      CAELESTIS_READ_TOKEN: ${CAELESTIS_READ_TOKEN:?Set CAELESTIS_READ_TOKEN in .env}
+      HOST: 0.0.0.0
+      PORT: '3000'
+      DATA_DIRECTORY: /data
+      REPLICAS: '1'
+    volumes:
+      - data:/data
+      - objects:/objects
+  frontend:
+    <<: *runtime
+    image: ${CAELESTIS_FRONTEND_IMAGE:-miacx/caelestis-frontend:local}
+    build:
+      context: .
+      target: frontend
+      args:
+        CAELESTIS_BUILD_ID: ${CAELESTIS_BUILD_ID:-development}
+    environment:
+      <<: *storage
+      CAELESTIS_SERVER: http://backend:3000/backend
+      CAELESTIS_READ_TOKEN: ${CAELESTIS_READ_TOKEN:?Set CAELESTIS_READ_TOKEN in .env}
+      HOST: 0.0.0.0
+      PORT: '3000'
+      ORIGIN: ${ORIGIN:-http://localhost:${CAELESTIS_HTTP_PORT:-3000}}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - '${CAELESTIS_BIND_ADDRESS:-127.0.0.1}:${CAELESTIS_HTTP_PORT:-3000}:3000'
+    volumes:
+      - objects:/objects
+
+volumes:
+  data:
+  objects:

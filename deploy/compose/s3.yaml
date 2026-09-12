@@ -1,0 +1,57 @@
+# A local S3-compatible service for either database adapter. Use a dedicated app bucket.
+x-s3: &s3
+  OBJECT_STORAGE: s3
+  S3_BUCKET: caelestis
+  S3_ENDPOINT: http://s3:9000
+  S3_REGION: us-east-1
+  S3_FORCE_PATH_STYLE: 'true'
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-caelestis}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+  AWS_SESSION_TOKEN: ''
+services:
+  backend:
+    environment: *s3
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+  frontend:
+    environment: *s3
+  s3:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: [server, /data]
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-caelestis}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - s3:/data
+  s3-init:
+    image: ${CAELESTIS_BACKEND_IMAGE:-miacx/caelestis-backend:local}
+    build:
+      context: .
+      target: backend
+    restart: 'no'
+    working_dir: /app/apps/backend
+    environment: *s3
+    depends_on: [s3]
+    command:
+      - node
+      - --input-type=module
+      - -e
+      - |
+        import { createRequire } from 'node:module';
+        import { setTimeout } from 'node:timers/promises';
+        const { S3Client, CreateBucketCommand } = createRequire(import.meta.resolve('@caelestis/storage/s3'))('@aws-sdk/client-s3');
+        const client = new S3Client({ endpoint: process.env.S3_ENDPOINT, region: process.env.S3_REGION, forcePathStyle: true });
+        try {
+          for (let attempt = 0; ; attempt++) {
+            try { await client.send(new CreateBucketCommand({ Bucket: process.env.S3_BUCKET })); break; }
+            catch (error) {
+              if (error.name === 'BucketAlreadyOwnedByYou') break;
+              if (attempt >= 29) throw error;
+              await setTimeout(1000);
+            }
+          }
+        } finally { client.destroy(); }
+volumes:
+  s3:

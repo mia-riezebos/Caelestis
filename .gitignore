@@ -1,4 +1,5 @@
 node_modules/
+/data/
 dist/
 .turbo/
 .svelte-kit/
@@ -12,6 +13,8 @@ dist/
 .wrangler/
 .codex-mutants/
 .pnpm-store/
+test-results/
+/images/
 
 # Agent scratch space. Subagent git worktrees land in .claude/worktrees/, and each one carries its
 # own biome.json — which biome reads as a nested root configuration and refuses to run against.

@@ -1,0 +1,76 @@
+replicaCount: 1
+image:
+  repository: docker.io/miacx/caelestis-backend
+  tag: ''
+  digest: ''
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+frontend:
+  image:
+    repository: docker.io/miacx/caelestis-frontend
+    tag: ''
+    digest: ''
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: '2', memory: 1Gi }
+server:
+  name: Caelestis
+  origin: ''
+  description: ''
+  season: 0
+  openAccess: false
+  basePath: /backend
+  existingSecret: caelestis-server
+database:
+  adapter: sqlite
+  host: ''
+  port: 5432
+  existingSecret: ''
+  secretKeys:
+    username: username
+    password: password
+    database: dbname
+  tls:
+    mode: verify-full
+    existingSecret: ''
+    caKey: ca.crt
+storage:
+  adapter: filesystem
+  s3:
+    bucket: ''
+    endpoint: ''
+    region: us-east-1
+    forcePathStyle: false
+    existingSecret: ''
+persistence:
+  enabled: true
+  existingClaim: ''
+  storageClass: ''
+  size: 10Gi
+  accessModes: [ReadWriteOnce]
+migration:
+  enabled: false
+service:
+  port: 80
+ingress:
+  enabled: false
+  className: ''
+  annotations: {}
+  host: caelestis.example.com
+  tls: []
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: '2'
+    memory: 1Gi
+podAnnotations:
+  prometheus.io/scrape: 'true'
+  prometheus.io/port: '3001'
+  prometheus.io/path: /metrics
+extraEnv: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

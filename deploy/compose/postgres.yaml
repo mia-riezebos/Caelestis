@@ -1,0 +1,31 @@
+# Combine with the root compose.yaml. PostgreSQL is private to the Compose network.
+services:
+  backend:
+    environment:
+      DB_ADAPTER: postgres
+      DATABASE_URL: ''
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGDATABASE: caelestis
+      PGUSER: caelestis
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PG_TLS_MODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: caelestis
+      POSTGRES_USER: caelestis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U caelestis -d caelestis']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  postgres:

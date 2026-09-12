@@ -18,6 +18,7 @@ const template = {
 } as unknown as Template
 const poster = new TextEncoder().encode('GIF89a-poster')
 const object = (version = 'v2') => ({
+  size: 6,
   etag: 'old',
   uploaded: new Date(),
   customMetadata: { version },
@@ -75,7 +76,10 @@ describe('persistent template GIFs', () => {
   it('returns a fresh stored GIF without decoding or fetching anything', async () => {
     const stored = object()
     const { images, event, work } = setup(stored)
-    expect(await ensureSocialImage(event, 0, template)).toBe(stored)
+    expect(await ensureSocialImage(event, 0, template)).toMatchObject({
+      etag: stored.etag,
+      metadata: stored.customMetadata,
+    })
     expect(images.put).not.toHaveBeenCalled()
     expect(fetchBackend).not.toHaveBeenCalled()
     expect(renderTimelapse).not.toHaveBeenCalled()
@@ -85,7 +89,10 @@ describe('persistent template GIFs', () => {
   it('keeps an old artwork GIF available until the daily job replaces it', async () => {
     const stored = { ...object('v1'), uploaded: new Date(0) }
     const { images, event, work } = setup(stored)
-    expect(await ensureSocialImage(event, 0, template)).toBe(stored)
+    expect(await ensureSocialImage(event, 0, template)).toMatchObject({
+      etag: stored.etag,
+      metadata: stored.customMetadata,
+    })
     expect(images.put).not.toHaveBeenCalled()
     await Promise.all(work)
     expect(renderTemplateHistory).not.toHaveBeenCalled()
@@ -97,7 +104,10 @@ describe('persistent template GIFs', () => {
     const winner = { ...object(), etag: 'winner' }
     images.head.mockResolvedValueOnce(null).mockResolvedValue(winner)
     images.put.mockResolvedValueOnce(null)
-    expect(await ensureSocialImage(event, 0, template)).toBe(winner)
+    expect(await ensureSocialImage(event, 0, template)).toMatchObject({
+      etag: winner.etag,
+      metadata: winner.customMetadata,
+    })
     await Promise.all(work)
     expect(images.put).toHaveBeenNthCalledWith(
       1,

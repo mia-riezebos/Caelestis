@@ -18,7 +18,7 @@ import { readProgressHistory } from '../telemetry/progress-history.js'
 import { readTileHistory } from '../telemetry/queries.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
-import { MemorySqlStore } from './memory/memory-sql-store.js'
+import { type SqlStoreHarness, sqlStoreAdapters } from './sql-store.test-helper.js'
 
 const TOKEN = 'a'.repeat(64)
 const DAY = seconds(1_750_032_000) // a UTC midnight
@@ -62,24 +62,7 @@ const observation = (overrides: Partial<TileObservation>): TileObservation => ({
   ...overrides,
 })
 
-type Harness = { store: SqlStore; close(): void }
-
-const adapters: readonly { name: string; make(): Harness }[] = [
-  {
-    name: 'memory',
-    make: () => ({ store: new MemorySqlStore(), close: () => undefined }),
-  },
-  {
-    name: 'D1',
-    make: () => {
-      const database = new SqliteD1Database()
-      return {
-        store: new D1SqlStore(database as unknown as D1Database),
-        close: () => database.close(),
-      }
-    },
-  },
-]
+type Harness = SqlStoreHarness
 
 it('reads progress for an accepted 400-chunk template in one D1 query', async () => {
   const database = new SqliteD1Database()
@@ -125,12 +108,12 @@ it('reads progress for an accepted 400-chunk template in one D1 query', async ()
   }
 })
 
-describe.each(adapters)('$name telemetry read contract', ({ make }) => {
+describe.each(sqlStoreAdapters)('$name telemetry read contract', ({ make }) => {
   let harness: Harness
   let store: SqlStore
 
-  beforeEach(() => {
-    harness = make()
+  beforeEach(async () => {
+    harness = await make()
     store = harness.store
   })
 
@@ -287,7 +270,7 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     await store.reserveTileBlobUpload(first.hash, first.hash, 'first', now, millis(now + 10000))
     expect(
       await store.commitTileBlobReservation('first', now, first, [status], true),
-    ).not.toBeNull()
+    ).toMatchObject({ statusChanges: [{ published: true, current: status }] })
     const older = { ...first, hash: 'e'.repeat(64), observedAt: millis(now - 1000) }
     await store.reserveTileBlobUpload(older.hash, older.hash, 'older', now, millis(now + 10000))
     expect(
@@ -842,12 +825,12 @@ describe('painter bucket tier', () => {
   })
 })
 
-describe.each(adapters)('$name painter bucket contract', ({ make }) => {
+describe.each(sqlStoreAdapters)('$name painter bucket contract', ({ make }) => {
   let harness: Harness
   let store: SqlStore
 
-  beforeEach(() => {
-    harness = make()
+  beforeEach(async () => {
+    harness = await make()
     store = harness.store
   })
 

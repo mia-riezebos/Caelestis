@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { parseEnv } from 'node:util'
 import adapter from '@sveltejs/adapter-cloudflare'
+import nodeAdapter from '@sveltejs/adapter-node'
 import { sveltekit } from '@sveltejs/kit/vite'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
@@ -50,7 +51,8 @@ export default defineConfig(({ command }) => {
             filename.split(/[/\\]/).includes('node_modules') ? undefined : true,
         },
 
-        adapter: adapter(),
+        adapter:
+          process.env.CAELESTIS_TARGET === 'node' ? nodeAdapter({ out: 'build' }) : adapter(),
       }),
     ],
   }

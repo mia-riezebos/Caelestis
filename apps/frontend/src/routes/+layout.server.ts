@@ -6,6 +6,7 @@ import type {
   StatusResponse,
 } from '@caelestis/shared'
 import { readBackendJson } from '$lib/server/backend.js'
+import { imageStorageFor } from '$lib/server/image-storage.js'
 import { socialMetadata } from '$lib/server/social.js'
 import { ensureSocialImage } from '$lib/server/social-images.js'
 import type { AppBootstrap } from '$lib/state/app.svelte.js'
@@ -32,7 +33,7 @@ export const load: LayoutServerLoad = async (event) => {
       social = await socialMetadata(
         event.url,
         bootstrap,
-        event.platform?.env.SOCIAL_IMAGES,
+        imageStorageFor(event),
         manifest ? (template) => ensureSocialImage(event, manifest.season, template) : undefined,
       )
     } catch (error) {

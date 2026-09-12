@@ -14,21 +14,25 @@ export {
   sampleTimeline,
 } from '../apps/frontend/src/lib/social-render.ts'
 
-/** Build locally by default. Only --publish writes the resulting GIFs to the configured R2 bucket. */
+/** Build locally by default. Publishing uses the supplied storage adapter or the Cloudflare CLI. */
 export const buildSocialImages = async ({
   site,
   output,
   publish = false,
   local = false,
   bucket = 'caelestis-blobs',
+  storage,
   templateId,
+  apiPath = '/api/v1/',
+  readToken,
   readMapTile = cachedMapTiles(resolve(output, '.osm')),
 }) => {
-  const api = new URL('/api/v1/', site)
+  const api = new URL(apiPath, site)
   const read = async (path, init) => {
     const response = await fetch(new URL(path, api), {
       signal: AbortSignal.timeout(60_000),
       ...init,
+      ...(readToken ? { headers: { ...init?.headers, authorization: `Bearer ${readToken}` } } : {}),
     })
     if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`)
     return response
@@ -50,6 +54,13 @@ export const buildSocialImages = async ({
       const file = resolve(output, `${encodeURIComponent(template.id)}.gif`)
       await writeFile(file, gif)
       if (publish) {
+        if (storage) {
+          await storage.put(socialImageKey(manifest.season, template), gif, {
+            contentType: 'image/gif',
+          })
+          console.log(`${template.id}: ${gif.length} bytes, published`)
+          continue
+        }
         const previous = await fetch(
           new URL(`/social/template/${encodeURIComponent(template.id)}.gif`, site),
           {

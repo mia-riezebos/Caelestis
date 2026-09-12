@@ -1,0 +1,31 @@
+# Combine with the root compose.yaml, optionally adding s3.yaml.
+services:
+  backend:
+    environment:
+      DB_ADAPTER: mariadb
+      MARIADB_HOST: mariadb
+      MARIADB_PORT: '3306'
+      MARIADB_DATABASE: caelestis
+      MARIADB_USER: caelestis
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?Set MARIADB_PASSWORD in .env}
+      MARIADB_TLS_MODE: disable
+    depends_on:
+      mariadb:
+        condition: service_healthy
+  mariadb:
+    image: mariadb:11.8@sha256:2d2f4095530294735a857cfe22bb101e19b0849b416911c796ec4aa81b164a62
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: caelestis
+      MARIADB_USER: caelestis
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?Set MARIADB_PASSWORD in .env}
+      MARIADB_RANDOM_ROOT_PASSWORD: '1'
+    volumes:
+      - mariadb:/var/lib/mysql
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  mariadb:

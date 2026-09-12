@@ -1,0 +1,21 @@
+# Connect to an existing CNPG primary reachable from this Docker host.
+# CNPG itself runs in Kubernetes; it is not a Compose service.
+services:
+  backend:
+    environment:
+      DB_ADAPTER: postgres
+      DATABASE_URL: ''
+      PGHOST: ${PGHOST:?Set PGHOST to a reachable CNPG primary hostname covered by its certificate}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:?Set PGDATABASE from the CNPG application secret}
+      PGUSER: ${PGUSER:?Set PGUSER from the CNPG application secret}
+      PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD from the CNPG application secret}
+      PG_TLS_MODE: verify-full
+      PG_TLS_CA_FILE: /etc/caelestis/postgres/ca.crt
+    volumes:
+      - type: bind
+        source: ${PG_TLS_CA_FILE:?Set PG_TLS_CA_FILE to the local CNPG CA certificate file}
+        target: /etc/caelestis/postgres/ca.crt
+        read_only: true
+        bind:
+          create_host_path: false

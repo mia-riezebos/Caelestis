@@ -1,0 +1,135 @@
+name: Release portable server
+
+on:
+  workflow_call:
+    secrets:
+      DOCKERHUB_TOKEN:
+        description: Docker Hub access token with write access to both Caelestis image repositories
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/portable-ci.yml
+    with:
+      extended: true
+
+  cloudflare:
+    uses: ./.github/workflows/portable-cloudflare.yml
+
+  publish:
+    needs: [validate, cloudflare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.20.0
+      - name: Prepare artifact versions
+        id: version
+        run: node .github/scripts/prepare-portable-release.mjs --output-dir release --github-output "$GITHUB_OUTPUT"
+      - name: Check for an already published version
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          status="$(curl -sS -o /tmp/existing-release.json -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")"
+          case "$status" in
+            200) echo 'exists=true' >> "$GITHUB_OUTPUT" ;;
+            404) echo 'exists=false' >> "$GITHUB_OUTPUT" ;;
+            *) cat /tmp/existing-release.json; exit 1 ;;
+          esac
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.existing.outputs.exists == 'false'
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        if: steps.existing.outputs.exists == 'false'
+        with:
+          version: v4.2.3
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.existing.outputs.exists == 'false'
+        with:
+          pattern: portable-images-*
+          path: tested-images
+      - name: Publish immutable images and chart
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_TAG: ${{ steps.version.outputs.imageTag }}
+          CHART_VERSION: ${{ steps.version.outputs.chartVersion }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          chart_registry="ghcr.io/${GITHUB_REPOSITORY,,}/charts"
+          test -n "${DOCKERHUB_TOKEN:?Configure the DOCKERHUB_TOKEN repository secret}"
+          echo "$DOCKERHUB_TOKEN" | docker login docker.io --username miacx --password-stdin
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          for arch in amd64 arm64; do
+            directory="tested-images/portable-images-$arch"
+            (cd "$directory" && sha256sum --check SHA256SUMS)
+            docker load -i "$directory/images.tar"
+            cp "$directory/image-configs.json" "release/$arch-image-configs.json"
+            for component in backend frontend; do
+              local_image="caelestis-$component:test"
+              image="docker.io/miacx/caelestis-$component:$IMAGE_TAG-$arch"
+              test "$(docker inspect "$local_image" --format '{{.Architecture}}')" = "$arch"
+              test "$(docker inspect "$local_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+              local_id="$(docker inspect "$local_image" --format '{{.Id}}')"
+              jq -e --arg id "$local_id" 'any(.[]; .Id == $id)' "$directory/image-configs.json"
+              if docker manifest inspect "$image" > /tmp/manifest.json 2>/tmp/manifest-error; then
+                test "$(jq -r .config.digest /tmp/manifest.json)" = "$local_id"
+              else
+                if ! grep -Eqi 'manifest unknown|no such manifest|not found' /tmp/manifest-error; then cat /tmp/manifest-error; exit 1; fi
+                docker tag "$local_image" "$image"
+                docker push "$image"
+              fi
+              cp "$directory/$component-sbom.spdx.json" "release/$component-$arch-sbom.spdx.json"
+            done
+          done
+          for component in backend frontend; do
+            image_repository="docker.io/miacx/caelestis-$component"
+            image="$image_repository:$IMAGE_TAG"
+            if docker manifest inspect "$image" > /tmp/manifest.json 2>/tmp/manifest-error; then
+              for arch in amd64 arm64; do
+                digest="$(docker buildx imagetools inspect "$image-$arch" --format '{{.Manifest.Digest}}')"
+                jq -e --arg arch "$arch" --arg digest "$digest" 'any(.manifests[]; .platform.architecture == $arch and .digest == $digest)' /tmp/manifest.json
+              done
+            else
+              if ! grep -Eqi 'manifest unknown|no such manifest|not found' /tmp/manifest-error; then cat /tmp/manifest-error; exit 1; fi
+              docker buildx imagetools create --tag "$image" "$image-amd64" "$image-arm64"
+            fi
+            digest="$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}')"
+            printf '%s@%s\n' "$image_repository" "$digest" > "release/$component-image.txt"
+            IMAGE_COMPONENT="$component" IMAGE_DIGEST="$digest" node --input-type=module -e "import {readFileSync,writeFileSync} from 'node:fs'; const file='deploy/helm/caelestis/values.yaml'; const indent=process.env.IMAGE_COMPONENT==='frontend'?'    ':'  '; writeFileSync(file,readFileSync(file,'utf8').replace(new RegExp('^'+indent+\"digest: ''\", 'm'), indent+'digest: '+process.env.IMAGE_DIGEST));"
+          done
+          helm package deploy/helm/caelestis --version "$CHART_VERSION" --app-version "$IMAGE_TAG" --destination release
+          chart="release/caelestis-$CHART_VERSION.tgz"
+          if helm pull "oci://$chart_registry/caelestis" --version "$CHART_VERSION" --destination /tmp 2>/tmp/chart-error; then
+            # Tar timestamps can differ on retries. Compare the extracted chart contents.
+            mkdir /tmp/chart-existing /tmp/chart-new
+            tar -xzf "/tmp/caelestis-$CHART_VERSION.tgz" -C /tmp/chart-existing
+            tar -xzf "$chart" -C /tmp/chart-new
+            diff -r /tmp/chart-existing /tmp/chart-new
+            cp "/tmp/caelestis-$CHART_VERSION.tgz" "$chart"
+          else
+            if ! grep -Eqi 'not found|manifest unknown' /tmp/chart-error; then cat /tmp/chart-error; exit 1; fi
+            helm push "$chart" "oci://$chart_registry"
+          fi
+          (cd release && sha256sum *.tgz *-image.txt *.json > SHA256SUMS)
+      - name: Publish release manifest and chart archive
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          IMAGE_TAG: ${{ steps.version.outputs.imageTag }}
+        run: |
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "Caelestis server $IMAGE_TAG" --notes-file release/notes.md --latest=false release/*.tgz release/*-image.txt release/*.json release/SHA256SUMS

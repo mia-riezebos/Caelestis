@@ -12,6 +12,7 @@ describe('app release workflow', () => {
   it('versions every deployable app and ignores only internal packages', () => {
     assert.deepEqual(changesets.ignore, [
       '@caelestis/shared',
+      '@caelestis/storage',
       '@caelestis/ui',
       '@caelestis/wire-schema',
     ])
@@ -20,7 +21,7 @@ describe('app release workflow', () => {
     assert.doesNotMatch(workflow, / {4}paths:/)
   })
 
-  it('keeps GitHub Releases userscript-only and tags deployed apps', () => {
+  it('keeps the userscript as the latest GitHub Release and tags deployed apps', () => {
     assert.match(workflow, /--title "Caelestis userscript v\$VERSION"[\s\S]*?--latest \\/)
     assert.equal(workflow.match(/gh release create/g)?.length, 1)
     assert.match(workflow, /Create frontend version tag/)

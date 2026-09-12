@@ -343,13 +343,25 @@ test('a failed template does not stop other outputs, and unpublished templates a
     server.closeAllConnections()
     server.close()
   })
+  const published = []
   await assert.rejects(
     buildSocialImages({
       site: `http://127.0.0.1:${server.address().port}`,
       output,
+      publish: true,
+      local: true,
+      storage: {
+        async put(key, bytes, options) {
+          published.push({ key, bytes, options })
+        },
+      },
       readMapTile: async () => sharp(png).resize(256, 256).png().toBuffer(),
     }),
     /failed for broken/,
   )
   assert.deepEqual(await readdir(output), ['test-template.gif'])
+  assert.equal(published.length, 1)
+  assert.equal(published[0].key, 'social/v2/0/test-template.gif')
+  assert.equal(published[0].options.contentType, 'image/gif')
+  assert.ok(published[0].bytes.length > 0)
 })

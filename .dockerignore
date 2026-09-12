@@ -1,0 +1,16 @@
+.git
+**/node_modules
+**/dist
+**/build
+**/.svelte-kit
+**/.wrangler
+**/.turbo
+**/.dev.vars*
+**/.env*
+.scratch
+.claude
+.plans
+data
+**/*.sqlite*
+**/*.log
+**/.DS_Store

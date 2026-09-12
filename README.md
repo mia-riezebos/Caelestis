@@ -115,6 +115,9 @@ for the version and compatibility policy.
 
 ## Self-hosting
 
+For Docker, Compose, and Kubernetes, see [Self-hosting](docs/self-hosting.md).
+For automated stack checks and the account setup wizard, see [Stack tests](docs/stack-testing.md).
+
 The included Wrangler files describe the deployment at `caelestis.mia.cx`. A fork must replace the
 Cloudflare account IDs, routes, D1 database, and R2 bucket with its own resources.
 
