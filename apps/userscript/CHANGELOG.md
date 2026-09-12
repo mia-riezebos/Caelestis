@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.10.1
+
+### Patch Changes
+
+- 116a65d: Report large paint batches completely without losing activity or double-counting retries.
+
 ## 0.10.0
 
 ### Minor Changes
