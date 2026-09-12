@@ -130,7 +130,23 @@ export interface LiveTileUpload extends PainterIdentity {
   readonly coverageToken?: string
 }
 
+/** One transport fragment of a paint event; only complete events enter accounting. */
+export interface LivePaintPart {
+  readonly transferId: string
+  readonly eventId: string
+  readonly season: number
+  readonly index: number
+  readonly total: number
+  readonly chunk: string
+}
+
+export interface LivePaintPartMessage extends LivePaintPart {
+  readonly type: 'paint-part'
+  readonly requestId: string
+}
+
 export type LiveSyncClientEvent =
+  | LivePaintPartMessage
   | {
       readonly type: 'state-vector'
       readonly requestId: string
@@ -241,6 +257,12 @@ export type LiveSyncServerEvent =
       readonly eventId: string
       readonly result: 'recorded' | 'partial' | 'duplicate'
       readonly error?: LiveMutationError
+    }
+  | {
+      readonly type: 'paint-part-result'
+      readonly requestId: string
+      readonly eventId: string
+      readonly index: number
     }
   | {
       readonly type: 'tile-offer-result'

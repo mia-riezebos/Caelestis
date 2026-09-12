@@ -15,8 +15,8 @@ Frame large paint reports over the live WebSocket, reassemble before accounting,
 
 ## TODOs
 
-- [~] Add the shared paint framing contract, bounded assembler, and boundary tests.
-- [ ] Accept negotiated paint parts in the backend and verify accounting/retry behavior.
+- [x] Add the shared paint framing contract, bounded assembler, and boundary tests.
+- [~] Accept negotiated paint parts in the backend and verify accounting/retry behavior.
 - [ ] Send large reports with acknowledgement backpressure and verify client compatibility/recovery.
 - [ ] Verify 100k-pixel delivery in Workers, run repository checks, document results, and file the PR.
 
@@ -28,3 +28,4 @@ Frame large paint reports over the live WebSocket, reassemble before accounting,
 - Acknowledging each fragment provides backpressure. Only the final `paint-result` confirms application. Reconnect/eviction can restart assembly using the same event ID.
 - Incomplete assemblies are transient and authenticated-socket scoped, with explicit expiry and a global byte budget. No partial accounting is persisted.
 - Production, live databases, and daily-driver channels are outside implementation validation scope.
+- Shared framing validation: 12 tests pass, including 100k-pixel Unicode/escaping round trips, conflicting/repeated parts, expiry, owner isolation, and global memory limits. Shared typecheck and 178 wire-schema tests pass.
