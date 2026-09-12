@@ -227,12 +227,17 @@
     color: inherit;
     cursor: pointer;
   }
-  .tool:hover:not(:disabled) {
+  .tool:hover:not(:disabled, .active) {
     background: color-mix(in oklab, currentColor 10%, transparent);
   }
   .tool.active {
     background: var(--caelestis-primary, oklch(0.68 0.15 244));
     color: white;
+  }
+  /* The active tool stays on its colour under the pointer; a tint of white on a white icon
+     would make it vanish. */
+  .tool.active:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--caelestis-primary, oklch(0.68 0.15 244)) 88%, black);
   }
   .tool:focus-visible {
     outline: 2px solid var(--caelestis-focus, currentColor);
@@ -277,12 +282,15 @@
     text-align: start;
     cursor: pointer;
   }
-  .choice:hover {
+  .choice:hover:not(.active) {
     background: color-mix(in oklab, currentColor 10%, transparent);
   }
   .choice.active {
     background: var(--caelestis-primary, oklch(0.68 0.15 244));
     color: white;
+  }
+  .choice.active:hover {
+    background: color-mix(in oklab, var(--caelestis-primary, oklch(0.68 0.15 244)) 88%, black);
   }
   .choice-label {
     flex: 1;
