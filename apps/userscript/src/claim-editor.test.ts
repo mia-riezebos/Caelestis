@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   scale: 1,
+  regions: [] as { id: string; document: RegionDocument }[],
   saved: [] as { id: string | null; document: RegionDocument }[],
   removed: [] as string[],
   saveError: null as string | null,
@@ -26,6 +27,7 @@ vi.mock('@caelestis/ui/elements', () => ({ CLAIM_MODE_TAG: 'caelestis-claim-mode
 
 const host = () => ({
   templateFor: () => harness.template,
+  myRegions: () => harness.regions,
   save: async (id: string | null, document: RegionDocument) => {
     harness.saved.push({ id, document })
     return harness.saveError
@@ -97,6 +99,7 @@ const setup = async (
 
 beforeEach(() => {
   harness.scale = 1
+  harness.regions = []
   harness.saved = []
   harness.removed = []
   harness.saveError = null
@@ -242,6 +245,35 @@ describe('claim editor', () => {
     expect(editor.claimModeModel()).toMatchObject({ editing: true, items: 1 })
     editor.handleClaimModeIntent({ type: 'confirm' })
     await vi.waitFor(() => expect(harness.saved[0]?.id).toBe('r1'))
+  })
+
+  it('loads one of my saved claims by clicking it in claim mode, unless work would be lost', async () => {
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: [{ id: 'a', op: 'add', shape: { kind: 'ellipse', x: 40, y: 40, w: 20, h: 20 } }],
+        },
+      },
+    ]
+    const editor = await setup('select')
+    expect(click(50, 50).defaultPrevented).toBe(true)
+    expect(editor.claimEditorEditingId()).toBe('r1')
+    expect(editor.claimModeModel()).toMatchObject({ editing: true, items: 1 })
+    // Draw something new on top: now the loaded claim has unsaved work, so another claim
+    // cannot replace it.
+    harness.regions.push({
+      id: 'r2',
+      document: {
+        items: [{ id: 'b', op: 'add', shape: { kind: 'rectangle', x: 100, y: 100, w: 5, h: 5 } }],
+      },
+    })
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'rectangle' })
+    drag(70, 70, 72, 72)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(102, 102)
+    expect(editor.claimEditorEditingId()).toBe('r1')
+    expect(editor.claimModeModel().message).toMatch(/Confirm or cancel/)
   })
 
   it('cancels without saving', async () => {

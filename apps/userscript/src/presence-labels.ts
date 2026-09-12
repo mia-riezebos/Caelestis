@@ -51,10 +51,18 @@ const labels = (): Label[] => {
   const list: Label[] = []
   for (const peer of view.peers) {
     const colour = presenceCss(peer.painter.wplaceUserId, 0.85)
-    if (peer.draft !== null) {
+    if (peer.viewport !== null && peer.draft !== null) {
+      list.push({
+        key: `peer:${peer.sessionId}:viewport`,
+        text: `${peer.painter.displayName} · painting ${peer.draft.pixels} px`,
+        rect: peer.viewport,
+        colour,
+        weight: 1,
+      })
+    } else if (peer.draft !== null) {
       list.push({
         key: `peer:${peer.sessionId}:draft`,
-        text: `${peer.painter.displayName} · drafting ${peer.draft.pixels}`,
+        text: `${peer.painter.displayName} · painting ${peer.draft.pixels} px`,
         rect: peer.draft.rect,
         colour,
         weight: 1,

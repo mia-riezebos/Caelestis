@@ -225,12 +225,30 @@ export const isPresenceDraft = (value: unknown): value is PresenceDraft => {
   )
 }
 
-/** A stable hue per painter so the same person looks the same in every tab and to every peer. */
-export const presenceHue = (wplaceUserId: number): number => {
-  let hash = 2166136261
-  for (const char of String(wplaceUserId)) {
-    hash ^= char.charCodeAt(0)
-    hash = Math.imul(hash, 16777619) >>> 0
-  }
-  return hash % 360
+export interface PresenceColour {
+  readonly name: string
+  /** 0..255 channels. */
+  readonly rgb: readonly [number, number, number]
 }
+
+/** Fourteen named colours, far enough apart to tell neighbours on a map apart. */
+export const PRESENCE_COLOURS: readonly PresenceColour[] = [
+  { name: 'red', rgb: [220, 38, 38] },
+  { name: 'orange', rgb: [245, 124, 0] },
+  { name: 'amber', rgb: [217, 166, 0] },
+  { name: 'lime', rgb: [101, 163, 13] },
+  { name: 'green', rgb: [22, 163, 74] },
+  { name: 'teal', rgb: [13, 148, 136] },
+  { name: 'cyan', rgb: [6, 182, 212] },
+  { name: 'sky', rgb: [14, 165, 233] },
+  { name: 'blue', rgb: [37, 99, 235] },
+  { name: 'indigo', rgb: [79, 70, 229] },
+  { name: 'violet', rgb: [139, 92, 246] },
+  { name: 'fuchsia', rgb: [192, 38, 211] },
+  { name: 'pink', rgb: [219, 39, 119] },
+  { name: 'rose', rgb: [225, 29, 72] },
+]
+
+/** A painter's colour, the same in every tab and to every peer: their id modulo the list. */
+export const presenceColour = (wplaceUserId: number): PresenceColour =>
+  PRESENCE_COLOURS[Math.abs(wplaceUserId) % PRESENCE_COLOURS.length] as PresenceColour

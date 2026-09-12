@@ -117,6 +117,12 @@ export const presenceSummaryModel = (): PresenceSummaryModel | undefined => {
 
 const host = (): ClaimEditorHost => ({
   templateFor: (document) => targetFor(regionDocumentBounds(document))?.template.name ?? null,
+  myRegions: () => {
+    const view = presenceView()
+    return view.regions
+      .filter((region) => region.claimant.wplaceUserId === view.me?.wplaceUserId)
+      .map((region) => ({ id: region.id, document: region.document }))
+  },
   save: async (id, document) => {
     const me = accountIdentity()
     if (me === null) return 'Wplace identity unavailable. Sign in, then retry.'

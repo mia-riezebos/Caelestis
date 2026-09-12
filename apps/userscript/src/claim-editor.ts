@@ -11,6 +11,7 @@ import {
   type RegionItem,
   type RegionShape,
   type RegionShapePixels,
+  regionDocumentContainsPixel,
   regionDocumentPixels,
   regionShapeBounds,
   regionShapeContainsPixel,
@@ -99,6 +100,8 @@ interface Drag {
 export interface ClaimEditorHost {
   /** The template the claim overlaps, by name, or null. Information only; never a gate. */
   readonly templateFor: (document: RegionDocument) => string | null
+  /** This painter's saved claims, loadable for editing by clicking them in claim mode. */
+  readonly myRegions: () => readonly { readonly id: string; readonly document: RegionDocument }[]
   /** Persist a new or edited claim. Resolves to an error message, or null on success. */
   readonly save: (id: string | null, document: RegionDocument) => Promise<string | null>
   /** Remove a saved claim. Resolves to an error message, or null on success. */
@@ -128,6 +131,8 @@ let stroke: Point[] | null = null
 let drawing: RegionShape | null = null
 let pending = false
 let message: string | undefined
+/** Whether the working document differs from what was loaded or saved. */
+let dirty = false
 let cursor = ''
 let overlay: SVGSVGElement | null = null
 let mode: (HTMLElement & { model: ClaimModeModel }) | null = null
@@ -148,6 +153,12 @@ const nextItemId = (): string => `i${Date.now().toString(36)}${(itemSeq++).toStr
 
 const bump = (): void => {
   version++
+}
+
+/** Any change to the items themselves; previews and selection do not count. */
+const touch = (): void => {
+  dirty = true
+  bump()
 }
 
 const notify = (): void => {
@@ -237,7 +248,7 @@ const selectedItem = (): RegionItem | null => items.find((item) => item.id === s
 
 const replaceItem = (id: string, shape: RegionShape): void => {
   items = items.map((item) => (item.id === id ? { ...item, shape } : item))
-  bump()
+  touch()
 }
 
 const addItem = (shape: RegionShape): void => {
@@ -248,7 +259,33 @@ const addItem = (shape: RegionShape): void => {
   const item: RegionItem = { id: nextItemId(), shape, op: subtract ? 'subtract' : 'add' }
   items = [...items, item]
   selectedId = item.id
+  touch()
+}
+
+/** One of your saved claims under a canvas pixel, other than the one already loaded. */
+const savedClaimAt = (
+  px: number,
+  py: number,
+): { readonly id: string; readonly document: RegionDocument } | null => {
+  for (const region of host?.myRegions() ?? []) {
+    if (region.id !== editingId && regionDocumentContainsPixel(region.document, px, py))
+      return region
+  }
+  return null
+}
+
+/** Load a saved claim into the editor, unless unsaved work would be lost. */
+const loadClaim = (region: { readonly id: string; readonly document: RegionDocument }): boolean => {
+  if (items.length > 0 && dirty) {
+    message = 'Confirm or cancel the current claim before editing another.'
+    return false
+  }
+  editingId = region.id
+  items = [...region.document.items]
+  selectedId = null
+  dirty = false
   bump()
+  return true
 }
 
 /** A box from two pixels, inclusive of both, capped at the largest allowed side. */
@@ -457,7 +494,14 @@ const onPointerDown = (event: PointerEvent): void => {
     case 'direct': {
       const hit = itemAt(px, py)
       if (hit === null) {
-        // Empty canvas: deselect and let the map pan.
+        // One of your saved claims: load it for editing. Otherwise deselect and let the map pan.
+        const saved = savedClaimAt(px, py)
+        if (saved !== null) {
+          consume(event)
+          loadClaim(saved)
+          notify()
+          return
+        }
         if (selectedId !== null) {
           selectedId = null
           notify()
@@ -556,8 +600,11 @@ const onPointerMove = (event: PointerEvent): void => {
     }
     if (tool === 'select' || tool === 'direct') {
       const point = canvasPixelAt(event.clientX, event.clientY)
-      const over = point !== null && itemAt(pixel(point.x), pixel(point.y)) !== null
-      setCursor(over ? 'move' : '')
+      const px = point === null ? -1 : pixel(point.x)
+      const py = point === null ? -1 : pixel(point.y)
+      const overItem = point !== null && itemAt(px, py) !== null
+      const overSaved = !overItem && point !== null && savedClaimAt(px, py) !== null
+      setCursor(overItem ? 'move' : overSaved ? 'pointer' : '')
     } else setCursor(toolCursor())
     return
   }
@@ -714,7 +761,7 @@ const deleteSelected = (): void => {
   if (selectedId === null) return
   items = items.filter((item) => item.id !== selectedId)
   selectedId = null
-  bump()
+  touch()
   notify()
 }
 
@@ -797,7 +844,7 @@ export const handleClaimModeIntent = (intent: ClaimModeIntent): void => {
         items = items.map((item) =>
           item.id === selected.id ? { ...item, op: subtract ? 'subtract' : 'add' } : item,
         )
-        bump()
+        touch()
       }
       break
     }
@@ -962,6 +1009,29 @@ const syncOverlay = (): void => {
       })
     }
   }
+  // What is mid-gesture gets an outline too, so a shape is visible while it is being dragged out.
+  if (drawing !== null) {
+    root.appendChild(
+      svg('path', {
+        d: pathData(regionShapeOutline(drawing).map(project), true),
+        fill: 'none',
+        stroke: accent,
+        'stroke-width': 1.5,
+        'stroke-dasharray': subtract ? '4 3' : '0',
+      }),
+    )
+  }
+  if (stroke !== null && stroke.length > 1) {
+    root.appendChild(
+      svg('path', {
+        d: pathData(stroke.map(project), false),
+        fill: 'none',
+        stroke: accent,
+        'stroke-width': 1.5,
+        'stroke-linecap': 'round',
+      }),
+    )
+  }
   if (pen !== null && pen.length > 0) {
     const flat = pen.map(project)
     root.appendChild(
@@ -1010,6 +1080,7 @@ export const startClaimMode = (
   items = existing === undefined ? [] : [...existing.document.items]
   editingId = existing?.id ?? null
   selectedId = null
+  dirty = false
   drag = null
   pen = null
   stroke = null

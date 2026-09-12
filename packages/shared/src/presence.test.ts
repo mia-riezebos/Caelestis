@@ -5,8 +5,9 @@ import {
   isPresenceDraft,
   isPresenceRect,
   MAX_PRESENCE_MASK_BITS,
+  PRESENCE_COLOURS,
   padRect,
-  presenceHue,
+  presenceColour,
   quantiseRect,
   rectIntersection,
   rectsIntersect,
@@ -80,9 +81,11 @@ describe('presence drafts', () => {
     expect(encodePresenceDraft([])).toBeNull()
   })
 
-  it('gives a painter a stable hue', () => {
-    expect(presenceHue(42)).toBe(presenceHue(42))
-    expect(presenceHue(42)).toBeGreaterThanOrEqual(0)
-    expect(presenceHue(42)).toBeLessThan(360)
+  it('gives a painter a named colour by id', () => {
+    expect(presenceColour(42)).toBe(presenceColour(42))
+    expect(presenceColour(0).name).toBe('red')
+    expect(presenceColour(14).name).toBe('red')
+    expect(presenceColour(13).name).toBe('rose')
+    expect(PRESENCE_COLOURS).toHaveLength(14)
   })
 })

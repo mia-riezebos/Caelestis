@@ -7,7 +7,7 @@ import {
   regionDocumentPixels,
   TILE_SIZE,
 } from '@caelestis/shared'
-import { claimEditorEditingId, claimEditorPixels, isClaimModeActive } from '../claim-editor.js'
+import { claimEditorEditingId, claimEditorPixels } from '../claim-editor.js'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { presenceView } from '../presence-client.js'
@@ -18,29 +18,25 @@ import { ramps } from './fade.js'
 import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
 
 /**
- * Other painters, drawn as two MapLibre custom layers that share one program.
+ * Other painters, drawn over the artwork as see-through coloured shapes.
  *
- * Drafts and region claims go *under* `pixel-art-layer`, so every placed pixel covers them and the
- * tint only shows where the canvas is still empty. A claim is a statement about unfinished space,
- * and finished art should never be recoloured by it.
+ * One MapLibre custom layer, inserted just under Wplace's crosshair, so everything here sits on
+ * top of the pixel art and our own overlay. Each painter has a named colour, and what they are
+ * doing is told by the pattern and the edge:
  *
- * Viewports go *over* the artwork and our own overlay, just under Wplace's crosshair. A viewport is
- * a cursor, not a claim: it has to stay visible wherever the other painter is looking, including
- * over finished art, or it says nothing once an area fills in. It is a faint fill with a dashed
- * edge, so it reads as an outline rather than a tint.
+ * - A viewport of someone browsing: dashed edge, 15% fill, dotted grid.
+ * - A viewport of someone painting: solid edge, 30% fill, diagonal stripes.
+ * - Their drafted pixels: the same colour, solid, so the exact pixels show inside the viewport.
+ * - A region claim: solid edge, 30% fill, diagonal stripes. The claim is the union of its shapes,
+ *   rasterised to whole pixels and sampled with nearest filtering, so the tint stops on a pixel
+ *   edge and the outline is the claim's own edge pixels.
+ * - The claim being edited: the same as a claim, from the editor's working document.
  *
- * Every rect is drawn on the tile grid, and every draft and claim is a whole-pixel mask sampled
- * with nearest filtering: the tint stops exactly at a pixel edge, never half way across one. A
- * claim's edge pixels carry a stronger value so the outline stays crisp without any smoothing.
- * Your own claims draw as that outline alone while the claim tool is closed; other painters' claims
- * keep their fill, since those are the ones you need to steer around.
  * Everything arrives and leaves on the shared fade ramp so a painter closing their tab does not
  * blink out.
  */
 
 export const PRESENCE_LAYER_ID = 'caelestis-presence'
-export const PRESENCE_VIEWPORT_LAYER_ID = 'caelestis-presence-viewports'
-const OUTLINE_LAYER_ID = 'caelestis-outline'
 const PIXEL_ART_LAYER = 'pixel-art-layer'
 const MARKER_LAYER_ID = 'caelestis-markers'
 const CROSSHAIR_LAYER = 'pixel-hover'
@@ -62,30 +58,46 @@ uniform int u_hasMask;
 uniform sampler2D u_mask;
 uniform float u_maskAlpha;
 uniform float u_maskEdge;
+uniform int u_pattern;
+uniform float u_patternAlpha;
+uniform float u_scale;
 out vec4 fragColor;
 void main() {
-  float alpha = u_fill;
+  vec2 px = v_uv * u_size;
+  float alpha = 0.0;
+  bool inside = false;
+  bool edge = false;
   if (u_hasMask == 1) {
     float level = texture(u_mask, v_uv).r;
-    if (level > 0.9) alpha = max(alpha, u_maskEdge);
-    else if (level > 0.4) alpha = max(alpha, u_maskAlpha);
-  }
-  if (u_borderWidth > 0.0) {
-    vec2 px = v_uv * u_size;
-    float horizontal = min(px.x, u_size.x - px.x);
-    float vertical = min(px.y, u_size.y - px.y);
-    float edge = min(horizontal, vertical);
-    if (edge < u_borderWidth) {
-      float along = horizontal < vertical ? px.y : px.x;
-      bool on = u_dash <= 0.0 || mod(along, u_dash * 2.0) < u_dash;
-      if (on) alpha = max(alpha, u_border);
+    inside = level > 0.4;
+    edge = level > 0.9;
+    if (inside) alpha = u_maskAlpha;
+  } else {
+    inside = true;
+    alpha = u_fill;
+    if (u_borderWidth > 0.0) {
+      float horizontal = min(px.x, u_size.x - px.x);
+      float vertical = min(px.y, u_size.y - px.y);
+      if (min(horizontal, vertical) < u_borderWidth) {
+        float along = horizontal < vertical ? px.y : px.x;
+        edge = u_dash <= 0.0 || mod(along, u_dash * 2.0) < u_dash;
+      }
     }
   }
+  if (inside && u_pattern == 1) {
+    // Diagonal stripes, in device pixels so they read the same at every zoom.
+    if (mod((px.x + px.y) / u_scale, 12.0) < 4.0) alpha = max(alpha, u_patternAlpha);
+  } else if (inside && u_pattern == 2) {
+    // A dotted grid.
+    vec2 cell = mod(px / u_scale, 8.0);
+    if (cell.x < 2.0 && cell.y < 2.0) alpha = max(alpha, u_patternAlpha);
+  }
+  if (edge) alpha = max(alpha, u_hasMask == 1 ? u_maskEdge : u_border);
   fragColor = vec4(u_colour * alpha, alpha);
 }
 `
 
-type Kind = 'viewport' | 'draft' | 'region' | 'tool'
+type Kind = 'viewport' | 'painting' | 'draft' | 'region' | 'tool'
 
 interface Style {
   readonly fill: number
@@ -94,23 +106,62 @@ interface Style {
   readonly dash: number
   readonly maskAlpha: number
   readonly maskEdge: number
+  /** 0 none, 1 diagonal stripes, 2 dotted grid. */
+  readonly pattern: 0 | 1 | 2
+  readonly patternAlpha: number
 }
 
 const STYLES: Record<Kind, Style> = {
-  viewport: { fill: 0.04, border: 0.35, borderWidth: 1.5, dash: 6, maskAlpha: 0, maskEdge: 0 },
-  draft: { fill: 0.1, border: 0.6, borderWidth: 1.5, dash: 0, maskAlpha: 0.5, maskEdge: 0.5 },
-  region: { fill: 0, border: 0, borderWidth: 0, dash: 0, maskAlpha: 0.1, maskEdge: 0.5 },
-  tool: { fill: 0, border: 0, borderWidth: 0, dash: 0, maskAlpha: 0.22, maskEdge: 0.85 },
-}
-
-/** Your own saved claims while the tool is closed: the edge pixels only. */
-const OWN_REGION_IDLE: Style = {
-  fill: 0,
-  border: 0,
-  borderWidth: 0,
-  dash: 0,
-  maskAlpha: 0,
-  maskEdge: 0.5,
+  viewport: {
+    fill: 0.15,
+    border: 0.9,
+    borderWidth: 1.5,
+    dash: 6,
+    maskAlpha: 0,
+    maskEdge: 0,
+    pattern: 2,
+    patternAlpha: 0.35,
+  },
+  painting: {
+    fill: 0.3,
+    border: 0.9,
+    borderWidth: 1.5,
+    dash: 0,
+    maskAlpha: 0,
+    maskEdge: 0,
+    pattern: 1,
+    patternAlpha: 0.5,
+  },
+  draft: {
+    fill: 0,
+    border: 0,
+    borderWidth: 0,
+    dash: 0,
+    maskAlpha: 0.55,
+    maskEdge: 0.7,
+    pattern: 0,
+    patternAlpha: 0,
+  },
+  region: {
+    fill: 0,
+    border: 0,
+    borderWidth: 0,
+    dash: 0,
+    maskAlpha: 0.3,
+    maskEdge: 0.95,
+    pattern: 1,
+    patternAlpha: 0.5,
+  },
+  tool: {
+    fill: 0,
+    border: 0,
+    borderWidth: 0,
+    dash: 0,
+    maskAlpha: 0.3,
+    maskEdge: 1,
+    pattern: 1,
+    patternAlpha: 0.5,
+  },
 }
 
 interface Item {
@@ -120,7 +171,6 @@ interface Item {
   readonly colour: readonly [number, number, number]
   /** A draft's base64 bitmask, or a claim's pixels; either becomes a nearest-sampled texture. */
   readonly mask: string | RegionShapePixels | null
-  readonly mine: boolean
 }
 
 interface MaskTexture {
@@ -169,7 +219,7 @@ const shapeTexels = ({
   return { rect, texels }
 }
 
-/** What the presence view and the claim tool say should be on screen, keyed for fading. */
+/** What the presence view and the claim editor say should be on screen, keyed for fading. */
 const currentItems = (): Item[] => {
   const view = presenceView()
   const items: Item[] = []
@@ -178,21 +228,19 @@ const currentItems = (): Item[] => {
     if (peer.viewport !== null) {
       items.push({
         key: `peer:${peer.sessionId}:viewport`,
-        kind: 'viewport',
+        kind: peer.draft === null ? 'viewport' : 'painting',
         rect: peer.viewport,
         colour,
         mask: null,
-        mine: false,
       })
     }
-    if (peer.draft !== null) {
+    if (peer.draft?.mask !== undefined) {
       items.push({
         key: `peer:${peer.sessionId}:draft`,
         kind: 'draft',
         rect: peer.draft.rect,
         colour,
-        mask: peer.draft.mask ?? null,
-        mine: false,
+        mask: peer.draft.mask,
       })
     }
   }
@@ -210,7 +258,6 @@ const currentItems = (): Item[] => {
       rect: pixels.rect,
       colour: presenceRgb(region.claimant.wplaceUserId),
       mask: pixels,
-      mine: view.me?.wplaceUserId === region.claimant.wplaceUserId,
     })
   }
   for (const id of documentPixels.keys()) if (!seen.has(id)) documentPixels.delete(id)
@@ -222,7 +269,6 @@ const currentItems = (): Item[] => {
       rect: editorPixels.rect,
       colour: view.me === null ? [1, 1, 1] : presenceRgb(view.me.wplaceUserId),
       mask: editorPixels,
-      mine: true,
     })
   }
   return items
@@ -235,8 +281,8 @@ const tileRect = (tile: TileQuad): PresenceRect => ({
   h: TILE_SIZE,
 })
 
-/** One custom layer drawing a subset of presence rects. Two instances split under and over. */
 class PresenceLayer {
+  readonly id = PRESENCE_LAYER_ID
   readonly type = 'custom' as const
   readonly renderingMode = '2d' as const
   private owner: WebGL2RenderingContext | null = null
@@ -248,12 +294,6 @@ class PresenceLayer {
   private readonly retained = new Map<string, Item>()
   private readonly fades = ramps()
   private readonly corners = new Float32Array(4 * 6)
-
-  constructor(
-    readonly id: string,
-    private readonly kinds: ReadonlySet<Kind>,
-    private readonly placement: string,
-  ) {}
 
   private uniform(gl: WebGL2RenderingContext, name: string): WebGLUniformLocation | null {
     if (!this.uniforms.has(name)) {
@@ -277,7 +317,8 @@ class PresenceLayer {
     if (typeof item.mask === 'string') {
       const bits = decodePresenceDraftMask({ rect: item.rect, mask: item.mask, pixels: 0 })
       if (bits === null) return null
-      texels = bits.map((bit) => (bit === 0 ? 0 : MASK_EDGE))
+      const painted = shapeTexels({ rect: item.rect, mask: bits, count: 0 })
+      texels = painted.texels
       width = item.rect.w
       height = item.rect.h
     } else {
@@ -368,7 +409,7 @@ class PresenceLayer {
     gl.enableVertexAttribArray(uv)
     gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 24, 16)
     gl.bindVertexArray(null)
-    log('install', `presence layer added ${this.placement}`)
+    log('install', 'presence layer added over the artwork')
   }
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
@@ -398,17 +439,15 @@ class PresenceLayer {
     if (program === null || vao === null || quad === null) return
     const now = performance.now()
     const shown = getState().showPresence
-    // The tool's own shape shows even with other painters hidden; it is the user's own work.
-    const items = currentItems().filter(
-      (item) => this.kinds.has(item.kind) && (shown || item.kind === 'tool'),
-    )
+    // The editor's own claim shows even with other painters hidden; it is the user's own work.
+    const items = currentItems().filter((item) => shown || item.kind === 'tool')
     const keys = new Set<string>()
     for (const item of items) {
       keys.add(item.key)
       this.retained.set(item.key, item)
     }
     // Everything drawn is what is present or still fading out. Ramps start from zero, so a new
-    // item arrives over the shared fade rather than appearing. The tool preview skips the ramp:
+    // item arrives over the shared fade rather than appearing. The editor's claim skips the ramp:
     // a shape being dragged has to follow the pointer this frame.
     let animating = false
     const drawn: { item: Item; fade: number }[] = []
@@ -437,33 +476,25 @@ class PresenceLayer {
         const bufferWidth = gl.drawingBufferWidth
         const bufferHeight = gl.drawingBufferHeight
         const deviceScale = Math.max(1, window.devicePixelRatio || 1)
-        const toolOpen = isClaimModeActive()
         gl.useProgram(program)
         gl.bindVertexArray(vao)
         gl.bindBuffer(gl.ARRAY_BUFFER, quad)
         gl.enable(gl.BLEND)
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
         gl.disable(gl.DEPTH_TEST)
+        gl.uniform1f(this.uniform(gl, 'u_scale'), deviceScale)
         for (const { item, fade } of drawn) {
-          // Your own claims are a reminder, not a tint: outline only, until the claim tool is
-          // open and they become things to pick up and edit.
-          const own = item.kind === 'region' && item.mine
-          const style = own && !toolOpen ? OWN_REGION_IDLE : STYLES[item.kind]
+          const style = STYLES[item.kind]
           const texture = this.maskTexture(gl, item)
-          const emphasis = own && toolOpen ? 1.4 : 1
           gl.uniform3f(this.uniform(gl, 'u_colour'), item.colour[0], item.colour[1], item.colour[2])
-          gl.uniform1f(this.uniform(gl, 'u_fill'), style.fill * emphasis * fade)
-          gl.uniform1f(this.uniform(gl, 'u_border'), Math.min(1, style.border * emphasis) * fade)
+          gl.uniform1f(this.uniform(gl, 'u_fill'), style.fill * fade)
+          gl.uniform1f(this.uniform(gl, 'u_border'), style.border * fade)
           gl.uniform1f(this.uniform(gl, 'u_borderWidth'), style.borderWidth * deviceScale)
           gl.uniform1f(this.uniform(gl, 'u_dash'), style.dash * deviceScale)
-          gl.uniform1f(
-            this.uniform(gl, 'u_maskAlpha'),
-            Math.min(1, style.maskAlpha * emphasis) * fade,
-          )
-          gl.uniform1f(
-            this.uniform(gl, 'u_maskEdge'),
-            Math.min(1, style.maskEdge * emphasis) * fade,
-          )
+          gl.uniform1f(this.uniform(gl, 'u_maskAlpha'), style.maskAlpha * fade)
+          gl.uniform1f(this.uniform(gl, 'u_maskEdge'), style.maskEdge * fade)
+          gl.uniform1i(this.uniform(gl, 'u_pattern'), style.pattern)
+          gl.uniform1f(this.uniform(gl, 'u_patternAlpha'), style.patternAlpha * fade)
           gl.uniform1i(this.uniform(gl, 'u_hasMask'), texture === null ? 0 : 1)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, texture)
@@ -480,19 +511,7 @@ class PresenceLayer {
   }
 }
 
-/** Drafts, claims, and the claim tool's shape, under the artwork. */
-export const presenceLayer = new PresenceLayer(
-  PRESENCE_LAYER_ID,
-  new Set<Kind>(['draft', 'region', 'tool']),
-  'under the artwork',
-)
-
-/** Viewports, over the artwork and our overlay, under Wplace's crosshair. */
-export const presenceViewportLayer = new PresenceLayer(
-  PRESENCE_VIEWPORT_LAYER_ID,
-  new Set<Kind>(['viewport']),
-  'over the artwork',
-)
+export const presenceLayer = new PresenceLayer()
 
 /** Ask MapLibre for a frame after presence data changed while the map is idle. */
 export const repaintPresence = (): void => {
@@ -508,61 +527,37 @@ interface LayerMap {
 }
 
 /**
- * Insert one layer before its anchor, or move it back there if a style change displaced it.
+ * Put the layer just under Wplace's crosshair and keep it there across style changes.
  *
- * `anchors` are tried in order; the first one present wins. `mustFollow` names layers that have to
- * stay below this one, which is what catches a basemap swap that leaves the layer present but in
- * the wrong place.
- */
-const place = (
-  map: LayerMap,
-  layer: PresenceLayer,
-  anchors: readonly string[],
-  mustFollow: readonly string[],
-): boolean => {
-  const anchor = anchors.find((id) => map.getLayer?.(id) !== undefined)
-  if (anchor === undefined) return false
-  try {
-    if (map.getLayer?.(layer.id) === undefined) {
-      map.addLayer?.(layer, anchor)
-      log('install', `${layer.id} inserted before ${anchor}`)
-      return true
-    }
-    const order = map.style?._order
-    if (order === undefined || map.moveLayer === undefined) return true
-    const at = order.indexOf(layer.id)
-    const anchorAt = order.indexOf(anchor)
-    const belowSomethingItShouldFollow = mustFollow.some((id) => {
-      const index = order.indexOf(id)
-      return index >= 0 && index > at
-    })
-    if (at >= 0 && ((anchorAt >= 0 && at > anchorAt) || belowSomethingItShouldFollow)) {
-      map.moveLayer(layer.id, anchor)
-      log('install', `restored ${layer.id} order after a style change`)
-    }
-    return true
-  } catch (error) {
-    warn('install', `could not add ${layer.id}`, String(error))
-    return false
-  }
-}
-
-/**
- * Put both layers in Wplace's style and keep them there across style changes.
- *
- * The under layer needs the outline or the pixel art to sit below; the over layer needs the
- * crosshair to sit below and the markers to sit above. Without those anchors there is nothing to
- * be relative to yet, so this waits for the overlay installer's next pass.
+ * It needs the crosshair to sit below, and it must stay above the pixel art and our markers; a
+ * basemap swap can leave it present but in the wrong place, which is what the order check catches.
+ * Without the anchor there is nothing to be relative to yet, so this waits for the next pass.
  */
 export const installPresenceLayer = (): boolean => {
   const map = getMap() as LayerMap | null
   if (map?.addLayer === undefined) return false
-  const under = place(map, presenceLayer, [OUTLINE_LAYER_ID, PIXEL_ART_LAYER], [])
-  const over = place(
-    map,
-    presenceViewportLayer,
-    [CROSSHAIR_LAYER],
-    [MARKER_LAYER_ID, PIXEL_ART_LAYER],
-  )
-  return under && over
+  if (map.getLayer?.(CROSSHAIR_LAYER) === undefined) return false
+  try {
+    if (map.getLayer?.(PRESENCE_LAYER_ID) === undefined) {
+      map.addLayer(presenceLayer, CROSSHAIR_LAYER)
+      log('install', `${PRESENCE_LAYER_ID} inserted before ${CROSSHAIR_LAYER}`)
+      return true
+    }
+    const order = map.style?._order
+    if (order === undefined || map.moveLayer === undefined) return true
+    const at = order.indexOf(PRESENCE_LAYER_ID)
+    const anchorAt = order.indexOf(CROSSHAIR_LAYER)
+    const belowSomethingItShouldFollow = [MARKER_LAYER_ID, PIXEL_ART_LAYER].some((id) => {
+      const index = order.indexOf(id)
+      return index >= 0 && index > at
+    })
+    if (at >= 0 && ((anchorAt >= 0 && at > anchorAt) || belowSomethingItShouldFollow)) {
+      map.moveLayer(PRESENCE_LAYER_ID, CROSSHAIR_LAYER)
+      log('install', `restored ${PRESENCE_LAYER_ID} order after a style change`)
+    }
+    return true
+  } catch (error) {
+    warn('install', `could not add ${PRESENCE_LAYER_ID}`, String(error))
+    return false
+  }
 }

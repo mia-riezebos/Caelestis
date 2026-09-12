@@ -6,7 +6,6 @@ vi.mock('../map-handle.js', () => ({ getMap: () => harness.map }))
 vi.mock('../claim-editor.js', () => ({
   claimEditorPixels: () => null,
   claimEditorEditingId: () => null,
-  isClaimModeActive: () => false,
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../presence-client.js', () => ({
@@ -43,7 +42,7 @@ afterEach(() => {
 })
 
 describe('installPresenceLayer', () => {
-  it('puts drafts and claims under the pixel art and viewports under the crosshair', async () => {
+  it('puts presence over the art and markers, under the crosshair', async () => {
     const order = [
       'background',
       'caelestis-outline',
@@ -58,30 +57,27 @@ describe('installPresenceLayer', () => {
     expect(installPresenceLayer()).toBe(true)
     expect(order).toEqual([
       'background',
-      'caelestis-presence',
       'caelestis-outline',
       'pixel-art-layer',
       'caelestis-overlay',
       'caelestis-markers',
-      'caelestis-presence-viewports',
+      'caelestis-presence',
       'pixel-hover',
     ])
   })
 
-  it('waits until the overlay anchors exist', async () => {
-    harness.map = orderedMap(['background']).map
+  it('waits until the crosshair exists', async () => {
+    harness.map = orderedMap(['background', 'pixel-art-layer']).map
     const { installPresenceLayer } = await import('./presence-layer.js')
 
     expect(installPresenceLayer()).toBe(false)
   })
 
-  it('restores both layers after a style change displaces them', async () => {
+  it('restores the layer after a style change displaces it', async () => {
     const order = [
       'background',
-      'caelestis-presence-viewports',
-      'pixel-art-layer',
-      'caelestis-outline',
       'caelestis-presence',
+      'pixel-art-layer',
       'caelestis-markers',
       'pixel-hover',
     ]
@@ -90,27 +86,18 @@ describe('installPresenceLayer', () => {
     const { installPresenceLayer } = await import('./presence-layer.js')
 
     expect(installPresenceLayer()).toBe(true)
-    expect(moveLayer).toHaveBeenCalledTimes(2)
+    expect(moveLayer).toHaveBeenCalledOnce()
     expect(order).toEqual([
       'background',
       'pixel-art-layer',
-      'caelestis-presence',
-      'caelestis-outline',
       'caelestis-markers',
-      'caelestis-presence-viewports',
+      'caelestis-presence',
       'pixel-hover',
     ])
   })
 
-  it('leaves correctly ordered layers alone', async () => {
-    const order = [
-      'caelestis-presence',
-      'caelestis-outline',
-      'pixel-art-layer',
-      'caelestis-markers',
-      'caelestis-presence-viewports',
-      'pixel-hover',
-    ]
+  it('leaves a correctly ordered layer alone', async () => {
+    const order = ['pixel-art-layer', 'caelestis-markers', 'caelestis-presence', 'pixel-hover']
     const { map, moveLayer } = orderedMap(order)
     harness.map = map
     const { installPresenceLayer } = await import('./presence-layer.js')
