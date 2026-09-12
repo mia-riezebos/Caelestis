@@ -451,9 +451,13 @@
      the end. The bar spans the width between Wplace's controls instead of sizing to content. */
   @media (max-width: 56rem) {
     .bar {
-      inset-inline: 3.5rem 4.5rem;
+      inset-inline: 3.5rem 7rem;
       inline-size: auto;
       max-inline-size: none;
+    }
+    .options {
+      flex-wrap: wrap;
+      row-gap: 0.35rem;
     }
     .row {
       grid-template-columns: 1fr;
