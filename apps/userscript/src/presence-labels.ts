@@ -153,9 +153,21 @@ const union = (rects: readonly PresenceRect[]): PresenceRect => {
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
 }
 
+const screenBox = (
+  frame: TileFrame,
+  rect: PresenceRect,
+): { x: number; y: number; width: number; height: number } | null => rectOnScreen(frame, rect)
+
 /**
- * The pieces of a claim that share a tag with the piece at `index`: pieces whose tags would
- * collide on screen are merged, transitively, so a cluster of small strokes reads as one.
+ * The pieces of a claim that share a tag with the piece at `index`.
+ *
+ * A tag must not cover any piece of its own claim, and tags must not cover each other, so two
+ * clusters merge when either one's tag would land on a piece of the other or on the other's tag.
+ * A cluster's tag sits above the union of its members, which is above the topmost member, so it
+ * can cover none of them; that is why the topmost piece wins over the largest. The merged tag may
+ * reach yet another piece, so this repeats until nothing more merges. The relation is the same
+ * whichever piece is hovered, and zoomed in far enough for the tags to fit in the gaps, every
+ * piece is a cluster of one again.
  */
 const clusterWith = (
   frame: TileFrame,
@@ -164,22 +176,44 @@ const clusterWith = (
   width: number,
   ratio: number,
 ): PresenceRect => {
-  const chips = boxes.map((box) => chipAbove(frame, box, width, ratio))
-  const members = new Set<number>([index])
-  const queue = [index]
-  while (queue.length > 0) {
-    const at = queue.pop() as number
-    const chip = chips[at]
-    if (chip === null || chip === undefined) continue
-    for (let other = 0; other < boxes.length; other++) {
-      if (members.has(other)) continue
-      const candidate = chips[other]
-      if (candidate === null || candidate === undefined || !boxesTouch(chip, candidate)) continue
-      members.add(other)
-      queue.push(other)
+  const shapes = boxes.map((box) => screenBox(frame, box))
+  let clusters = boxes.map((_, member) => [member])
+  for (let pass = 0; pass < boxes.length; pass++) {
+    const rects = clusters.map((members) => union(members.map((m) => boxes[m] as PresenceRect)))
+    const chips = rects.map((rect) => chipAbove(frame, rect, width, ratio))
+    const lands = (chip: ReturnType<typeof chipAbove>, members: readonly number[]): boolean =>
+      chip !== null &&
+      members.some((member) => {
+        const shape = shapes[member]
+        return shape !== null && shape !== undefined && boxesTouch(chip, shape)
+      })
+    let merged = false
+    const next: number[][] = []
+    const taken = new Set<number>()
+    for (let a = 0; a < clusters.length; a++) {
+      if (taken.has(a)) continue
+      const group = [...(clusters[a] as number[])]
+      taken.add(a)
+      for (let b = a + 1; b < clusters.length; b++) {
+        if (taken.has(b)) continue
+        const chipA = chips[a] ?? null
+        const chipB = chips[b] ?? null
+        const touch =
+          lands(chipA, clusters[b] as number[]) ||
+          lands(chipB, clusters[a] as number[]) ||
+          (chipA !== null && chipB !== null && boxesTouch(chipA, chipB))
+        if (!touch) continue
+        group.push(...(clusters[b] as number[]))
+        taken.add(b)
+        merged = true
+      }
+      next.push(group)
     }
+    clusters = next
+    if (!merged) break
   }
-  return union([...members].map((member) => boxes[member] as PresenceRect))
+  const mine = clusters.find((members) => members.includes(index)) ?? [index]
+  return union(mine.map((member) => boxes[member] as PresenceRect))
 }
 
 const regionText = (displayName: string, label: string): string =>
@@ -236,6 +270,22 @@ export const presenceTagsAt = (
   }
   for (const id of [...pieces.keys()]) if (!seen.has(id)) pieces.delete(id)
   return tags
+}
+
+/**
+ * Pieces of every claim except `except`, as canvas rects. A tag cannot merge with another
+ * painter's claim, so it is nudged up until it clears these instead.
+ */
+export const otherClaimPieces = (except: string): PresenceRect[] => {
+  const view = presenceView()
+  const editing = claimEditorEditingId()
+  const boxes: PresenceRect[] = []
+  for (const region of view.regions) {
+    if (region.id === except || region.id === editing) continue
+    const held = piecesFor(region.id, region.document)
+    if (held !== null) boxes.push(...held.components.boxes)
+  }
+  return boxes
 }
 
 const removeAll = (): void => {
@@ -318,6 +368,29 @@ export const renderPresenceLabels = (frame: TileFrame): void => {
     let x = Math.round(centre - width / 2)
     x = Math.min(Math.max(x, box.left + INSET), box.right - width - INSET)
     let y = Math.round(top - GAP - TAG_HEIGHT)
+    // Another painter's claim cannot share this tag, so the tag climbs until it is clear of it.
+    if (tag.key.startsWith('region:')) {
+      const obstacles = otherClaimPieces(tag.key.slice('region:'.length))
+        .map((piece) => rectOnScreen(frame, piece))
+        .filter((piece) => piece !== null)
+        .map((piece) => ({
+          left: box.left + piece.x / ratioX,
+          top: box.top + piece.y / ratioY,
+          right: box.left + (piece.x + piece.width) / ratioX,
+          bottom: box.top + (piece.y + piece.height) / ratioY,
+        }))
+      for (let guard = 0; guard < obstacles.length; guard++) {
+        const hit = obstacles.find(
+          (piece) =>
+            x < piece.right &&
+            piece.left < x + width &&
+            y < piece.bottom &&
+            piece.top < y + TAG_HEIGHT,
+        )
+        if (hit === undefined) break
+        y = Math.round(hit.top - GAP - TAG_HEIGHT)
+      }
+    }
     // Above the map's top edge there is nowhere to go but inside, just under the edge.
     if (y < box.top + INSET) y = Math.round(Math.min(top + INSET, box.bottom - TAG_HEIGHT - INSET))
     // Tags for different things must not cover each other: stack upward on a collision.

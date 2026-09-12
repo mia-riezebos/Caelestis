@@ -114,6 +114,56 @@ describe('presence tags', () => {
     ])
   })
 
+  it('merges a piece into the piece above it when its tag would land on that piece', async () => {
+    // A big piece on top and a small one just under it: the small one's tag would sit on the big.
+    harness.regions = [
+      {
+        ...twoPieces,
+        rect: { x: 0, y: 0, w: 40, h: 35 },
+        document: {
+          items: [
+            { id: 'a', op: 'add', shape: rect(0, 0, 40, 20) },
+            { id: 'b', op: 'add', shape: rect(10, 30, 10, 5) },
+          ],
+        },
+      },
+    ]
+    // At 1 px per canvas px the 21 px tall tag above y 30 covers the big piece: one tag, on top.
+    expect(await tagsAt(frameAt(1), 15, 32)).toEqual([
+      expect.objectContaining({ rect: { x: 0, y: 0, w: 40, h: 35 } }),
+    ])
+    expect(await tagsAt(frameAt(1), 5, 5)).toEqual([
+      expect.objectContaining({ rect: { x: 0, y: 0, w: 40, h: 35 } }),
+    ])
+    // At 8 px per canvas px the gap is 80 px tall: the small piece has its own tag again.
+    expect(await tagsAt(frameAt(8), 15, 32)).toEqual([
+      expect.objectContaining({ rect: { x: 10, y: 30, w: 10, h: 5 } }),
+    ])
+    expect(await tagsAt(frameAt(8), 5, 5)).toEqual([
+      expect.objectContaining({ rect: { x: 0, y: 0, w: 40, h: 20 } }),
+    ])
+  })
+
+  it('grows a cluster until its tag lands on no further piece', async () => {
+    // Three pieces stacked: the bottom one's tag hits the middle, the merged tag hits the top.
+    harness.regions = [
+      {
+        ...twoPieces,
+        rect: { x: 0, y: 0, w: 40, h: 65 },
+        document: {
+          items: [
+            { id: 'a', op: 'add', shape: rect(0, 0, 40, 10) },
+            { id: 'b', op: 'add', shape: rect(0, 25, 40, 10) },
+            { id: 'c', op: 'add', shape: rect(0, 50, 40, 15) },
+          ],
+        },
+      },
+    ]
+    expect(await tagsAt(frameAt(1), 5, 55)).toEqual([
+      expect.objectContaining({ rect: { x: 0, y: 0, w: 40, h: 65 } }),
+    ])
+  })
+
   it('tags a hovered viewport where it is drawn, and a draft over its viewport', async () => {
     harness.peers = [
       {
@@ -198,11 +248,42 @@ describe('renderPresenceLabels', () => {
     expect(document.querySelectorAll('#caelestis-presence-labels span')).toHaveLength(0)
   })
 
+  it("climbs off another painter's claim instead of covering it", async () => {
+    harness.regions = [
+      {
+        ...twoPieces,
+        id: 'mine',
+        rect: { x: 100, y: 130, w: 40, h: 10 },
+        document: { items: [{ id: 'a', op: 'add', shape: rect(100, 130, 40, 10) }] },
+      },
+      {
+        ...twoPieces,
+        id: 'theirs',
+        claimant: { wplaceUserId: 2, displayName: 'Ada' },
+        rect: { x: 90, y: 100, w: 60, h: 20 },
+        document: { items: [{ id: 'a', op: 'add', shape: rect(90, 100, 60, 20) }] },
+      },
+    ]
+    const { renderPresenceLabels } = await import('./presence-labels.js')
+    const canvas = canvasAt()
+    const frame = frameAt(1, canvas)
+    renderPresenceLabels(frame)
+    hover(canvas, 120, 135)
+    renderPresenceLabels(frame)
+    const chips = [...document.querySelectorAll<HTMLElement>('#caelestis-presence-labels span')]
+    expect(chips.map((chip) => chip.textContent)).toEqual(['Sam · claimed'])
+    const match = /translate\((-?\d+)px, (-?\d+)px\)/.exec(chips[0]?.style.transform ?? '')
+    const y = Number((match as RegExpExecArray)[2])
+    // Not in the 21 px band above y 130, which Ada's claim (y 100..120) occupies; above hers instead.
+    expect(y + 17).toBeLessThanOrEqual(100)
+  })
+
   it('hides every chip while other painters are hidden', async () => {
     harness.regions = [twoPieces]
     harness.showPresence = false
     const { renderPresenceLabels } = await import('./presence-labels.js')
     const canvas = canvasAt()
+    renderPresenceLabels(frameAt(1, canvas))
     hover(canvas, 5, 5)
     renderPresenceLabels(frameAt(1, canvas))
     expect(document.querySelectorAll('#caelestis-presence-labels span')).toHaveLength(0)
