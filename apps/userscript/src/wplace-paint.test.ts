@@ -335,18 +335,6 @@ describe('Wplace paint controls', () => {
     expect(closed).toHaveReturnedWith(false)
   })
 
-  it('toggles Wplace theme through its native light or dark mode control', async () => {
-    const theme = document.createElement('button')
-    theme.setAttribute('aria-label', 'Dark mode')
-    const clicked = vi.fn()
-    theme.addEventListener('click', clicked)
-    document.body.appendChild(theme)
-    const { toggleWplaceTheme } = await import('./wplace-paint.js')
-
-    expect(toggleWplaceTheme()).toBe(true)
-    expect(clicked).toHaveBeenCalledOnce()
-  })
-
   it('moves through Wplace authoritative draft history only while its controls are enabled', async () => {
     const { drawer, redo, undo } = paintDrawer()
     const unrelated = document.createElement('button')

@@ -9,6 +9,7 @@ import { fetchCanvasTiles } from './telemetry/fetcher.js'
 import { runTileBlobGc, type TileBlobGcMode } from './telemetry/tile-blobs.js'
 
 export { AlarmWatcher } from './alarm-watcher.js'
+export { PresenceObject } from './presence-object.js'
 export { StatusReadModelObject } from './status-read-model-object.js'
 export { TelemetryShard } from './telemetry-shard.js'
 export { TemplateBackfillObject } from './template-backfill-object.js'
@@ -80,6 +81,13 @@ const appFor = (env: Env): App => {
     new D1SqlStore(instrumentD1(env.DB)),
     new DurableObjectCounterStore(env.TELEMETRY),
     statusReadModelFor(env),
+    {
+      publishRegions: (season, surface) =>
+        env.PRESENCE.getByName(`${season}:${templateSurfaceKey(surface)}`).publishRegions(
+          season,
+          surface,
+        ),
+    },
   )
   const app = createApp(context, {
     backfillClients: (templateId) => env.TEMPLATE_BACKFILL.getByName(templateId),
@@ -93,6 +101,35 @@ const appFor = (env: Env): App => {
     openAccess: env.OPEN_ACCESS === 'true',
     connectStatusLive: (request, connection) =>
       statusReadModelFor(env).connectLive(request, connection),
+    presenceOnline: (season, surface) =>
+      env.PRESENCE.getByName(`${season}:${templateSurfaceKey(surface)}`).online(),
+    connectPresence: async (request, connection) => {
+      const { season, surface, painter } = connection
+      if (connection.revocable)
+        await env.STATUS_READ_MODEL.getByName(`season:${season}`).registerPresenceSurface(
+          season,
+          connection.tokenHash,
+          surface,
+        )
+      const headers = new Headers(request.headers)
+      headers.set('x-caelestis-season', String(season))
+      headers.set('x-caelestis-surface-kind', surface.kind)
+      headers.delete('x-caelestis-alliance-id')
+      if (surface.allianceId !== null)
+        headers.set('x-caelestis-alliance-id', String(surface.allianceId))
+      headers.set('x-caelestis-painter-id', String(painter.wplaceUserId))
+      headers.set('x-caelestis-painter-name', encodeURIComponent(painter.displayName))
+      headers.set('x-caelestis-token-hash', connection.tokenHash)
+      headers.set('x-caelestis-client-hash', connection.clientHash)
+      headers.set('x-caelestis-credential-scope', connection.credentialScope)
+      headers.set('x-caelestis-anonymous', connection.anonymous ? '1' : '0')
+      headers.set('x-caelestis-revocable', connection.revocable ? '1' : '0')
+      headers.set('x-caelestis-metric-client', connection.metricClient)
+      headers.set('x-caelestis-metric-client-version', connection.metricClientVersion)
+      return env.PRESENCE.getByName(`${season}:${templateSurfaceKey(surface)}`).fetch(
+        new Request(request, { headers }),
+      )
+    },
   })
   preparedApps.set(env, app)
   return app
@@ -141,3 +178,5 @@ export default {
     ctx.waitUntil(runTileBlobGc(stores, { mode: gcMode }).then(() => undefined))
   },
 } satisfies ExportedHandler<Env>
+
+import { templateSurfaceKey } from '@caelestis/shared'

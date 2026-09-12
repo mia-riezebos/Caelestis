@@ -59,6 +59,8 @@ describe('status read-model Durable Object', () => {
   ) => {
     const storage = (target: Map<string, unknown>) => ({
       get: async <A>(key: string) => target.get(key) as A | undefined,
+      list: async ({ prefix }: { prefix: string }) =>
+        new Map([...target].filter(([key]) => key.startsWith(prefix))),
       put: async (key: string, value: unknown) => {
         if (new TextEncoder().encode(JSON.stringify(value)).byteLength > maximumValueBytes) {
           throw new RangeError('value exceeds Durable Object storage limit')
@@ -84,6 +86,29 @@ describe('status read-model Durable Object', () => {
       },
     } as unknown as DurableObjectState
   }
+
+  it('revokes all registered presence rooms after status object eviction', async () => {
+    database = new SqliteD1Database()
+    const held = new Map<string, unknown>()
+    const state = objectState(held)
+    const closeCredential = vi.fn(async () => {})
+    const getByName = vi.fn(() => ({ closeCredential }))
+    const env = { DB: database, PRESENCE: { getByName } } as unknown as Env
+    const first = new StatusReadModelObject(state, env)
+    const tokenHash = 'a'.repeat(64)
+    await first.registerPresenceSurface(0, tokenHash, WORLD_TEMPLATE_SURFACE)
+    await first.registerPresenceSurface(0, tokenHash, { kind: 'alliance-picture', allianceId: 7 })
+    await first.registerPresenceSurface(0, 'b'.repeat(64), WORLD_TEMPLATE_SURFACE)
+    const recovered = new StatusReadModelObject(state, env)
+    await recovered.closeCredential(0, tokenHash)
+    expect(getByName.mock.calls).toEqual([['0:world'], ['0:alliance-picture:7']])
+    expect(closeCredential).toHaveBeenCalledTimes(2)
+    expect(closeCredential).toHaveBeenCalledWith(tokenHash)
+    expect([...held.keys()].filter((key) => key.startsWith(`presence:${tokenHash}:`))).toEqual([])
+    expect(
+      [...held.keys()].filter((key) => key.startsWith(`presence:${'b'.repeat(64)}:`)),
+    ).toHaveLength(1)
+  })
 
   it('persists a reconstructible season projection across object eviction', async () => {
     database = new SqliteD1Database()

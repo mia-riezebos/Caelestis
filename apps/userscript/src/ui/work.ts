@@ -168,7 +168,7 @@ export const workSectionModel = (surface: TemplateSurface, changed: () => void) 
   return { templates, canShowOthers, error: errors.join('\n') }
 }
 
-/** Attach the same claim marker to ordinary rows and the flat In progress projection. */
+/** Attach the same claim marker to ordinary rows and the flat Favourites projection. */
 export const withTemplateClaims = (
   tree: TemplateTreeModel,
   claims: ReturnType<typeof workSectionModel>,

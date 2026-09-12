@@ -167,8 +167,18 @@
       },
       {
         id: 'theme', category: 'Overlay', title: 'Toggle Wplace theme',
-        description: 'L switches Wplace between its native light and dark themes.',
-        rows: [{ key: 'L', label: 'Light / dark theme' }], keyboardKeys: ['KeyL'],
+        description: 'N switches Wplace between its native light and dark themes.',
+        rows: [{ key: 'N', label: 'Light / dark theme' }], keyboardKeys: ['KeyN'],
+      },
+      {
+        id: 'claim', category: 'Overlay', title: 'Claim mode',
+        description: 'M enters claim mode with the rectangle tool. Inside, the keys follow Illustrator: V selection (drag empty canvas for a marquee; rotate from the grip or just outside a corner), A direct selection (anchors on every shape), Q lasso, P pen (on a selected path: click an end to continue, a segment to add an anchor, an anchor to delete it), + and − add or delete anchors, Shift+C the anchor-point tool, N pencil (pixels), B paintbrush, E eraser, M rectangle, L ellipse, H hand or hold Space to pan; scroll pans, Alt/Option or Ctrl/Cmd+scroll zooms; Enter saves your claims, Delete removes the selection, Escape leaves. Hold or right-click a drawer button for its other tools.',
+        rows: [{ key: 'M', label: 'Claim mode' }], keyboardKeys: ['KeyM'],
+      },
+      {
+        id: 'presence', category: 'Overlay', title: 'Show or hide other painters',
+        description: 'Q hides other painters’ viewports and every claimed region, and shows them again.',
+        rows: [{ key: 'Q', label: 'Other painters and claims' }], keyboardKeys: ['KeyQ'],
       },
       {
         id: 'rings', category: 'Overlay', title: 'Toggle contrast rings',

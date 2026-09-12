@@ -1,5 +1,6 @@
 import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
+import { isClaimModeActive } from './claim-editor.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
@@ -23,14 +24,15 @@ import { isMoving } from './templates/move.js'
 import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
 import { togglePanel } from './ui/panel.js'
+import { openClaimTool } from './ui/presence-actions.js'
 import { toggleShortcutHelp } from './ui/shortcut-help.js'
 import {
   cancelPaintDraft,
   performPaintAction,
   redoPaintDraft,
-  toggleWplaceTheme,
   undoPaintDraft,
 } from './wplace-paint.js'
+import { toggleWplaceTheme } from './wplace-theme.js'
 
 const triggerMapRepaint = (): void => {
   const map = getMap() as { triggerRepaint?: () => void } | null
@@ -147,6 +149,8 @@ export const installKeyboardShortcuts = (
     // Placement owns its confirm/cancel keys. This listener runs in capture so Wplace's alliance
     // modal cannot swallow shortcuts before they reach the shared key map.
     if (isMoving() && (event.key === 'Escape' || event.key === 'Enter')) return
+    // Claim mode is its own keyboard world: tool letters, confirm, cancel, delete all belong to it.
+    if (isClaimModeActive()) return
     const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
     const alliance = activeAllianceSurface()
@@ -186,6 +190,19 @@ export const installKeyboardShortcuts = (
     if (shortcut === 'toggle-panel') {
       claim()
       togglePanel()
+      return
+    }
+    if (shortcut === 'claim-mode') {
+      // Claimed on every canvas so Wplace never sees the key; alliance artboards have no
+      // presence room yet, so only the world canvas opens the tool.
+      claim()
+      if (allianceSurface === null) openClaimTool('rectangle')
+      return
+    }
+    if (shortcut === 'toggle-presence') {
+      // Hide or show other painters' viewports and every region claim, to ignore them for a while.
+      claim()
+      setState({ showPresence: !getState().showPresence })
       return
     }
     if (shortcut === 'toggle-template-menu') {

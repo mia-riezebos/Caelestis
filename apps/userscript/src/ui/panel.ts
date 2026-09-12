@@ -53,10 +53,12 @@ import {
   serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
 import { onCanvasWrite } from '../canvas-write.js'
+import { onClaimEditorChange } from '../claim-editor.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { onArtboardPixelsChange } from '../gl/artboard-pixels.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
+import { onPresenceChange } from '../presence-client.js'
 import {
   isProfileEnabled,
   profileReport,
@@ -122,7 +124,15 @@ import {
   PanelSessions,
   type PanelView,
 } from './panel-scope.js'
-import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
+import { openClaimEditor, openClaimTool, presenceSummaryModel } from './presence-actions.js'
+import {
+  claimToolButton,
+  mismatchModeButton,
+  presenceModeButton,
+  syncClaimToolState,
+  syncMismatchModeState,
+  syncPresenceModeState,
+} from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID, toast } from './toast.js'
@@ -575,6 +585,10 @@ const settingsModel = (): SettingsModel => {
     colourNavigationOrder: state.colourNavigationOrder,
     reportPaints: state.reportPaints,
     shareTiles: state.shareTiles,
+    sharePresence: state.sharePresence,
+    showPresence: state.showPresence,
+    showPresenceViewports: state.showPresenceViewports,
+    showPresenceClaims: state.showPresenceClaims,
     notifyRegressions: state.notifyRegressions,
     notifyGriefing: state.notifyGriefing,
     notifyUpdates: state.notifyUpdates,
@@ -1031,6 +1045,12 @@ const claimTreeModels = (
       },
       canShowOthers: claims.canShowOthers,
       error: claims.error,
+      ...(panelSurface.kind === 'world'
+        ? (() => {
+            const presence = presenceSummaryModel()
+            return presence === undefined ? {} : { presence }
+          })()
+        : {}),
     },
   }
 }
@@ -1079,6 +1099,12 @@ const buildSveltePanel = (): CaelestisPanel => {
       case 'work-visibility':
         showOtherClaims = intent.showOtherClaims
         rerenderTree()
+        break
+      case 'region-claim':
+        openClaimTool(undefined, rerenderTree)
+        break
+      case 'region-edit':
+        openClaimEditor(intent.id, rerenderTree)
         break
       case 'navigate':
         if (panelSurface.kind !== 'world' && intent.view === 'settings') break
@@ -1471,16 +1497,35 @@ export const installPanel = (): void => {
   void refreshStoredServers(refreshView)
   installServerConnectionRetry(refreshView)
   const rail = railContainer()
-  rail.append(railButton(), colourModeButton(), mismatchModeButton())
+  rail.append(
+    railButton(),
+    colourModeButton(),
+    mismatchModeButton(),
+    presenceModeButton(),
+    claimToolButton(),
+  )
   syncRailButtonState()
   syncColourModeState()
   syncMismatchModeState()
+  syncPresenceModeState()
+  syncClaimToolState()
+  onClaimEditorChange(syncClaimToolState)
+  onPresenceChange(syncClaimToolState)
+  // Headcounts and claims arrive over the socket; the Painters drawer has to follow them.
+  onPresenceChange(rerenderTree)
+  onStateChange(syncPresenceModeState)
   positionRail()
   log('install', 'rail installed beside wplace’s')
 
   const sync = (): void => {
     // Their re-render may have taken our buttons if anything ever moves them; put them back cheaply.
-    for (const button of [railButton(), colourModeButton(), mismatchModeButton()]) {
+    for (const button of [
+      railButton(),
+      colourModeButton(),
+      mismatchModeButton(),
+      presenceModeButton(),
+      claimToolButton(),
+    ]) {
       if (!rail.contains(button)) rail.appendChild(button)
     }
     positionRail()

@@ -11,15 +11,19 @@ import accountTree from '@iconify-icons/material-symbols/account-tree'
 import add from '@iconify-icons/material-symbols/add'
 import arrowBack from '@iconify-icons/material-symbols/arrow-back'
 import arrowRight from '@iconify-icons/material-symbols/arrow-right'
+import arrowSelectorTool from '@iconify-icons/material-symbols/arrow-selector-tool'
+import brushGlyph from '@iconify-icons/material-symbols/brush'
 import bugReport from '@iconify-icons/material-symbols/bug-report'
 import check from '@iconify-icons/material-symbols/check'
 import chevronRight from '@iconify-icons/material-symbols/chevron-right'
+import circleGlyph from '@iconify-icons/material-symbols/circle'
 import close from '@iconify-icons/material-symbols/close'
 import createNewFolder from '@iconify-icons/material-symbols/create-new-folder'
 import darkMode from '@iconify-icons/material-symbols/dark-mode'
 import deleteOutline from '@iconify-icons/material-symbols/delete-outline'
 import dns from '@iconify-icons/material-symbols/dns'
 import download from '@iconify-icons/material-symbols/download'
+import editGlyph from '@iconify-icons/material-symbols/edit'
 import editOutline from '@iconify-icons/material-symbols/edit-outline'
 import error from '@iconify-icons/material-symbols/error'
 import extension from '@iconify-icons/material-symbols/extension'
@@ -28,25 +32,36 @@ import fitScreen from '@iconify-icons/material-symbols/fit-screen'
 import flag from '@iconify-icons/material-symbols/flag'
 import folder from '@iconify-icons/material-symbols/folder'
 import gridView from '@iconify-icons/material-symbols/grid-view'
+import groups from '@iconify-icons/material-symbols/groups'
 import image from '@iconify-icons/material-symbols/image'
 import info from '@iconify-icons/material-symbols/info'
+import inkEraser from '@iconify-icons/material-symbols/ink-eraser'
+import inkPen from '@iconify-icons/material-symbols/ink-pen'
 import keyboardArrowDown from '@iconify-icons/material-symbols/keyboard-arrow-down'
 import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
 import labelOutline from '@iconify-icons/material-symbols/label-outline'
+import lassoSelect from '@iconify-icons/material-symbols/lasso-select'
 import lightMode from '@iconify-icons/material-symbols/light-mode'
+import lineCurve from '@iconify-icons/material-symbols/line-curve'
 import moreVert from '@iconify-icons/material-symbols/more-vert'
+import nearMe from '@iconify-icons/material-symbols/near-me'
 import notifications from '@iconify-icons/material-symbols/notifications-outline'
 import openInNew from '@iconify-icons/material-symbols/open-in-new'
 import openWith from '@iconify-icons/material-symbols/open-with'
 import palette from '@iconify-icons/material-symbols/palette'
+import panTool from '@iconify-icons/material-symbols/pan-tool'
 import pause from '@iconify-icons/material-symbols/pause'
+import pentagonGlyph from '@iconify-icons/material-symbols/pentagon'
 import playArrow from '@iconify-icons/material-symbols/play-arrow'
+import rectangleGlyph from '@iconify-icons/material-symbols/rectangle'
 import refresh from '@iconify-icons/material-symbols/refresh'
 import remove from '@iconify-icons/material-symbols/remove'
 import search from '@iconify-icons/material-symbols/search'
 import settings from '@iconify-icons/material-symbols/settings'
+import shapesGlyph from '@iconify-icons/material-symbols/shapes'
 import share from '@iconify-icons/material-symbols/share'
 import sortByAlphaRounded from '@iconify-icons/material-symbols/sort-by-alpha-rounded'
+import starGlyph from '@iconify-icons/material-symbols/star'
 import taskAlt from '@iconify-icons/material-symbols/task-alt'
 import tune from '@iconify-icons/material-symbols/tune'
 import unfoldMore from '@iconify-icons/material-symbols/unfold-more'
@@ -88,6 +103,7 @@ export const ICONS = define({
   expandMore: keyboardArrowDown,
   extension,
   eye: visibility,
+  painters: groups,
   eyeOff: visibilityOff,
   filter: filterAltOutline,
   fitScreen,
@@ -100,6 +116,22 @@ export const ICONS = define({
   kebab: moreVert,
   lightMode,
   move: openWith,
+  shapes: shapesGlyph,
+  toolSelect: arrowSelectorTool,
+  toolDirect: nearMe,
+  toolLasso: lassoSelect,
+  toolHand: panTool,
+  toolPen: inkPen,
+  toolAddAnchor: add,
+  toolDeleteAnchor: remove,
+  toolAnchor: lineCurve,
+  toolPencil: editGlyph,
+  toolBrush: brushGlyph,
+  toolEraser: inkEraser,
+  toolRectangle: rectangleGlyph,
+  toolEllipse: circleGlyph,
+  toolPolygon: pentagonGlyph,
+  toolStar: starGlyph,
   palette,
   pause,
   play: playArrow,

@@ -4,6 +4,14 @@ import { installAlarmNotifications } from './alarms.js'
 import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
 import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
 import {
+  claimEditorTool,
+  isClaimModeActive,
+  onClaimEditorChange,
+  startClaimMode,
+  stopClaimMode,
+  syncClaimEditorFrame,
+} from './claim-editor.js'
+import {
   canvasPixelAtIn,
   createScreenProjectionCache,
   cssPixelsPerCanvasPixelIn,
@@ -29,6 +37,7 @@ import {
   markerDensityMemoryBytes,
   markerGpuMemoryBytes,
 } from './gl/markers.js'
+import { installPresenceLayer, repaintPresence } from './gl/presence-layer.js'
 import { installKeyboardShortcuts } from './keyboard-shortcuts.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
 import { installPaintCursorTracking, syncPaintCursorMap } from './paint-cursor.js'
@@ -37,6 +46,9 @@ import {
   paintPaletteProgress,
   refreshPaintPaletteFocus,
 } from './paint-palette.js'
+import { installPresence, observePresenceFrame, onPresenceChange } from './presence-client.js'
+import { onPresenceHoverChange } from './presence-hover.js'
+import { renderPresenceLabels } from './presence-labels.js'
 import {
   configureProfileRun,
   installProfile,
@@ -75,10 +87,12 @@ import {
 } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel, refreshTemplateTreeFocus } from './ui/panel.js'
+import { installClaimToolHost } from './ui/presence-actions.js'
 import { installUserscriptUpdateCheck } from './userscript-update.js'
 import { loadAccount } from './wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 import { installColourPicker } from './wplace-picker.js'
+import { getWplaceState, installWplaceStateCapture } from './wplace-state.js'
 
 /**
  * Entry point.
@@ -161,6 +175,7 @@ const attachOverlayLayer = (): void => {
     }
     if (getMap() === null) installMapCapture()
     installOverlayLayer()
+    installPresenceLayer()
     syncPaintCursorMap(getMap())
   }
   attach()
@@ -269,12 +284,23 @@ const main = (): void => {
   registerProfileMemorySource('Marker draw batches', markerBatchMemoryBytes)
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
+  // Both traps must be armed before Wplace's modules evaluate; the state is built during startup.
+  step('wplace state capture', installWplaceStateCapture)
   step('map capture', installMapCapture)
   step('alliance surface observer', installAllianceSurfaceObserver)
   step('debug API', () => {
     installDebugApi({
       /** The captured MapLibre Map, for poking at its style and layers from the console. */
       map: () => getMap(),
+      /** Wplace's captured global state object, whose setters drive theme and dialogs. */
+      wplaceState: () => getWplaceState(),
+      /** Claim mode, openable here without a presence server for pointer testing. */
+      claimTool: {
+        active: () => isClaimModeActive(),
+        tool: () => claimEditorTool(),
+        start: (tool?: Parameters<typeof startClaimMode>[0]) => startClaimMode(tool),
+        stop: () => stopClaimMode(),
+      },
       /** Each template's own switch beside the renderer's effective visibility decision. */
       templates: () =>
         localTemplates().map((template) => ({
@@ -382,6 +408,23 @@ const main = (): void => {
   // Drafting Transparent writes nothing a canvas hook can see, so the only place it shows up is
   // wplace's crosshairs. Throttled inside; with nothing drafted there is nothing to read.
   step('drafted pixels', () => onFrame(reconcileDrafts, 'Reconcile drafted pixels'))
+  // Where this tab is looking and drafting, for the other painters; and their tags for us. The
+  // socket itself is throttled inside, so feeding it every frame costs a rect comparison.
+  step('presence', () => {
+    installPresence()
+    onPresenceChange(() => {
+      repaintPresence()
+      repaint()
+    })
+    onClaimEditorChange(repaintPresence)
+    onPresenceHoverChange(repaintPresence)
+    installClaimToolHost()
+    onFrame(observePresenceFrame, 'Presence viewport')
+    onFrame(syncClaimEditorFrame, 'Claim editor overlay')
+    onFrame((frame) => {
+      if (activeAllianceSurface() === null) renderPresenceLabels(frame)
+    }, 'Presence labels')
+  })
   /**
    * Start capturing before the first frame, not on it.
    *

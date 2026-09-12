@@ -99,15 +99,123 @@ export interface PanelModel {
     readonly tree: TemplateTreeModel
     readonly error: string
     readonly canShowOthers: boolean
+    readonly presence?: PresenceSummaryModel
   }
   readonly showOtherClaims?: boolean
   readonly appearance?: AppearanceEditorModel
   readonly settings?: SettingsModel
 }
 
+/** One persisted region claim as the Painters drawer lists it. */
+export interface RegionClaimRowModel {
+  readonly id: string
+  readonly label: string
+  readonly claimant: string
+  readonly mine: boolean
+  /** Human size, such as "120 × 80". */
+  readonly size: string
+}
+
+/** Live painter headcount and region claims for the current drawing surface. */
+export interface PresenceSummaryModel {
+  readonly online: number
+  readonly connected: boolean
+  readonly regions: readonly RegionClaimRowModel[]
+  /** Whether the claim tool can start: signed in, connected, and not already open. */
+  readonly canClaim: boolean
+  readonly pending?: boolean
+  readonly message?: string
+}
+
+/** The tools of claim mode, in drawer order. */
+export type ClaimTool =
+  | 'select'
+  | 'direct'
+  | 'lasso'
+  | 'pen'
+  | 'add-anchor'
+  | 'delete-anchor'
+  | 'anchor'
+  | 'pencil'
+  | 'brush'
+  | 'eraser'
+  | 'rectangle'
+  | 'ellipse'
+  | 'polygon'
+  | 'star'
+  | 'hand'
+
+/** Tools sit in groups, Illustrator-style: one drawer button per group with a flyout to switch. */
+export type ClaimToolGroupId = 'selection' | 'pen' | 'pencil' | 'shape' | 'navigate'
+
+export interface ClaimToolEntry {
+  readonly tool: ClaimTool
+  readonly group: ClaimToolGroupId
+  readonly label: string
+  readonly key: string
+  readonly icon: IconName
+}
+
+export interface ClaimToolGroup {
+  readonly id: ClaimToolGroupId
+  readonly label: string
+  readonly tools: readonly ClaimToolEntry[]
+  /** The tool the group's button shows: the one last used from it. */
+  readonly shown: ClaimTool
+}
+
+/** Options for the tool in hand; only the ones that apply are set. */
+export interface ClaimToolOptions {
+  readonly sides?: number
+  readonly points?: number
+  /** Inner radius as a percentage of the outer radius. */
+  readonly inner?: number
+  /** Stroke width in pixels, for pen, pencil, and brush. */
+  readonly width?: number
+  readonly minCorners: number
+  readonly maxCorners: number
+  readonly maxWidth: number
+}
+
+/** Claim mode: a tool drawer on the left, a cancel-or-confirm bar at the top. */
+export interface ClaimModeModel {
+  readonly tool: ClaimTool
+  readonly tools: readonly ClaimToolEntry[]
+  readonly groups: readonly ClaimToolGroup[]
+  readonly options: ClaimToolOptions
+  /** Whether the next shape drawn cuts out of the claim instead of adding to it. */
+  readonly subtract: boolean
+  /** Items in the document, and how many are selected. */
+  readonly items: number
+  readonly selected: boolean
+  readonly selectedCount: number
+  /** Whether anything differs from what is saved: what Save writes and Cancel discards. */
+  readonly dirty: boolean
+  /** The template the claim overlaps, or null. Shown for context; a claim needs no template. */
+  readonly template: string | null
+  /** Pixels the claim covers. */
+  readonly pixels: number
+  readonly pending: boolean
+  readonly message?: string
+}
+
+export type ClaimModeIntent =
+  | { readonly type: 'set-tool'; readonly tool: ClaimTool }
+  | {
+      readonly type: 'set-option'
+      readonly option: 'sides' | 'points' | 'inner' | 'width'
+      readonly value: number
+    }
+  | { readonly type: 'set-subtract'; readonly subtract: boolean }
+  | { readonly type: 'delete-item' }
+  | { readonly type: 'confirm' }
+  | { readonly type: 'cancel' }
+
 export type PanelIntent =
   | { readonly type: 'work-retry' }
   | { readonly type: 'work-visibility'; readonly showOtherClaims: boolean }
+  | { readonly type: 'region-claim' }
+  | { readonly type: 'region-edit'; readonly id: string }
   | { readonly type: 'work-tree'; readonly intent: TemplateTreeIntent }
   | { readonly type: 'navigate'; readonly view: PanelView }
   | { readonly type: 'close' }
@@ -127,6 +235,10 @@ export interface PanelProps {
 export type SettingsBooleanKey =
   | 'reportPaints'
   | 'shareTiles'
+  | 'sharePresence'
+  | 'showPresence'
+  | 'showPresenceViewports'
+  | 'showPresenceClaims'
   | 'debugLogging'
   | 'performanceProfiling'
   | 'notifyRegressions'
@@ -182,6 +294,10 @@ export interface SettingsModel {
   readonly colourNavigationOrder: 'unpainted-first' | 'mismatched-first'
   readonly reportPaints: boolean
   readonly shareTiles: boolean
+  readonly sharePresence: boolean
+  readonly showPresence: boolean
+  readonly showPresenceViewports: boolean
+  readonly showPresenceClaims: boolean
   readonly debugLogging: boolean
   readonly performanceProfiling: boolean
   readonly notifyRegressions: boolean
@@ -227,6 +343,8 @@ export type RailControlId =
   | 'alliance-panel'
   | 'colour'
   | 'mismatch'
+  | 'claim'
+  | 'presence'
   | 'overlay-menu'
   | 'overlay-finished'
   | 'overlay-frozen'

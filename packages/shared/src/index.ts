@@ -1,4 +1,5 @@
 export * from './backfill.js'
+export * from './bitmask.js'
 export * from './client-metrics.js'
 export * from './count.js'
 export { sha256Hex } from './hash.js'
@@ -22,12 +23,14 @@ export {
   PngError,
   type RgbaImage,
 } from './png.js'
+export * from './presence.js'
 export {
   OPAQUE_ALPHA_THRESHOLD,
   type QuantiseReport,
   type QuantiseResult,
   quantiseToPalette,
 } from './quantise.js'
+export * from './region-shape.js'
 export {
   type PixelBounds,
   SliceError,

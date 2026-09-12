@@ -11,20 +11,27 @@
     onretry,
     showOtherClaims = false,
     onshowothers,
+    onclaimregion,
+    oneditregion,
   }: {
     model: NonNullable<PanelModel['work']>
     onIntent: (intent: TemplateTreeIntent) => void
     onretry: () => void
     showOtherClaims?: boolean
     onshowothers: (show: boolean) => void
+    onclaimregion?: () => void
+    oneditregion?: (id: string) => void
   } = $props()
   const count = $derived(model.tree.entries.length)
-  const drawerId = $props.id()
+  const presence = $derived(model.presence)
+  const favouritesId = $props.id()
+  const paintersId = `${favouritesId}-painters`
   let open = $state(false)
+  let paintersOpen = $state(false)
 </script>
 
-<section class="work t-acc" data-open={String(open)} aria-label="In progress drawer">
-  <div class="t-acc-panel" id={drawerId} inert={!open} aria-hidden={!open}>
+<section class="drawer t-acc" data-open={String(open)} aria-label="Favourites drawer">
+  <div class="t-acc-panel" id={favouritesId} inert={!open} aria-hidden={!open}>
     <div class="t-acc-panel-inner">
       <div class="list">
         {#if model.canShowOthers}
@@ -56,18 +63,74 @@
   <button
     class="t-acc-head"
     aria-expanded={open}
-    aria-controls={drawerId}
+    aria-controls={favouritesId}
     onclick={() => {
       open = !open
     }}
   >
-    <span>In progress <span class="count">{count}</span></span>
+    <span>Favourites <span class="count">{count}</span></span>
     <span class="t-acc-chevron" aria-hidden="true"><Icon name="expandLess" /></span>
   </button>
 </section>
 
+{#if presence !== undefined}
+  <section class="drawer t-acc" data-open={String(paintersOpen)} aria-label="Painters drawer">
+    <div class="t-acc-panel" id={paintersId} inert={!paintersOpen} aria-hidden={!paintersOpen}>
+      <div class="t-acc-panel-inner">
+        <div class="list presence">
+          <div class="claim-actions">
+            <Button
+              label="Claim a region"
+              title="Draw a rectangle, ellipse, polygon, or star on the map (M)"
+              size="compact"
+              kind="ghost"
+              disabled={!presence.canClaim || presence.pending === true}
+              onclick={() => onclaimregion?.()}
+            />
+          </div>
+          {#if presence.message}
+            <p class="notice" role="alert">{presence.message}</p>
+          {/if}
+          {#if presence.regions.length === 0}
+            <p class="empty">No region claims yet. Press M on the map, or use the button above.</p>
+          {/if}
+          {#each presence.regions as region (region.id)}
+            <div class="region" data-mine={String(region.mine)}>
+              <span class="region-text">
+                <strong>{region.claimant}</strong>
+                {region.label === '' ? 'claimed' : region.label} · {region.size}
+              </span>
+              {#if region.mine}
+                <span class="region-actions">
+                  <Button label="Edit" size="compact" kind="ghost" disabled={presence.pending === true || !presence.canClaim} onclick={() => oneditregion?.(region.id)} />
+                </span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      </div>
+    </div>
+    <button
+      class="t-acc-head"
+      aria-expanded={paintersOpen}
+      aria-controls={paintersId}
+      onclick={() => {
+        paintersOpen = !paintersOpen
+      }}
+    >
+      <span>
+        Painters
+        <span class="count">
+          {#if presence.connected}{presence.online} online{:else}offline{/if}
+        </span>
+      </span>
+      <span class="t-acc-chevron" aria-hidden="true"><Icon name="expandLess" /></span>
+    </button>
+  </section>
+{/if}
+
 <style>
-  .work {
+  .drawer {
     --acc-expand: 250ms;
     --acc-collapse: 250ms;
     --acc-chevron: 250ms;
@@ -102,6 +165,40 @@
   .options {
     padding: 0.25rem 0.75rem 0;
   }
+  .presence {
+    padding: 0.5rem 0.75rem 0.5rem;
+  }
+  .claim-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-block-end: 0.35rem;
+  }
+  .region {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-block-size: 1.75rem;
+    font-size: 0.75rem;
+  }
+  .region-actions {
+    display: flex;
+    gap: 0.15rem;
+    flex: 0 0 auto;
+  }
+  .region-text {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .region[data-mine='true'] .region-text {
+    color: var(--caelestis-text);
+  }
+  .region[data-mine='false'] .region-text {
+    color: var(--caelestis-muted-text);
+  }
   button {
     width: 100%;
     text-align: start;
@@ -125,6 +222,9 @@
     font-size: 12px;
     line-height: 1.5;
     color: var(--caelestis-muted-text);
+  }
+  .presence .empty {
+    margin-inline: 0;
   }
   .notice {
     display: flex;

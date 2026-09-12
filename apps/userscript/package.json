@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@caelestis/shared": "workspace:*",
-    "@caelestis/ui": "workspace:*"
+    "@caelestis/ui": "workspace:*",
+    "polygon-clipping": "0.15.7"
   },
   "devDependencies": {
     "@types/greasemonkey": "^4.0.7",

@@ -68,6 +68,14 @@ class_name = "TemplateBackfillObject"
 tag = "v4"
 new_sqlite_classes = ["TemplateBackfillObject"]
 
+[[durable_objects.bindings]]
+name = "PRESENCE"
+class_name = "PresenceObject"
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["PresenceObject"]
+
 [vars]
 SHARD_STRATEGY = "single"
 SERVER_ID = "01a03930-4f7d-7e72-aa07-666380bf60f7"

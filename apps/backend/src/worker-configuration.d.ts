@@ -17,11 +17,12 @@ interface __BaseEnv_Env {
 	ALARM_WATCHER: DurableObjectNamespace<import("./worker").AlarmWatcher>;
 	STATUS_READ_MODEL: DurableObjectNamespace<import("./worker").StatusReadModelObject>;
 	TEMPLATE_BACKFILL: DurableObjectNamespace<import("./worker").TemplateBackfillObject>;
+	PRESENCE: DurableObjectNamespace<import("./worker").PresenceObject>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./worker");
-		durableNamespaces: "TelemetryShard" | "AlarmWatcher" | "StatusReadModelObject" | "TemplateBackfillObject";
+		durableNamespaces: "TelemetryShard" | "AlarmWatcher" | "StatusReadModelObject" | "TemplateBackfillObject" | "PresenceObject";
 	}
 	interface Env extends __BaseEnv_Env {}
 }

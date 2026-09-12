@@ -148,6 +148,34 @@
       "when": 1788996768313,
       "tag": "0020_tidy_micromacro",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1789136408775,
+      "tag": "0021_amazing_blindfold",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1789140288358,
+      "tag": "0022_yielding_vulcan",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1789236199521,
+      "tag": "0023_aspiring_thunderbolts",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1789253210891,
+      "tag": "0024_region-credential-ownership",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,20 @@
-import { millis, tileKey, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
+import {
+  isRegionDocument,
+  isRegionItem,
+  isRegionShape,
+  MAX_PATH_NODES,
+  MAX_RASTER_BITS,
+  MAX_REGION_ITEMS,
+  MAX_REGION_SHAPE_CORNERS,
+  MAX_REGION_SHAPE_EXTENT,
+  MAX_STROKE_WIDTH,
+  MIN_REGION_SHAPE_CORNERS,
+  millis,
+  packBits,
+  tileKey,
+  WORLD_PIXELS,
+  WORLD_TILES,
+} from '@caelestis/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -18,6 +34,15 @@ import {
   PaintEvent,
   PaintPixels,
   PaintTile,
+  PresenceClientEvent,
+  PresenceDraft,
+  PresenceOnline,
+  PresenceRect,
+  PresenceServerEvent,
+  RegionClaimRequest,
+  RegionDocument,
+  RegionItem,
+  RegionShape,
   ServerInfo,
   StatusDelta,
   StatusResponse,
@@ -30,6 +55,299 @@ import {
 } from './index.js'
 
 const HASH = 'a'.repeat(64)
+
+describe('presence schemas', () => {
+  it('accepts only non-negative integer HTTP headcounts', () => {
+    for (const online of [0, 3])
+      expect(Schema.decodeUnknownSync(PresenceOnline)({ online })).toEqual({ online })
+    for (const invalid of [{}, { online: -1 }, { online: 0.5 }, { online: '3' }, { online: NaN }])
+      expect(() => Schema.decodeUnknownSync(PresenceOnline)(invalid)).toThrow()
+  })
+
+  it.each([{}, { templateId: null }])('decodes a claim request with template hint %j', (hint) => {
+    const request = {
+      ...hint,
+      document: {
+        items: [{ id: 'box', shape: { kind: 'rectangle', x: 0, y: 0, w: 8, h: 8 }, op: 'add' }],
+      },
+      label: '',
+      actor: { wplaceUserId: 1, displayName: 'Mia' },
+    }
+    expect(Schema.decodeUnknownSync(RegionClaimRequest)(request)).toEqual(request)
+  })
+  const shapes = [
+    {
+      kind: 'pixels',
+      x: 10,
+      y: 20,
+      w: 3,
+      h: 3,
+      mask: packBits(Uint8Array.of(1, 0, 1, 0, 1, 0, 1, 0, 1)),
+    },
+    { kind: 'rectangle', x: 0, y: 1, w: 1, h: MAX_REGION_SHAPE_EXTENT },
+    { kind: 'ellipse', x: 1, y: 0, w: MAX_REGION_SHAPE_EXTENT, h: 1 },
+    { kind: 'polygon', cx: 0, cy: 1, r: 1, sides: MIN_REGION_SHAPE_CORNERS, rotation: 0 },
+    {
+      kind: 'star',
+      cx: 1,
+      cy: 0,
+      r: MAX_REGION_SHAPE_EXTENT / 2,
+      inner: 1,
+      points: MAX_REGION_SHAPE_CORNERS,
+      rotation: 359,
+    },
+    {
+      kind: 'path',
+      nodes: [
+        { x: -0.5, y: 1.25, out: { x: -20, y: 40 } },
+        { x: 20, y: 30, in: { x: 10.5, y: 25.75 } },
+      ],
+      closed: false,
+      width: 0.5,
+    },
+    {
+      kind: 'path',
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 5, y: 10 },
+      ],
+      closed: true,
+      width: 0,
+    },
+  ]
+  it.each(shapes)('round-trips a valid $kind', (shape) => {
+    expect(isRegionShape(shape)).toBe(true)
+    expect(Schema.decodeUnknownSync(RegionShape)(shape)).toEqual(shape)
+    expect(Schema.encodeSync(RegionShape)(Schema.decodeUnknownSync(RegionShape)(shape))).toEqual(
+      shape,
+    )
+  })
+  it.each(shapes)('matches shared validation at every $kind field boundary', (shape) => {
+    for (const field of Object.keys(shape).filter((key) => key !== 'kind')) {
+      for (const value of [
+        undefined,
+        null,
+        '1',
+        -1,
+        0,
+        0.5,
+        1,
+        2,
+        3,
+        12,
+        13,
+        359,
+        360,
+        999,
+        1_000,
+        1_001,
+        2_000,
+        2_001,
+        Number.MAX_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER + 1,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+      ]) {
+        const candidate = { ...shape, [field]: value }
+        if (isRegionShape(candidate))
+          expect(Schema.decodeUnknownSync(RegionShape)(candidate)).toEqual(candidate)
+        else expect(() => Schema.decodeUnknownSync(RegionShape)(candidate)).toThrow()
+      }
+    }
+  })
+  it('accepts the largest raster mask and rejects invalid masks and oversized boxes', () => {
+    const shape = {
+      kind: 'pixels',
+      x: 0,
+      y: 0,
+      w: 512,
+      h: 512,
+      mask: packBits(new Uint8Array(MAX_RASTER_BITS).fill(1)),
+    }
+    expect(shape.mask).toHaveLength(43_692)
+    expect(Schema.decodeUnknownSync(RegionShape)(shape)).toEqual(shape)
+    for (const candidate of [
+      { ...shape, mask: shape.mask.slice(4) },
+      { ...shape, mask: `${shape.mask}AAAA` },
+      { ...shape, mask: `!${shape.mask.slice(1)}` },
+      { ...shape, h: 513, mask: packBits(new Uint8Array(512 * 513)) },
+      { ...shape, w: 350, h: 749, mask: packBits(new Uint8Array(350 * 749)) },
+    ])
+      expect(() => Schema.decodeUnknownSync(RegionShape)(candidate)).toThrow()
+  })
+  it('rejects a star whose inner radius equals its radius', () => {
+    expect(() =>
+      Schema.decodeUnknownSync(RegionShape)({
+        kind: 'star',
+        cx: 10,
+        cy: 10,
+        r: 10,
+        inner: 10,
+        points: 5,
+        rotation: 0,
+      }),
+    ).toThrow()
+  })
+  it('matches shared validation for path nodes, handles, counts, and stroke limits', () => {
+    const point = { x: 1.5, y: -2.25 }
+    const path = { kind: 'path', nodes: [point, point], closed: false, width: 1 }
+    const candidates: unknown[] = []
+    for (const closed of [false, true]) {
+      for (const length of [0, 1, 2, 3, MAX_PATH_NODES, MAX_PATH_NODES + 1])
+        for (const width of [-1, 0, 0.5, MAX_STROKE_WIDTH, MAX_STROKE_WIDTH + 1, Infinity, NaN])
+          candidates.push({ ...path, closed, width, nodes: Array.from({ length }, () => point) })
+    }
+    for (const node of [
+      null,
+      {},
+      { ...point, x: '1' },
+      { ...point, x: 4_000_000.1 },
+      { ...point, y: -4_000_000.1 },
+      { ...point, x: Infinity },
+      { ...point, y: NaN },
+      { ...point, in: null },
+      { ...point, out: { x: 0 } },
+      { ...point, in: { x: 0, y: Infinity } },
+      { ...point, out: { x: -4_000_000, y: 4_000_000 } },
+    ])
+      candidates.push({ ...path, nodes: [point, node] })
+    for (const candidate of candidates) {
+      if (isRegionShape(candidate))
+        expect(Schema.decodeUnknownSync(RegionShape)(candidate)).toEqual(candidate)
+      else expect(() => Schema.decodeUnknownSync(RegionShape)(candidate)).toThrow()
+    }
+  })
+  it('matches shared item and document validation and preserves item order', () => {
+    const item = {
+      id: 'box',
+      shape: { kind: 'rectangle', x: 0, y: 0, w: 8, h: 8 },
+      op: 'add',
+    }
+    for (const candidate of [
+      item,
+      null,
+      {},
+      { ...item, id: '' },
+      { ...item, id: 'a'.repeat(64) },
+      { ...item, id: 'a'.repeat(65) },
+      { ...item, op: 'subtract' },
+      { ...item, op: 'replace' },
+      { ...item, shape: null },
+    ]) {
+      if (isRegionItem(candidate))
+        expect(Schema.decodeUnknownSync(RegionItem)(candidate)).toEqual(candidate)
+      else expect(() => Schema.decodeUnknownSync(RegionItem)(candidate)).toThrow()
+    }
+    for (const candidate of [
+      null,
+      {},
+      { items: [] },
+      { items: [null] },
+      { items: [item, item] },
+      { items: [item, { ...item, id: 'cutout', op: 'subtract' }] },
+      ...[1, MAX_REGION_ITEMS, MAX_REGION_ITEMS + 1].map((length) => ({
+        items: Array.from({ length }, (_, index) => ({ ...item, id: String(index) })),
+      })),
+    ]) {
+      if (isRegionDocument(candidate)) {
+        const decoded = Schema.decodeUnknownSync(RegionDocument)(candidate)
+        expect(decoded).toEqual(candidate)
+        expect(Schema.encodeSync(RegionDocument)(decoded)).toEqual(candidate)
+      } else expect(() => Schema.decodeUnknownSync(RegionDocument)(candidate)).toThrow()
+    }
+  })
+
+  it.each(['add', 'subtract'])(
+    'bounds every %s path, including its handles, in claim requests',
+    (op) => {
+      for (const part of ['node', 'handle']) {
+        for (const extent of [MAX_REGION_SHAPE_EXTENT, MAX_REGION_SHAPE_EXTENT + 1]) {
+          const request = {
+            actor: { wplaceUserId: 1, displayName: 'Mia' },
+            label: '',
+            document: {
+              items: [
+                { id: 'box', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 1, h: 1 } },
+                {
+                  id: 'path',
+                  op,
+                  shape: {
+                    kind: 'path',
+                    closed: false,
+                    width: 1,
+                    nodes:
+                      part === 'node'
+                        ? [
+                            { x: 0, y: 0 },
+                            { x: extent, y: 1 },
+                          ]
+                        : [
+                            { x: 0, y: 0, out: { x: extent, y: 1 } },
+                            { x: 1, y: 1 },
+                          ],
+                  },
+                },
+              ],
+            },
+          }
+          if (extent === MAX_REGION_SHAPE_EXTENT)
+            expect(Schema.decodeUnknownSync(RegionClaimRequest)(request)).toEqual(request)
+          else expect(() => Schema.decodeUnknownSync(RegionClaimRequest)(request)).toThrow()
+        }
+      }
+    },
+  )
+  it('accepts safe rects and the shared bounded draft mask format', () => {
+    const rect = { x: 0, y: 8, w: 8, h: 1 }
+    expect(Schema.decodeUnknownSync(PresenceRect)(rect)).toEqual(rect)
+    expect(Schema.decodeUnknownSync(PresenceDraft)({ rect, pixels: 1, mask: 'gA==' })).toEqual({
+      rect,
+      pixels: 1,
+      mask: 'gA==',
+    })
+    expect(
+      Schema.decodeUnknownSync(PresenceClientEvent)({ type: 'presence-update', draft: null }),
+    ).toEqual({ type: 'presence-update', draft: null })
+  })
+  it('rejects invalid coordinates, sizes, unsafe integers, and masks', () => {
+    const rect = { x: 0, y: 0, w: 8, h: 1 }
+    for (const invalid of [
+      { ...rect, x: -1 },
+      { ...rect, w: 0 },
+      { ...rect, y: 0.5 },
+      { ...rect, x: Number.MAX_SAFE_INTEGER + 1 },
+    ])
+      expect(() => Schema.decodeUnknownSync(PresenceRect)(invalid)).toThrow()
+    for (const mask of ['!', 'gA=', 'gA======', 'g!=='])
+      expect(() => Schema.decodeUnknownSync(PresenceDraft)({ rect, pixels: 1, mask })).toThrow()
+    expect(() =>
+      Schema.decodeUnknownSync(PresenceDraft)({
+        rect: { ...rect, w: 32_769 },
+        pixels: 1,
+        mask: 'gA==',
+      }),
+    ).toThrow()
+    expect(() =>
+      Schema.decodeUnknownSync(RegionClaimRequest)({
+        templateId: 'not-a-uuid',
+        document: {
+          items: [{ id: 'box', shape: { kind: 'rectangle', ...rect }, op: 'add' }],
+        },
+        label: '',
+        actor: { wplaceUserId: 1, displayName: 'Mia' },
+      }),
+    ).toThrow()
+    expect(() =>
+      Schema.decodeUnknownSync(PresenceServerEvent)({
+        type: 'presence-delta',
+        online: -1,
+        upsert: [],
+        remove: [],
+      }),
+    ).toThrow()
+  })
+})
 const SECONDS = 1_750_000_000
 const MILLIS = millis(SECONDS * 1_000)
 

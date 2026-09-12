@@ -1,3 +1,4 @@
+import { PRESENCE_PROTOCOL_V1, uuidV7 } from '@caelestis/shared'
 import { afterEach, expect, it, vi } from 'vitest'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
@@ -21,6 +22,70 @@ vi.mock('cloudflare:workers', () => ({
  * test about the wiring rather than about R2 or a Durable Object.
  */
 const BOOTSTRAP = 'bootstrap-secret'
+
+it('routes presence to the named surface room with authenticated internal headers', async () => {
+  const environment = env()
+  const fetchPresence = vi.fn(async (_request: Request) => new Response('connected'))
+  const getByName = vi.fn(() => ({ fetch: fetchPresence }))
+  const configured = { ...environment, PRESENCE: { getByName }, SEASON: '0' } as unknown as Env
+  const response = await worker.fetch(
+    new Request(
+      `https://example.com/telemetry/presence?season=0&surface=alliance-picture&allianceId=7&painterId=42&painterName=Mia%20%F0%9F%8E%A8&client=userscript&clientVersion=0.5.4&clientId=${uuidV7()}`,
+      {
+        headers: {
+          upgrade: 'websocket',
+          'sec-websocket-protocol': `${PRESENCE_PROTOCOL_V1}, caelestis.auth.b64.${btoa(BOOTSTRAP).replace(/=+$/, '')}`,
+          'x-caelestis-painter-id': '999',
+        },
+      },
+    ),
+    configured,
+  )
+  expect(response.status).toBe(200)
+  expect(getByName).toHaveBeenCalledWith('0:alliance-picture:7')
+  const request = fetchPresence.mock.calls[0]?.[0] as Request | undefined
+  expect(request).toBeDefined()
+  expect(Object.fromEntries(request?.headers ?? [])).toMatchObject({
+    'x-caelestis-season': '0',
+    'x-caelestis-surface-kind': 'alliance-picture',
+    'x-caelestis-alliance-id': '7',
+    'x-caelestis-painter-id': '42',
+    'x-caelestis-painter-name': encodeURIComponent('Mia 🎨'),
+    'x-caelestis-credential-scope': 'admin',
+    'x-caelestis-anonymous': '0',
+    'x-caelestis-revocable': '0',
+    'x-caelestis-token-hash': expect.stringMatching(/^[a-f0-9]{64}$/),
+    'x-caelestis-client-hash': expect.stringMatching(/^[a-f0-9]{64}$/),
+    'x-caelestis-metric-client': 'userscript',
+    'x-caelestis-metric-client-version': '0.5.4',
+  })
+})
+
+it.each([
+  ['surface=world', '0:world'],
+  ['surface=alliance-picture&allianceId=7', '0:alliance-picture:7'],
+])('reads the presence headcount through one room RPC for %s', async (query, room) => {
+  const environment = env()
+  const online = vi.fn(async () => 5)
+  const getByName = vi.fn(() => ({ online }))
+  const configured = {
+    ...environment,
+    PRESENCE: { getByName },
+    SEASON: '0',
+    OPEN_ACCESS: 'true',
+  } as unknown as Env
+  const prepare = vi.spyOn(environment.DB, 'prepare')
+  const response = await worker.fetch(
+    new Request(`https://example.com/telemetry/presence/online?season=0&${query}`),
+    configured,
+  )
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ online: 5 })
+  expect(response.headers.get('cache-control')).toBe('no-store')
+  expect(getByName).toHaveBeenCalledExactlyOnceWith(room)
+  expect(online).toHaveBeenCalledExactlyOnceWith()
+  expect(prepare).not.toHaveBeenCalled()
+})
 
 let d1: SqliteD1Database | null = null
 
@@ -128,6 +193,7 @@ it('forwards the configured identity, season and open access to the app', async 
     liveSync: 1,
     liveSyncMax: 2,
     liveTileOffers: 1,
+    presence: 1,
     livePaintParts: 1,
   })
   expect(manifest.status).toBe(200)

@@ -946,6 +946,7 @@ export interface ServerSettings {
 }
 
 export interface SqlStore extends TagStore {
+  readonly regions: import('../work/region-store.js').RegionStore
   readonly work: import('../work/store.js').WorkStore
   /** The operator's overrides. Nulls throughout when nobody has set anything. */
   readServerSettings(): Promise<ServerSettings>

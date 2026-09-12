@@ -13,6 +13,10 @@
  *   node apps/userscript/dev-inject.mjs --verbose        # include wplace's own console output
  *   node apps/userscript/dev-inject.mjs --relaunch       # restart a Chromium that lacks the port
  *
+ * While watching, the terminal takes single keys: `n` opens another injected tab (in the
+ * background, at the same URL), `r` rebuilds and reloads every tab, `q` quits. Two tabs on one
+ * server is the quickest way to watch presence from both sides.
+ *
  * What this is and is not: the bundle is installed with
  * `Page.addScriptToEvaluateOnNewDocument`, which runs in the page's main world before any page
  * script. That is the timing and the world a `@grant none` userscript gets. A script with any
@@ -110,6 +114,24 @@ class Tab {
   #sessionId
   #id = 1
   #pending = new Map()
+  #installed = null
+  /** Set by the owner; called once when the browser drops this tab's connection. */
+  onClose = null
+  #closed = false
+
+  /** The page or its connection is gone: fail every waiting command and tell the owner once. */
+  #gone() {
+    if (this.#closed) return
+    this.#closed = true
+    for (const { reject } of this.#pending.values()) reject(new Error('tab closed'))
+    this.#pending.clear()
+    try {
+      this.#ws.close()
+    } catch {
+      // Already closed.
+    }
+    this.onClose?.()
+  }
 
   static async open() {
     // Start a debuggable Chromium if there is not one already, so this needs no setup by hand.
@@ -151,6 +173,17 @@ class Tab {
         )
       }
     })
+    tab.#ws.addEventListener('close', () => tab.#gone(), { once: true })
+    // Closing the page does not close the browser socket; the page's session detaches instead.
+    tab.#ws.addEventListener('message', (event) => {
+      const message = JSON.parse(event.data)
+      if (
+        (message.method === 'Target.detachedFromTarget' &&
+          message.params?.sessionId === tab.#sessionId) ||
+        (message.method === 'Target.targetDestroyed' && message.params?.targetId === tab.target?.id)
+      )
+        tab.#gone()
+    })
     const { targetId } = await tab.send('Target.createTarget', {
       url: 'about:blank',
       background: true,
@@ -159,6 +192,8 @@ class Tab {
     const { sessionId } = await tab.send('Target.attachToTarget', { targetId, flatten: true })
     tab.#sessionId = sessionId
     await tab.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    await tab.send('Page.enable')
+    await tab.send('Runtime.enable')
     return tab
   }
 
@@ -167,13 +202,38 @@ class Tab {
     this.#ws.send(JSON.stringify({ id, method, params, sessionId: this.#sessionId }))
     return new Promise((resolve, reject) => this.#pending.set(id, { resolve, reject }))
   }
+
+  /** Replace the injected bundle and reload the page so it takes effect. */
+  async inject(source) {
+    if (this.#installed)
+      await this.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: this.#installed })
+    const { identifier } = await this.send('Page.addScriptToEvaluateOnNewDocument', { source })
+    this.#installed = identifier
+    await this.send('Page.navigate', { url })
+  }
 }
 
-const tab = await Tab.open()
-await tab.send('Page.enable')
-await tab.send('Runtime.enable')
+/** Every injected tab this run owns. The first is the one screenshots and non-watch runs use. */
+const tabs = []
+let lastSource = null
 
-let installed = null
+const openTab = async () => {
+  const tab = await Tab.open()
+  tabs.push(tab)
+  tab.onClose = () => {
+    const at = tabs.indexOf(tab)
+    if (at !== -1) tabs.splice(at, 1)
+    console.log(`tab closed; ${tabs.length} left`)
+  }
+  if (lastSource !== null) {
+    await tab.inject(lastSource)
+    console.log(`opened another injected tab → ${url} (${tabs.length} open)`)
+  }
+  return tab
+}
+
+await openTab()
+
 const load = async () => {
   await build()
   const bundle = readFileSync(BUNDLE, 'utf8')
@@ -181,13 +241,11 @@ const load = async () => {
   // Stripe's. A real userscript is gated by `@match`, so gate this the same way — otherwise the
   // harness runs the script in places the shipped script never would, and any bug that causes
   // shows up only here.
-  const source = `if (/^https:\\/\\/wplace\\.live\\//.test(location.href)) {\n${bundle}\n}`
-  if (installed)
-    await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: installed })
-  const { identifier } = await tab.send('Page.addScriptToEvaluateOnNewDocument', { source })
-  installed = identifier
-  await tab.send('Page.navigate', { url })
-  console.log(`injected ${(source.length / 1024).toFixed(1)} KB → ${url}`)
+  lastSource = `if (/^https:\\/\\/wplace\\.live\\//.test(location.href)) {\n${bundle}\n}`
+  for (const tab of tabs) await tab.inject(lastSource)
+  console.log(
+    `injected ${(lastSource.length / 1024).toFixed(1)} KB → ${url}${tabs.length > 1 ? ` (${tabs.length} tabs)` : ''}`,
+  )
 }
 
 let initialLoad = load
@@ -225,12 +283,38 @@ if (watching) {
       void reload()
     }, 150)
   })
+
+  // Single keys, only when a person is at the terminal. Raw mode means Ctrl-C arrives as a byte,
+  // so it is handled here rather than by the default signal.
+  if (process.stdin.isTTY) {
+    console.log('keys: n opens another injected tab, r rebuilds and reloads, q quits.')
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', (key) => {
+      switch (key) {
+        case 'n':
+          void openTab().catch((error) => console.error('could not open a tab:', error.message))
+          break
+        case 'r':
+          void reload()
+          break
+        case 'q':
+        case '':
+          process.exit(0)
+          break
+        default:
+          break
+      }
+    })
+  }
 }
 
 await initialLoad()
 if (!watching || shotPath) await sleep(settleMs)
 
 if (shotPath) {
+  const [tab] = tabs
   const { data } = await tab.send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(shotPath, Buffer.from(data, 'base64'))
   console.log(`screenshot → ${shotPath}`)

@@ -1,10 +1,26 @@
 import type * as Shared from '@caelestis/shared'
 import {
+  isPresenceDraft,
+  isRegionDocument,
+  isRegionItem,
+  isRegionShape,
   MAX_LIVE_MESSAGE_BYTES,
   MAX_LIVE_PAINT_PARTS,
   MAX_LIVE_PROJECTIONS,
   MAX_LIVE_TEMPLATE_IDS,
+  MAX_PATH_NODES,
+  MAX_PRESENCE_PEERS,
+  MAX_PRESENCE_REGION_LABEL,
+  MAX_PRESENCE_REGION_PIXELS,
+  MAX_PRESENCE_REGIONS,
+  MAX_PRESENCE_SUBSCRIBERS,
+  MAX_RASTER_BITS,
+  MAX_REGION_ITEMS,
+  MAX_REGION_SHAPE_CORNERS,
+  MAX_REGION_SHAPE_EXTENT,
+  MAX_STROKE_WIDTH,
   MAX_TILE_OFFERS,
+  MIN_REGION_SHAPE_CORNERS,
   PALETTE_SIZE,
   parseTemplateTags,
   TILE_SIZE,
@@ -155,6 +171,162 @@ const TemplateSurface = Schema.Union([
   }),
 ])
 
+export const PresenceRect = Schema.Struct({
+  x: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  y: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  w: integerBetween(1, Number.MAX_SAFE_INTEGER),
+  h: integerBetween(1, Number.MAX_SAFE_INTEGER),
+})
+
+export const PresenceDraft = Schema.Struct({
+  rect: PresenceRect,
+  mask: Schema.optionalKey(Schema.String),
+  pixels: integerBetween(0, Number.MAX_SAFE_INTEGER),
+}).pipe(Schema.check(booleanFilter(isPresenceDraft, 'invalid presence draft mask')))
+
+const PresenceIdentity = Schema.Struct({
+  wplaceUserId: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  displayName: boundedString(128),
+})
+const PresenceSessionId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/))
+
+export const PresenceClientEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal('presence-heartbeat') }),
+  Schema.Struct({
+    type: Schema.Literal('presence-update'),
+    viewport: Schema.optionalKey(Schema.NullOr(PresenceRect)),
+    draft: Schema.optionalKey(Schema.NullOr(PresenceDraft)),
+  }),
+])
+
+export const PresencePeer = Schema.Struct({
+  sessionId: PresenceSessionId,
+  painter: PresenceIdentity,
+  viewport: Schema.NullOr(PresenceRect),
+  draft: Schema.NullOr(PresenceDraft),
+})
+
+const RegionRect = PresenceRect.check(
+  booleanFilter(
+    (rect) => rect.w * rect.h <= MAX_PRESENCE_REGION_PIXELS,
+    'region area exceeds limit',
+  ),
+)
+const RegionLabel = Schema.String.check(Schema.isMaxLength(MAX_PRESENCE_REGION_LABEL))
+
+const RegionBox = {
+  x: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  y: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  w: integerBetween(1, MAX_REGION_SHAPE_EXTENT),
+  h: integerBetween(1, MAX_REGION_SHAPE_EXTENT),
+}
+const RegionRadial = {
+  cx: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  cy: integerBetween(0, Number.MAX_SAFE_INTEGER),
+  r: integerBetween(1, MAX_REGION_SHAPE_EXTENT / 2),
+  rotation: integerBetween(0, 359),
+}
+const RegionCorners = integerBetween(MIN_REGION_SHAPE_CORNERS, MAX_REGION_SHAPE_CORNERS)
+
+const MAX_REGION_COORDINATE = 4_000_000
+const RegionCoordinate = Schema.Number.check(
+  booleanFilter(
+    (value) => Number.isFinite(value) && Math.abs(value) <= MAX_REGION_COORDINATE,
+    'invalid path coordinate',
+  ),
+)
+
+export const Point = Schema.Struct({ x: RegionCoordinate, y: RegionCoordinate })
+export const PathNode = Schema.Struct({
+  x: RegionCoordinate,
+  y: RegionCoordinate,
+  in: Schema.optionalKey(Point),
+  out: Schema.optionalKey(Point),
+})
+
+/** Editable shapes with the same structural limits as the shared contract. */
+export const RegionShape = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal('pixels'),
+    ...RegionBox,
+    mask: boundedString(Math.ceil(Math.ceil(MAX_RASTER_BITS / 8) / 3) * 4),
+  }),
+  Schema.Struct({ kind: Schema.Literal('rectangle'), ...RegionBox }),
+  Schema.Struct({ kind: Schema.Literal('ellipse'), ...RegionBox }),
+  Schema.Struct({ kind: Schema.Literal('polygon'), ...RegionRadial, sides: RegionCorners }),
+  Schema.Struct({
+    kind: Schema.Literal('star'),
+    ...RegionRadial,
+    points: RegionCorners,
+    inner: integerBetween(1, MAX_REGION_SHAPE_EXTENT / 2 - 1),
+  }).check(
+    booleanFilter((shape) => shape.inner < shape.r, 'inner radius must be less than radius'),
+  ),
+  Schema.Struct({
+    kind: Schema.Literal('path'),
+    nodes: boundedArray(PathNode, MAX_PATH_NODES),
+    closed: Schema.Boolean,
+    width: Schema.Number.check(
+      booleanFilter(
+        (width) => Number.isFinite(width) && width >= 0 && width <= MAX_STROKE_WIDTH,
+        'invalid stroke width',
+      ),
+    ),
+  }),
+]).check(booleanFilter(isRegionShape, 'invalid region shape'))
+
+export const RegionItem = Schema.Struct({
+  id: boundedString(MAX_IDENTIFIER_LENGTH),
+  shape: RegionShape,
+  op: Schema.Literals(['add', 'subtract']),
+}).check(booleanFilter(isRegionItem, 'invalid region item'))
+
+export const RegionDocument = Schema.Struct({
+  items: boundedArray(RegionItem, MAX_REGION_ITEMS),
+}).check(booleanFilter(isRegionDocument, 'invalid region document'))
+
+export const RegionClaim = Schema.Struct({
+  id: Identifier,
+  season: Season,
+  surface: TemplateSurface,
+  templateId: Schema.NullOr(Identifier),
+  claimant: PresenceIdentity,
+  document: RegionDocument,
+  rect: RegionRect,
+  label: RegionLabel,
+  createdAt: integerBetween(0, Number.MAX_SAFE_INTEGER),
+})
+
+export const RegionClaimRequest = Schema.Struct({
+  templateId: Schema.optionalKey(Schema.NullOr(Identifier)),
+  document: RegionDocument,
+  label: RegionLabel,
+  actor: PresenceIdentity,
+})
+
+/** HTTP headcount of open presence sockets in one room. */
+export const PresenceOnline = Schema.Struct({ online: NonNegativeInteger })
+
+export const PresenceServerEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal('presence-ready'),
+    sessionId: PresenceSessionId,
+    online: integerBetween(0, MAX_PRESENCE_SUBSCRIBERS),
+    peers: boundedArray(PresencePeer, MAX_PRESENCE_PEERS),
+    regions: boundedArray(RegionClaim, MAX_PRESENCE_REGIONS),
+  }),
+  Schema.Struct({
+    type: Schema.Literal('presence-delta'),
+    online: integerBetween(0, MAX_PRESENCE_SUBSCRIBERS),
+    upsert: boundedArray(PresencePeer, MAX_PRESENCE_PEERS),
+    remove: boundedArray(PresenceSessionId, MAX_PRESENCE_PEERS),
+  }),
+  Schema.Struct({
+    type: Schema.Literal('regions'),
+    regions: boundedArray(RegionClaim, MAX_PRESENCE_REGIONS),
+  }),
+])
+
 const BoundingBoxStruct = Schema.Struct({
   minX: integerBetween(0, WORLD_PIXELS - 1),
   // Redundant, like maxY below: `minY < maxY <= WORLD_PIXELS` already implies it. Stated for
@@ -196,6 +368,7 @@ export const ServerInfo = Schema.Struct({
   liveSync: Schema.optionalKey(Schema.Literals([1, 2])),
   liveSyncMax: Schema.optionalKey(Schema.Literals([1, 2])),
   liveTileOffers: Schema.optionalKey(Schema.Literal(1)),
+  presence: Schema.optionalKey(Schema.Literal(1)),
   livePaintParts: Schema.optionalKey(Schema.Literal(1)),
 }).pipe(
   Schema.check(
@@ -1175,6 +1348,30 @@ assertExact<Exact<Schema.Schema.Type<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Schema.Type<typeof LiveTileOffer>, Shared.LiveTileOffer>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceRect>, Shared.PresenceRect>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceRect>, Shared.PresenceRect>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceDraft>, Shared.PresenceDraft>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceDraft>, Shared.PresenceDraft>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceClientEvent>, Shared.PresenceClientEvent>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceClientEvent>, Shared.PresenceClientEvent>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresencePeer>, Shared.PresencePeer>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresencePeer>, Shared.PresencePeer>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionShape>, Shared.RegionShape>>()
+assertExact<Exact<Schema.Schema.Type<typeof Point>, Shared.Point>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof Point>, Shared.Point>>()
+assertExact<Exact<Schema.Schema.Type<typeof PathNode>, Shared.PathNode>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PathNode>, Shared.PathNode>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionItem>, Shared.RegionItem>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionItem>, Shared.RegionItem>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionDocument>, Shared.RegionDocument>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionDocument>, Shared.RegionDocument>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionShape>, Shared.RegionShape>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionClaim>, Shared.RegionClaim>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionClaim>, Shared.RegionClaim>>()
+assertExact<Exact<Schema.Schema.Type<typeof PresenceServerEvent>, Shared.PresenceServerEvent>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PresenceServerEvent>, Shared.PresenceServerEvent>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionClaimRequest>, Shared.RegionClaimRequest>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionClaimRequest>, Shared.RegionClaimRequest>>()
 assertExact<Exact<Schema.Schema.Type<typeof LiveTileOfferBatch>, Shared.LiveTileOfferBatch>>()
 assertExact<
   Exact<Schema.Schema.Type<typeof LiveDashboardSubscription>, Shared.LiveDashboardSubscription>

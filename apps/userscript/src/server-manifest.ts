@@ -22,6 +22,8 @@ export interface ServerInfo {
   readonly liveSync?: 1 | 2
   readonly liveSyncMax?: 1 | 2
   readonly liveTileOffers?: 1
+  /** Present when the server accepts the painter presence socket at `/telemetry/presence`. */
+  readonly presence?: 1
   readonly livePaintParts?: 1
 }
 
@@ -82,6 +84,7 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
   )
     return null
   if (value.liveTileOffers !== undefined && value.liveTileOffers !== 1) return null
+  if (value.presence !== undefined && value.presence !== 1) return null
   if (value.livePaintParts !== undefined && value.livePaintParts !== 1) return null
   if (
     value.description !== undefined &&
@@ -100,6 +103,7 @@ export const parseServerInfo = (value: unknown): ServerInfo | null => {
       ? { liveSyncMax: value.liveSyncMax }
       : {}),
     ...(value.liveTileOffers === 1 ? { liveTileOffers: 1 as const } : {}),
+    ...(value.presence === 1 ? { presence: 1 as const } : {}),
     ...(value.livePaintParts === 1 ? { livePaintParts: 1 as const } : {}),
   }
 }

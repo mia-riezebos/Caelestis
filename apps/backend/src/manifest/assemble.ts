@@ -168,6 +168,10 @@ const assembleManifestWithSql = async (
           ...(options.server.liveTileOffers === undefined
             ? {}
             : { liveTileOffers: options.server.liveTileOffers }),
+          ...(options.server.presence === undefined ? {} : { presence: options.server.presence }),
+          ...(options.server.livePaintParts === undefined
+            ? {}
+            : { livePaintParts: options.server.livePaintParts }),
         }
       : {
           id: options.server.id,
@@ -181,6 +185,10 @@ const assembleManifestWithSql = async (
           ...(options.server.liveTileOffers === undefined
             ? {}
             : { liveTileOffers: options.server.liveTileOffers }),
+          ...(options.server.presence === undefined ? {} : { presence: options.server.presence }),
+          ...(options.server.livePaintParts === undefined
+            ? {}
+            : { livePaintParts: options.server.livePaintParts }),
         }
   const unsigned: Manifest = {
     ...(catalog.length === 0

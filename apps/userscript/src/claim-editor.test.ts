@@ -1,0 +1,925 @@
+// @vitest-environment happy-dom
+
+import { type RegionDocument, regionDocumentContainsPixel } from '@caelestis/shared'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const harness = vi.hoisted(() => ({
+  scale: 1,
+  regions: [] as { id: string; document: RegionDocument }[],
+  saved: [] as { id: string | null; document: RegionDocument }[],
+  removed: [] as string[],
+  saveError: null as string | null,
+  removeError: null as string | null,
+  template: 'Mural' as string | null,
+  map: null as HTMLElement | null,
+  panned: [] as [number, number][],
+  dismissCard: vi.fn(() => true),
+}))
+
+vi.mock('./main.js', () => ({
+  canvasPixelAt: (x: number, y: number) => ({ x: x / harness.scale, y: y / harness.scale }),
+  screenProjection: () => ({
+    pointFor: (x: number, y: number) => ({ x: x * harness.scale, y: y * harness.scale }),
+    pixelsPerCanvasPixel: { x: harness.scale, y: harness.scale },
+  }),
+  isMapInteractionTarget: (target: EventTarget | null) => target === harness.map,
+}))
+vi.mock('./map-handle.js', () => ({
+  getMap: () => ({ panBy: (offset: [number, number]) => harness.panned.push(offset) }),
+}))
+vi.mock('./debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
+vi.mock('./ui/theme.js', () => ({ applyWplaceTheme: vi.fn() }))
+vi.mock('./wplace-pixel-card.js', () => ({ dismissWplacePixelCard: harness.dismissCard }))
+vi.mock('@caelestis/ui/elements', () => ({ CLAIM_MODE_TAG: 'caelestis-claim-mode' }))
+
+const host = () => ({
+  templateFor: () => harness.template,
+  myRegions: () => harness.regions,
+  save: async (id: string | null, document: RegionDocument) => {
+    harness.saved.push({ id, document })
+    return harness.saveError
+  },
+  remove: async (id: string) => {
+    harness.removed.push(id)
+    return harness.removeError
+  },
+  changed: vi.fn(),
+})
+
+const map = (): HTMLElement => {
+  if (harness.map === null) throw new Error('map missing')
+  return harness.map
+}
+
+const pointer = (
+  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  x: number,
+  y: number,
+  target: Element = map(),
+): PointerEvent => {
+  const event = new PointerEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: x,
+    clientY: y,
+    button: 0,
+    pointerId: 1,
+  })
+  target.dispatchEvent(event)
+  return event
+}
+
+const drag = (fromX: number, fromY: number, toX: number, toY: number): void => {
+  pointer('pointerdown', fromX, fromY)
+  pointer('pointermove', toX, toY)
+  pointer('pointerup', toX, toY)
+}
+
+const click = (x: number, y: number): PointerEvent => {
+  const down = pointer('pointerdown', x, y)
+  pointer('pointerup', x, y)
+  return down
+}
+
+const key = (value: string): KeyboardEvent => {
+  const event = new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true })
+  document.dispatchEvent(event)
+  return event
+}
+
+const handle = (name: string): HTMLElement => {
+  const element = document.querySelector<HTMLElement>(
+    `#caelestis-claim-overlay [data-handle="${name}"]`,
+  )
+  if (element === null) throw new Error(`handle ${name} missing`)
+  return element
+}
+
+const setup = async (
+  tool?: Parameters<typeof import('./claim-editor.js')['startClaimMode']>[0],
+) => {
+  const editor = await import('./claim-editor.js')
+  editor.installClaimEditor(host())
+  editor.startClaimMode(tool)
+  return editor
+}
+
+beforeEach(() => {
+  harness.scale = 1
+  harness.regions = []
+  harness.saved = []
+  harness.removed = []
+  harness.saveError = null
+  harness.removeError = null
+  harness.template = 'Mural'
+  harness.dismissCard.mockClear()
+  document.body.innerHTML = ''
+  const canvas = document.createElement('canvas')
+  canvas.className = 'maplibregl-canvas'
+  document.body.appendChild(canvas)
+  harness.map = canvas
+  Element.prototype.setPointerCapture ??= () => undefined
+  Element.prototype.releasePointerCapture ??= () => undefined
+})
+
+afterEach(async () => {
+  const { resetClaimEditor } = await import('./claim-editor.js')
+  resetClaimEditor()
+  vi.resetModules()
+})
+
+describe('claim editor', () => {
+  it('draws a whole-pixel rectangle that becomes an editable item', async () => {
+    const editor = await setup('rectangle')
+    drag(10.6, 20.2, 14.9, 22.1)
+    expect(editor.claimModeModel()).toMatchObject({ items: 1, selected: true, pixels: 15 })
+    expect(editor.claimEditorPixels()?.rect).toEqual({ x: 10, y: 20, w: 5, h: 3 })
+  })
+
+  it('turns a plain wheel into a pan and leaves a modified wheel to the map to zoom', async () => {
+    await setup('select')
+    harness.panned = []
+    // happy-dom's WheelEvent drops modifier flags, so they are pinned on by hand.
+    const wheel = (deltaY: number, modifier?: 'shiftKey' | 'altKey' | 'ctrlKey' | 'metaKey') => {
+      const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY })
+      for (const flag of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey'] as const)
+        Object.defineProperty(event, flag, { value: flag === modifier })
+      map().dispatchEvent(event)
+      return event
+    }
+    expect(wheel(120).defaultPrevented).toBe(true)
+    expect(wheel(40, 'shiftKey').defaultPrevented).toBe(true)
+    expect(harness.panned).toEqual([
+      [0, 120],
+      [40, 0],
+    ])
+    for (const modifier of ['altKey', 'ctrlKey', 'metaKey'] as const)
+      expect(wheel(120, modifier).defaultPrevented).toBe(false)
+    expect(harness.panned).toHaveLength(2)
+  })
+
+  it('only the hand tool leaves a press to the map, and Space is a temporary hand', async () => {
+    const editor = await setup('select')
+    drag(50, 50, 59, 59)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'hand' })
+    expect(click(55, 55).defaultPrevented).toBe(false)
+    expect(map().style.cursor).toBe('grab')
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    expect(map().style.cursor).toBe('default')
+    key(' ')
+    expect(editor.claimEditorTool()).toBe('hand')
+    document.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }))
+    expect(editor.claimEditorTool()).toBe('select')
+  })
+
+  it('drags a marquee over empty canvas with the selection tool, lighting what it catches', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 19, 19)
+    drag(40, 10, 49, 19)
+    drag(80, 80, 89, 89)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(200, 200)
+    expect(editor.claimModeModel().selectedCount).toBe(0)
+    // The press on empty canvas is consumed, so the map does not pan under the marquee.
+    expect(pointer('pointerdown', 5, 5).defaultPrevented).toBe(true)
+    pointer('pointermove', 55, 25)
+    expect(
+      document.querySelector('#caelestis-claim-overlay [data-gesture="marquee"]'),
+    ).not.toBeNull()
+    expect(editor.claimModeModel().selectedCount).toBe(2)
+    pointer('pointerup', 55, 25)
+    expect(document.querySelector('#caelestis-claim-overlay [data-gesture="marquee"]')).toBeNull()
+    expect(editor.claimModeModel().selectedCount).toBe(2)
+    // Shift-click adds the third; Delete removes all three.
+    const down = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 85,
+      clientY: 85,
+      button: 0,
+      pointerId: 1,
+      shiftKey: true,
+    })
+    map().dispatchEvent(down)
+    pointer('pointerup', 85, 85)
+    expect(editor.claimModeModel().selectedCount).toBe(3)
+    key('Delete')
+    expect(editor.claimModeModel().items).toBe(0)
+  })
+
+  it('selects with the lasso whatever its loop encloses, and moves a multi-selection together', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 19, 19)
+    drag(40, 10, 49, 19)
+    drag(80, 80, 89, 89)
+    key('q')
+    expect(editor.claimEditorTool()).toBe('lasso')
+    expect(pointer('pointerdown', 0, 0).defaultPrevented).toBe(true)
+    pointer('pointermove', 60, 0)
+    pointer('pointermove', 60, 30)
+    pointer('pointermove', 0, 30)
+    expect(document.querySelector('#caelestis-claim-overlay [data-gesture="lasso"]')).not.toBeNull()
+    pointer('pointerup', 0, 30)
+    expect(editor.claimModeModel().selectedCount).toBe(2)
+    key('v')
+    drag(15, 15, 25, 15)
+    const bounds = editor.claimEditorBounds()
+    // Both caught shapes moved right by ten; the third stayed put.
+    expect(bounds).toEqual({ x: 20, y: 10, w: 70, h: 80 })
+  })
+
+  it('subtracts a second shape and rasterises the difference', async () => {
+    const editor = await setup('rectangle')
+    drag(0, 0, 5, 5)
+    // The toggle applies to the selected item too, so deselect before arming it for the cut-out.
+    key('Escape')
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'ellipse' })
+    editor.handleClaimModeIntent({ type: 'set-subtract', subtract: true })
+    expect(editor.claimEditorPixels()?.count).toBe(36)
+    drag(2, 2, 3, 3)
+    expect(editor.claimModeModel().items).toBe(2)
+    expect(editor.claimEditorPixels()?.count).toBe(32)
+  })
+
+  it('selects an item by clicking it and moves it by dragging with the selection tool', async () => {
+    const editor = await setup('rectangle')
+    drag(50, 50, 59, 59)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(80, 80)
+    expect(editor.claimModeModel().selected).toBe(false)
+    expect(click(55, 55).defaultPrevented).toBe(true)
+    expect(editor.claimModeModel().selected).toBe(true)
+    drag(55, 55, 65, 58)
+    expect(editor.claimEditorPixels()?.rect).toEqual({ x: 60, y: 53, w: 10, h: 10 })
+  })
+
+  it('keeps a selection click from Wplace and closes the pixel card on entering claim mode', async () => {
+    const editor = await setup('rectangle')
+    expect(harness.dismissCard).toHaveBeenCalledOnce()
+    drag(50, 50, 69, 69)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    // The press selects the shape and starts no drag; the release and the click are still eaten.
+    expect(pointer('pointerdown', 60, 60).defaultPrevented).toBe(true)
+    expect(pointer('pointerup', 60, 60).defaultPrevented).toBe(true)
+    const click_ = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 60,
+      clientY: 60,
+    })
+    map().dispatchEvent(click_)
+    expect(click_.defaultPrevented).toBe(true)
+    expect(editor.claimModeModel().selectedCount).toBe(1)
+    // The hand tool leaves everything to the map, click included.
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'hand' })
+    expect(pointer('pointerdown', 60, 60).defaultPrevented).toBe(false)
+    expect(pointer('pointerup', 60, 60).defaultPrevented).toBe(false)
+    const passed = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 60,
+      clientY: 60,
+    })
+    map().dispatchEvent(passed)
+    expect(passed.defaultPrevented).toBe(false)
+  })
+
+  it('keeps a box on its anchor when dragged past the largest size', async () => {
+    const editor = await setup('rectangle')
+    drag(5_000, 5_000, 0, 0)
+    // Capped at the extent, measured from the anchor: the box still holds the press pixel.
+    expect(editor.claimEditorBounds()).toEqual({ x: 3_001, y: 3_001, w: 2_000, h: 2_000 })
+  })
+
+  it('never makes a star too small to have an inner radius', async () => {
+    await setup('star')
+    click(100, 100)
+    key('Enter')
+    await Promise.resolve()
+    const shape = harness.saved[0]?.document.items[0]?.shape
+    expect(shape?.kind).toBe('star')
+    expect(shape?.kind === 'star' ? shape.r > shape.inner : false).toBe(true)
+  })
+
+  it('lets a save from an abandoned session finish without touching the next one', async () => {
+    let finish: (value: string | null) => void = () => undefined
+    const slow = {
+      ...host(),
+      save: () =>
+        new Promise<string | null>((resolve) => {
+          finish = resolve
+        }),
+    }
+    const editor = await import('./claim-editor.js')
+    editor.installClaimEditor(slow)
+    editor.startClaimMode('rectangle')
+    drag(0, 0, 9, 9)
+    key('Enter')
+    expect(editor.claimModeModel().pending).toBe(true)
+    // Escape ends the session mid-save; a new session begins with new work.
+    editor.stopClaimMode()
+    editor.startClaimMode('rectangle')
+    drag(20, 20, 29, 29)
+    finish(null)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(editor.isClaimModeActive()).toBe(true)
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimModeModel().pending).toBe(false)
+  })
+
+  it('resizes a rectangle from a corner handle and keeps the opposite corner', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 19, 19)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(15, 15)
+    const corner = handle('corner:2')
+    pointer('pointerdown', 20, 20, corner)
+    pointer('pointermove', 29, 24)
+    pointer('pointerup', 29, 24)
+    expect(editor.claimEditorPixels()?.rect).toEqual({ x: 10, y: 10, w: 20, h: 15 })
+  })
+
+  it('lets direct selection drag any anchor of a rectangle, turning it into a path', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 29, 29)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(15, 15)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle^="anchor:"]'),
+    ).toHaveLength(4)
+    // Corner 2 is the bottom-right (30, 30); pulling it out makes a kite, no longer a box.
+    const corner = handle('anchor:2')
+    pointer('pointerdown', 30, 30, corner)
+    pointer('pointermove', 50, 50)
+    pointer('pointerup', 50, 50)
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(4)
+    key('Enter')
+    await Promise.resolve()
+    const document_ = harness.saved[0]?.document as RegionDocument
+    const shape = document_.items[0]?.shape
+    expect(shape?.kind).toBe('path')
+    expect(shape?.kind === 'path' ? shape.nodes.length : 0).toBe(4)
+    expect(regionDocumentContainsPixel(document_, 45, 45)).toBe(true)
+    expect(regionDocumentContainsPixel(document_, 12, 45)).toBe(false)
+    expect(regionDocumentContainsPixel(document_, 15, 15)).toBe(true)
+  })
+
+  it('keeps the pixels of an ellipse when its anchors turn it into a bezier path', async () => {
+    const editor = await setup('ellipse')
+    drag(10, 10, 49, 29)
+    const before = editor.claimEditorPixels()?.count ?? 0
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(30, 20)
+    const top = handle('anchor:0')
+    // A click on an anchor changes nothing at all.
+    pointer('pointerdown', 30, 10, top)
+    pointer('pointerup', 30, 10)
+    expect(editor.claimEditorPixels()?.count).toBe(before)
+    expect(document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":in"]')).toHaveLength(
+      0,
+    )
+    // Moving it and bringing it back converts to a bezier path with nearly the same pixels.
+    pointer('pointerdown', 30, 10, handle('anchor:0'))
+    pointer('pointermove', 40, 10)
+    pointer('pointermove', 30, 10)
+    pointer('pointerup', 30, 10)
+    const after = editor.claimEditorPixels()?.count ?? 0
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(Math.ceil(before * 0.03))
+    expect(document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":in"]')).toHaveLength(
+      4,
+    )
+  })
+
+  it('rotates a polygon from the grip in whole degrees, and a rectangle from a corner zone', async () => {
+    const editor = await setup('polygon')
+    drag(100, 100, 140, 100)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(100, 100)
+    const grip = handle('rotate:0')
+    // A quarter turn clockwise around the centre (100, 100): from straight above to the right.
+    pointer('pointerdown', 100, 60, grip)
+    pointer('pointermove', 140, 100)
+    pointer('pointerup', 140, 100)
+    const saved = editor.claimModeModel()
+    expect(saved.items).toBe(1)
+    key('Enter')
+    await Promise.resolve()
+    const shape = harness.saved[0]?.document.items[0]?.shape
+    expect(shape?.kind).toBe('polygon')
+    expect(shape?.kind === 'polygon' ? shape.rotation : -1).toBe(90)
+
+    const again = await setup('rectangle')
+    drag(200, 200, 239, 219)
+    again.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(210, 210)
+    // Just outside the bottom-right corner (240, 220) is a rotate zone, not a marquee start.
+    expect(map().style.cursor).toBe('default')
+    pointer('pointermove', 254, 234)
+    expect(map().style.cursor).toContain('url(')
+    expect(pointer('pointerdown', 254, 234).defaultPrevented).toBe(true)
+    pointer('pointermove', 206, 234)
+    pointer('pointerup', 206, 234)
+    expect(document.querySelector('#caelestis-claim-overlay [data-gesture="marquee"]')).toBeNull()
+    const bounds = again.claimEditorBounds()
+    // Turned by about a quarter, the 40 by 20 box now stands roughly 20 by 40 about its centre.
+    expect(bounds?.w).toBeLessThan(30)
+    expect(bounds?.h).toBeGreaterThan(34)
+  })
+
+  it('scales a path and a drawing from bounding-box corner handles with the selection tool', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 29, 29)
+    // Turn it into a path by moving an anchor, then come back to the selection tool.
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(15, 15)
+    const anchor = handle('anchor:2')
+    pointer('pointerdown', 30, 30, anchor)
+    pointer('pointermove', 40, 40)
+    pointer('pointermove', 30, 30)
+    pointer('pointerup', 30, 30)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(15, 15)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle^="scale:"]'),
+    ).toHaveLength(4)
+    // Pull the bottom-right corner out: the top-left stays, the box doubles.
+    const corner = handle('scale:2')
+    pointer('pointerdown', 30, 30, corner)
+    pointer('pointermove', 50, 50)
+    pointer('pointerup', 50, 50)
+    key('Enter')
+    await Promise.resolve()
+    const document_ = harness.saved[0]?.document as RegionDocument
+    expect(regionDocumentContainsPixel(document_, 45, 45)).toBe(true)
+    expect(regionDocumentContainsPixel(document_, 12, 12)).toBe(true)
+    expect(regionDocumentContainsPixel(document_, 55, 55)).toBe(false)
+
+    const again = await setup('pencil')
+    pointer('pointerdown', 100, 100)
+    pointer('pointermove', 103, 100)
+    pointer('pointerup', 103, 100)
+    again.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(101, 100)
+    const grow = handle('scale:2')
+    pointer('pointerdown', 104, 101, grow)
+    pointer('pointermove', 108, 103)
+    pointer('pointerup', 108, 103)
+    expect(again.claimEditorBounds()).toEqual({ x: 100, y: 100, w: 8, h: 3 })
+    expect(again.claimEditorPixels()?.count).toBe(24)
+  })
+
+  it('builds a closed path with the pen, curving a segment by dragging', async () => {
+    const editor = await setup('pen')
+    click(0, 0)
+    pointer('pointerdown', 20, 0)
+    pointer('pointermove', 30, 10)
+    pointer('pointerup', 30, 10)
+    click(20, 20)
+    click(0, 20)
+    expect(editor.claimModeModel().items).toBe(0)
+    // Clicking the first anchor closes the path into a filled item.
+    click(0, 0)
+    expect(editor.claimModeModel().items).toBe(1)
+    const pixels = editor.claimEditorPixels()
+    expect(pixels?.count).toBeGreaterThan(400)
+  })
+
+  it('shows the pen path as a curve with anchors, handles, and a rubber band to the pointer', async () => {
+    await setup('pen')
+    click(0, 0)
+    pointer('pointerdown', 40, 0)
+    pointer('pointermove', 60, 30)
+    pointer('pointerup', 60, 30)
+    const overlay = '#caelestis-claim-overlay'
+    expect(document.querySelectorAll(`${overlay} [data-pen-anchor]`)).toHaveLength(2)
+    // The dragged anchor got both handles, drawn as lines with round ends.
+    expect(document.querySelectorAll(`${overlay} line`)).toHaveLength(2)
+    pointer('pointermove', 80, 40)
+    expect(document.querySelector(`${overlay} [data-gesture="rubber-band"]`)).not.toBeNull()
+  })
+
+  it('lets the pen continue an open path, add an anchor on a segment, and delete one', async () => {
+    const editor = await setup('pen')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 2 })
+    click(0, 50)
+    click(40, 50)
+    key('Enter')
+    expect(editor.claimModeModel()).toMatchObject({ items: 1, selectedCount: 1 })
+    // A click on the segment of the selected path adds an anchor there.
+    click(20, 50)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(3)
+    // Continue from the last end: click its anchor, then place another point.
+    pointer('pointerdown', 40, 50, handle('node:2:anchor'))
+    pointer('pointerup', 40, 50)
+    click(80, 50)
+    key('Enter')
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(4)
+    expect(editor.claimEditorPixels()).not.toBeNull()
+    // The pen on a middle anchor deletes it.
+    pointer('pointerdown', 20, 50, handle('node:1:anchor'))
+    pointer('pointerup', 20, 50)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(3)
+  })
+
+  it('has add, delete, and anchor-point tools with Illustrator keys', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 49, 29)
+    key('+')
+    expect(editor.claimEditorTool()).toBe('add-anchor')
+    // A click on the rectangle's edge makes it a five-anchor path.
+    click(30, 10)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(5)
+    key('-')
+    expect(editor.claimEditorTool()).toBe('delete-anchor')
+    pointer('pointerdown', 30, 10, handle('node:1:anchor'))
+    pointer('pointerup', 30, 10)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(4)
+    const shifted = new KeyboardEvent('keydown', {
+      key: 'C',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    document.dispatchEvent(shifted)
+    expect(editor.claimEditorTool()).toBe('anchor')
+    // Dragging out of a corner gives it handles; clicking it again makes it a corner.
+    pointer('pointerdown', 10, 10, handle('node:0:anchor'))
+    pointer('pointermove', 25, 0)
+    pointer('pointerup', 25, 0)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle="node:0:out"]'),
+    ).toHaveLength(1)
+    pointer('pointerdown', 10, 10, handle('node:0:anchor'))
+    pointer('pointerup', 10, 10)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle="node:0:out"]'),
+    ).toHaveLength(0)
+  })
+
+  it('finishes an open pen path with Enter as a stroke and drops one with Escape', async () => {
+    const editor = await setup('pen')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 3 })
+    click(0, 5)
+    click(30, 5)
+    key('Enter')
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorPixels()?.count).toBeGreaterThan(80)
+    click(50, 50)
+    click(60, 60)
+    key('Escape')
+    expect(editor.claimModeModel().items).toBe(1)
+  })
+
+  it('records a brush stroke as an open path with the chosen width', async () => {
+    const editor = await setup('brush')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 5 })
+    pointer('pointerdown', 10, 10)
+    pointer('pointermove', 20, 10)
+    pointer('pointermove', 30, 12)
+    pointer('pointerup', 30, 12)
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorPixels()?.count).toBeGreaterThan(100)
+  })
+
+  it('draws pixels with the pencil, joining strokes into one drawing', async () => {
+    const editor = await setup('pencil')
+    pointer('pointerdown', 10, 10)
+    pointer('pointermove', 14, 10)
+    pointer('pointerup', 14, 10)
+    expect(editor.claimModeModel()).toMatchObject({ items: 1, selectedCount: 1 })
+    expect(editor.claimEditorPixels()?.count).toBe(5)
+    // The next stroke joins the selected drawing rather than making a second item.
+    pointer('pointerdown', 14, 10)
+    pointer('pointermove', 14, 13)
+    pointer('pointerup', 14, 13)
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorPixels()?.count).toBe(8)
+    key('Enter')
+    await vi.waitFor(() => expect(harness.saved).toHaveLength(1))
+    expect(harness.saved[0]?.document.items[0]?.shape.kind).toBe('pixels')
+  })
+
+  it('erases pixels from a drawing and cuts a vector shape into pieces', async () => {
+    const editor = await setup('pencil')
+    pointer('pointerdown', 10, 10)
+    pointer('pointermove', 20, 10)
+    pointer('pointerup', 20, 10)
+    expect(editor.claimEditorPixels()?.count).toBe(11)
+    key('e')
+    expect(editor.claimEditorTool()).toBe('eraser')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 1 })
+    pointer('pointerdown', 15, 10)
+    pointer('pointermove', 16, 10)
+    pointer('pointerup', 16, 10)
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorPixels()?.count).toBe(9)
+
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'rectangle' })
+    drag(100, 100, 139, 119)
+    expect(editor.claimModeModel().items).toBe(2)
+    key('e')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 4 })
+    pointer('pointerdown', 120, 95)
+    pointer('pointermove', 120, 110)
+    expect(document.querySelector('#caelestis-claim-overlay [data-gesture="erase"]')).not.toBeNull()
+    pointer('pointermove', 120, 125)
+    pointer('pointerup', 120, 125)
+    // The rectangle is now two paths; the drawing is untouched.
+    expect(editor.claimModeModel().items).toBe(3)
+    key('Enter')
+    await vi.waitFor(() => expect(harness.saved).toHaveLength(1))
+    const kinds = harness.saved[0]?.document.items.map((item) => item.shape.kind)
+    expect(kinds).toEqual(['pixels', 'path', 'path'])
+    const pixels = editor.claimEditorPixels
+    expect(pixels).toBeDefined()
+  })
+
+  it('switches tools with letters, deletes the selected item, and confirms into a save', async () => {
+    const editor = await setup('rectangle')
+    key('l')
+    expect(editor.claimEditorTool()).toBe('ellipse')
+    key('v')
+    expect(editor.claimEditorTool()).toBe('select')
+    key('m')
+    drag(0, 0, 4, 4)
+    drag(10, 10, 12, 12)
+    expect(editor.claimModeModel().items).toBe(2)
+    key('Delete')
+    expect(editor.claimModeModel().items).toBe(1)
+    key('Enter')
+    await vi.waitFor(() => expect(harness.saved).toHaveLength(1))
+    expect(harness.saved[0]?.document.items).toHaveLength(1)
+    await vi.waitFor(() => expect(editor.isClaimModeActive()).toBe(false))
+    expect(document.getElementById('caelestis-claim-mode')).toBeNull()
+  })
+
+  it('loads every saved region together and saves them back as one claim', async () => {
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: [{ id: 'a', op: 'add', shape: { kind: 'ellipse', x: 40, y: 40, w: 20, h: 20 } }],
+        },
+      },
+      {
+        id: 'r2',
+        document: {
+          items: [{ id: 'b', op: 'add', shape: { kind: 'rectangle', x: 100, y: 100, w: 5, h: 5 } }],
+        },
+      },
+    ]
+    const editor = await setup('select')
+    expect(editor.claimEditorEditingIds()).toEqual(['r1', 'r2'])
+    expect(editor.claimModeModel()).toMatchObject({ items: 2, dirty: false })
+    // Nothing changed: Save just leaves.
+    editor.handleClaimModeIntent({ type: 'confirm' })
+    await vi.waitFor(() => expect(editor.isClaimModeActive()).toBe(false))
+    expect(harness.saved).toHaveLength(0)
+    // Add a shape: the whole set goes under the first id and the second is released.
+    editor.startClaimMode('rectangle')
+    drag(70, 70, 72, 72)
+    expect(editor.claimModeModel()).toMatchObject({ items: 3, dirty: true })
+    key('Enter')
+    await vi.waitFor(() => expect(harness.saved).toHaveLength(1))
+    expect(harness.saved[0]?.id).toBe('r1')
+    expect(harness.saved[0]?.document.items).toHaveLength(3)
+    expect(harness.removed).toEqual(['r2'])
+  })
+
+  it('releases everything when the last region is deleted and saved', async () => {
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: [{ id: 'a', op: 'add', shape: { kind: 'rectangle', x: 40, y: 40, w: 20, h: 20 } }],
+        },
+      },
+    ]
+    const editor = await setup('select')
+    click(50, 50)
+    key('Delete')
+    expect(editor.claimModeModel()).toMatchObject({ items: 0, dirty: true })
+    key('Enter')
+    await vi.waitFor(() => expect(harness.removed).toEqual(['r1']))
+    expect(harness.saved).toHaveLength(0)
+  })
+
+  it('restores what a cancelled pointer was changing and drops what it was drawing', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 29, 29)
+    // The drag's own release armed a click swallow; spend it so the assertion below is clean.
+    map().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    const before = editor.claimEditorBounds()
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    pointer('pointerdown', 15, 15)
+    pointer('pointermove', 60, 60)
+    map().dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }))
+    expect(editor.claimEditorBounds()).toEqual(before)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'rectangle' })
+    pointer('pointerdown', 100, 100)
+    pointer('pointermove', 140, 140)
+    map().dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }))
+    expect(editor.claimModeModel().items).toBe(1)
+    // No click follows a cancel, so none is swallowed.
+    const click_ = new MouseEvent('click', { bubbles: true, cancelable: true })
+    map().dispatchEvent(click_)
+    expect(click_.defaultPrevented).toBe(false)
+  })
+
+  it('previews a subtracting pen path as a cut-out', async () => {
+    const editor = await setup('rectangle')
+    drag(0, 0, 39, 39)
+    const full = editor.claimEditorPixels()?.count ?? 0
+    editor.handleClaimModeIntent({ type: 'set-subtract', subtract: true })
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'pen' })
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 4 })
+    click(5, 20)
+    click(35, 20)
+    expect(editor.claimEditorPixels()?.count ?? 0).toBeLessThan(full)
+  })
+
+  it('keeps a continued path in its place in the order', async () => {
+    const editor = await setup('pen')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 3 })
+    click(0, 0)
+    click(20, 0)
+    key('Enter')
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'rectangle' })
+    drag(50, 50, 59, 59)
+    key('Enter')
+    await Promise.resolve()
+    const kinds = () => (harness.saved.at(-1)?.document.items ?? []).map((item) => item.shape.kind)
+    expect(kinds()).toEqual(['path', 'rectangle'])
+    // Continue the path, which sits first: after the edit it is still first.
+    harness.regions = [{ id: 'r1', document: harness.saved[0]?.document as RegionDocument }]
+    const again = await setup('select')
+    click(10, 0)
+    key('p')
+    pointer('pointerdown', 20, 0, handle('node:1:anchor'))
+    pointer('pointerup', 20, 0)
+    click(40, 0)
+    key('Enter')
+    key('Enter')
+    await Promise.resolve()
+    expect(again.isClaimModeActive()).toBe(false)
+    expect(kinds()).toEqual(['path', 'rectangle'])
+  })
+
+  it('never lets the eraser leave more shapes than a claim may hold', async () => {
+    const editor = await setup('rectangle')
+    for (let i = 0; i < 63; i++) drag(i * 20, 0, i * 20 + 9, 9)
+    expect(editor.claimModeModel().items).toBe(63)
+    key('e')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 2 })
+    // One stroke across every shape would double the count; the cuts that do not fit are skipped.
+    pointer('pointerdown', 0, 5)
+    pointer('pointermove', 1300, 5)
+    pointer('pointerup', 1300, 5)
+    expect(editor.claimModeModel().items).toBeLessThanOrEqual(64)
+    expect(editor.claimModeModel().message).toMatch(/at most 64/)
+  })
+
+  it('catches a shape with the lasso when the loop only crosses its edge', async () => {
+    const editor = await setup('rectangle')
+    drag(0, 0, 39, 39)
+    key('q')
+    pointer('pointerdown', 15, -5)
+    pointer('pointermove', 25, -5)
+    pointer('pointermove', 25, 5)
+    pointer('pointermove', 15, 5)
+    pointer('pointerup', 15, 5)
+    expect(editor.claimModeModel().selectedCount).toBe(1)
+  })
+
+  it('closes the pixel card when leaving the hand tool', async () => {
+    const editor = await setup('hand')
+    expect(harness.dismissCard).toHaveBeenCalledTimes(1)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    expect(harness.dismissCard).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps unreleased claims in the set when a merge only partly succeeds', async () => {
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: [{ id: 'a', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 5, h: 5 } }],
+        },
+      },
+      {
+        id: 'r2',
+        document: {
+          items: [{ id: 'b', op: 'add', shape: { kind: 'rectangle', x: 20, y: 0, w: 5, h: 5 } }],
+        },
+      },
+    ]
+    harness.removeError = 'Server answered 500.'
+    const editor = await setup('rectangle')
+    drag(40, 0, 44, 4)
+    key('Enter')
+    await vi.waitFor(() => expect(editor.claimModeModel().message).toMatch(/Save again/))
+    expect(editor.isClaimModeActive()).toBe(true)
+    expect(editor.claimEditorEditingIds()).toEqual(['r1', 'r2'])
+    expect(editor.claimModeModel().dirty).toBe(true)
+    harness.removeError = null
+    key('Enter')
+    await vi.waitFor(() => expect(editor.isClaimModeActive()).toBe(false))
+    expect(harness.removed).toEqual(['r2', 'r2'])
+  })
+
+  it('ignores keys while a save is in flight', async () => {
+    let finish: (value: string | null) => void = () => undefined
+    const hostWithSlowSave = {
+      ...host(),
+      save: () =>
+        new Promise<string | null>((resolve) => {
+          finish = resolve
+        }),
+    }
+    const editor = await import('./claim-editor.js')
+    editor.installClaimEditor(hostWithSlowSave)
+    editor.startClaimMode('rectangle')
+    drag(0, 0, 9, 9)
+    key('Enter')
+    expect(editor.claimModeModel().pending).toBe(true)
+    // Delete and tool keys are consumed but change nothing while the save runs.
+    expect(key('Delete').defaultPrevented).toBe(true)
+    key('v')
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorTool()).toBe('rectangle')
+    finish(null)
+    await vi.waitFor(() => expect(editor.isClaimModeActive()).toBe(false))
+  })
+
+  it('renumbers duplicate item ids across loaded claims and refuses to save past the item cap', async () => {
+    const box = (x: number) => ({ kind: 'rectangle' as const, x, y: 0, w: 4, h: 4 })
+    harness.regions = [
+      { id: 'r1', document: { items: [{ id: 'same', op: 'add', shape: box(0) }] } },
+      { id: 'r2', document: { items: [{ id: 'same', op: 'add', shape: box(10) }] } },
+    ]
+    const editor = await setup('select')
+    click(2, 2)
+    key('Delete')
+    // Only the clicked one went; the other kept its pixels despite the shared id.
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorPixels()?.rect).toEqual({ x: 10, y: 0, w: 4, h: 4 })
+    editor.handleClaimModeIntent({ type: 'cancel' })
+
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: Array.from({ length: 40 }, (_, i) => ({
+            id: `a${i}`,
+            op: 'add' as const,
+            shape: box(i * 5),
+          })),
+        },
+      },
+      {
+        id: 'r2',
+        document: {
+          items: Array.from({ length: 30 }, (_, i) => ({
+            id: `b${i}`,
+            op: 'add' as const,
+            shape: box(300 + i * 5),
+          })),
+        },
+      },
+    ]
+    const again = await setup('select')
+    expect(again.claimModeModel().message).toMatch(/at most 64/)
+    // Removing one shape leaves 69: still too many, so Save says how many more must go.
+    click(2, 2)
+    key('Delete')
+    expect(again.claimModeModel().items).toBe(69)
+    key('Enter')
+    await Promise.resolve()
+    expect(harness.saved).toHaveLength(0)
+    expect(again.isClaimModeActive()).toBe(true)
+    expect(again.claimModeModel().message).toMatch(/remove 5/)
+  })
+
+  it('cancels without saving', async () => {
+    const editor = await setup('rectangle')
+    drag(0, 0, 3, 3)
+    editor.handleClaimModeIntent({ type: 'cancel' })
+    expect(editor.isClaimModeActive()).toBe(false)
+    expect(harness.saved).toHaveLength(0)
+  })
+})

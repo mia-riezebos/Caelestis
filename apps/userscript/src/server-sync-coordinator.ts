@@ -48,7 +48,7 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const cachedLiveClientIds = new Map<string, string>()
 
 /** Stable, non-secret browser identity scoped to one anonymous server. */
-const liveClientId = (serverUrl: string): string => {
+export const liveClientId = (serverUrl: string): string => {
   const serverKey = canonicalServerUrl(serverUrl)
   const cached = cachedLiveClientIds.get(serverKey)
   if (cached !== undefined) return cached
@@ -216,7 +216,8 @@ const liveCapable = (server: ConnectedServer): boolean =>
 const socketOnly = (server: ConnectedServer, resource: ServerSyncResource): boolean =>
   activeLiveProtocolVersion(server) === 2 && resource.live === true
 
-const liveCredentialProtocol = (token: string): string => {
+/** The bearer token as a WebSocket subprotocol, the only header a browser socket can carry. */
+export const liveCredentialProtocol = (token: string): string => {
   const bytes = new TextEncoder().encode(token)
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)

@@ -1,5 +1,6 @@
 export type Shortcut =
   | 'cancel-paint'
+  | 'claim-mode'
   | 'cycle-colour-next'
   | 'cycle-colour-previous'
   | 'fly-to-colour'
@@ -15,6 +16,7 @@ export type Shortcut =
   | 'toggle-colour'
   | 'toggle-markers'
   | 'toggle-panel'
+  | 'toggle-presence'
   | 'toggle-rings'
   | 'toggle-selected-colour-markers'
   | 'toggle-template-menu'
@@ -107,8 +109,12 @@ export const shortcutFor = (
       return 'fly-to-colour'
     case 'g':
       return 'peek-overlays'
-    case 'l':
+    case 'm':
+      return 'claim-mode'
+    case 'n':
       return 'toggle-theme'
+    case 'q':
+      return 'toggle-presence'
     case 'r':
       return 'toggle-rings'
     case 'a':

@@ -5,9 +5,28 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   appearance: { markMismatch: false },
   redraw: vi.fn(),
+  toolActive: false,
+  connected: false,
+  me: null as { wplaceUserId: number; displayName: string } | null,
+  openClaimTool: vi.fn(() => true),
+  stopClaimTool: vi.fn(),
 }))
 
 vi.mock('../main.js', () => ({ redraw: harness.redraw }))
+vi.mock('../claim-editor.js', () => ({
+  isClaimModeActive: () => harness.toolActive,
+  stopClaimMode: harness.stopClaimTool,
+}))
+vi.mock('../presence-client.js', () => ({
+  presenceView: () => ({
+    peers: [],
+    regions: [],
+    online: 0,
+    connected: harness.connected,
+    me: harness.me,
+  }),
+}))
+vi.mock('./presence-actions.js', () => ({ openClaimTool: harness.openClaimTool }))
 vi.mock('../state.js', () => ({
   getState: () => ({ appearance: harness.appearance }),
   setState: (patch: { appearance: { markMismatch: boolean } }) => {
@@ -15,13 +34,57 @@ vi.mock('../state.js', () => ({
   },
 }))
 
-import { MISMATCH_MODE_ID, mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
+import {
+  claimToolButton,
+  MISMATCH_MODE_ID,
+  mismatchModeButton,
+  syncClaimToolState,
+  syncMismatchModeState,
+} from './rail-controls.js'
 
 beforeEach(() => {
   registerCaelestisUi()
   document.body.replaceChildren()
   harness.appearance = { markMismatch: false }
   harness.redraw.mockClear()
+  harness.toolActive = false
+  harness.connected = false
+  harness.me = null
+  harness.openClaimTool.mockClear()
+  harness.stopClaimTool.mockClear()
+})
+
+describe('region claim rail control', () => {
+  it('is always on the rail, disabled until presence is connected and signed in', async () => {
+    const button = claimToolButton()
+    document.body.appendChild(button)
+    syncClaimToolState()
+    await Promise.resolve()
+    expect(button.model.disabled).toBe(true)
+    expect(button.model.label).toBe('Claim a region (M)')
+
+    harness.connected = true
+    harness.me = { wplaceUserId: 7, displayName: 'Mia' }
+    syncClaimToolState()
+    expect(button.model.disabled).toBeUndefined()
+  })
+
+  it('opens the tool on click and closes it when pressed again', async () => {
+    harness.connected = true
+    harness.me = { wplaceUserId: 7, displayName: 'Mia' }
+    const button = claimToolButton()
+    document.body.appendChild(button)
+    syncClaimToolState()
+    await Promise.resolve()
+    button.shadowRoot?.querySelector('button')?.click()
+    expect(harness.openClaimTool).toHaveBeenCalledOnce()
+
+    harness.toolActive = true
+    syncClaimToolState()
+    expect(button.model.pressed).toBe(true)
+    button.shadowRoot?.querySelector('button')?.click()
+    expect(harness.stopClaimTool).toHaveBeenCalledOnce()
+  })
 })
 
 describe('global mismatch-marker rail control', () => {

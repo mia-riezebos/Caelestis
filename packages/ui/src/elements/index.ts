@@ -1,4 +1,5 @@
 import type {
+  ClaimModeModel,
   NotificationsModel,
   OverlayControlsModel,
   PaletteProgressModel,
@@ -8,6 +9,7 @@ import type {
   TagManagerModel,
 } from '../types.js'
 import type { WorkModel } from '../work/model.js'
+import ClaimModeElement from './ClaimMode.element.svelte'
 import NotificationsElement from './Notifications.element.svelte'
 import OverlayControlsElement from './OverlayControls.element.svelte'
 import PaletteProgressElement from './PaletteProgress.element.svelte'
@@ -33,6 +35,8 @@ export const RAIL_CONTROL_TAG = 'caelestis-rail-control'
 export const SHORTCUT_HELP_TAG = 'caelestis-shortcut-help'
 export const TAG_MANAGER_TAG = 'caelestis-tag-manager'
 export type CaelestisTagManager = HTMLElement & { model: TagManagerModel }
+export const CLAIM_MODE_TAG = 'caelestis-claim-mode'
+export type CaelestisClaimMode = HTMLElement & { model: ClaimModeModel }
 
 export type CaelestisTemplateAdmin = HTMLElement & {
   finished: boolean
@@ -83,6 +87,7 @@ export const CaelestisShortcutHelp =
   ShortcutHelpElement.element as ElementConstructor<CaelestisShortcutHelp>
 export const CaelestisTagManager =
   TagManagerElement.element as ElementConstructor<CaelestisTagManager>
+export const CaelestisClaimMode = ClaimModeElement.element as ElementConstructor<CaelestisClaimMode>
 
 /** Browser-only and idempotent, so both hosts can call it whenever their UI mounts. */
 export const registerCaelestisUi = (): void => {
@@ -96,6 +101,8 @@ export const registerCaelestisUi = (): void => {
     customElements.define('caelestis-work', CaelestisWork)
   if (customElements.get(TAG_MANAGER_TAG) === undefined)
     customElements.define(TAG_MANAGER_TAG, CaelestisTagManager)
+  if (customElements.get(CLAIM_MODE_TAG) === undefined)
+    customElements.define(CLAIM_MODE_TAG, CaelestisClaimMode)
   if (customElements.get(TEMPLATE_STATE_TAG) === undefined) {
     customElements.define(TEMPLATE_STATE_TAG, CaelestisTemplateState)
   }
@@ -126,6 +133,7 @@ declare global {
   interface HTMLElementTagNameMap {
     'caelestis-backfill': CaelestisBackfill
     'caelestis-tag-manager': CaelestisTagManager
+    'caelestis-claim-mode': CaelestisClaimMode
     'caelestis-template-admin': CaelestisTemplateAdmin
     'caelestis-template-state': CaelestisTemplateState
     'caelestis-notifications': CaelestisNotifications
