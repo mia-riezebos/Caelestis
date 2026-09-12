@@ -36,7 +36,7 @@ const RELEASES = {
   frontend: {
     notes: (repository, tag) =>
       `https://github.com/${repository}/blob/${encodeURIComponent(tag)}/apps/frontend/CHANGELOG.md`,
-    link: () => ({ label: 'Open dashboard', url: 'https://caelestis.mia.cx' }),
+    link: () => ({ label: 'Open dashboard', url: 'https://caelest.is' }),
   },
 }
 
