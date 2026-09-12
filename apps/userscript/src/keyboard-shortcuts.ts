@@ -1,8 +1,9 @@
-import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
+import { type KeyBinding, keyBindingReleasedBy, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
+import { activeShortcutBindings } from './shortcut-bindings.js'
 import { currentShortcutPlatform, type ShortcutPlatform, shortcutFor } from './shortcuts.js'
 import {
   getState,
@@ -125,6 +126,8 @@ export const installKeyboardShortcuts = (
   platform: ShortcutPlatform = currentShortcutPlatform(),
 ): (() => void) => {
   let peeking = false
+  /** The chords that started the current peek; a rebinding mid-hold must not strand it. */
+  let peekBindings: readonly KeyBinding[] = []
   const repaintPeek = (active: boolean): void => {
     if (!setOverlayPeekActive(active)) return
     triggerMapRepaint()
@@ -132,11 +135,13 @@ export const installKeyboardShortcuts = (
   const endPeek = (): void => {
     if (!peeking) return
     peeking = false
+    peekBindings = []
     repaintPeek(false)
   }
 
   const onKeyup = (event: KeyboardEvent): void => {
-    if (!peeking || event.key.toLowerCase() !== 'g') return
+    if (!peeking) return
+    if (!peekBindings.some((binding) => keyBindingReleasedBy(binding, event))) return
     claimShortcut(event)
     endPeek()
   }
@@ -147,7 +152,7 @@ export const installKeyboardShortcuts = (
     // Placement owns its confirm/cancel keys. This listener runs in capture so Wplace's alliance
     // modal cannot swallow shortcuts before they reach the shared key map.
     if (isMoving() && (event.key === 'Escape' || event.key === 'Enter')) return
-    const shortcut = shortcutFor(event, platform)
+    const shortcut = shortcutFor(event, platform, activeShortcutBindings())
     if (shortcut === null) return
     const alliance = activeAllianceSurface()
     const allianceEditorStage = activeAllianceEditorStage()
@@ -232,6 +237,7 @@ export const installKeyboardShortcuts = (
     }
     if (shortcut === 'peek-overlays') {
       claim()
+      if (!peeking) peekBindings = activeShortcutBindings()['peek-overlays']
       peeking = true
       repaintPeek(true)
       return

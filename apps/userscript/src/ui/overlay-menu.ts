@@ -24,6 +24,7 @@ import {
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
+import { shortcutHint } from '../shortcut-bindings.js'
 import {
   activeServerToken,
   admittedServerContentsFor,
@@ -2175,7 +2176,7 @@ const renderControls = (
       host.appendChild(button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
-    const title = `${template.name} — display options (T)`
+    const title = `${template.name} — display options${shortcutHint('toggle-template-menu')}`
     const label = `${template.name} display options`
     button.title = title
     button.setAttribute('aria-label', label)

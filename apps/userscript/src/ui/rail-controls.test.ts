@@ -4,12 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   appearance: { markMismatch: false },
+  overrides: {} as import('@caelestis/shared').ShortcutOverrides,
   redraw: vi.fn(),
 }))
 
 vi.mock('../main.js', () => ({ redraw: harness.redraw }))
 vi.mock('../state.js', () => ({
-  getState: () => ({ appearance: harness.appearance }),
+  getState: () => ({ appearance: harness.appearance, shortcutOverrides: harness.overrides }),
   setState: (patch: { appearance: { markMismatch: boolean } }) => {
     harness.appearance = patch.appearance
   },
@@ -21,6 +22,7 @@ beforeEach(() => {
   registerCaelestisUi()
   document.body.replaceChildren()
   harness.appearance = { markMismatch: false }
+  harness.overrides = {}
   harness.redraw.mockClear()
 })
 
@@ -53,6 +55,24 @@ describe('global mismatch-marker rail control', () => {
       'Hide global mismatch markers (W)',
     )
     expect(button.model.pressed).toBe(true)
+  })
+
+  it('names the rebound key in its tooltip and drops the hint once the key is gone', async () => {
+    const button = mismatchModeButton()
+    document.body.appendChild(button)
+    harness.overrides = {
+      'toggle-markers': [{ key: 'm', code: 'KeyM', command: false, shift: false, alt: false }],
+    }
+    syncMismatchModeState()
+    await Promise.resolve()
+    expect(button.shadowRoot?.querySelector('button')?.title).toBe(
+      'Show global mismatch markers (M)',
+    )
+
+    harness.overrides = { 'toggle-markers': [] }
+    syncMismatchModeState()
+    await Promise.resolve()
+    expect(button.shadowRoot?.querySelector('button')?.title).toBe('Show global mismatch markers')
   })
 
   it('reuses the mounted control after a rail sync', () => {

@@ -188,6 +188,7 @@ export interface SettingsModel {
   readonly notifyGriefing: boolean
   readonly notifyUpdates: boolean
   readonly notifyActivity: boolean
+  readonly shortcuts: ShortcutSettingsModel
   readonly profile?: {
     readonly note: string
     readonly metrics: readonly ProfileMetricModel[]
@@ -219,6 +220,13 @@ export type SettingsIntent =
       readonly value: SettingsModel['colourNavigationOrder']
     }
   | { readonly type: 'set-boolean'; readonly key: SettingsBooleanKey; readonly value: boolean }
+  | {
+      readonly type: 'set-shortcut-binding'
+      readonly id: import('@caelestis/shared').ShortcutId
+      /** `null` leaves the action without a key. */
+      readonly binding: import('@caelestis/shared').KeyBinding | null
+    }
+  | { readonly type: 'reset-shortcut-bindings' }
   | { readonly type: 'reset-profile' }
   | { readonly type: 'copy-profile' }
 
@@ -255,10 +263,24 @@ export interface PaletteProgressModel {
   readonly value: string
 }
 
-export type ShortcutHelpPlatform = 'mac' | 'windows-linux'
+export type ShortcutHelpPlatform = import('@caelestis/shared').ShortcutPlatform
 
 export interface ShortcutHelpModel {
   readonly platform: ShortcutHelpPlatform
+  /** The chords in force, so the reference shows what the keys do right now. */
+  readonly bindings: import('@caelestis/shared').ShortcutBindings
+}
+
+export interface ShortcutSettingsModel {
+  readonly platform: ShortcutHelpPlatform
+  readonly bindings: import('@caelestis/shared').ShortcutBindings
+  /** Whether any action differs from its default, which is when reset does something. */
+  readonly customised: boolean
+  /** The last recorded chord and the actions it was taken from, so the panel can say so. */
+  readonly lastChange?: {
+    readonly id: import('@caelestis/shared').ShortcutId
+    readonly displaced: readonly import('@caelestis/shared').ShortcutId[]
+  }
 }
 
 export type ShortcutHelpIntent = { readonly type: 'close' }

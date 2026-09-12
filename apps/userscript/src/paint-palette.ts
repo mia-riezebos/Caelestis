@@ -3,6 +3,7 @@ import {
   formatPixels,
   latLngToCanvasPixel,
   sameTemplateSurface,
+  shortcutLabel,
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import type { CaelestisPaletteProgress } from '@caelestis/ui/elements'
@@ -14,6 +15,8 @@ import { count, warn } from './debug.js'
 import { artboardColourProgress, artboardColourTargets } from './gl/artboard-markers.js'
 import { onArtboardPixelsChange, readArtboardPixels } from './gl/artboard-pixels.js'
 import { getMap } from './map-handle.js'
+import { activeShortcutBindings } from './shortcut-bindings.js'
+import { currentShortcutPlatform } from './shortcuts.js'
 import { type ConnectedServer, getState, onStateChange, serverConnectionIdentity } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
 import { onLocalChange, type PlacedTemplate, templateById } from './templates/local-store.js'
@@ -481,6 +484,12 @@ export const navigateFocusedColour = async (index: number, cycle = false): Promi
 }
 
 /** The keyboard form of middle-click: use Wplace's current colour and cycle on repeated presses. */
+/** How a swatch's label tells the user to jump: by mouse, and by key while one is assigned. */
+const jumpInstruction = (): string => {
+  const key = shortcutLabel(activeShortcutBindings()['fly-to-colour'], currentShortcutPlatform())
+  return key === '' ? 'Middle-click' : `Middle-click, or select it and press ${key},`
+}
+
 export const navigateFocusedSelectedColour = async (): Promise<boolean> => {
   const index = selectedColour()
   return index === null ? false : await navigateFocusedColour(index, true)
@@ -563,7 +572,7 @@ const render = (): void => {
     originalLabels.set(element, label)
     element.setAttribute(
       'aria-label',
-      `${label}. ${formatPixels(remaining)} left in the focused template. Middle-click, or select it and press F, to go to its nearest ${navigationLabel} pixel.`,
+      `${label}. ${formatPixels(remaining)} left in the focused template. ${jumpInstruction()} to go to its nearest ${navigationLabel} pixel.`,
     )
     if (!originalTitles.has(element)) originalTitles.set(element, element.getAttribute('title'))
     const originalTitle = originalTitles.get(element)

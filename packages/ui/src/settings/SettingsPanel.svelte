@@ -4,9 +4,60 @@
   import SectionHeader from '../foundations/SectionHeader.svelte'
   import SettingRow from '../foundations/SettingRow.svelte'
   import Toggle from '../foundations/Toggle.svelte'
+  import { keyBindingFromStroke, keyBindingLabel, type ShortcutId, shortcutLabel } from '@caelestis/shared'
+  import { SHORTCUT_ACTIONS, type ShortcutCategory, shortcutActionLabel } from '../shortcut-help/actions.js'
   import type { AccessTokenScope, SettingsIntent, SettingsModel, SettingsServerModel } from '../types.js'
 
   let { model, onIntent }: { model: SettingsModel; onIntent?: (intent: SettingsIntent) => void } = $props()
+  const SHORTCUT_CATEGORIES: readonly ShortcutCategory[] = ['Painting', 'Overlay']
+  /**
+   * The action whose key control is waiting for a keystroke. While set, that control carries
+   * `data-caelestis-key-capture` (KEY_CAPTURE_ATTRIBUTE in @caelestis/shared), which the
+   * userscript's key map treats like a text field so no shortcut fires from the recorded key.
+   */
+  let recording = $state<ShortcutId | null>(null)
+  const displacedNotice = (): string => {
+    const change = model.shortcuts.lastChange
+    if (change === undefined || change.displaced.length === 0) return ''
+    const { bindings, platform } = model.shortcuts
+    const key = shortcutLabel(bindings[change.id], platform)
+    const sentences = [`${key} was taken from ${change.displaced.map(shortcutActionLabel).join(' and ')}.`]
+    // An action can hold several chords; losing one is not the same as losing its key.
+    const emptied = change.displaced.filter((id) => bindings[id].length === 0)
+    if (emptied.length > 0) {
+      const verb = emptied.length === 1 ? 'has' : 'have'
+      sentences.push(`${emptied.map(shortcutActionLabel).join(' and ')} now ${verb} no key.`)
+    }
+    for (const id of change.displaced) {
+      if (bindings[id].length === 0) continue
+      sentences.push(`${shortcutActionLabel(id)} still has ${shortcutLabel(bindings[id], platform)}.`)
+    }
+    return sentences.join(' ')
+  }
+  const shortcutStatus = $derived(
+    recording !== null ? 'Press the new key. Esc keeps the current one.' : displacedNotice(),
+  )
+  const recordKey = (event: KeyboardEvent, id: ShortcutId): void => {
+    if (recording !== id) return
+    // While recording, every key belongs to this control: nothing scrolls, tabs away, or triggers.
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.repeat) return
+    if (event.key === 'Escape' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      recording = null
+      return
+    }
+    const binding = keyBindingFromStroke(event, model.shortcuts.platform)
+    // A bare modifier is the start of a chord; the other platform's command key is not ours.
+    if (binding === null) return
+    recording = null
+    emit({ type: 'set-shortcut-binding', id, binding })
+  }
+  const keyControlName = (label: string, id: ShortcutId): string => {
+    if (recording === id) return `Press a new key for ${label}`
+    const current = shortcutLabel(model.shortcuts.bindings[id], model.shortcuts.platform)
+    return `Change key for ${label}, now ${current === '' ? 'not set' : current}`
+  }
   let addServer = $state('')
   let tokenDrafts = $state<Record<string, string>>({})
   let accessLabelDrafts = $state<Record<string, string>>({})
@@ -147,6 +198,40 @@
   <SettingRow label="Report my activity" hint="Shares paint activity only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Report my activity" checked={model.reportPaints} onChange={(value) => emit({ type: 'set-boolean', key: 'reportPaints', value })} />{/snippet}</SettingRow>
   <SettingRow label="Share tiles" hint="Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Share tiles" checked={model.shareTiles} onChange={(value) => emit({ type: 'set-boolean', key: 'shareTiles', value })} />{/snippet}</SettingRow>
 
+  <SectionHeader title="Keyboard shortcuts" icon="keyboard">
+    {#snippet actions()}<Button label="Reset" title="Reset all shortcuts to their defaults" kind="ghost" size="compact" disabled={!model.shortcuts.customised} onclick={() => emit({ type: 'reset-shortcut-bindings' })} />{/snippet}
+  </SectionHeader>
+  <p class="subtle">Select a key, then press the new one. A key already in use moves to the action you chose.</p>
+  {#each SHORTCUT_CATEGORIES as category}
+    <section class="shortcut-group" aria-label={`${category} shortcuts`}>
+      <h3>{category}</h3>
+      {#each SHORTCUT_ACTIONS.filter((action) => action.category === category) as action (action.id)}
+        {@const bindings = model.shortcuts.bindings[action.id]}
+        {@const isRecording = recording === action.id}
+        <div class="shortcut-row">
+          <span class="shortcut-label">{action.label}</span>
+          <button
+            type="button"
+            class="shortcut-key"
+            class:recording={isRecording}
+            data-caelestis-shortcut={action.id}
+            aria-label={keyControlName(action.label, action.id)}
+            data-caelestis-key-capture={isRecording ? '' : undefined}
+            onclick={(event) => { recording = action.id; event.currentTarget.focus() }}
+            onkeydown={(event) => recordKey(event, action.id)}
+            onblur={() => { if (recording === action.id) recording = null }}
+          >
+            {#if isRecording}<span class="shortcut-prompt">Press a key…</span>
+            {:else if bindings.length === 0}<span class="shortcut-unset">Not set</span>
+            {:else}{#each bindings as binding, index}{#if index > 0}<span class="shortcut-or">or</span>{/if}<kbd>{keyBindingLabel(binding, model.shortcuts.platform)}</kbd>{/each}{/if}
+          </button>
+          <span class="shortcut-clear" class:hidden={bindings.length === 0 || isRecording}><Button label={`Remove the key for ${action.label}`} kind="ghost" size="compact" iconOnly onclick={() => emit({ type: 'set-shortcut-binding', id: action.id, binding: null })}>×</Button></span>
+        </div>
+      {/each}
+    </section>
+  {/each}
+  <p class="subtle shortcut-status" role="status">{shortcutStatus}</p>
+
   <SectionHeader title="Diagnostics" icon="bug" />
   <SettingRow label="Debug logging" hint="Verbose console output for bug reports">{#snippet children()}<Toggle label="Debug logging" checked={model.debugLogging} onChange={(value) => emit({ type: 'set-boolean', key: 'debugLogging', value })} />{/snippet}</SettingRow>
   <SettingRow label="Performance profiling" hint="Measures Caelestis CPU, GPU and known buffers. Profiling adds a small overhead.">{#snippet children()}<Toggle label="Performance profiling" checked={model.performanceProfiling} onChange={(value) => emit({ type: 'set-boolean', key: 'performanceProfiling', value })} />{/snippet}</SettingRow>
@@ -189,6 +274,18 @@
   .new-token-row select { inline-size: 6.5rem; flex: 0 0 auto; }
   .token-error { margin: 0; font-size: 0.72rem; }
   .error { color: var(--caelestis-danger); }
+  .shortcut-group { padding: 0 var(--caelestis-content-inset, 1rem); }
+  .shortcut-group h3 { margin: 0.5rem 0 0.15rem; color: var(--caelestis-muted-text); font-size: 0.72rem; }
+  .shortcut-row { display: flex; align-items: center; gap: 0.5rem; min-block-size: 2.25rem; }
+  .shortcut-label { flex: 1; min-inline-size: 0; }
+  .shortcut-key { display: inline-flex; min-inline-size: 5.5rem; block-size: 1.75rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: 0.35rem; padding-inline: 0.5rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); background: var(--caelestis-raised-surface); color: inherit; font: inherit; cursor: pointer; }
+  .shortcut-key kbd { font: 700 0.75rem/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .shortcut-key.recording { border-color: var(--caelestis-primary); box-shadow: 0 0 0 2px color-mix(in oklab, var(--caelestis-primary) 35%, transparent); }
+  .shortcut-or, .shortcut-unset, .shortcut-prompt { color: var(--caelestis-muted-text); font-size: 0.75rem; }
+  .shortcut-clear { display: inline-flex; flex: 0 0 auto; }
+  .shortcut-clear.hidden { visibility: hidden; }
+  .shortcut-status { min-block-size: 1rem; }
+  .shortcut-key:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
   .profile { margin: 0.35rem var(--caelestis-content-inset, 1rem); padding: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-radius, calc(0.7rem + 1px)); }
   .metric { display: flex; justify-content: space-between; gap: 1rem; padding-block: 0.15rem; font-size: 0.72rem; }.metric span { color: var(--caelestis-muted-text); }.metric strong { font-variant-numeric: tabular-nums; }
   .profile-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; margin-block-start: 0.5rem; }.profile-actions span { margin-inline-end: auto; color: var(--caelestis-muted-text); font-size: 0.72rem; }

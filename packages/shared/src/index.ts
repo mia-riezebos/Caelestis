@@ -27,6 +27,7 @@ export {
   type QuantiseResult,
   quantiseToPalette,
 } from './quantise.js'
+export * from './shortcuts.js'
 export {
   type PixelBounds,
   SliceError,

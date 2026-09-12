@@ -30,6 +30,7 @@ import folder from '@iconify-icons/material-symbols/folder'
 import gridView from '@iconify-icons/material-symbols/grid-view'
 import image from '@iconify-icons/material-symbols/image'
 import info from '@iconify-icons/material-symbols/info'
+import keyboard from '@iconify-icons/material-symbols/keyboard'
 import keyboardArrowDown from '@iconify-icons/material-symbols/keyboard-arrow-down'
 import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
 import labelOutline from '@iconify-icons/material-symbols/label-outline'
@@ -98,6 +99,7 @@ export const ICONS = define({
   image,
   info,
   kebab: moreVert,
+  keyboard,
   lightMode,
   move: openWith,
   palette,
