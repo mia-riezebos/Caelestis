@@ -768,8 +768,9 @@ const onPointerDown = (event: PointerEvent): void => {
         notify()
         return
       }
-      pen = [...pen, { x: px, y: py }]
-      startDrag('pen', event, { x: px, y: py }, null, pen.length - 1)
+      // Anchors sit wherever the pointer is; the grid only matters once the path is rasterised.
+      pen = [...pen, { x: point.x, y: point.y }]
+      startDrag('pen', event, { x: point.x, y: point.y }, null, pen.length - 1)
       bump()
       notify()
       return
@@ -922,10 +923,9 @@ const onPointerMove = (event: PointerEvent): void => {
       if (base?.shape.kind !== 'path') return
       const current = selectedItem()
       if (current?.shape.kind !== 'path') return
-      const target = drag.part === 'anchor' ? { x: px, y: py } : { x: point.x, y: point.y }
       replaceItem(
         base.id,
-        moveNode(current.shape, drag.index, drag.part, target.x, target.y, base.shape),
+        moveNode(current.shape, drag.index, drag.part, point.x, point.y, base.shape),
       )
       break
     }
