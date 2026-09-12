@@ -1,5 +1,11 @@
 # @caelestis/frontend
 
+## 0.5.8
+
+### Patch Changes
+
+- eea150b: Link release announcements to caelest.is.
+
 ## 0.5.7
 
 ### Patch Changes
