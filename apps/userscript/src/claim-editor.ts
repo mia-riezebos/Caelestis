@@ -164,6 +164,7 @@ type DragKind =
   | 'scale'
   | 'handle-solo'
   | 'anchor-pull'
+  | 'anchor-convert'
 
 interface Drag {
   readonly kind: DragKind
@@ -231,6 +232,13 @@ let drag: Drag | null = null
 let pen: PathNode[] | null = null
 /** When the pen continues a saved path, the item it came from, restored on commit. */
 let penContinued: RegionItem | null = null
+/** Where that item sat: add and subtract apply in order, so it must return to the same slot. */
+let penContinuedIndex = 0
+
+const restoreContinued = (item: RegionItem): void => {
+  const at = Math.min(penContinuedIndex, items.length)
+  items = [...items.slice(0, at), item, ...items.slice(at)]
+}
 /** Where the pointer is over the map, in canvas coordinates, for the pen's rubber band. */
 let hover: Point | null = null
 /** The stroke under construction, as raw points. */
@@ -330,7 +338,7 @@ const previewItem = (): RegionItem | null => {
     return {
       id: 'preview',
       shape: { kind: 'path', closed: false, width: Math.max(1, width), nodes: pen },
-      op: 'add',
+      op: subtract ? 'subtract' : 'add',
     }
   return null
 }
@@ -423,10 +431,33 @@ const insidePolygon = (ring: readonly Point[], x: number, y: number): boolean =>
   return inside
 }
 
-/** Whether a shape is caught by a lasso: any point of its outline lies inside the loop. */
-const inLasso = (shape: RegionShape, ring: readonly Point[]): boolean =>
-  ring.length >= 3 &&
-  regionShapeOutline(shape).some((point) => insidePolygon(ring, point.x, point.y))
+const orient = (a: Point, b: Point, c: Point): number =>
+  (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+
+const segmentsCross = (a: Point, b: Point, c: Point, d: Point): boolean =>
+  orient(a, b, c) * orient(a, b, d) < 0 && orient(c, d, a) * orient(c, d, b) < 0
+
+/**
+ * Whether a shape is caught by a lasso: a point of its outline lies inside the loop, the loop
+ * lies inside the shape, or an outline edge crosses the loop. The last case is what catches a
+ * narrow loop drawn across the middle of an edge.
+ */
+const inLasso = (shape: RegionShape, ring: readonly Point[]): boolean => {
+  if (ring.length < 3) return false
+  const outline = regionShapeOutline(shape)
+  if (outline.some((point) => insidePolygon(ring, point.x, point.y))) return true
+  const closed = shape.kind !== 'path' || shape.closed
+  if (closed && ring.some((point) => insidePolygon(outline, point.x, point.y))) return true
+  const edges = closed ? outline.length : outline.length - 1
+  for (let i = 0; i < edges; i++) {
+    const a = outline[i] as Point
+    const b = outline[(i + 1) % outline.length] as Point
+    for (let j = 0; j < ring.length; j++) {
+      if (segmentsCross(a, b, ring[j] as Point, ring[(j + 1) % ring.length] as Point)) return true
+    }
+  }
+  return false
+}
 
 const replaceItem = (id: string, shape: RegionShape): void => {
   items = items.map((item) => (item.id === id ? { ...item, shape } : item))
@@ -522,17 +553,15 @@ const commitPen = (closed: boolean): void => {
   pen = null
   penContinued = null
   if (nodes.length < (closed ? 3 : 2)) {
-    if (continued !== null) {
-      items = [...items, continued]
-      bump()
-    } else bump()
+    if (continued !== null) restoreContinued(continued)
+    bump()
     notify()
     return
   }
   if (continued !== null && continued.shape.kind === 'path') {
-    // The path picks up where it left off, under its own id and width.
+    // The path picks up where it left off, under its own id, width, and place in the order.
     const shape: RegionShape = { ...continued.shape, closed, nodes }
-    items = [...items, { ...continued, shape }]
+    restoreContinued({ ...continued, shape })
     select([continued.id])
     touch()
     notify()
@@ -608,6 +637,7 @@ const continuePathFrom = (item: RegionItem, index: number): boolean => {
   if (index !== 0 && index !== item.shape.nodes.length - 1) return false
   pen = orientToContinue(item.shape.nodes, index)
   penContinued = item
+  penContinuedIndex = items.indexOf(item)
   items = items.filter((held) => held.id !== item.id)
   select([])
   bump()
@@ -673,7 +703,7 @@ const finishErase = (): void => {
   const next: RegionItem[] = []
   let changed = false
   let overflow = false
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     if (item.shape.kind === 'pixels') {
       const left = eraseFromRaster(item.shape, set)
       if (left === item.shape) next.push(item)
@@ -689,7 +719,8 @@ const finishErase = (): void => {
     }
     area ??= strokeArea(line, eraserWidth)
     const pieces = splitItem(item, area, nextItemId)
-    if (next.length + pieces.length + (items.length - next.length) > MAX_REGION_ITEMS + 1) {
+    // What is kept so far, plus these pieces, plus every item still to come, must fit.
+    if (next.length + pieces.length + (items.length - index - 1) > MAX_REGION_ITEMS) {
       overflow = true
       next.push(item)
       continue
@@ -1008,10 +1039,9 @@ const onHandlePress = (event: PointerEvent, target: Element): boolean => {
     replaceItem(item.id, converted.shape)
     startDrag('anchor-pull', event, { x: 0, y: 0 }, converted, index, 'anchor')
   } else if (kind === 'anchor' && shape.kind !== 'path') {
-    // Editing one anchor of a rectangle, ellipse, polygon, or star turns it into a path first.
-    const converted: RegionItem = { ...item, shape: toPath(shape) }
-    replaceItem(item.id, converted.shape)
-    startDrag('node', event, { x: 0, y: 0 }, converted, index, 'anchor')
+    // Editing one anchor of a rectangle, ellipse, polygon, or star turns it into a path, but
+    // only once the anchor moves: a mere click must leave the claim as it was.
+    startDrag('anchor-convert', event, { x: 0, y: 0 }, item, index, 'anchor')
   } else if (kind === 'rotate') {
     startDrag('rotate', event, regionShapeCentre(shape), item)
   } else if (kind === 'scale' && (shape.kind === 'path' || shape.kind === 'pixels')) {
@@ -1367,6 +1397,14 @@ const onPointerMove = (event: PointerEvent): void => {
       bump()
       break
     }
+    case 'anchor-convert': {
+      if (base === null || !drag.moved) return
+      const converted: RegionItem = { ...base, shape: toPath(base.shape) }
+      const path = converted.shape as PathShape
+      drag = { ...drag, kind: 'node', base: converted }
+      replaceItem(base.id, moveNode(path, drag.index, 'anchor', point.x, point.y, path))
+      break
+    }
     case 'anchor-pull': {
       if (base?.shape.kind !== 'path' || !drag.moved) return
       // Dragging out of an anchor gives it a pair of handles pointing along the drag.
@@ -1488,6 +1526,56 @@ const onPointerEnd = (event: PointerEvent): void => {
   notify()
 }
 
+/**
+ * A cancelled pointer (the browser took it: a gesture, a lost capture) is not a release. What a
+ * drag changed goes back, what it was drawing is dropped, and no click is expected after it.
+ */
+const onPointerCancel = (event: PointerEvent): void => {
+  if (drag === null) {
+    if (consumedPress === event.pointerId) consumedPress = null
+    return
+  }
+  if (event.pointerId !== drag.pointerId) return
+  const ended = drag
+  drag = null
+  consumedPress = null
+  switch (ended.kind) {
+    case 'move':
+      items = items.map((item) => ended.group.find((was) => was.id === item.id) ?? item)
+      break
+    case 'corner':
+    case 'outer':
+    case 'inner':
+    case 'node':
+    case 'rotate':
+    case 'scale':
+    case 'anchor-pull':
+    case 'handle-solo':
+    case 'anchor-convert':
+      if (ended.base !== null)
+        items = items.map((item) =>
+          item.id === ended.base?.id ? (ended.base as RegionItem) : item,
+        )
+      break
+    case 'pen':
+      if (pen !== null) pen = pen.filter((_, at) => at !== ended.index)
+      if (pen !== null && pen.length === 0) pen = null
+      break
+    default:
+      break
+  }
+  drawing = null
+  stroke = null
+  raster = null
+  erasing = null
+  lastStamp = null
+  marquee = null
+  lasso = null
+  bump()
+  setCursor(toolCursor())
+  notify()
+}
+
 const isTyping = (target: EventTarget | null): boolean => {
   let node = target as (Element & { shadowRoot?: ShadowRoot | null }) | null
   while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement as typeof node
@@ -1509,11 +1597,13 @@ const onKeydown = (event: KeyboardEvent): void => {
     return
   }
   if (key === 'escape') {
+    // An open tool flyout closes on Escape by itself; the editor stays out of it.
+    if (mode?.shadowRoot?.querySelector('[role="menu"]') != null) return
     consume(event)
     if (pen !== null) {
       // Dropping the pen gives a continued path back as it was.
       pen = null
-      if (penContinued !== null) items = [...items, penContinued]
+      if (penContinued !== null) restoreContinued(penContinued)
       penContinued = null
       bump()
       notify()
@@ -1599,6 +1689,8 @@ const deleteSelected = (): void => {
 
 const setTool = (next: ClaimTool): void => {
   if (pen !== null && next !== 'pen') commitPen(false)
+  // Hand-tool clicks reach Wplace and can open its pixel card; it is stale again from here.
+  if (tool === 'hand' && next !== 'hand') dismissWplacePixelCard()
   tool = next
   shown = { ...shown, [groupOf(next)]: next }
   if (next !== 'hand') handHeldFrom = null
@@ -1629,15 +1721,28 @@ const confirm = async (): Promise<void> => {
   let error: string | null = null
   if (items.length > 0) error = await host.save(primary ?? null, document)
   else if (primary !== undefined) error = await host.remove(primary)
-  for (const id of others) {
-    if (error !== null) break
-    error = await host.remove(id)
+  const written = error === null
+  const unreleased: string[] = []
+  if (written) {
+    // The primary now holds every shape. A source that fails to release is a duplicate of
+    // part of it, so it stays in the set and the next Save tries again.
+    for (const id of others) {
+      const failure = await host.remove(id)
+      if (failure !== null) {
+        error ??= failure
+        unreleased.push(id)
+      }
+    }
   }
   pending = false
   if (!isClaimModeActive()) return
   if (error === null) stopClaimMode()
   else {
-    message = error
+    if (written && primary !== undefined) {
+      editingIds = [primary, ...unreleased]
+      dirty = true
+      message = `${error} Save again to release the remaining ${unreleased.length === 1 ? 'claim' : 'claims'}.`
+    } else message = error
     notify()
   }
 }
@@ -2015,7 +2120,7 @@ export const installClaimEditor = (editorHost: ClaimEditorHost): void => {
   window.addEventListener('pointerdown', onPointerDown, true)
   window.addEventListener('pointermove', onPointerMove, true)
   window.addEventListener('pointerup', onPointerEnd, true)
-  window.addEventListener('pointercancel', onPointerEnd, true)
+  window.addEventListener('pointercancel', onPointerCancel, true)
   window.addEventListener('keydown', onKeydown, true)
   window.addEventListener('keyup', onKeyup, true)
   window.addEventListener('wheel', onWheel, { capture: true, passive: false })
@@ -2098,7 +2203,7 @@ export const resetClaimEditor = (): void => {
     window.removeEventListener('pointerdown', onPointerDown, true)
     window.removeEventListener('pointermove', onPointerMove, true)
     window.removeEventListener('pointerup', onPointerEnd, true)
-    window.removeEventListener('pointercancel', onPointerEnd, true)
+    window.removeEventListener('pointercancel', onPointerCancel, true)
     window.removeEventListener('keydown', onKeydown, true)
     window.removeEventListener('keyup', onKeyup, true)
     window.removeEventListener('wheel', onWheel, true)

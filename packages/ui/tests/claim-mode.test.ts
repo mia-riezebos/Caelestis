@@ -122,6 +122,24 @@ describe('claim mode drawer', () => {
     expect(root.querySelector('[role="menu"]')).not.toBeNull()
   })
 
+  it('closes an open flyout on Escape before anyone else sees the key', async () => {
+    const { root, group } = await mount()
+    group('selection').dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+    )
+    await tick()
+    expect(root.querySelector('[role="menu"]')).not.toBeNull()
+    const seen = vi.fn()
+    window.addEventListener('keydown', seen)
+    const press = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    document.body.dispatchEvent(press)
+    await tick()
+    expect(root.querySelector('[role="menu"]')).toBeNull()
+    expect(press.defaultPrevented).toBe(true)
+    expect(seen).not.toHaveBeenCalled()
+    window.removeEventListener('keydown', seen)
+  })
+
   it('labels the delete action with the selection size', async () => {
     const { root } = await mount()
     const labels = [...root.querySelectorAll('button')].map((button) => button.textContent?.trim())

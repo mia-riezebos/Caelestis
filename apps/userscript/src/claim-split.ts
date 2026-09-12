@@ -121,10 +121,46 @@ const pathFrom = (ring: Ring): RegionShape => ({
   nodes: thin(closedRing(ring)).map(([x, y]) => ({ x, y })),
 })
 
+/** Far beyond any canvas coordinate; the half-planes below reach this far. */
+const FAR = 1e7
+
+/**
+ * Polygons without holes: a polygon that has one is cut in two along a vertical line through
+ * that hole's middle, and each half is cut again until none is left. Ordered add-and-subtract
+ * items cannot express a hole any other way without changing pixels outside the shape: a
+ * "hole" flipped to the opposite op would add coverage under a subtract item.
+ */
+const withoutHoles = (polygon: Polygon, depth = 0): Polygon[] => {
+  const [outer, hole] = polygon
+  if (outer === undefined) return []
+  if (hole === undefined || depth > 12) return [[outer]]
+  const cx = snap(hole.reduce((sum, [x]) => sum + x, 0) / hole.length)
+  const left: Polygon = [
+    [
+      [-FAR, -FAR],
+      [cx, -FAR],
+      [cx, FAR],
+      [-FAR, FAR],
+    ],
+  ]
+  const right: Polygon = [
+    [
+      [cx, -FAR],
+      [FAR, -FAR],
+      [FAR, FAR],
+      [cx, FAR],
+    ],
+  ]
+  return [
+    ...polygonClipping.intersection([polygon], left).flatMap((p) => withoutHoles(p, depth + 1)),
+    ...polygonClipping.intersection([polygon], right).flatMap((p) => withoutHoles(p, depth + 1)),
+  ]
+}
+
 /**
  * The pieces of an item after the eraser's area is cut out of it, as new items in the same op.
- * Each polygon's outer ring is a piece; its holes follow as subtract paths. An empty result
- * means the eraser took the whole shape.
+ * Every piece is a simple polygon; where the eraser left a hole, the shape is split into parts
+ * around it. An empty result means the eraser took the whole shape.
  */
 export const splitItem = (
   item: RegionItem,
@@ -135,18 +171,10 @@ export const splitItem = (
   if (area.length === 0) return [item]
   const remaining = polygonClipping.difference(area, eraser)
   const pieces: RegionItem[] = []
-  for (const polygon of remaining) {
-    const [outer, ...holes] = polygon
+  for (const polygon of remaining.flatMap((held) => withoutHoles(held))) {
+    const outer = polygon[0]
     if (outer === undefined || closedRing(outer).length < 3) continue
     pieces.push({ id: nextId(), shape: pathFrom(outer), op: item.op })
-    for (const hole of holes) {
-      if (closedRing(hole).length < 3) continue
-      pieces.push({
-        id: nextId(),
-        shape: pathFrom(hole),
-        op: item.op === 'add' ? 'subtract' : 'add',
-      })
-    }
   }
   return pieces
 }

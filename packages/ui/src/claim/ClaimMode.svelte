@@ -90,13 +90,17 @@
     open = null
     onIntent({ type: 'set-tool', tool: entry.tool })
   }
-  const onDrawerKeydown = (event: KeyboardEvent): void => {
+  /** Escape closes an open flyout, whoever has focus; nothing else sees that press. */
+  const onWindowKeydown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape' && open !== null) {
-      event.stopPropagation()
+      event.preventDefault()
+      event.stopImmediatePropagation()
       open = null
     }
   }
 </script>
+
+<svelte:window onkeydowncapture={onWindowKeydown} />
 
 <div class="mode" aria-label="Claim mode">
   <nav class="drawer" aria-label="Claim tools">
@@ -126,7 +130,7 @@
           {#if group.tools.length > 1}<span class="corner" aria-hidden="true"></span>{/if}
         </button>
         {#if open === group.id}
-          <div class="flyout" role="menu" tabindex="-1" aria-label={group.label} onkeydown={onDrawerKeydown}>
+          <div class="flyout" role="menu" aria-label={group.label}>
             {#each group.tools as held (held.tool)}
               <button
                 type="button"

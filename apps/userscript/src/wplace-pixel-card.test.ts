@@ -9,6 +9,7 @@ describe('dismissing the pixel card', () => {
       <div class="card"><div class="flex"><button aria-label="Close" class="btn btn-circle btn-xs"></button></div><button>Paint</button></div>
       <dialog open><button aria-label="Close">x</button></dialog>
       <div id="caelestis-panel"><button aria-label="Close"></button></div>
+      <div class="paint-drawer"><div><button title="Undo"></button><button title="Redo"></button><button aria-label="Close"></button></div></div>
     `
     const clicks = [...document.querySelectorAll('button[aria-label="Close"]')].map((button) => {
       const spy = vi.fn()
@@ -16,7 +17,7 @@ describe('dismissing the pixel card', () => {
       return spy
     })
     expect(dismissWplacePixelCard()).toBe(true)
-    expect(clicks.map((spy) => spy.mock.calls.length)).toEqual([1, 0, 0])
+    expect(clicks.map((spy) => spy.mock.calls.length)).toEqual([1, 0, 0, 0])
     document.body.innerHTML = ''
     expect(dismissWplacePixelCard()).toBe(false)
   })

@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
   saved: [] as { id: string | null; document: RegionDocument }[],
   removed: [] as string[],
   saveError: null as string | null,
+  removeError: null as string | null,
   template: 'Mural' as string | null,
   map: null as HTMLElement | null,
   panned: [] as [number, number][],
@@ -40,7 +41,7 @@ const host = () => ({
   },
   remove: async (id: string) => {
     harness.removed.push(id)
-    return null
+    return harness.removeError
   },
   changed: vi.fn(),
 })
@@ -109,6 +110,7 @@ beforeEach(() => {
   harness.saved = []
   harness.removed = []
   harness.saveError = null
+  harness.removeError = null
   harness.template = 'Mural'
   harness.dismissCard.mockClear()
   document.body.innerHTML = ''
@@ -329,7 +331,17 @@ describe('claim editor', () => {
     editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
     click(30, 20)
     const top = handle('anchor:0')
+    // A click on an anchor changes nothing at all.
     pointer('pointerdown', 30, 10, top)
+    pointer('pointerup', 30, 10)
+    expect(editor.claimEditorPixels()?.count).toBe(before)
+    expect(document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":in"]')).toHaveLength(
+      0,
+    )
+    // Moving it and bringing it back converts to a bezier path with nearly the same pixels.
+    pointer('pointerdown', 30, 10, handle('anchor:0'))
+    pointer('pointermove', 40, 10)
+    pointer('pointermove', 30, 10)
     pointer('pointerup', 30, 10)
     const after = editor.claimEditorPixels()?.count ?? 0
     expect(Math.abs(after - before)).toBeLessThanOrEqual(Math.ceil(before * 0.03))
@@ -382,6 +394,7 @@ describe('claim editor', () => {
     click(15, 15)
     const anchor = handle('anchor:2')
     pointer('pointerdown', 30, 30, anchor)
+    pointer('pointermove', 40, 40)
     pointer('pointermove', 30, 30)
     pointer('pointerup', 30, 30)
     editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
@@ -660,6 +673,129 @@ describe('claim editor', () => {
     key('Enter')
     await vi.waitFor(() => expect(harness.removed).toEqual(['r1']))
     expect(harness.saved).toHaveLength(0)
+  })
+
+  it('restores what a cancelled pointer was changing and drops what it was drawing', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 29, 29)
+    // The drag's own release armed a click swallow; spend it so the assertion below is clean.
+    map().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    const before = editor.claimEditorBounds()
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    pointer('pointerdown', 15, 15)
+    pointer('pointermove', 60, 60)
+    map().dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }))
+    expect(editor.claimEditorBounds()).toEqual(before)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'rectangle' })
+    pointer('pointerdown', 100, 100)
+    pointer('pointermove', 140, 140)
+    map().dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }))
+    expect(editor.claimModeModel().items).toBe(1)
+    // No click follows a cancel, so none is swallowed.
+    const click_ = new MouseEvent('click', { bubbles: true, cancelable: true })
+    map().dispatchEvent(click_)
+    expect(click_.defaultPrevented).toBe(false)
+  })
+
+  it('previews a subtracting pen path as a cut-out', async () => {
+    const editor = await setup('rectangle')
+    drag(0, 0, 39, 39)
+    const full = editor.claimEditorPixels()?.count ?? 0
+    editor.handleClaimModeIntent({ type: 'set-subtract', subtract: true })
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'pen' })
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 4 })
+    click(5, 20)
+    click(35, 20)
+    expect(editor.claimEditorPixels()?.count ?? 0).toBeLessThan(full)
+  })
+
+  it('keeps a continued path in its place in the order', async () => {
+    const editor = await setup('pen')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 3 })
+    click(0, 0)
+    click(20, 0)
+    key('Enter')
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'rectangle' })
+    drag(50, 50, 59, 59)
+    key('Enter')
+    await Promise.resolve()
+    const kinds = () => (harness.saved.at(-1)?.document.items ?? []).map((item) => item.shape.kind)
+    expect(kinds()).toEqual(['path', 'rectangle'])
+    // Continue the path, which sits first: after the edit it is still first.
+    harness.regions = [{ id: 'r1', document: harness.saved[0]?.document as RegionDocument }]
+    const again = await setup('select')
+    click(10, 0)
+    key('p')
+    pointer('pointerdown', 20, 0, handle('node:1:anchor'))
+    pointer('pointerup', 20, 0)
+    click(40, 0)
+    key('Enter')
+    key('Enter')
+    await Promise.resolve()
+    expect(again.isClaimModeActive()).toBe(false)
+    expect(kinds()).toEqual(['path', 'rectangle'])
+  })
+
+  it('never lets the eraser leave more shapes than a claim may hold', async () => {
+    const editor = await setup('rectangle')
+    for (let i = 0; i < 63; i++) drag(i * 20, 0, i * 20 + 9, 9)
+    expect(editor.claimModeModel().items).toBe(63)
+    key('e')
+    editor.handleClaimModeIntent({ type: 'set-option', option: 'width', value: 2 })
+    // One stroke across every shape would double the count; the cuts that do not fit are skipped.
+    pointer('pointerdown', 0, 5)
+    pointer('pointermove', 1300, 5)
+    pointer('pointerup', 1300, 5)
+    expect(editor.claimModeModel().items).toBeLessThanOrEqual(64)
+    expect(editor.claimModeModel().message).toMatch(/at most 64/)
+  })
+
+  it('catches a shape with the lasso when the loop only crosses its edge', async () => {
+    const editor = await setup('rectangle')
+    drag(0, 0, 39, 39)
+    key('q')
+    pointer('pointerdown', 15, -5)
+    pointer('pointermove', 25, -5)
+    pointer('pointermove', 25, 5)
+    pointer('pointermove', 15, 5)
+    pointer('pointerup', 15, 5)
+    expect(editor.claimModeModel().selectedCount).toBe(1)
+  })
+
+  it('closes the pixel card when leaving the hand tool', async () => {
+    const editor = await setup('hand')
+    expect(harness.dismissCard).toHaveBeenCalledTimes(1)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    expect(harness.dismissCard).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps unreleased claims in the set when a merge only partly succeeds', async () => {
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: [{ id: 'a', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 5, h: 5 } }],
+        },
+      },
+      {
+        id: 'r2',
+        document: {
+          items: [{ id: 'b', op: 'add', shape: { kind: 'rectangle', x: 20, y: 0, w: 5, h: 5 } }],
+        },
+      },
+    ]
+    harness.removeError = 'Server answered 500.'
+    const editor = await setup('rectangle')
+    drag(40, 0, 44, 4)
+    key('Enter')
+    await vi.waitFor(() => expect(editor.claimModeModel().message).toMatch(/Save again/))
+    expect(editor.isClaimModeActive()).toBe(true)
+    expect(editor.claimEditorEditingIds()).toEqual(['r1', 'r2'])
+    expect(editor.claimModeModel().dirty).toBe(true)
+    harness.removeError = null
+    key('Enter')
+    await vi.waitFor(() => expect(editor.isClaimModeActive()).toBe(false))
+    expect(harness.removed).toEqual(['r2', 'r2'])
   })
 
   it('cancels without saving', async () => {

@@ -1,4 +1,9 @@
-import { type RegionItem, regionDocumentPixels, regionShapeContainsPixel } from '@caelestis/shared'
+import {
+  type RegionItem,
+  regionDocumentContainsPixel,
+  regionDocumentPixels,
+  regionShapeContainsPixel,
+} from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { splitItem, strokeArea } from './claim-split.js'
 
@@ -30,7 +35,7 @@ describe('splitting shapes with the eraser', () => {
     expect(regionShapeContainsPixel(pieces[0]?.shape as RegionItem['shape'], 20, 5)).toBe(false)
   })
 
-  it('leaves a hole as a subtract path and removes a shape the eraser covers', () => {
+  it('cuts a shape around a hole into pieces that all keep its op, and removes one the eraser covers', () => {
     const item: RegionItem = {
       id: 'a',
       op: 'add',
@@ -38,11 +43,18 @@ describe('splitting shapes with the eraser', () => {
     }
     const hole = strokeArea([{ x: 15, y: 15 }], 10)
     const pieces = splitItem(item, hole, nextId)
-    expect(pieces.map((piece) => piece.op)).toEqual(['add', 'subtract'])
+    expect(pieces.length).toBeGreaterThanOrEqual(2)
+    expect(pieces.every((piece) => piece.op === 'add')).toBe(true)
     const pixels = regionDocumentPixels({ items: pieces })
-    expect(regionShapeContainsPixel(pieces[0]?.shape as RegionItem['shape'], 15, 15)).toBe(true)
+    expect(regionDocumentContainsPixel({ items: pieces }, 15, 15)).toBe(false)
+    expect(regionDocumentContainsPixel({ items: pieces }, 2, 2)).toBe(true)
     expect(pixels?.count).toBeLessThan(900)
     expect(pixels?.count).toBeGreaterThan(900 - 100)
+    // A subtract shape with a hole erased out of it never adds pixels: with no earlier add,
+    // the document stays empty.
+    const cut = splitItem({ ...item, op: 'subtract' }, hole, nextId)
+    expect(cut.every((piece) => piece.op === 'subtract')).toBe(true)
+    expect(regionDocumentPixels({ items: cut })).toBeNull()
     const everything = strokeArea([{ x: 15, y: 15 }], 100)
     expect(splitItem(item, everything, nextId)).toEqual([])
   })
