@@ -1,10 +1,12 @@
 import {
+  MAX_RASTER_BITS,
   type Point,
   type PresenceRect,
   type RegionShape,
   type RegionShapePixels,
   rasterShapeFrom,
   regionShapePixels,
+  WORLD_PIXELS,
 } from '@caelestis/shared'
 
 /**
@@ -34,7 +36,8 @@ export class PixelSet {
   }
 
   add(x: number, y: number): void {
-    if (x < 0 || y < 0) return
+    // A wide tip at the canvas edge reaches past it; those pixels do not exist.
+    if (x < 0 || y < 0 || x >= WORLD_PIXELS || y >= WORLD_PIXELS) return
     this.held.add(y * PixelSet.STRIDE + x)
     if (x < this.left) this.left = x
     if (x > this.right) this.right = x
@@ -81,10 +84,12 @@ export class PixelSet {
     }
   }
 
-  /** The set as shared pixels over its bounding box, or null when empty. */
+  /** The set as shared pixels over its bounding box, or null when empty or too large to hold. */
   pixels(): RegionShapePixels | null {
     const rect = this.bounds()
     if (rect === null) return null
+    // A long diagonal stroke has a huge box for few pixels; refuse before allocating it.
+    if (rect.w * rect.h > MAX_RASTER_BITS) return null
     const mask = new Uint8Array(rect.w * rect.h)
     for (const key of this.held) {
       const y = Math.floor(key / PixelSet.STRIDE)

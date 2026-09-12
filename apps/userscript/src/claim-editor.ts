@@ -1177,7 +1177,8 @@ const onPointerDown = (event: PointerEvent): void => {
       consume(event)
       const set = new PixelSet()
       set.stamp(px, py, eraserWidth)
-      erasing = { set, line: [{ x: point.x, y: point.y }] }
+      // The cut through vector shapes follows the same pixel centres the raster stamps.
+      erasing = { set, line: [{ x: px + 0.5, y: py + 0.5 }] }
       lastStamp = { x: px, y: py }
       startDrag('erase', event, { x: px, y: py }, null)
       bump()
@@ -1392,8 +1393,9 @@ const onPointerMove = (event: PointerEvent): void => {
       erasing.set.line(lastStamp ?? { x: px, y: py }, { x: px, y: py }, eraserWidth)
       lastStamp = { x: px, y: py }
       const last = erasing.line[erasing.line.length - 1] as Point
-      if (Math.hypot(point.x - last.x, point.y - last.y) >= 1)
-        erasing.line = [...erasing.line, { x: point.x, y: point.y }]
+      const centre = { x: px + 0.5, y: py + 0.5 }
+      if (Math.hypot(centre.x - last.x, centre.y - last.y) >= 1)
+        erasing.line = [...erasing.line, centre]
       bump()
       break
     }

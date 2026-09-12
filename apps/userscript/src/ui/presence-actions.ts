@@ -25,7 +25,7 @@ import {
   presenceView,
   releaseRegion,
 } from '../presence-client.js'
-import type { ConnectedServer } from '../state.js'
+import { activeServerToken, type ConnectedServer } from '../state.js'
 import { isServerTemplate, localTemplates, type PlacedTemplate } from '../templates/local-store.js'
 import { accountIdentity } from '../wplace-account.js'
 import { toast } from './toast.js'
@@ -197,11 +197,15 @@ export const installClaimToolHost = (): void => {
 
 const ready = (): boolean => {
   const view = presenceView()
-  if (view.connected && view.me !== null) return true
+  const server = claimServer()
+  const token = server === undefined ? null : activeServerToken(server)
+  if (view.connected && view.me !== null && token !== null) return true
   message =
     view.me === null
       ? 'Sign in to Wplace to claim regions.'
-      : 'Connect to a server that supports painter presence to claim regions.'
+      : !view.connected || server === undefined
+        ? 'Connect to a server that supports painter presence to claim regions.'
+        : `Add your access token for ${server.info?.name ?? server.url} to claim regions.`
   toast(message, 'error')
   rerenderPanel?.()
   return false

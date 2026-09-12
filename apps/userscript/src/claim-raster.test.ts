@@ -1,4 +1,4 @@
-import { regionShapePixels } from '@caelestis/shared'
+import { regionShapePixels, WORLD_PIXELS } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { eraseFromRaster, mergeRasters, PixelSet, rasterTouches } from './claim-raster.js'
 
@@ -20,6 +20,21 @@ describe('pixel sets', () => {
     expect(set.has(22, 20)).toBe(true)
     expect(set.has(22, 22)).toBe(false)
     expect(set.has(23, 20)).toBe(false)
+  })
+
+  it('drops pixels past the canvas edge and refuses a box too large to hold', () => {
+    const edge = new PixelSet()
+    edge.stamp(WORLD_PIXELS - 1, WORLD_PIXELS - 1, 5)
+    expect(edge.has(WORLD_PIXELS - 1, WORLD_PIXELS - 1)).toBe(true)
+    expect(edge.has(WORLD_PIXELS, WORLD_PIXELS - 1)).toBe(false)
+    const shape = edge.shape()
+    expect(shape).not.toBeNull()
+    expect(shape?.kind === 'pixels' ? shape.x + shape.w : 0).toBe(WORLD_PIXELS)
+    const diagonal = new PixelSet()
+    diagonal.add(0, 0)
+    diagonal.add(1_000, 1_000)
+    expect(diagonal.pixels()).toBeNull()
+    expect(diagonal.shape()).toBeNull()
   })
 
   it('merges two rasters and erases from one', () => {
