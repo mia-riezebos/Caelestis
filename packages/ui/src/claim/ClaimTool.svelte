@@ -81,13 +81,13 @@
         label={saveLabel}
         size="compact"
         kind="primary"
-        disabled={!model.drawn || model.template === null || model.pending}
+        disabled={!model.drawn || model.pending}
         onclick={() => onIntent({ type: 'claim' })}
       />
     </div>
   </div>
   <p class="hint" role="status">
-    {#if model.message}{model.message}{:else if model.drawn && model.template === null}The shape does not touch a server template.{:else}{hint}{/if}
+    {#if model.message}{model.message}{:else}{hint}{/if}
   </p>
 </div>
 

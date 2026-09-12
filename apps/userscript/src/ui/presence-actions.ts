@@ -12,7 +12,13 @@ import {
 } from '@caelestis/shared'
 import type { PresenceSummaryModel } from '@caelestis/ui/elements'
 import { type ClaimToolHost, isClaimToolActive, startClaimTool } from '../claim-tool.js'
-import { claimRegion, presenceView, releaseRegion } from '../presence-client.js'
+import {
+  claimRegion,
+  presenceRegionServer,
+  presenceServers,
+  presenceView,
+  releaseRegion,
+} from '../presence-client.js'
 import type { ConnectedServer } from '../state.js'
 import { isServerTemplate, localTemplates, type PlacedTemplate } from '../templates/local-store.js'
 import { accountIdentity } from '../wplace-account.js'
@@ -64,9 +70,7 @@ const targetFor = (rect: PresenceRect): ClaimTarget | null => {
 }
 
 const serverFor = (region: RegionClaim): ConnectedServer | undefined =>
-  localTemplates().find(
-    (template) => template.id === region.templateId && template.serverConnection !== undefined,
-  )?.serverConnection
+  presenceRegionServer(region.id) ?? undefined
 
 const shapeName = (shape: RegionShape): string => {
   switch (shape.kind) {
@@ -120,17 +124,21 @@ const host = (): ClaimToolHost => ({
   save: async (id, shape) => {
     const me = accountIdentity()
     if (me === null) return 'Wplace identity unavailable. Sign in, then retry.'
+    // A claim lives on a server, not on a template. An overlapping template only decides which
+    // server gets it when several are connected, and is recorded as a hint.
     const target = targetFor(regionShapeBounds(shape))
-    if (target === null) return 'The shape does not touch a server template.'
-    const error = await claimRegion(target.server, id ?? uuidV7(), {
-      templateId: target.template.id,
+    const server =
+      (id === null ? null : presenceRegionServer(id)) ?? target?.server ?? presenceServers()[0]
+    if (server === undefined) return 'Presence is not connected to any server.'
+    const error = await claimRegion(server, id ?? uuidV7(), {
+      templateId: target?.template.id ?? null,
       shape,
       label: '',
       actor: me,
     })
     if (error === null)
       toast(
-        `${id === null ? 'Claimed' : 'Updated'} ${shapeName(shape)} on ${target.template.name}.`,
+        `${id === null ? 'Claimed' : 'Updated'} ${shapeName(shape)}${target === null ? '' : ` on ${target.template.name}`}.`,
       )
     return error
   },
@@ -154,7 +162,10 @@ export const openClaimTool = (kind?: RegionShapeKind, rerender?: () => void): bo
   const view = presenceView()
   if (!view.connected || view.me === null) {
     message =
-      view.me === null ? 'Sign in to Wplace to claim regions.' : 'Presence is not connected.'
+      view.me === null
+        ? 'Sign in to Wplace to claim regions.'
+        : 'Connect to a server that supports painter presence to claim regions.'
+    toast(message, 'error')
     rerenderPanel?.()
     return false
   }

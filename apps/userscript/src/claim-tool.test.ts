@@ -165,15 +165,15 @@ describe('claim tool', () => {
     expect(tool.isClaimToolActive()).toBe(false)
   })
 
-  it('refuses to claim a shape that touches no server template', async () => {
+  it('claims a shape that touches no template at all', async () => {
     harness.template = null
     const tool = await import('./claim-tool.js')
     tool.startClaimTool(host(), 'rectangle')
     drag(0, 0, 3, 3)
+    expect(tool.claimToolModel().template).toBeNull()
     tool.handleClaimToolIntent({ type: 'claim' })
-    await Promise.resolve()
-    expect(harness.saved).toHaveLength(0)
-    expect(tool.claimToolModel().message).toMatch(/server template/)
+    await vi.waitFor(() => expect(harness.saved).toHaveLength(1))
+    expect(tool.claimToolModel().message).toBeUndefined()
   })
 
   it('selects one of my claims on click, moves it with the command key, and saves it', async () => {

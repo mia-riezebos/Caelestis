@@ -137,8 +137,8 @@ const isRegion = (value: unknown): value is RegionClaim => {
   return (
     typeof region.id === 'string' &&
     region.id.length <= 64 &&
-    typeof region.templateId === 'string' &&
-    region.templateId.length <= 128 &&
+    (region.templateId === null ||
+      (typeof region.templateId === 'string' && region.templateId.length <= 128)) &&
     isWorkIdentity(region.claimant) &&
     isRegionShape(region.shape) &&
     isPresenceRect(region.rect) &&
@@ -488,6 +488,20 @@ export const presenceView = (): PresenceView => {
     regions.push(...connection.regions)
   }
   return { peers, regions, online, connected, me: accountIdentity() }
+}
+
+/** Servers with an open presence socket, in configuration order. */
+export const presenceServers = (): readonly ConnectedServer[] =>
+  [...connections.values()]
+    .filter((connection) => connection.socket?.readyState === WebSocket.OPEN)
+    .map((connection) => connection.server)
+
+/** The server a region claim came from, or null once that connection is gone. */
+export const presenceRegionServer = (id: string): ConnectedServer | null => {
+  for (const connection of connections.values()) {
+    if (connection.regions.some((region) => region.id === id)) return connection.server
+  }
+  return null
 }
 
 /** The presence connection a server template belongs to, when it is open. */

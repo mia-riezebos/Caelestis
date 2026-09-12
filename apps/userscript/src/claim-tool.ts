@@ -57,7 +57,7 @@ export interface ClaimToolRegion {
 }
 
 export interface ClaimToolHost {
-  /** The template a shape lands on, by name, or null. */
+  /** The template a shape happens to overlap, by name, or null. Information only; never a gate. */
   readonly templateFor: (shape: RegionShape) => string | null
   /** This painter's saved claims, selectable for editing. */
   readonly myRegions: () => readonly ClaimToolRegion[]
@@ -492,11 +492,6 @@ const commitClaim = async (): Promise<void> => {
   if (!active || pending || shape === null || host === null) return
   const held = shape
   const id = editingId
-  if (host.templateFor(held) === null) {
-    message = 'The shape does not touch a server template.'
-    notify()
-    return
-  }
   pending = true
   message = undefined
   notify()
