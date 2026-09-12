@@ -83,6 +83,26 @@ describe('assembleManifest', () => {
     await sql.insertNode(node)
   })
 
+  it.each([undefined, 'Server description'])(
+    'preserves server capabilities with description %s',
+    async (description) => {
+      const manifest = await assembleManifest(sql, {
+        server: {
+          ...server,
+          ...(description === undefined ? {} : { description }),
+          presence: 1,
+          livePaintParts: 1,
+        },
+        season: 1,
+        includeUnpublished: false,
+      })
+
+      expect(manifest.server.presence).toBe(1)
+      expect(manifest.server.livePaintParts).toBe(1)
+      expectDecodes(manifest)
+    },
+  )
+
   it('drops a template whose tiles a concurrent publish has not revealed yet', async () => {
     // The templates and tiles reads are not one snapshot. A publish landing between them shows the
     // template to the first query and not the second, and `chunks: []` is something the wire
