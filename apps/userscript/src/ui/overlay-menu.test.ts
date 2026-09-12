@@ -2523,6 +2523,7 @@ describe('interaction outranks a repaint', () => {
     expect(await deleteDialog()).toBe(dialog)
     await answerDelete(false)
     expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
+    expect(await focusedControl()).toBe('delete')
   })
 })
 

@@ -1262,7 +1262,6 @@ const requestDelete = (id: string, rerender: () => void): void => {
   }
   if (confirming.has(id)) return
   confirming.add(id)
-  const trigger = railActions.find((action) => action.dataset[CONTROL] === 'delete')
   void confirmDestructive({
     title: isServerTemplate(current) ? 'Delete published template?' : 'Delete template?',
     body: `${current.name} will be permanently removed.`,
@@ -1270,9 +1269,11 @@ const requestDelete = (id: string, rerender: () => void): void => {
       ? 'Everyone connected to this server will stop seeing it.'
       : 'It is stored in this browser only.',
     confirmLabel: 'Delete',
-    restoreFocusTo: trigger?.shadowRoot?.querySelector('button') ?? trigger ?? null,
   }).then((confirmed) => {
     confirming.delete(id)
+    if (openFor === id && menuOwner === id && menuNode !== null) {
+      focusControl(builtControl(menuNode, 'delete'))
+    }
     if (confirmed) confirmDelete(id, rerender)
   })
 }
