@@ -97,15 +97,7 @@ describe('region shapes', () => {
         { x: 0, y: 6 },
       ],
     }
-    expect(rows(triangle)).toEqual([
-      '######.',
-      '#####..',
-      '####...',
-      '###....',
-      '##.....',
-      '#......',
-      '.......',
-    ])
+    expect(rows(triangle)).toEqual(['######', '#####.', '####..', '###...', '##....', '#.....'])
     const line: RegionShape = {
       kind: 'path',
       closed: false,
@@ -295,5 +287,54 @@ describe('raster shapes', () => {
     expect(isRegionShape({ kind: 'pixels', x: 0, y: 0, w: 8, h: 1, mask: 'AA==' })).toBe(true)
     expect(isRegionShape({ kind: 'pixels', x: 0, y: 0, w: 8, h: 1, mask: 'AAAAAAAA' })).toBe(false)
     expect(isRegionShape({ kind: 'pixels', x: 0, y: 0, w: 600, h: 600, mask: '' })).toBe(false)
+  })
+})
+
+describe('path limits', () => {
+  it('rejects a path whose span exceeds the shape extent, whatever its op', () => {
+    const huge = {
+      kind: 'path',
+      closed: true,
+      width: 0,
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 3_000, y: 0 },
+        { x: 3_000, y: 10 },
+      ],
+    }
+    expect(isRegionShape(huge)).toBe(false)
+    expect(
+      isRegionDocument({
+        items: [
+          { id: 'a', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 1, h: 1 } },
+          { id: 'b', op: 'subtract', shape: huge },
+        ],
+      }),
+    ).toBe(false)
+    const handles = {
+      kind: 'path',
+      closed: false,
+      width: 2,
+      nodes: [
+        { x: 0, y: 0, out: { x: 2_500, y: 0 } },
+        { x: 10, y: 0 },
+      ],
+    }
+    expect(isRegionShape(handles)).toBe(false)
+  })
+
+  it('does not pad the bounds of a filled path', () => {
+    expect(
+      regionShapeBounds({
+        kind: 'path',
+        closed: true,
+        width: 0,
+        nodes: [
+          { x: 0, y: 0 },
+          { x: 10, y: 0 },
+          { x: 10, y: 10 },
+        ],
+      }),
+    ).toEqual({ x: 0, y: 0, w: 10, h: 10 })
   })
 })

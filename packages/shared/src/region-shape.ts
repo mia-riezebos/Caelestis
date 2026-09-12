@@ -160,6 +160,28 @@ const validRotation = (value: unknown): value is number => int(value) && value >
 const validCorners = (value: unknown): value is number =>
   int(value) && value >= MIN_REGION_SHAPE_CORNERS && value <= MAX_REGION_SHAPE_CORNERS
 
+/**
+ * A path, handles included, fits a box no wider or taller than a shape may be. Without this a
+ * subtract path spanning millions of pixels passes the document's area check (which counts only
+ * added items) and the rasteriser tries to allocate its whole mask.
+ */
+const pathWithinExtent = (nodes: readonly PathNode[]): boolean => {
+  let left = Number.POSITIVE_INFINITY
+  let top = Number.POSITIVE_INFINITY
+  let right = Number.NEGATIVE_INFINITY
+  let bottom = Number.NEGATIVE_INFINITY
+  for (const node of nodes) {
+    for (const point of [node, node.in, node.out]) {
+      if (point === undefined) continue
+      left = Math.min(left, point.x)
+      top = Math.min(top, point.y)
+      right = Math.max(right, point.x)
+      bottom = Math.max(bottom, point.y)
+    }
+  }
+  return right - left <= MAX_REGION_SHAPE_EXTENT && bottom - top <= MAX_REGION_SHAPE_EXTENT
+}
+
 const isPathNode = (value: unknown): value is PathNode => {
   if (!isPoint(value)) return false
   const node = value as PathNode
@@ -216,7 +238,8 @@ export const isRegionShape = (value: unknown): value is RegionShape => {
         Array.isArray(shape.nodes) &&
         shape.nodes.length >= (shape.closed ? 3 : 2) &&
         shape.nodes.length <= MAX_PATH_NODES &&
-        shape.nodes.every(isPathNode)
+        shape.nodes.every(isPathNode) &&
+        pathWithinExtent(shape.nodes as readonly PathNode[])
       )
     default:
       return false
@@ -372,7 +395,9 @@ export const regionShapeBounds = (shape: RegionShape): PresenceRect => {
       ...(node.in === undefined ? [] : [node.in]),
       ...(node.out === undefined ? [] : [node.out]),
     ])
-    return boundsOf(handles, shape.width / 2 + 1)
+    // A stroke reaches half its width past the line; a fill never leaves its hull, so a
+    // zero-width closed path pads by nothing and a claim on a surface edge stays within it.
+    return boundsOf(handles, shape.width > 0 ? shape.width / 2 + 1 : 0)
   }
   return boundsOf(regionShapeOutline(shape))
 }
