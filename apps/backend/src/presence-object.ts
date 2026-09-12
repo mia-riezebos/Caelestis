@@ -394,6 +394,11 @@ export class PresenceObject extends DurableObject<Env> {
     this.close(socket, 1011, 'presence socket error')
   }
 
+  /** Count open sockets, including hibernated sessions, without scheduling or sending updates. */
+  async online(): Promise<number> {
+    return this.sockets().length
+  }
+
   /** Reload committed claims and deliver the surface's authoritative region list. */
   async publishRegions(season: number, surface: TemplateSurface): Promise<void> {
     await this.sessions.revoke(async () => {

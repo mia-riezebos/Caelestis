@@ -7,23 +7,33 @@ import { createApp } from '../app.js'
 import { hashToken } from '../auth/tokens.js'
 import { makeBackendContext } from '../runtime/backend-runtime.js'
 
-const setup = async (openAccess = false) => {
+const setup = async (
+  openAccess = false,
+  presence: 'enabled' | 'disabled' | 'upgrade-only' = 'enabled',
+) => {
   const sql = new MemorySqlStore()
-  await sql.insertAccessToken({
-    tokenHash: await hashToken('report'),
-    scope: 'report',
-    label: 'report',
-    createdWithToken: 'a'.repeat(64),
-    createdAt: millis(Date.now()),
-  })
+  for (const scope of ['read', 'report'] as const)
+    await sql.insertAccessToken({
+      tokenHash: await hashToken(scope),
+      scope,
+      label: scope,
+      createdWithToken: 'a'.repeat(64),
+      createdAt: millis(Date.now()),
+    })
   const connectPresence = vi.fn(async () => new Response('connected'))
+  const presenceOnline = vi.fn(async () => 3)
   const app = createApp(
     makeBackendContext(
       new MemoryBlobStore(),
       sql,
       new MemoryCounterStore(sql, () => millis(Date.now())),
     ),
-    { currentSeason: 0, openAccess, connectPresence },
+    {
+      currentSeason: 0,
+      openAccess,
+      ...(presence === 'disabled' ? {} : { connectPresence }),
+      ...(presence === 'upgrade-only' ? {} : { presenceOnline }),
+    },
   )
   const request = (
     query = 'season=0&painterId=1&painterName=Mia',
@@ -32,8 +42,80 @@ const setup = async (openAccess = false) => {
     app.request(`/v1/telemetry/presence?${query}`, {
       headers: { upgrade: 'websocket', 'sec-websocket-protocol': protocols },
     })
-  return { app, request, connectPresence }
+  return { app, request, connectPresence, presenceOnline }
 }
+
+describe('presence online route', () => {
+  it.each([
+    ['surface=world', WORLD_TEMPLATE_SURFACE],
+    ['surface=alliance-picture&allianceId=7', { kind: 'alliance-picture', allianceId: 7 }],
+  ])('returns an uncached headcount for %s with a plain read token', async (query, surface) => {
+    const h = await setup()
+    const response = await h.app.request(`/v1/telemetry/presence/online?season=0&${query}`, {
+      headers: { authorization: 'Bearer read' },
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ online: 3 })
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(h.presenceOnline).toHaveBeenCalledExactlyOnceWith(0, surface)
+    expect(h.connectPresence).not.toHaveBeenCalled()
+  })
+
+  it('accepts anonymous reads without client identity and exposes the compatibility path', async () => {
+    const h = await setup(true)
+    h.presenceOnline.mockResolvedValue(0)
+    const response = await h.app.request('/telemetry/presence/online?season=0')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ online: 0 })
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(h.presenceOnline).toHaveBeenCalledExactlyOnceWith(0, WORLD_TEMPLATE_SURFACE)
+    expect(h.connectPresence).not.toHaveBeenCalled()
+  })
+
+  it.each(['disabled', 'upgrade-only'] as const)(
+    'returns 404 when presence is %s',
+    async (mode) => {
+      const h = await setup(true, mode)
+      const response = await h.app.request('/v1/telemetry/presence/online?season=0&surface=world')
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({ error: 'not found' })
+      expect(h.presenceOnline).not.toHaveBeenCalled()
+    },
+  )
+
+  it('rejects unserved seasons and invalid drawing scopes before reading the room', async () => {
+    const h = await setup(true)
+    for (const query of ['', 'season=1', 'season=bad'])
+      expect((await h.app.request(`/v1/telemetry/presence/online?${query}`)).status).toBe(404)
+    for (const query of [
+      'surface=bad',
+      'surface=alliance-picture',
+      'surface=alliance-picture&allianceId=0',
+      'surface=world&allianceId=bad',
+      'surface=world&allianceId=-1',
+      'surface=world&allianceId=1.5',
+    ])
+      expect((await h.app.request(`/v1/telemetry/presence/online?season=0&${query}`)).status).toBe(
+        400,
+      )
+    expect(h.presenceOnline).not.toHaveBeenCalled()
+  })
+
+  it('requires read authentication and rejects invalid tokens even on an open server', async () => {
+    const closed = await setup()
+    expect((await closed.app.request('/v1/telemetry/presence/online?season=0')).status).toBe(401)
+    const open = await setup(true)
+    expect(
+      (
+        await open.app.request('/v1/telemetry/presence/online?season=0', {
+          headers: { authorization: 'Bearer bad' },
+        })
+      ).status,
+    ).toBe(401)
+    expect(closed.presenceOnline).not.toHaveBeenCalled()
+    expect(open.presenceOnline).not.toHaveBeenCalled()
+  })
+})
 
 describe('presence upgrade route', () => {
   it('authenticates the protocol token, forwards identity and metrics, and advertises presence', async () => {

@@ -22,7 +22,7 @@ export const syncClaimToolState = (): void => {
       ready || active
         ? active
           ? 'Leave claim mode without saving (Esc)'
-          : 'Claim a region: draw shapes, paths, and strokes over the map (M or L)'
+          : 'Claim a region: draw shapes, paths, and strokes over the map (M)'
         : 'Claim a region. Needs a connected server with painter presence and a Wplace sign-in.',
     pressed: active,
     ...(ready || active ? {} : { disabled: true }),

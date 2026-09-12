@@ -296,6 +296,9 @@ export const RegionClaimRequest = Schema.Struct({
   actor: PresenceIdentity,
 })
 
+/** HTTP headcount of open presence sockets in one room. */
+export const PresenceOnline = Schema.Struct({ online: NonNegativeInteger })
+
 export const PresenceServerEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal('presence-ready'),

@@ -24,3 +24,6 @@ export type ConnectPresence = (
   request: Request,
   connection: PresenceConnection,
 ) => Promise<Response>
+
+/** Count open room sockets without starting presence delivery. */
+export type PresenceOnline = (season: number, surface: TemplateSurface) => Promise<number>

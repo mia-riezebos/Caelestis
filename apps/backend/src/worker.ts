@@ -101,6 +101,8 @@ const appFor = (env: Env): App => {
     openAccess: env.OPEN_ACCESS === 'true',
     connectStatusLive: (request, connection) =>
       statusReadModelFor(env).connectLive(request, connection),
+    presenceOnline: (season, surface) =>
+      env.PRESENCE.getByName(`${season}:${templateSurfaceKey(surface)}`).online(),
     connectPresence: async (request, connection) => {
       const { season, surface, painter } = connection
       if (connection.revocable)

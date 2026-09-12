@@ -130,6 +130,30 @@ afterEach(() => {
 })
 
 describe('presence room', () => {
+  it('counts open sockets after hibernation without scheduling, sending, or reading D1', async () => {
+    expect(await object.online()).toBe(0)
+    const observer = await attach({ 'x-caelestis-credential-scope': 'read' })
+    const closed = await attach()
+    const closing = await attach()
+    expect(await object.online()).toBe(3)
+    closed.readyState = 3
+    closing.serializeAttachment({ closed: true })
+    vi.clearAllTimers()
+    for (const socket of sockets) socket.send.mockClear()
+    object = new PresenceObject(state, { DB: database } as unknown as Env)
+    const getWebSockets = vi.spyOn(state, 'getWebSockets')
+    const prepare = vi.spyOn(database, 'prepare')
+
+    expect(await object.online()).toBe(1)
+    expect(getWebSockets).toHaveBeenCalledExactlyOnceWith('presence')
+    expect(vi.getTimerCount()).toBe(0)
+    tick()
+    for (const socket of sockets) expect(socket.send).not.toHaveBeenCalled()
+    expect(prepare).not.toHaveBeenCalled()
+    observer.readyState = 3
+    expect(await object.online()).toBe(0)
+  })
+
   it('sends nearby masks, excludes self, and removes peers when the viewport moves away', async () => {
     const a = await attach()
     const b = await attach()

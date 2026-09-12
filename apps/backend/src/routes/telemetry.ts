@@ -29,7 +29,7 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   TILE_HISTORY_RESOLUTIONS,
 } from '../ports/index.js'
-import type { ConnectPresence } from '../presence/port.js'
+import type { ConnectPresence, PresenceOnline } from '../presence/port.js'
 import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
 import { runBackendHttp, runBackendMiddleware } from '../runtime/hono.js'
 import {
@@ -224,6 +224,7 @@ export const createTelemetryRoutes = (
   options: {
     readonly currentSeason: number
     readonly connectPresence?: ConnectPresence
+    readonly presenceOnline?: PresenceOnline
     readonly connectStatusLive?: (
       request: Request,
       connection: {
@@ -243,6 +244,23 @@ export const createTelemetryRoutes = (
   },
 ) => {
   const routes = new Hono()
+
+  routes.get('/presence/online', requireScopeEffect(runtime, auth, 'read'), async (c) => {
+    c.header('cache-control', 'no-store')
+    if (options.connectPresence === undefined || options.presenceOnline === undefined)
+      return c.json({ error: 'not found' }, 404)
+    const season = wholeNumber(c.req.query('season'))
+    if (season === null || season !== options.currentSeason)
+      return c.json({ error: 'season is not served by this live endpoint' }, 404)
+    const allianceId = c.req.query('allianceId')
+    const surface = templateSurface(
+      c.req.query('surface') ?? 'world',
+      allianceId === undefined ? null : wholeNumber(allianceId),
+    )
+    if (surface === null || (allianceId !== undefined && wholeNumber(allianceId) === null))
+      return c.json({ error: 'invalid drawing surface' }, 400)
+    return c.json({ online: await options.presenceOnline(season, surface) })
+  })
 
   routes.get(
     '/presence',

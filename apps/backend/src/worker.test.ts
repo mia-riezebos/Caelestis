@@ -61,6 +61,32 @@ it('routes presence to the named surface room with authenticated internal header
   })
 })
 
+it.each([
+  ['surface=world', '0:world'],
+  ['surface=alliance-picture&allianceId=7', '0:alliance-picture:7'],
+])('reads the presence headcount through one room RPC for %s', async (query, room) => {
+  const environment = env()
+  const online = vi.fn(async () => 5)
+  const getByName = vi.fn(() => ({ online }))
+  const configured = {
+    ...environment,
+    PRESENCE: { getByName },
+    SEASON: '0',
+    OPEN_ACCESS: 'true',
+  } as unknown as Env
+  const prepare = vi.spyOn(environment.DB, 'prepare')
+  const response = await worker.fetch(
+    new Request(`https://example.com/telemetry/presence/online?season=0&${query}`),
+    configured,
+  )
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ online: 5 })
+  expect(response.headers.get('cache-control')).toBe('no-store')
+  expect(getByName).toHaveBeenCalledExactlyOnceWith(room)
+  expect(online).toHaveBeenCalledExactlyOnceWith()
+  expect(prepare).not.toHaveBeenCalled()
+})
+
 let d1: SqliteD1Database | null = null
 
 afterEach(() => {

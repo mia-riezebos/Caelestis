@@ -149,7 +149,7 @@
 
   <SectionHeader title="Painters" icon="share" />
   <SettingRow label="Share where I am" hint="Other painters on the same server see the area you are looking at and the pixels you have drafted, while this tab is open. Nothing is stored.">{#snippet children()}<Toggle label="Share where I am" checked={model.sharePresence} onChange={(value) => emit({ type: 'set-boolean', key: 'sharePresence', value })} />{/snippet}</SettingRow>
-  <SettingRow label="Show other painters" hint="Draws their viewports, drafts, and claimed regions under the artwork at low opacity.">{#snippet children()}<Toggle label="Show other painters" checked={model.showPresence} onChange={(value) => emit({ type: 'set-boolean', key: 'showPresence', value })} />{/snippet}</SettingRow>
+  <SettingRow label="Show other painters" hint="Draws their viewports, drafts, and claimed regions over the artwork, see-through. Q toggles this.">{#snippet children()}<Toggle label="Show other painters" checked={model.showPresence} onChange={(value) => emit({ type: 'set-boolean', key: 'showPresence', value })} />{/snippet}</SettingRow>
 
   <SectionHeader title="Diagnostics" icon="bug" />
   <SettingRow label="Debug logging" hint="Verbose console output for bug reports">{#snippet children()}<Toggle label="Debug logging" checked={model.debugLogging} onChange={(value) => emit({ type: 'set-boolean', key: 'debugLogging', value })} />{/snippet}</SettingRow>

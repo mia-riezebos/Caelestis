@@ -172,8 +172,13 @@
       },
       {
         id: 'claim', category: 'Overlay', title: 'Claim mode',
-        description: 'M enters claim mode with the rectangle tool, L with the ellipse. Inside, V selects, A edits path anchors, P is the pen, N the pencil, B the brush; Enter confirms, Delete removes a shape, Escape leaves.',
-        rows: [{ key: 'M', label: 'Claim mode, rectangle' }, { key: 'L', label: 'Claim mode, ellipse' }], keyboardKeys: ['KeyM', 'KeyL'],
+        description: 'M enters claim mode with the rectangle tool. Inside, V selects, A edits path anchors, P is the pen, N the pencil, B the brush, M the rectangle, L the ellipse; Enter confirms, Delete removes a shape, Escape leaves.',
+        rows: [{ key: 'M', label: 'Claim mode' }], keyboardKeys: ['KeyM'],
+      },
+      {
+        id: 'presence', category: 'Overlay', title: 'Show or hide other painters',
+        description: 'Q hides other painters’ viewports and every claimed region, and shows them again.',
+        rows: [{ key: 'Q', label: 'Other painters and claims' }], keyboardKeys: ['KeyQ'],
       },
       {
         id: 'rings', category: 'Overlay', title: 'Toggle contrast rings',

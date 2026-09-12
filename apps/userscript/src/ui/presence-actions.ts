@@ -182,7 +182,7 @@ const ready = (): boolean => {
   return false
 }
 
-/** Enter claim mode with a tool in hand, from the rail, the drawer, or the M and L keys. */
+/** Enter claim mode with a tool in hand, from the rail, the drawer, or the M key. */
 export const openClaimTool = (tool?: ClaimTool, rerender?: () => void): boolean => {
   if (rerender !== undefined) rerenderPanel = rerender
   if (!ready()) return false

@@ -192,12 +192,17 @@ export const installKeyboardShortcuts = (
       togglePanel()
       return
     }
-    if (shortcut === 'claim-rectangle' || shortcut === 'claim-ellipse') {
+    if (shortcut === 'claim-mode') {
       // Claimed on every canvas so Wplace never sees the key; alliance artboards have no
       // presence room yet, so only the world canvas opens the tool.
       claim()
-      if (allianceSurface === null)
-        openClaimTool(shortcut === 'claim-rectangle' ? 'rectangle' : 'ellipse')
+      if (allianceSurface === null) openClaimTool('rectangle')
+      return
+    }
+    if (shortcut === 'toggle-presence') {
+      // Hide or show other painters' viewports and every region claim, to ignore them for a while.
+      claim()
+      setState({ showPresence: !getState().showPresence })
       return
     }
     if (shortcut === 'toggle-template-menu') {

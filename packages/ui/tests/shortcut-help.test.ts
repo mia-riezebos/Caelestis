@@ -57,17 +57,17 @@ describe('shortcut help', () => {
     const map = document.querySelector<HTMLElement>('.caelestis-keymap')
     const previous = map?.querySelector<HTMLButtonElement>('[data-keyboard-key="KeyA"]')
     const next = map?.querySelector<HTMLButtonElement>('[data-keyboard-key="KeyD"]')
-    const unused = map?.querySelector<HTMLElement>('[data-keyboard-key="KeyQ"]')
+    const unused = map?.querySelector<HTMLElement>('[data-keyboard-key="AltLeft"]')
 
     expect(previous?.dataset.shortcutSet).toBe('colour-cycle')
     expect(next?.dataset.shortcutSet).toBe('colour-cycle')
     expect(unused).not.toBeInstanceOf(HTMLButtonElement)
     expect(
-      ['Escape', 'Digit1', 'KeyQ', 'KeyA', 'KeyZ'].map(
+      ['Escape', 'Digit1', 'AltLeft', 'KeyA', 'KeyZ'].map(
         (code) =>
           map?.querySelector<HTMLElement>(`[data-keyboard-key="${code}"]`)?.dataset.keyUnits,
       ),
-    ).toEqual(['1.25', '1', '1', '1', '1'])
+    ).toEqual(['1.25', '1', '1.25', '1', '1'])
     expect(map?.querySelector<HTMLElement>('[data-keyboard-key="Tab"]')?.dataset.keyUnits).toBe(
       '1.5',
     )

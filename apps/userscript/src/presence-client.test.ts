@@ -24,6 +24,11 @@ const harness = vi.hoisted(() => ({
   draftedTiles: [] as { x: number; y: number }[],
   draftedOffsets: new Map<string, number[]>(),
   mutations: [] as { url: string; init: RequestInit }[],
+  reads: [] as { url: string; init: RequestInit }[],
+  /** Presence headcount per server origin; a missing entry answers 404. */
+  online: new Map<string, number>(),
+  /** Region claims per server origin, served to servers without the socket. */
+  regions: new Map<string, unknown[]>(),
 }))
 
 vi.mock('./state.js', () => ({
@@ -48,6 +53,22 @@ vi.mock('./server-transport.js', () => ({
   requestServerMutation: (url: string, init: RequestInit) => {
     harness.mutations.push({ url, init })
     return Promise.resolve({ response: new Response(null, { status: 200 }), body: {} })
+  },
+  requestServerMetadata: (url: string, init: RequestInit) => {
+    harness.reads.push({ url, init })
+    const { origin, pathname } = new URL(url)
+    if (pathname.endsWith('/telemetry/presence/online')) {
+      const online = harness.online.get(origin)
+      return Promise.resolve(
+        online === undefined
+          ? { response: new Response(null, { status: 404 }), body: { error: 'not found' } }
+          : { response: new Response(null, { status: 200 }), body: { online } },
+      )
+    }
+    return Promise.resolve({
+      response: new Response(null, { status: 200 }),
+      body: { regions: harness.regions.get(origin) ?? [] },
+    })
   },
 }))
 vi.mock('./client-metrics.js', () => ({ userscriptVersion: '0.0.0-test' }))
@@ -127,7 +148,15 @@ beforeEach(() => {
   harness.draftedTiles = []
   harness.draftedOffsets = new Map()
   harness.mutations = []
+  harness.reads = []
+  harness.online = new Map([[server.url, 1]])
+  harness.regions = new Map()
 })
+
+/** Let the election's probes resolve; they are plain promises, not timers. */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 12; i++) await Promise.resolve()
+}
 
 afterEach(async () => {
   const { resetPresence } = await import('./presence-client.js')
@@ -140,6 +169,7 @@ afterEach(async () => {
 const connect = async () => {
   const client = await import('./presence-client.js')
   client.installPresence()
+  await settle()
   const socket = FakeWebSocket.instances[0]
   if (socket === undefined) throw new Error('no socket opened')
   socket.open()
@@ -147,7 +177,7 @@ const connect = async () => {
 }
 
 describe('presence client', () => {
-  it('opens one socket per server with the painter identity and credential protocol', async () => {
+  it('opens one socket with the painter identity and credential protocol', async () => {
     const { socket } = await connect()
     const url = new URL(socket.url)
     expect(url.protocol).toBe('wss:')
@@ -164,7 +194,95 @@ describe('presence client', () => {
     harness.state.servers = [{ ...server, info: { ...server.info, presence: undefined } }]
     const client = await import('./presence-client.js')
     client.installPresence()
+    await settle()
     expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(harness.reads).toHaveLength(0)
+  })
+
+  it('opens a single socket on the server with the fewest painters online', async () => {
+    const busy = {
+      ...server,
+      url: 'https://busy.test',
+      info: { ...server.info, id: 'a-busy' },
+    }
+    const quiet = {
+      ...server,
+      url: 'https://quiet.test',
+      info: { ...server.info, id: 'b-quiet' },
+    }
+    harness.state.servers = [busy, quiet]
+    harness.online = new Map([
+      [busy.url, 40],
+      [quiet.url, 3],
+    ])
+    const claim = {
+      id: 'r-busy',
+      season: 3,
+      surface: { kind: 'world', allianceId: null },
+      templateId: null,
+      claimant: { wplaceUserId: 9, displayName: 'Sam' },
+      document: {
+        items: [{ id: 'a', op: 'add', shape: { kind: 'rectangle', x: 5, y: 5, w: 10, h: 10 } }],
+      },
+      rect: { x: 5, y: 5, w: 10, h: 10 },
+      label: '',
+      createdAt: 1,
+    }
+    harness.regions.set(busy.url, [claim])
+    const client = await import('./presence-client.js')
+    client.installPresence()
+    await settle()
+    // Both were asked, once each, with the bearer token; only the quiet one got the socket.
+    const probes = harness.reads.filter((read) => read.url.includes('/telemetry/presence/online'))
+    expect(probes.map((read) => new URL(read.url).origin).sort()).toEqual([busy.url, quiet.url])
+    expect(new Headers(probes[0]?.init.headers).get('authorization')).toBe('Bearer secret-token')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]?.url.startsWith('wss://quiet.test')).toBe(true)
+    FakeWebSocket.instances[0]?.open()
+    // The busy server still contributes its claims, fetched over HTTP.
+    await settle()
+    expect(client.presenceView().regions).toEqual([claim])
+    expect(client.presenceServers().map((held) => held.url)).toEqual([quiet.url, busy.url])
+    expect(client.presenceLiveServer()?.url).toBe(quiet.url)
+    // Claims on the busy server are saved over HTTP and its list is fetched again straight away.
+    const before = harness.reads.length
+    await client.claimRegion(busy, '0192e7c0-0000-7000-8000-000000000002', {
+      templateId: null,
+      document: claim.document,
+      label: '',
+      actor: { wplaceUserId: 7, displayName: 'Mia' },
+    })
+    await settle()
+    expect(harness.reads.slice(before).some((read) => read.url.includes('/work/regions'))).toBe(
+      true,
+    )
+  })
+
+  it('breaks a headcount tie by server id and treats an unanswered probe as the busiest', async () => {
+    const zed = { ...server, url: 'https://zed.test', info: { ...server.info, id: 'z' } }
+    const amy = { ...server, url: 'https://amy.test', info: { ...server.info, id: 'a' } }
+    const mute = { ...server, url: 'https://mute.test', info: { ...server.info, id: '0' } }
+    harness.state.servers = [zed, amy, mute]
+    harness.online = new Map([
+      [zed.url, 5],
+      [amy.url, 5],
+    ])
+    const client = await import('./presence-client.js')
+    client.installPresence()
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]?.url.startsWith('wss://amy.test')).toBe(true)
+  })
+
+  it('keeps the open socket where it is when a quieter server appears', async () => {
+    const { socket } = await connect()
+    const quiet = { ...server, url: 'https://quiet.test', info: { ...server.info, id: 'b' } }
+    harness.online.set(quiet.url, 0)
+    harness.state.servers = [server, quiet]
+    harness.listener?.()
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(socket.readyState).toBe(1)
   })
 
   it('publishes the first viewport at once and later ones at most every two seconds', async () => {
@@ -279,6 +397,7 @@ describe('presence client', () => {
     socket.receive({ type: 'presence-ready', sessionId: 42 })
     expect(socket.readyState).toBe(3)
     await vi.advanceTimersByTimeAsync(2_000)
+    await settle()
     expect(FakeWebSocket.instances).toHaveLength(2)
   })
 

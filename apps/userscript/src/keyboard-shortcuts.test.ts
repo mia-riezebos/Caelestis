@@ -203,7 +203,7 @@ describe('keyboard shortcut actions', () => {
     expect(press('b').defaultPrevented).toBe(true)
     expect(press('Escape').defaultPrevented).toBe(true)
     expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
-    for (const key of ['a', 'd', 'f', 'l', 'm', 'n', 's', 'w', 'x']) {
+    for (const key of ['a', 'd', 'f', 'm', 'n', 'q', 's', 'w', 'x']) {
       expect(press(key).defaultPrevented).toBe(true)
     }
 
@@ -238,7 +238,7 @@ describe('keyboard shortcut actions', () => {
     harness.allianceStage = stage
 
     expect(press('b').defaultPrevented).toBe(true)
-    for (const key of ['1', 'a', 'c', 'd', 'f', 'g', 'l', 'm', 'n', 'r', 's', 't', 'v', 'w', 'x']) {
+    for (const key of ['1', 'a', 'c', 'd', 'f', 'g', 'm', 'n', 'q', 'r', 's', 't', 'v', 'w', 'x']) {
       expect(press(key).defaultPrevented).toBe(true)
     }
 
@@ -315,6 +315,14 @@ describe('keyboard shortcut actions', () => {
     expect(harness.paintAction).toHaveBeenCalledOnce()
     expect(harness.cancelPaint).toHaveBeenCalledOnce()
     expect(harness.toggleTheme).toHaveBeenCalledOnce()
+  })
+
+  it('opens claim mode on M and toggles other painters on Q', async () => {
+    const { openClaimTool } = await import('./ui/presence-actions.js')
+    expect(press('m').defaultPrevented).toBe(true)
+    expect(openClaimTool).toHaveBeenCalledWith('rectangle')
+    expect(press('q').defaultPrevented).toBe(true)
+    expect(harness.setState).toHaveBeenCalledWith({ showPresence: true })
   })
 
   it('leaves Escape available when no paint draft is open', () => {

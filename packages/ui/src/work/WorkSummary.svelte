@@ -83,7 +83,7 @@
           <div class="claim-actions">
             <Button
               label="Claim a region"
-              title="Draw a rectangle, ellipse, polygon, or star on the map (M or L)"
+              title="Draw a rectangle, ellipse, polygon, or star on the map (M)"
               size="compact"
               kind="ghost"
               disabled={!presence.canClaim || presence.pending === true}
@@ -94,7 +94,7 @@
             <p class="notice" role="alert">{presence.message}</p>
           {/if}
           {#if presence.regions.length === 0}
-            <p class="empty">No region claims yet. Press M or L on the map, or use the button above.</p>
+            <p class="empty">No region claims yet. Press M on the map, or use the button above.</p>
           {/if}
           {#each presence.regions as region (region.id)}
             <div class="region" data-mine={String(region.mine)}>

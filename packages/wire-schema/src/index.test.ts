@@ -34,6 +34,7 @@ import {
   PaintTile,
   PresenceClientEvent,
   PresenceDraft,
+  PresenceOnline,
   PresenceRect,
   PresenceServerEvent,
   RegionClaimRequest,
@@ -54,6 +55,13 @@ import {
 const HASH = 'a'.repeat(64)
 
 describe('presence schemas', () => {
+  it('accepts only non-negative integer HTTP headcounts', () => {
+    for (const online of [0, 3])
+      expect(Schema.decodeUnknownSync(PresenceOnline)({ online })).toEqual({ online })
+    for (const invalid of [{}, { online: -1 }, { online: 0.5 }, { online: '3' }, { online: NaN }])
+      expect(() => Schema.decodeUnknownSync(PresenceOnline)(invalid)).toThrow()
+  })
+
   it.each([{}, { templateId: null }])('decodes a claim request with template hint %j', (hint) => {
     const request = {
       ...hint,
