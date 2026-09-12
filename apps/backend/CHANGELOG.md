@@ -1,5 +1,11 @@
 # @caelestis/backend
 
+## 0.4.3
+
+### Patch Changes
+
+- 6021b80: Add caelest.is and backend.caelest.is alongside the existing Caelestis domains.
+
 ## 0.4.2
 
 ### Patch Changes

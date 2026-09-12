@@ -1,5 +1,18 @@
 # @caelestis/userscript
 
+## 0.10.0
+
+### Minor Changes
+
+- 7c75cc2: Show placed Wplace alliance templates with a Copy to Local action while keeping extra Caelestis templates outside native alliance limits.
+- 7c75cc2: Sync personal world templates with Wplace while preserving Caelestis folders, appearance, and artwork history.
+
+### Patch Changes
+
+- f12e475: Number new Local folders against their siblings only, so a "New folder" elsewhere in the tree no longer forces "New folder 2".
+- 59e67a5: Mirror personal world-template tags with Wplace while keeping tags beyond its limits in Caelestis.
+- 16ef2af: Use the same deletion confirmation dialog from template rails and context menus.
+
 ## 0.9.0
 
 ### Minor Changes
