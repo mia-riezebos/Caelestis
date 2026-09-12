@@ -7,6 +7,7 @@ import {
   MIN_REGION_SHAPE_CORNERS,
   type PathNode,
   type Point,
+  type PresenceRect,
   type RegionDocument,
   type RegionItem,
   type RegionShape,
@@ -14,6 +15,7 @@ import {
   regionDocumentContainsPixel,
   regionDocumentPixels,
   regionShapeBounds,
+  regionShapeCentre,
   regionShapeContainsPixel,
   regionShapeOutline,
   translateRegionShape,
@@ -58,6 +60,17 @@ const HIT_RADIUS_CSS = 9
 const CLICK_SLOP_PX = 4
 const STROKE_STEP_PX = 2
 const DEFAULT_INNER = 50
+/** Just outside a bounding-box corner, this far in CSS pixels, the pointer rotates the shape. */
+const ROTATE_ZONE_CSS = 28
+/** How far the rotate handle floats above the bounding box, in CSS pixels. */
+const ROTATE_STEM_CSS = 26
+/** Illustrator's Shift while rotating: whole turns of this many degrees. */
+const ROTATE_SNAP_DEGREES = 15
+/** The bezier control distance that makes four cubic segments a near-perfect ellipse. */
+const ELLIPSE_KAPPA = 0.5522847498
+const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M10 3a7 7 0 1 1-6.3 4" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/><path d="M10 3a7 7 0 1 1-6.3 4" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"/><path d="M3 2v5.5h5.5" fill="none" stroke="#fff" stroke-width="3.5" stroke-linejoin="round"/><path d="M3 2v5.5h5.5" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"/></svg>',
+)}") 10 10, alias`
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
 /** Illustrator's keys where it has them: V, A, Q, P, N, B, M, L. */
@@ -117,6 +130,7 @@ type DragKind =
   | 'pen'
   | 'marquee'
   | 'lasso'
+  | 'rotate'
 
 interface Drag {
   readonly kind: DragKind
@@ -133,6 +147,8 @@ interface Drag {
   readonly index: number
   /** For node drags: which part of the node. */
   readonly part: 'anchor' | 'in' | 'out'
+  /** Where the press landed, in canvas coordinates, for angles measured from the origin. */
+  readonly press: Point
   moved: boolean
 }
 
@@ -549,8 +565,116 @@ const startDrag = (
     group: kind === 'move' ? selectedItems() : [],
     index,
     part,
+    press: canvasPixelAt(event.clientX, event.clientY) ?? { x: origin.x, y: origin.y },
     moved: false,
   }
+}
+
+type PathShape = Extract<RegionShape, { kind: 'path' }>
+
+/**
+ * A parametric shape as a closed path with the same pixels, so its anchors can be edited one by
+ * one: corners for a rectangle, polygon, or star; four smooth anchors with bezier handles for an
+ * ellipse. This is what Illustrator does too: a rectangle is a path with four anchors.
+ */
+const toPath = (shape: RegionShape): PathShape => {
+  if (shape.kind === 'path') return shape
+  if (shape.kind === 'ellipse') {
+    const cx = shape.x + shape.w / 2
+    const cy = shape.y + shape.h / 2
+    const rx = shape.w / 2
+    const ry = shape.h / 2
+    const kx = rx * ELLIPSE_KAPPA
+    const ky = ry * ELLIPSE_KAPPA
+    return {
+      kind: 'path',
+      closed: true,
+      width: 0,
+      nodes: [
+        { x: cx, y: cy - ry, in: { x: cx - kx, y: cy - ry }, out: { x: cx + kx, y: cy - ry } },
+        { x: cx + rx, y: cy, in: { x: cx + rx, y: cy - ky }, out: { x: cx + rx, y: cy + ky } },
+        { x: cx, y: cy + ry, in: { x: cx + kx, y: cy + ry }, out: { x: cx - kx, y: cy + ry } },
+        { x: cx - rx, y: cy, in: { x: cx - rx, y: cy + ky }, out: { x: cx - rx, y: cy - ky } },
+      ],
+    }
+  }
+  return {
+    kind: 'path',
+    closed: true,
+    width: 0,
+    nodes: regionShapeOutline(shape).map((point) => ({ x: point.x, y: point.y })),
+  }
+}
+
+/** The anchors the direct-selection tool shows for a shape, in canvas coordinates. */
+const anchorsOf = (shape: RegionShape): readonly Point[] =>
+  shape.kind === 'path' ? shape.nodes : toPath(shape).nodes
+
+const rotatePoint = (point: Point, centre: Point, radians: number): Point => {
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  const dx = point.x - centre.x
+  const dy = point.y - centre.y
+  return { x: centre.x + dx * cos - dy * sin, y: centre.y + dx * sin + dy * cos }
+}
+
+const rotatePath = (path: PathShape, centre: Point, radians: number): PathShape => ({
+  ...path,
+  nodes: path.nodes.map((node) => ({
+    ...rotatePoint(node, centre, radians),
+    ...(node.in === undefined ? {} : { in: rotatePoint(node.in, centre, radians) }),
+    ...(node.out === undefined ? {} : { out: rotatePoint(node.out, centre, radians) }),
+  })),
+})
+
+/**
+ * A shape turned by `radians` about its centre. Polygons and stars turn in place, in whole
+ * degrees; anything else becomes a path first, since a rectangle or ellipse has no angle.
+ */
+const rotateShape = (shape: RegionShape, centre: Point, radians: number): RegionShape => {
+  if (shape.kind === 'polygon' || shape.kind === 'star') {
+    const turned = Math.round((radians * 180) / Math.PI)
+    return { ...shape, rotation: (((shape.rotation + turned) % 360) + 360) % 360 }
+  }
+  return rotatePath(toPath(shape), centre, radians)
+}
+
+/** The bounding-box corners of a shape, projected to client pixels. */
+const cornersOnScreen = (
+  shape: RegionShape,
+): { readonly corners: readonly Point[]; readonly box: PresenceRect } | null => {
+  const projection = screenProjection()
+  if (projection === null) return null
+  const box = regionShapeBounds(shape)
+  const corners = [
+    { x: box.x, y: box.y },
+    { x: box.x + box.w, y: box.y },
+    { x: box.x + box.w, y: box.y + box.h },
+    { x: box.x, y: box.y + box.h },
+  ].map((corner) => projection.pointFor(corner.x, corner.y))
+  return { corners, box }
+}
+
+/**
+ * Whether a client point sits in a rotate zone: just outside a bounding-box corner of the one
+ * selected shape, past the corner's own handle, as Illustrator's cursor does near a corner.
+ */
+const inRotateZone = (clientX: number, clientY: number): boolean => {
+  const item = selectedItem()
+  if (item === null || tool !== 'direct') return false
+  const screen = cornersOnScreen(item.shape)
+  if (screen === null) return false
+  const [a, , c] = screen.corners
+  if (a === undefined || c === undefined) return false
+  const insideBox =
+    clientX >= Math.min(a.x, c.x) - HIT_RADIUS_CSS &&
+    clientX <= Math.max(a.x, c.x) + HIT_RADIUS_CSS &&
+    clientY >= Math.min(a.y, c.y) - HIT_RADIUS_CSS &&
+    clientY <= Math.max(a.y, c.y) + HIT_RADIUS_CSS
+  if (insideBox) return false
+  return screen.corners.some(
+    (corner) => Math.hypot(clientX - corner.x, clientY - corner.y) <= ROTATE_ZONE_CSS,
+  )
 }
 
 const onHandlePress = (event: PointerEvent, target: Element): boolean => {
@@ -578,6 +702,13 @@ const onHandlePress = (event: PointerEvent, target: Element): boolean => {
     startDrag(kind, event, { x: shape.cx, y: shape.cy }, item)
   } else if (kind === 'node' && shape.kind === 'path') {
     startDrag('node', event, { x: 0, y: 0 }, item, index, (part as Drag['part']) ?? 'anchor')
+  } else if (kind === 'anchor' && shape.kind !== 'path') {
+    // Editing one anchor of a rectangle, ellipse, polygon, or star turns it into a path first.
+    const converted: RegionItem = { ...item, shape: toPath(shape) }
+    replaceItem(item.id, converted.shape)
+    startDrag('node', event, { x: 0, y: 0 }, converted, index, 'anchor')
+  } else if (kind === 'rotate') {
+    startDrag('rotate', event, regionShapeCentre(shape), item)
   } else return false
   message = undefined
   notify()
@@ -597,6 +728,13 @@ const onPointerDown = (event: PointerEvent): void => {
   const px = pixel(point.x)
   const py = pixel(point.y)
   message = undefined
+  if (inRotateZone(event.clientX, event.clientY)) {
+    const item = selectedItem() as RegionItem
+    consume(event)
+    startDrag('rotate', event, regionShapeCentre(item.shape), item)
+    notify()
+    return
+  }
   switch (tool) {
     case 'select':
     case 'direct': {
@@ -734,7 +872,15 @@ const onPointerMove = (event: PointerEvent): void => {
       const py = point === null ? -1 : pixel(point.y)
       const overItem = point !== null && itemAt(px, py) !== null
       const overSaved = !overItem && point !== null && savedClaimAt(px, py) !== null
-      setCursor(overItem ? 'move' : overSaved ? 'pointer' : 'default')
+      setCursor(
+        inRotateZone(event.clientX, event.clientY)
+          ? ROTATE_CURSOR
+          : overItem
+            ? 'move'
+            : overSaved
+              ? 'pointer'
+              : 'default',
+      )
     } else setCursor(toolCursor())
     return
   }
@@ -820,6 +966,20 @@ const onPointerMove = (event: PointerEvent): void => {
         base.id,
         moveNode(current.shape, drag.index, drag.part, target.x, target.y, base.shape),
       )
+      break
+    }
+    case 'rotate': {
+      if (base === null) return
+      const centre = { x: drag.originX, y: drag.originY }
+      let radians =
+        Math.atan2(point.y - centre.y, point.x - centre.x) -
+        Math.atan2(drag.press.y - centre.y, drag.press.x - centre.x)
+      if (event.shiftKey) {
+        const step = (ROTATE_SNAP_DEGREES * Math.PI) / 180
+        radians = Math.round(radians / step) * step
+      }
+      replaceItem(base.id, rotateShape(base.shape, centre, radians))
+      setCursor(ROTATE_CURSOR)
       break
     }
     case 'stroke': {
@@ -1199,6 +1359,30 @@ const syncOverlay = (): void => {
         if (shape.kind === 'star' && ring[1] !== undefined)
           handle(project(ring[1]), 'inner:0', 'rgb(255 160 40)')
       }
+    }
+    if (tool === 'direct') {
+      // A rotate handle floats above the box; the zones just outside its corners rotate too.
+      const box = regionShapeBounds(shape)
+      const top = project({ x: box.x + box.w / 2, y: box.y })
+      const grip = { x: top.x, y: top.y - ROTATE_STEM_CSS }
+      root.appendChild(
+        svg('line', {
+          x1: top.x,
+          y1: top.y,
+          x2: grip.x,
+          y2: grip.y,
+          stroke: accent,
+          'stroke-width': 1,
+        }),
+      )
+      handle(grip, 'rotate:0', 'rgb(120 200 90)')
+      const rotateGrip = root.lastElementChild as SVGElement | null
+      if (rotateGrip !== null) rotateGrip.style.cursor = ROTATE_CURSOR
+    }
+    if (tool === 'direct' && shape.kind !== 'path') {
+      // Every shape has anchors under direct selection; dragging one makes it a path.
+      for (const [index, anchor] of anchorsOf(shape).entries())
+        handle(project(anchor), `anchor:${index}`, accent)
     }
     if (tool === 'direct' && shape.kind === 'path') {
       shape.nodes.forEach((node, index) => {

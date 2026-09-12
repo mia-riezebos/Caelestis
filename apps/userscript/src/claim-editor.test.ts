@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { RegionDocument } from '@caelestis/shared'
+import { type RegionDocument, regionDocumentContainsPixel } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
@@ -258,6 +258,86 @@ describe('claim editor', () => {
     pointer('pointermove', 29, 24)
     pointer('pointerup', 29, 24)
     expect(editor.claimEditorPixels()?.rect).toEqual({ x: 10, y: 10, w: 20, h: 15 })
+  })
+
+  it('lets direct selection drag any anchor of a rectangle, turning it into a path', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 29, 29)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(15, 15)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle^="anchor:"]'),
+    ).toHaveLength(4)
+    // Corner 2 is the bottom-right (30, 30); pulling it out makes a kite, no longer a box.
+    const corner = handle('anchor:2')
+    pointer('pointerdown', 30, 30, corner)
+    pointer('pointermove', 50, 50)
+    pointer('pointerup', 50, 50)
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(
+      document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":anchor"]'),
+    ).toHaveLength(4)
+    key('Enter')
+    await Promise.resolve()
+    const document_ = harness.saved[0]?.document as RegionDocument
+    const shape = document_.items[0]?.shape
+    expect(shape?.kind).toBe('path')
+    expect(shape?.kind === 'path' ? shape.nodes.length : 0).toBe(4)
+    expect(regionDocumentContainsPixel(document_, 45, 45)).toBe(true)
+    expect(regionDocumentContainsPixel(document_, 12, 45)).toBe(false)
+    expect(regionDocumentContainsPixel(document_, 15, 15)).toBe(true)
+  })
+
+  it('keeps the pixels of an ellipse when its anchors turn it into a bezier path', async () => {
+    const editor = await setup('ellipse')
+    drag(10, 10, 49, 29)
+    const before = editor.claimEditorPixels()?.count ?? 0
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(30, 20)
+    const top = handle('anchor:0')
+    pointer('pointerdown', 30, 10, top)
+    pointer('pointerup', 30, 10)
+    const after = editor.claimEditorPixels()?.count ?? 0
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(Math.ceil(before * 0.03))
+    expect(document.querySelectorAll('#caelestis-claim-overlay [data-handle$=":in"]')).toHaveLength(
+      4,
+    )
+  })
+
+  it('rotates a polygon from the grip in whole degrees, and a rectangle from a corner zone', async () => {
+    const editor = await setup('polygon')
+    drag(100, 100, 140, 100)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(100, 100)
+    const grip = handle('rotate:0')
+    // A quarter turn clockwise around the centre (100, 100): from straight above to the right.
+    pointer('pointerdown', 100, 60, grip)
+    pointer('pointermove', 140, 100)
+    pointer('pointerup', 140, 100)
+    const saved = editor.claimModeModel()
+    expect(saved.items).toBe(1)
+    key('Enter')
+    await Promise.resolve()
+    const shape = harness.saved[0]?.document.items[0]?.shape
+    expect(shape?.kind).toBe('polygon')
+    expect(shape?.kind === 'polygon' ? shape.rotation : -1).toBe(90)
+
+    const again = await setup('rectangle')
+    drag(200, 200, 239, 219)
+    again.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    click(210, 210)
+    // Just outside the bottom-right corner (240, 220) is a rotate zone, not a marquee start.
+    expect(map().style.cursor).toBe('default')
+    pointer('pointermove', 254, 234)
+    expect(map().style.cursor).toContain('url(')
+    expect(pointer('pointerdown', 254, 234).defaultPrevented).toBe(true)
+    pointer('pointermove', 206, 234)
+    pointer('pointerup', 206, 234)
+    expect(document.querySelector('#caelestis-claim-overlay [data-gesture="marquee"]')).toBeNull()
+    const bounds = again.claimEditorBounds()
+    // Turned by about a quarter, the 40 by 20 box now stands roughly 20 by 40 about its centre.
+    expect(bounds?.w).toBeLessThan(30)
+    expect(bounds?.h).toBeGreaterThan(34)
   })
 
   it('builds a closed path with the pen, curving a segment by dragging', async () => {

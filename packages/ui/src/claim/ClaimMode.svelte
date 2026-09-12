@@ -18,7 +18,7 @@
       case 'select':
         return 'Click a shape to select it, Shift-click to add, drag to move, drag empty canvas for a marquee. Handles resize or rotate.'
       case 'direct':
-        return 'Click a path, then drag its anchors and handles. Drag empty canvas for a marquee.'
+        return 'Click a shape, then drag any anchor; a rectangle, ellipse, polygon, or star becomes a path as you do. Drag the green grip, or just outside a corner, to rotate; Shift snaps to 15°.'
       case 'lasso':
         return 'Draw a loop around shapes to select them. Shift adds to the selection.'
       case 'hand':
