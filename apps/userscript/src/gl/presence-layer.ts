@@ -29,7 +29,9 @@ import { linkTemplateProgram, writeClipCorner } from './renderer-core.js'
  * - Their drafted pixels: the same colour, solid, so the exact pixels show inside the viewport.
  * - A region claim: solid edge, 30% fill, diagonal stripes. The claim is the union of its shapes,
  *   rasterised to whole pixels and sampled with nearest filtering, so the tint stops on a pixel
- *   edge and the outline is the claim's own edge pixels.
+ *   edge. The outline is a stroke of fixed device-pixel width along that boundary, found in the
+ *   shader by sampling the mask a stroke-width away in screen space, so it never claims a pixel
+ *   of its own and stays the same thickness at every zoom.
  * - The claim being edited: the same as a claim, from the editor's working document.
  *
  * Everything arrives and leaves on the shared fade ramp so a painter closing their tab does not
@@ -41,9 +43,8 @@ const PIXEL_ART_LAYER = 'pixel-art-layer'
 const MARKER_LAYER_ID = 'caelestis-markers'
 const CROSSHAIR_LAYER = 'pixel-hover'
 const TOOL_KEY = 'tool'
-/** Mask texel levels: outside, inside, and inside-on-the-edge. */
-const MASK_INSIDE = 128
-const MASK_EDGE = 255
+/** Mask texel level for an inside pixel; outside stays zero. */
+const MASK_INSIDE = 255
 
 const FRAGMENT_SOURCE = `#version 300 es
 precision highp float;
@@ -57,21 +58,35 @@ uniform vec2 u_size;
 uniform int u_hasMask;
 uniform sampler2D u_mask;
 uniform float u_maskAlpha;
-uniform float u_maskEdge;
 uniform int u_pattern;
 uniform float u_patternAlpha;
 uniform float u_scale;
 out vec4 fragColor;
+bool outsideAt(vec2 uv) {
+  // Beyond the texture is outside too; clamping would otherwise repeat the edge texel.
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return true;
+  return texture(u_mask, uv).r < 0.5;
+}
 void main() {
   vec2 px = v_uv * u_size;
   float alpha = 0.0;
   bool inside = false;
   bool edge = false;
   if (u_hasMask == 1) {
-    float level = texture(u_mask, v_uv).r;
-    inside = level > 0.4;
-    edge = level > 0.9;
-    if (inside) alpha = u_maskAlpha;
+    inside = !outsideAt(v_uv);
+    if (inside) {
+      alpha = u_maskAlpha;
+      // A stroke of u_borderWidth device pixels along the boundary, drawn on the inside: a
+      // fragment is on it when anything that far away, in screen space, is outside the mask.
+      if (u_borderWidth > 0.0) {
+        vec2 d = vec2(u_borderWidth) / u_size;
+        vec2 g = d * 0.7071;
+        edge = outsideAt(v_uv + vec2(d.x, 0.0)) || outsideAt(v_uv - vec2(d.x, 0.0)) ||
+          outsideAt(v_uv + vec2(0.0, d.y)) || outsideAt(v_uv - vec2(0.0, d.y)) ||
+          outsideAt(v_uv + g) || outsideAt(v_uv - g) ||
+          outsideAt(v_uv + vec2(g.x, -g.y)) || outsideAt(v_uv - vec2(g.x, -g.y));
+      }
+    }
   } else {
     inside = true;
     alpha = u_fill;
@@ -92,7 +107,7 @@ void main() {
     vec2 cell = mod(px / u_scale, 8.0);
     if (cell.x < 2.0 && cell.y < 2.0) alpha = max(alpha, u_patternAlpha);
   }
-  if (edge) alpha = max(alpha, u_hasMask == 1 ? u_maskEdge : u_border);
+  if (edge) alpha = max(alpha, u_border);
   fragColor = vec4(u_colour * alpha, alpha);
 }
 `
@@ -104,8 +119,8 @@ interface Style {
   readonly border: number
   readonly borderWidth: number
   readonly dash: number
+  /** Fill alpha inside a mask; `border` and `borderWidth` stroke its boundary in device pixels. */
   readonly maskAlpha: number
-  readonly maskEdge: number
   /** 0 none, 1 diagonal stripes, 2 dotted grid. */
   readonly pattern: 0 | 1 | 2
   readonly patternAlpha: number
@@ -118,7 +133,6 @@ const STYLES: Record<Kind, Style> = {
     borderWidth: 1.5,
     dash: 6,
     maskAlpha: 0,
-    maskEdge: 0,
     pattern: 2,
     patternAlpha: 0.35,
   },
@@ -128,7 +142,6 @@ const STYLES: Record<Kind, Style> = {
     borderWidth: 1.5,
     dash: 0,
     maskAlpha: 0,
-    maskEdge: 0,
     pattern: 1,
     patternAlpha: 0.5,
   },
@@ -138,27 +151,24 @@ const STYLES: Record<Kind, Style> = {
     borderWidth: 0,
     dash: 0,
     maskAlpha: 0.55,
-    maskEdge: 0.7,
     pattern: 0,
     patternAlpha: 0,
   },
   region: {
     fill: 0,
-    border: 0,
-    borderWidth: 0,
+    border: 0.95,
+    borderWidth: 1.5,
     dash: 0,
     maskAlpha: 0.3,
-    maskEdge: 0.95,
     pattern: 1,
     patternAlpha: 0.5,
   },
   tool: {
     fill: 0,
-    border: 0,
-    borderWidth: 0,
+    border: 1,
+    borderWidth: 1.5,
     dash: 0,
     maskAlpha: 0.3,
-    maskEdge: 1,
     pattern: 1,
     patternAlpha: 0.5,
   },
@@ -193,29 +203,13 @@ const pixelsFor = (id: string, document: RegionDocument): RegionShapePixels | nu
   return pixels
 }
 
-/** Paint pixels as texel levels, marking pixels whose 4-neighbour is outside as edge. */
+/** Pixels as texels: inside or not. The outline is found in the shader, in device pixels. */
 const shapeTexels = ({
   rect,
   mask,
 }: RegionShapePixels): { readonly rect: PresenceRect; readonly texels: Uint8Array } => {
   const texels = new Uint8Array(mask.length)
-  const { w, h } = rect
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const at = y * w + x
-      if (mask[at] !== 1) continue
-      const edge =
-        x === 0 ||
-        y === 0 ||
-        x === w - 1 ||
-        y === h - 1 ||
-        mask[at - 1] !== 1 ||
-        mask[at + 1] !== 1 ||
-        mask[at - w] !== 1 ||
-        mask[at + w] !== 1
-      texels[at] = edge ? MASK_EDGE : MASK_INSIDE
-    }
-  }
+  for (let at = 0; at < mask.length; at++) if (mask[at] === 1) texels[at] = MASK_INSIDE
   return { rect, texels }
 }
 
@@ -492,7 +486,6 @@ class PresenceLayer {
           gl.uniform1f(this.uniform(gl, 'u_borderWidth'), style.borderWidth * deviceScale)
           gl.uniform1f(this.uniform(gl, 'u_dash'), style.dash * deviceScale)
           gl.uniform1f(this.uniform(gl, 'u_maskAlpha'), style.maskAlpha * fade)
-          gl.uniform1f(this.uniform(gl, 'u_maskEdge'), style.maskEdge * fade)
           gl.uniform1i(this.uniform(gl, 'u_pattern'), style.pattern)
           gl.uniform1f(this.uniform(gl, 'u_patternAlpha'), style.patternAlpha * fade)
           gl.uniform1i(this.uniform(gl, 'u_hasMask'), texture === null ? 0 : 1)

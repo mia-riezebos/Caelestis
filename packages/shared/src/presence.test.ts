@@ -86,6 +86,8 @@ describe('presence drafts', () => {
     expect(presenceColour(0).name).toBe('red')
     expect(presenceColour(14).name).toBe('red')
     expect(presenceColour(13).name).toBe('rose')
+    // Mia's id, which Wplace shows in violet.
+    expect(presenceColour(5_592_323).name).toBe('violet')
     expect(PRESENCE_COLOURS).toHaveLength(14)
   })
 })

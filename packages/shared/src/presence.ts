@@ -231,24 +231,29 @@ export interface PresenceColour {
   readonly rgb: readonly [number, number, number]
 }
 
-/** Fourteen named colours, far enough apart to tell neighbours on a map apart. */
+/**
+ * Wplace's own user colours, in Wplace's order: the Tailwind `text-*-500` classes its client
+ * assigns a painter by `id % 14`, converted from their oklch definitions to sRGB on the live page
+ * (Tailwind 4, read 2026-09-12). Matching this list is what makes our colour agree with the one
+ * Wplace shows next to a painter's name.
+ */
 export const PRESENCE_COLOURS: readonly PresenceColour[] = [
-  { name: 'red', rgb: [220, 38, 38] },
-  { name: 'orange', rgb: [245, 124, 0] },
-  { name: 'amber', rgb: [217, 166, 0] },
-  { name: 'lime', rgb: [101, 163, 13] },
-  { name: 'green', rgb: [22, 163, 74] },
-  { name: 'teal', rgb: [13, 148, 136] },
-  { name: 'cyan', rgb: [6, 182, 212] },
-  { name: 'sky', rgb: [14, 165, 233] },
-  { name: 'blue', rgb: [37, 99, 235] },
-  { name: 'indigo', rgb: [79, 70, 229] },
-  { name: 'violet', rgb: [139, 92, 246] },
-  { name: 'fuchsia', rgb: [192, 38, 211] },
-  { name: 'pink', rgb: [219, 39, 119] },
-  { name: 'rose', rgb: [225, 29, 72] },
+  { name: 'red', rgb: [251, 44, 54] },
+  { name: 'orange', rgb: [255, 105, 0] },
+  { name: 'yellow', rgb: [240, 177, 0] },
+  { name: 'lime', rgb: [124, 207, 0] },
+  { name: 'emerald', rgb: [0, 188, 125] },
+  { name: 'teal', rgb: [0, 187, 167] },
+  { name: 'cyan', rgb: [0, 184, 219] },
+  { name: 'sky', rgb: [0, 166, 244] },
+  { name: 'indigo', rgb: [97, 95, 255] },
+  { name: 'violet', rgb: [142, 81, 255] },
+  { name: 'purple', rgb: [173, 70, 255] },
+  { name: 'fuchsia', rgb: [225, 42, 251] },
+  { name: 'pink', rgb: [246, 51, 154] },
+  { name: 'rose', rgb: [255, 32, 86] },
 ]
 
-/** A painter's colour, the same in every tab and to every peer: their id modulo the list. */
+/** A painter's colour, the same as Wplace shows for them: their id modulo the list. */
 export const presenceColour = (wplaceUserId: number): PresenceColour =>
   PRESENCE_COLOURS[Math.abs(wplaceUserId) % PRESENCE_COLOURS.length] as PresenceColour
