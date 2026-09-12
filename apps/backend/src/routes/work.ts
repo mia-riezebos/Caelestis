@@ -21,6 +21,30 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const MAX_REGION_REQUEST_LENGTH =
   16_384 + MAX_REGION_ITEMS * Math.ceil(Math.ceil(MAX_RASTER_BITS / 8) / 3) * 4
 
+/** Bound bytes before buffering or decoding, including requests without Content-Length. */
+const readRegionBody = async (request: Request, limit: number): Promise<string | null> => {
+  if (Number(request.headers.get('content-length')) > limit) return null
+  if (request.body === null) return ''
+  const reader = request.body.getReader()
+  const decoder = new TextDecoder()
+  let length = 0
+  let text = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) return text + decoder.decode()
+      length += value.byteLength
+      if (length > limit) {
+        await reader.cancel()
+        return null
+      }
+      text += decoder.decode(value, { stream: true })
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 const natural = (text: string | undefined): number | null => {
   if (text === undefined || !/^(0|[1-9]\d*)$/.test(text)) return null
   const value = Number(text)
@@ -91,9 +115,8 @@ export const createWorkRoutes = (runtime: BackendRuntime, auth: AuthOptions) => 
       (allianceId !== undefined && natural(allianceId) === null)
     )
       return c.json({ error: 'Invalid region ID or drawing scope' }, 400)
-    const text = await c.req.text()
-    if (text.length > MAX_REGION_REQUEST_LENGTH)
-      return c.json({ error: 'Region request is too large' }, 413)
+    const text = await readRegionBody(c.req.raw, MAX_REGION_REQUEST_LENGTH)
+    if (text === null) return c.json({ error: 'Region request is too large' }, 413)
     let request: Schema.Schema.Type<typeof RegionClaimRequest>
     try {
       request = Schema.decodeUnknownSync(RegionClaimRequest)(JSON.parse(text))
@@ -110,8 +133,8 @@ export const createWorkRoutes = (runtime: BackendRuntime, auth: AuthOptions) => 
   routes.delete('/regions/:id', requireScopeEffect(runtime, auth, 'report'), async (c) => {
     const id = c.req.param('id')
     if (!uuid.test(id)) return c.json({ error: 'Invalid region ID' }, 400)
-    const text = await c.req.text()
-    if (text.length > 16_384) return c.json({ error: 'Region request is too large' }, 413)
+    const text = await readRegionBody(c.req.raw, 16_384)
+    if (text === null) return c.json({ error: 'Region request is too large' }, 413)
     let body: unknown
     try {
       body = JSON.parse(text)

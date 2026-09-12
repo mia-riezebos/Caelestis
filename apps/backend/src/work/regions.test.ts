@@ -1,6 +1,7 @@
 import {
   MAX_PRESENCE_REGIONS,
   MAX_RASTER_BITS,
+  MAX_REGION_ITEMS,
   millis,
   packBits,
   type RegionClaim,
@@ -84,6 +85,13 @@ const setup = async (adapter: 'memory' | 'd1') => {
       createdWithToken: 'a'.repeat(64),
       createdAt: millis(Date.now()),
     })
+  await sql.insertAccessToken({
+    tokenHash: await hashToken('second-report'),
+    label: 'second report',
+    scope: 'report',
+    createdWithToken: 'a'.repeat(64),
+    createdAt: millis(Date.now()),
+  })
   const templateId = uuidV7()
   await sql.insertTemplateVersion({
     templateId,
@@ -134,7 +142,7 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     const replay = await h.call('PUT', id, h.body)
     expect(replay.status).toBe(200)
     expect(await replay.json()).toEqual(region)
-    expect((await h.call('PUT', id, { ...h.body, actor: other })).status).toBe(409)
+    expect((await h.call('PUT', id, { ...h.body, actor: other })).status).toBe(403)
     const list = await h.app.request(`/work/regions?season=0&templateId=${h.body.templateId}`, {
       headers: { authorization: 'Bearer read' },
     })
@@ -149,6 +157,160 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     expect(h.publishRegions).toHaveBeenCalledTimes(3)
     expect(h.publishRegions).toHaveBeenLastCalledWith(0, WORLD_TEMPLATE_SURFACE)
   })
+
+  it('binds mutations to the creating credential and painter while allowing admins', async () => {
+    const h = await setup(adapter)
+    const id = uuidV7()
+    const response = await h.call('PUT', id, h.body)
+    expect(response.status).toBe(200)
+    const original = await response.json()
+    expect(original).not.toHaveProperty('tokenHash')
+    for (const method of ['PUT', 'DELETE']) {
+      expect(
+        (await h.call(method, id, { ...h.body, label: 'Forged' }, 'second-report')).status,
+      ).toBe(403)
+      expect((await h.call(method, id, { ...h.body, actor: other })).status).toBe(403)
+    }
+    expect(await h.sql.regions.readRegion(id)).toEqual(original)
+    expect(h.publishRegions).toHaveBeenCalledTimes(1)
+    expect((await h.call('PUT', id, { ...h.body, label: 'Owner' })).status).toBe(200)
+    expect(
+      (await h.call('PUT', id, { ...h.body, actor: other, label: 'Admin' }, 'admin')).status,
+    ).toBe(200)
+    // Administrative edits do not transfer an existing credential's ownership.
+    expect((await h.call('DELETE', id, { actor })).status).toBe(200)
+    expect((await h.call('PUT', id, h.body)).status).toBe(200)
+    expect((await h.call('DELETE', id, { actor: other }, 'admin')).status).toBe(200)
+  })
+
+  it('allows one matching-actor writer to adopt an unowned legacy claim atomically', async () => {
+    const h = await setup(adapter)
+    const id = uuidV7()
+    const legacy: RegionClaim = {
+      id,
+      season: 0,
+      surface: WORLD_TEMPLATE_SURFACE,
+      templateId: h.body.templateId,
+      claimant: actor,
+      document: h.body.document,
+      rect: { x: 0, y: 0, w: 8, h: 8 },
+      label: '',
+      createdAt: Date.now(),
+    }
+    expect(await h.sql.regions.createRegion(legacy, null)).toBe(true)
+    expect((await h.call('PUT', id, { ...h.body, actor: other })).status).toBe(403)
+    expect((await h.call('DELETE', id, { actor: other })).status).toBe(403)
+    const tokens = ['report', 'second-report']
+    const responses = await Promise.all(tokens.map((token) => h.call('PUT', id, h.body, token)))
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 403])
+    const loser = tokens[responses.findIndex((response) => response.status === 403)]
+    const winner = tokens[responses.findIndex((response) => response.status === 200)]
+    expect((await h.call('DELETE', id, { actor }, loser)).status).toBe(403)
+    expect((await h.call('DELETE', id, { actor }, winner)).status).toBe(200)
+    expect(await h.sql.regions.createRegion(legacy, null)).toBe(true)
+    expect((await h.call('PUT', id, { ...h.body, actor: other }, 'admin')).status).toBe(200)
+  })
+
+  it('updates and clears the template hint with the same validation as creation', async () => {
+    const h = await setup(adapter)
+    const id = uuidV7()
+    expect((await h.call('PUT', id, h.body)).status).toBe(200)
+    expect((await h.call('PUT', id, { ...h.body, templateId: uuidV7() })).status).toBe(400)
+    expect((await h.call('PUT', id, { ...h.body, templateId: null })).status).toBe(200)
+    const list = await h.app.request(`/v1/work/regions?season=0&templateId=${h.body.templateId}`, {
+      headers: { authorization: 'Bearer read' },
+    })
+    expect(await list.json()).toEqual({ regions: [] })
+    expect((await h.sql.regions.readRegion(id))?.templateId).toBeNull()
+    expect((await h.call('PUT', id, h.body)).status).toBe(200)
+    expect((await h.sql.regions.readRegion(id))?.templateId).toBe(h.body.templateId)
+  })
+
+  it.each(['nodes', 'handles'])(
+    'rejects an oversized subtract path with distant %s before storing it',
+    async (extent) => {
+      const h = await setup(adapter)
+      const id = uuidV7()
+      const response = await h.call('PUT', id, {
+        ...h.body,
+        document: {
+          items: [
+            { id: 'add', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 1, h: 1 } },
+            {
+              id: 'subtract',
+              op: 'subtract',
+              shape: {
+                kind: 'path',
+                closed: false,
+                width: 1,
+                nodes:
+                  extent === 'nodes'
+                    ? [
+                        { x: 0, y: 0 },
+                        { x: 1_000_000, y: 1_000_000 },
+                      ]
+                    : [
+                        { x: 0, y: 0, out: { x: 1_000_000, y: 1_000_000 } },
+                        { x: 1, y: 1 },
+                      ],
+              },
+            },
+          ],
+        },
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({ error: 'Invalid region request' })
+      expect(await h.sql.regions.readRegion(id)).toBeNull()
+      expect(h.publishRegions).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['PUT', 'DELETE'])(
+    'rejects oversized %s bodies before reading declared bytes and cancels chunked overflow',
+    async (method) => {
+      const h = await setup(adapter)
+      const limit =
+        method === 'PUT'
+          ? 16_384 + MAX_REGION_ITEMS * Math.ceil(Math.ceil(MAX_RASTER_BITS / 8) / 3) * 4
+          : 16_384
+      const url = `https://example.com/v1/work/regions/${uuidV7()}?season=0`
+      const headers = { authorization: 'Bearer report', 'content-type': 'application/json' }
+      const pull = vi.fn()
+      const declared = new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 })
+      const declaredInit = {
+        method,
+        headers: { ...headers, 'content-length': String(limit + 1) },
+        body: declared,
+        duplex: 'half',
+      }
+      expect((await h.app.request(new Request(url, declaredInit))).status).toBe(413)
+      expect(pull).not.toHaveBeenCalled()
+      await declared.cancel()
+
+      const cancel = vi.fn()
+      const chunks = [
+        new TextEncoder().encode('é'.repeat(Math.floor(limit / 2))),
+        new Uint8Array(2),
+      ]
+      let reads = 0
+      const stream = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            const chunk = chunks[reads++]
+            if (chunk === undefined) throw new Error('Read beyond byte limit')
+            controller.enqueue(chunk)
+          },
+          cancel,
+        },
+        { highWaterMark: 0 },
+      )
+      const chunkedInit = { method, headers, body: stream, duplex: 'half' }
+      expect((await h.app.request(new Request(url, chunkedInit))).status).toBe(413)
+      expect(reads).toBe(2)
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(h.publishRegions).not.toHaveBeenCalled()
+    },
+  )
 
   it.each([{}, { templateId: null }])(
     'creates, lists, reads, and broadcasts a standalone claim with hint %j',
@@ -359,12 +521,14 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     const responses = await Promise.all(
       [actor, other].map((actor) => h.call('PUT', id, { ...h.body, actor })),
     )
-    expect(responses.map((response) => response.status).sort()).toEqual([200, 409])
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 403])
     const region = await h.sql.regions.readRegion(id)
     if (region === null) throw new Error('Missing region')
     for (let i = 1; i < MAX_PRESENCE_REGIONS; i++)
-      expect(await h.sql.regions.createRegion({ ...region, id: uuidV7(), createdAt: i })).toBe(true)
-    expect(await h.sql.regions.createRegion({ ...region, id: uuidV7() })).toBe(false)
+      expect(
+        await h.sql.regions.createRegion({ ...region, id: uuidV7(), createdAt: i }, null),
+      ).toBe(true)
+    expect(await h.sql.regions.createRegion({ ...region, id: uuidV7() }, null)).toBe(false)
     const list = await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)
     expect(list).toHaveLength(MAX_PRESENCE_REGIONS)
     expect(list[0]?.createdAt).toBe(1)

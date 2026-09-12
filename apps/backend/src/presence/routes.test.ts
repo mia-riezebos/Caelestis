@@ -123,7 +123,7 @@ describe('presence upgrade route', () => {
     expect(
       (
         await h.request(
-          'season=0&painterId=1&painterName=Mia%20%F0%9F%8E%A8&client=userscript&clientVersion=1.2.3',
+          `season=0&painterId=1&painterName=Mia%20%F0%9F%8E%A8&client=userscript&clientVersion=1.2.3&clientId=${uuidV7()}`,
         )
       ).status,
     ).toBe(200)
@@ -159,7 +159,42 @@ describe('presence upgrade route', () => {
     ).toBe(401)
     expect(h.connectPresence).not.toHaveBeenCalled()
   })
-  it('requires a UUID client identity for anonymous observers and retains read scope', async () => {
+  it.each(['read', 'report', null])(
+    'requires a UUID v7 client identity for token %s',
+    async (token) => {
+      const h = await setup(true)
+      const protocols =
+        token === null
+          ? PRESENCE_PROTOCOL_V1
+          : `${PRESENCE_PROTOCOL_V1}, caelestis.auth.b64.${btoa(token)}`
+      for (const query of ['', '&clientId=bad', '&clientId=00000000-0000-4000-8000-000000000001'])
+        expect(
+          (await h.request(`season=0&painterId=1&painterName=Mia${query}`, protocols)).status,
+        ).toBe(400)
+      expect(h.connectPresence).not.toHaveBeenCalled()
+    },
+  )
+
+  it('separates clients sharing a report token while retaining the revocation identity', async () => {
+    const h = await setup()
+    const tokenHash = await hashToken('report')
+    const clients = [uuidV7(), uuidV7()]
+    for (const clientId of clients) {
+      expect(
+        (await h.request(`season=0&painterId=1&painterName=Mia&clientId=${clientId}`)).status,
+      ).toBe(200)
+      expect(h.connectPresence).toHaveBeenLastCalledWith(
+        expect.any(Request),
+        expect.objectContaining({
+          tokenHash,
+          clientHash: await hashToken(`${tokenHash}\u0000${clientId}`),
+          revocable: true,
+        }),
+      )
+    }
+  })
+
+  it('retains read scope for anonymous observers with a client identity', async () => {
     const h = await setup(true)
     expect((await h.request(undefined, PRESENCE_PROTOCOL_V1)).status).toBe(400)
     expect(

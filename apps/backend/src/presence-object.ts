@@ -17,7 +17,6 @@ import {
   type PresenceRect,
   type PresenceServerEvent,
   padRect,
-  peerRect,
   quantiseRect,
   type RegionClaim,
   rectCentreDistance,
@@ -122,12 +121,12 @@ export class PresenceObject extends DurableObject<Env> {
     const interest = padRect(viewport, PRESENCE_INTEREST_PADDING)
     return peers
       .flatMap((peer) => {
-        const rect = peerRect(peer)
-        return peer.sessionId !== subscriber.sessionId &&
-          rect !== null &&
-          rectsIntersect(interest, rect)
-          ? [{ peer, distance: rectCentreDistance(viewport, rect) }]
-          : []
+        if (peer.sessionId === subscriber.sessionId) return []
+        const rects = [peer.viewport, peer.draft?.rect].filter((rect) => rect != null)
+        if (!rects.some((rect) => rectsIntersect(interest, rect))) return []
+        return [
+          { peer, distance: Math.min(...rects.map((rect) => rectCentreDistance(viewport, rect))) },
+        ]
       })
       .sort((a, b) => a.distance - b.distance || a.peer.sessionId.localeCompare(b.peer.sessionId))
       .slice(0, MAX_PRESENCE_PEERS)
@@ -146,35 +145,56 @@ export class PresenceObject extends DurableObject<Env> {
     if (this.timer !== null) return
     this.timer = setTimeout(() => {
       this.timer = null
-      this.tick()
+      this.state.waitUntil(this.tick())
     }, PRESENCE_TICK_MS)
   }
 
-  private tick(): void {
-    const now = Date.now()
-    for (const socket of this.sockets()) {
-      if (now - this.attachment(socket).lastSeenAt > PRESENCE_STALE_MS)
-        this.close(socket, 1000, 'presence stale')
-    }
-    const sockets = this.sockets()
-    const peers = sockets.map((socket) => this.peer(this.attachment(socket)))
-    const dirty = new Set(this.dirty)
-    this.dirty.clear()
-    for (const socket of sockets) {
-      const subscriber = this.attachment(socket)
-      const relevant = this.relevant(subscriber, peers)
-      const previous = this.sent.get(subscriber.sessionId) ?? new Set<string>()
-      const next = new Set(relevant.map((peer) => peer.sessionId))
-      const upsert = relevant.filter(
-        (peer) => dirty.has(peer.sessionId) || !previous.has(peer.sessionId),
+  private async tick(): Promise<void> {
+    await this.sessions.revoke(async () => {
+      const recovering = this.sockets().find(
+        (socket) => !this.sent.has(this.attachment(socket).sessionId),
       )
-      const remove = [...previous].filter((id) => !next.has(id))
-      const onlineChanged = this.onlineSent.get(subscriber.sessionId) !== sockets.length
-      this.sent.set(subscriber.sessionId, next)
-      this.onlineSent.set(subscriber.sessionId, sockets.length)
-      if (upsert.length || remove.length || onlineChanged)
-        this.send(socket, { type: 'presence-delta', online: sockets.length, upsert, remove })
-    }
+      const attachment = recovering === undefined ? undefined : this.attachment(recovering)
+      const regions =
+        attachment === undefined
+          ? []
+          : await this.sql.regions.listRegions(attachment.season, attachment.surface)
+      const now = Date.now()
+      for (const socket of this.sockets()) {
+        if (now - this.attachment(socket).lastSeenAt > PRESENCE_STALE_MS)
+          this.close(socket, 1000, 'presence stale')
+      }
+      const sockets = this.sockets()
+      const peers = sockets.map((socket) => this.peer(this.attachment(socket)))
+      const dirty = new Set(this.dirty)
+      this.dirty.clear()
+      for (const socket of sockets) {
+        const subscriber = this.attachment(socket)
+        const relevant = this.relevant(subscriber, peers)
+        const previous = this.sent.get(subscriber.sessionId)
+        const next = new Set(relevant.map((peer) => peer.sessionId))
+        this.sent.set(subscriber.sessionId, next)
+        if (previous === undefined) {
+          this.onlineSent.set(subscriber.sessionId, sockets.length)
+          this.send(socket, {
+            type: 'presence-ready',
+            sessionId: subscriber.sessionId,
+            online: sockets.length,
+            peers: relevant,
+            regions,
+          })
+          continue
+        }
+        const upsert = relevant.filter(
+          (peer) => dirty.has(peer.sessionId) || !previous.has(peer.sessionId),
+        )
+        const remove = [...previous].filter((id) => !next.has(id))
+        const onlineChanged = this.onlineSent.get(subscriber.sessionId) !== sockets.length
+        this.onlineSent.set(subscriber.sessionId, sockets.length)
+        if (upsert.length || remove.length || onlineChanged)
+          this.send(socket, { type: 'presence-delta', online: sockets.length, upsert, remove })
+      }
+    })
   }
 
   private drop(socket: WebSocket): void {
@@ -319,21 +339,24 @@ export class PresenceObject extends DurableObject<Env> {
   override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
     const attachment = this.attachment(socket)
     if (attachment.closed) return
-    if (typeof message !== 'string') return
-    if (message.length > MAX_PRESENCE_MESSAGE_CODE_UNITS) {
-      this.close(socket, 1009, 'presence message too large')
-      return
-    }
-    if (message === 'ping') {
-      socket.send('pong')
-      return
-    }
     const now = Date.now()
     const rate = (this.rates.get(attachment.sessionId) ?? []).filter((at) => now - at < 1_000)
     rate.push(now)
     this.rates.set(attachment.sessionId, rate)
     if (rate.length > MAX_PRESENCE_MESSAGES_PER_SECOND) {
       this.close(socket, 1008, 'presence rate limit')
+      return
+    }
+    if (typeof message !== 'string') {
+      this.close(socket, 1003, 'presence requires text messages')
+      return
+    }
+    if (message.length > MAX_PRESENCE_MESSAGE_CODE_UNITS) {
+      this.close(socket, 1009, 'presence message too large')
+      return
+    }
+    if (message === 'ping') {
+      socket.send('pong')
       return
     }
     let event: Schema.Schema.Type<typeof PresenceClientEvent>

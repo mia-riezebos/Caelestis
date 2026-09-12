@@ -33,7 +33,7 @@ export const listRegions = (season: number, surface: TemplateSurface, templateId
     return yield* storage(() => sql.regions.listRegions(season, surface, templateId))
   })
 
-/** Create a claim or update its document and label as its claimant or an administrator. */
+/** Create a credential-owned claim or update its content and template hint as its owner or an administrator. */
 export const putRegion = (
   id: string,
   season: number,
@@ -89,26 +89,27 @@ export const putRegion = (
         label: request.label,
         createdAt: Date.now(),
       }
-      inserted = yield* storage(() => sql.regions.createRegion(created))
+      inserted = yield* storage(() => sql.regions.createRegion(created, caller.tokenHash))
       region = inserted ? created : yield* storage(() => sql.regions.readRegion(id))
     }
     if (region === null)
       return yield* Effect.fail(new ResourceConflictError({ message: 'Region limit reached' }))
-    if (
-      (caller.scope !== 'admin' && region.claimant.wplaceUserId !== request.actor.wplaceUserId) ||
-      region.season !== season ||
-      !sameTemplateSurface(region.surface, surface)
-    )
+    if (region.season !== season || !sameTemplateSurface(region.surface, surface))
       return yield* Effect.fail(new ResourceConflictError({ message: 'Region is already claimed' }))
     if (!inserted)
-      region = yield* storage(() => sql.regions.updateRegion(id, request.document, request.label))
-    if (region === null)
-      return yield* Effect.fail(new ResourceConflictError({ message: 'Region no longer exists' }))
+      region = yield* storage(() =>
+        sql.regions.updateRegion(id, request.document, request.label, templateId, {
+          tokenHash: caller.tokenHash,
+          actorId: request.actor.wplaceUserId,
+          admin: caller.scope === 'admin',
+        }),
+      )
+    if (region === null) return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
     yield* storage(() => live.publishRegions(season, surface))
     return region
   })
 
-/** Only the claimant or an administrator can remove a persisted claim. */
+/** Only the owning credential with the claimant's ID, or an administrator, can remove a claim. */
 export const deleteRegion = (id: string, actor: PainterIdentity, caller: Caller) =>
   Effect.gen(function* () {
     if (caller.scope === 'read')
@@ -118,9 +119,14 @@ export const deleteRegion = (id: string, actor: PainterIdentity, caller: Caller)
     const region = yield* storage(() => sql.regions.readRegion(id))
     if (region === null)
       return yield* Effect.fail(new ResourceNotFoundError({ message: 'Region not found' }))
-    if (caller.scope !== 'admin' && actor.wplaceUserId !== region.claimant.wplaceUserId)
-      return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
-    yield* storage(() => sql.regions.deleteRegion(id))
+    const deleted = yield* storage(() =>
+      sql.regions.deleteRegion(id, {
+        tokenHash: caller.tokenHash,
+        actorId: actor.wplaceUserId,
+        admin: caller.scope === 'admin',
+      }),
+    )
+    if (!deleted) return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
     yield* storage(() => live.publishRegions(region.season, region.surface))
     return { ok: true }
   })

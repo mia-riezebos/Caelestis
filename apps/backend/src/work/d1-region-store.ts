@@ -8,10 +8,18 @@ import {
   type TemplateSurface,
   templateSurface,
 } from '@caelestis/shared'
-import { and, asc, eq, isNull } from 'drizzle-orm'
+import { and, asc, eq, isNull, or, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/d1'
 import { workRegions } from '../db/schema.js'
-import type { RegionStore } from './region-store.js'
+import type { RegionStore, RegionWriter } from './region-store.js'
+
+const ownedBy = (writer: RegionWriter) =>
+  writer.admin
+    ? undefined
+    : and(
+        eq(workRegions.claimantUserId, writer.actorId),
+        or(isNull(workRegions.tokenHash), eq(workRegions.tokenHash, writer.tokenHash)),
+      )
 
 const fromRow = (row: typeof workRegions.$inferSelect): RegionClaim => {
   const surface = templateSurface(row.surfaceKind, row.allianceId)
@@ -83,14 +91,14 @@ export class D1RegionStore implements RegionStore {
     return row === undefined ? null : fromRow(row)
   }
 
-  async createRegion(region: RegionClaim): Promise<boolean> {
+  async createRegion(region: RegionClaim, tokenHash: string | null): Promise<boolean> {
     const { surface, document, claimant } = region
     const rect = regionDocumentBounds(document)
     if (rect === null) throw new Error('Region document must contain an added shape')
     const result = await this.client
       .prepare(`INSERT INTO work_regions
-      (id, season, surface_kind, alliance_id, template_id, claimant_user_id, claimant_name, x, y, w, h, label, created_at, shape)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      (id, season, surface_kind, alliance_id, template_id, claimant_user_id, claimant_name, x, y, w, h, label, created_at, shape, token_hash)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM work_regions WHERE season = ? AND surface_kind = ? AND alliance_id IS ?) < ?
       ON CONFLICT(id) DO NOTHING`)
       .bind(
@@ -108,6 +116,7 @@ export class D1RegionStore implements RegionStore {
         region.label,
         region.createdAt,
         JSON.stringify(document),
+        tokenHash,
         region.season,
         surface.kind,
         surface.allianceId,
@@ -117,21 +126,33 @@ export class D1RegionStore implements RegionStore {
     return result.meta.changes === 1
   }
 
-  async deleteRegion(id: string): Promise<void> {
-    await this.db.delete(workRegions).where(eq(workRegions.id, id))
+  async deleteRegion(id: string, writer: RegionWriter): Promise<boolean> {
+    const rows = await this.db
+      .delete(workRegions)
+      .where(and(eq(workRegions.id, id), ownedBy(writer)))
+      .returning({ id: workRegions.id })
+    return rows.length === 1
   }
 
   async updateRegion(
     id: string,
     document: RegionDocument,
     label: string,
+    templateId: string | null,
+    writer: RegionWriter,
   ): Promise<RegionClaim | null> {
     const rect = regionDocumentBounds(document)
     if (rect === null) throw new Error('Region document must contain an added shape')
     const [row] = await this.db
       .update(workRegions)
-      .set({ shape: JSON.stringify(document), ...rect, label })
-      .where(eq(workRegions.id, id))
+      .set({
+        shape: JSON.stringify(document),
+        ...rect,
+        label,
+        templateId,
+        tokenHash: sql`coalesce(${workRegions.tokenHash}, ${writer.tokenHash})`,
+      })
+      .where(and(eq(workRegions.id, id), ownedBy(writer)))
       .returning()
     return row === undefined ? null : fromRow(row)
   }

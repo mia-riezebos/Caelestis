@@ -305,13 +305,10 @@ export const createTelemetryRoutes = (
         return c.json({ error: 'invalid drawing surface or painter identity' }, 400)
       const caller = c.get('caller')
       const anonymous = caller.token === null && caller.scope === 'read'
-      let clientHash = caller.tokenHash
-      if (anonymous) {
-        const clientId = c.req.query('clientId')
-        if (clientId === undefined || !UUID_V7.test(clientId))
-          return c.json({ error: 'clientId must be a UUID' }, 400)
-        clientHash = await hashToken(`${caller.tokenHash}\u0000${clientId}`)
-      }
+      const clientId = c.req.query('clientId')
+      if (clientId === undefined || !UUID_V7.test(clientId))
+        return c.json({ error: 'clientId must be a UUID' }, 400)
+      const clientHash = await hashToken(`${caller.tokenHash}\u0000${clientId}`)
       const metricClient = normalizeMetricClientIdentity(
         c.req.query('client') ?? 'unknown',
         c.req.query('clientVersion') ?? 'unknown',

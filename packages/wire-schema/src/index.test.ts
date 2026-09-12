@@ -99,7 +99,7 @@ describe('presence schemas', () => {
     {
       kind: 'path',
       nodes: [
-        { x: -0.5, y: 1.25, out: { x: -4_000_000, y: 4_000_000 } },
+        { x: -0.5, y: 1.25, out: { x: -20, y: 40 } },
         { x: 20, y: 30, in: { x: 10.5, y: 25.75 } },
       ],
       closed: false,
@@ -257,6 +257,47 @@ describe('presence schemas', () => {
       } else expect(() => Schema.decodeUnknownSync(RegionDocument)(candidate)).toThrow()
     }
   })
+
+  it.each(['add', 'subtract'])(
+    'bounds every %s path, including its handles, in claim requests',
+    (op) => {
+      for (const part of ['node', 'handle']) {
+        for (const extent of [MAX_REGION_SHAPE_EXTENT, MAX_REGION_SHAPE_EXTENT + 1]) {
+          const request = {
+            actor: { wplaceUserId: 1, displayName: 'Mia' },
+            label: '',
+            document: {
+              items: [
+                { id: 'box', op: 'add', shape: { kind: 'rectangle', x: 0, y: 0, w: 1, h: 1 } },
+                {
+                  id: 'path',
+                  op,
+                  shape: {
+                    kind: 'path',
+                    closed: false,
+                    width: 1,
+                    nodes:
+                      part === 'node'
+                        ? [
+                            { x: 0, y: 0 },
+                            { x: extent, y: 1 },
+                          ]
+                        : [
+                            { x: 0, y: 0, out: { x: extent, y: 1 } },
+                            { x: 1, y: 1 },
+                          ],
+                  },
+                },
+              ],
+            },
+          }
+          if (extent === MAX_REGION_SHAPE_EXTENT)
+            expect(Schema.decodeUnknownSync(RegionClaimRequest)(request)).toEqual(request)
+          else expect(() => Schema.decodeUnknownSync(RegionClaimRequest)(request)).toThrow()
+        }
+      }
+    },
+  )
   it('accepts safe rects and the shared bounded draft mask format', () => {
     const rect = { x: 0, y: 8, w: 8, h: 1 }
     expect(Schema.decodeUnknownSync(PresenceRect)(rect)).toEqual(rect)

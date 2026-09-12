@@ -169,6 +169,13 @@
       "when": 1789236199521,
       "tag": "0023_aspiring_thunderbolts",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1789253210891,
+      "tag": "0024_region-credential-ownership",
+      "breakpoints": true
     }
   ]
 }

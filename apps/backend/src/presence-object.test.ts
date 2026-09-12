@@ -74,7 +74,7 @@ const update = (socket: Socket, fields: object) =>
     asWebSocket(socket),
     JSON.stringify({ type: 'presence-update', ...fields }),
   )
-const tick = () => vi.advanceTimersByTime(PRESENCE_TICK_MS)
+const tick = () => vi.advanceTimersByTimeAsync(PRESENCE_TICK_MS)
 const attach = async (headers: Record<string, string> = {}) => {
   const response = await object.fetch(request(headers))
   expect(response.status).toBe(101)
@@ -120,6 +120,7 @@ beforeEach(() => {
     setWebSocketAutoResponse: vi.fn(),
     getWebSockets: () => sockets,
     acceptWebSocket: (socket: Socket) => sockets.push(socket),
+    waitUntil: vi.fn(),
   } as unknown as DurableObjectState
   object = new PresenceObject(state, { DB: database } as unknown as Env)
 })
@@ -147,7 +148,7 @@ describe('presence room', () => {
     expect(await object.online()).toBe(1)
     expect(getWebSockets).toHaveBeenCalledExactlyOnceWith('presence')
     expect(vi.getTimerCount()).toBe(0)
-    tick()
+    await tick()
     for (const socket of sockets) expect(socket.send).not.toHaveBeenCalled()
     expect(prepare).not.toHaveBeenCalled()
     observer.readyState = 3
@@ -162,7 +163,7 @@ describe('presence room', () => {
       draft: { rect: { x: 1, y: 1, w: 1, h: 1 }, pixels: 1, mask: 'gA==' },
     })
     update(b, { viewport: rect(504) })
-    tick()
+    await tick()
     const delta = b.events().at(-1)
     expect(delta).toMatchObject({
       type: 'presence-delta',
@@ -183,7 +184,7 @@ describe('presence room', () => {
         .some((peer) => peer.sessionId === own.sessionId),
     ).toBe(false)
     update(b, { viewport: rect(5_000) })
-    tick()
+    await tick()
     expect(b.events().at(-1)).toMatchObject({
       type: 'presence-delta',
       upsert: [],
@@ -203,14 +204,61 @@ describe('presence room', () => {
     expect(oversized.close).toHaveBeenCalledWith(1009, 'presence message too large')
   })
 
+  it('closes binary senders with 1003 and counts binary frames against the rate limit', async () => {
+    const binary = await attach()
+    object.webSocketMessage(asWebSocket(binary), new ArrayBuffer(5))
+    expect(binary.close).toHaveBeenCalledWith(1003, 'presence requires text messages')
+    const limited = await attach()
+    for (let n = 0; n < MAX_PRESENCE_MESSAGES_PER_SECOND; n++)
+      object.webSocketMessage(asWebSocket(limited), '{}')
+    object.webSocketMessage(asWebSocket(limited), new ArrayBuffer(5))
+    expect(limited.close).toHaveBeenCalledWith(1008, 'presence rate limit')
+  })
+
+  it('delivers a nearby viewport even when the same peer has a distant draft', async () => {
+    const subscriber = await attach()
+    const peer = await attach()
+    update(subscriber, { viewport: rect(0) })
+    update(peer, { viewport: rect(8), draft: { rect: rect(50_000), pixels: 1 } })
+    await tick()
+    expect(subscriber.events().at(-1)).toMatchObject({
+      type: 'presence-delta',
+      upsert: [{ viewport: rect(8), draft: { rect: rect(50_000), pixels: 1 } }],
+    })
+  })
+
+  it('replaces the survivor peer map when a close wakes the room after hibernation', async () => {
+    const survivor = await attach()
+    const closed = await attach()
+    update(survivor, { viewport: rect(0) })
+    update(closed, { viewport: rect(8) })
+    await tick()
+    expect(survivor.events()[0]?.type).toBe('presence-ready')
+    expect(closed.events()[0]?.type).toBe('presence-ready')
+    expect(survivor.events().at(-1)).toMatchObject({ upsert: [{ viewport: rect(8) }] })
+    vi.clearAllTimers()
+    object = new PresenceObject(state, { DB: database } as unknown as Env)
+    object.webSocketClose(asWebSocket(closed), 1000, 'closed', true)
+    await tick()
+    expect(survivor.events().at(-1)).toMatchObject({
+      type: 'presence-ready',
+      online: 1,
+      peers: [],
+      regions: [],
+    })
+    update(survivor, { viewport: rect(16) })
+    const count = survivor.events().length
+    await tick()
+    expect(survivor.events()).toHaveLength(count)
+  })
+
   it('ignores read updates and malformed payloads; observers receive online counts only', async () => {
     const read = await attach({ 'x-caelestis-credential-scope': 'read' })
     const publisher = await attach()
     update(read, { viewport: rect(0), draft: { rect: rect(0), pixels: 1 } })
     update(publisher, { viewport: rect(0) })
     object.webSocketMessage(asWebSocket(publisher), 'bad json')
-    object.webSocketMessage(asWebSocket(publisher), new ArrayBuffer(5))
-    tick()
+    await tick()
     expect(read.deserializeAttachment()).toMatchObject({ viewport: null, draftRect: null })
     expect(read.events().at(-1)).toEqual({
       type: 'presence-delta',
@@ -226,10 +274,10 @@ describe('presence room', () => {
     const active = await attach()
     update(stale, { viewport: rect(0) })
     update(active, { viewport: rect(0) })
-    tick()
+    await tick()
     vi.setSystemTime(Date.now() + PRESENCE_STALE_MS + 1)
     object.webSocketMessage(asWebSocket(active), JSON.stringify({ type: 'presence-heartbeat' }))
-    tick()
+    await tick()
     expect(stale.close).toHaveBeenCalledWith(1000, 'presence stale')
     expect(active.events().at(-1)).toMatchObject({
       online: 1,
@@ -251,7 +299,7 @@ describe('presence room', () => {
         draft: { rect: rect(i * 8), pixels: 1, mask: 'gAAAAAAAAAA=' },
       })
     }
-    tick()
+    await tick()
     const delta = subscriber.events().at(-1)
     expect(delta).toMatchObject({ upsert: expect.any(Array) })
     if (delta?.type !== 'presence-delta') throw new Error('Expected delta')
@@ -260,9 +308,10 @@ describe('presence room', () => {
     )
     object = new PresenceObject(state, { DB: database } as unknown as Env)
     object.webSocketMessage(asWebSocket(subscriber), JSON.stringify({ type: 'presence-heartbeat' }))
-    tick()
+    await tick()
     expect(subscriber.events().at(-1)).toMatchObject({
-      upsert: expect.arrayContaining([
+      type: 'presence-ready',
+      peers: expect.arrayContaining([
         expect.objectContaining({ draft: { rect: rect(8), pixels: 1 } }),
       ]),
     })
@@ -317,23 +366,29 @@ describe('presence room', () => {
       label: '',
       createdAt: Date.now(),
     }
-    await sql.regions.createRegion(region)
+    await sql.regions.createRegion(region, null)
     const a = await attach()
     const b = await attach()
     expect(b.events()[0]).toMatchObject({ type: 'presence-ready', regions: [region] })
     update(a, { viewport: rect(0) })
     update(b, { viewport: rect(0) })
-    tick()
+    await tick()
     const nextShape: RegionShape = { kind: 'ellipse', x: 0, y: 0, w: 8, h: 8 }
     const nextDocument: RegionDocument = {
       items: [{ id: 'ellipse', shape: nextShape, op: 'add' }],
     }
-    const updated = await sql.regions.updateRegion(region.id, nextDocument, 'Updated')
+    const updated = await sql.regions.updateRegion(
+      region.id,
+      nextDocument,
+      'Updated',
+      region.templateId,
+      { tokenHash: 'a'.repeat(64), actorId: 1, admin: false },
+    )
     await object.publishRegions(0, WORLD_TEMPLATE_SURFACE)
     expect(b.events().at(-1)).toEqual({ type: 'regions', regions: [updated] })
     expect(updated).toEqual({ ...region, document: nextDocument, rect: rect(0), label: 'Updated' })
     object.webSocketError(asWebSocket(a))
-    tick()
+    await tick()
     expect(b.events().at(-1)).toMatchObject({ online: 1, remove: [expect.any(String)] })
   })
 })

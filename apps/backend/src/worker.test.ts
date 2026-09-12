@@ -1,4 +1,4 @@
-import { PRESENCE_PROTOCOL_V1 } from '@caelestis/shared'
+import { PRESENCE_PROTOCOL_V1, uuidV7 } from '@caelestis/shared'
 import { afterEach, expect, it, vi } from 'vitest'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
@@ -30,7 +30,7 @@ it('routes presence to the named surface room with authenticated internal header
   const configured = { ...environment, PRESENCE: { getByName }, SEASON: '0' } as unknown as Env
   const response = await worker.fetch(
     new Request(
-      'https://example.com/telemetry/presence?season=0&surface=alliance-picture&allianceId=7&painterId=42&painterName=Mia%20%F0%9F%8E%A8&client=userscript&clientVersion=0.5.4',
+      `https://example.com/telemetry/presence?season=0&surface=alliance-picture&allianceId=7&painterId=42&painterName=Mia%20%F0%9F%8E%A8&client=userscript&clientVersion=0.5.4&clientId=${uuidV7()}`,
       {
         headers: {
           upgrade: 'websocket',
