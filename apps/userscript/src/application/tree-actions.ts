@@ -30,6 +30,7 @@ import {
   getState,
   hasServerAdminToken,
   isCurrentServerConnection,
+  type LocalFolder,
   listServerNodes,
   MAX_LOCAL_FOLDERS,
   moveNode as moveNodeOnServer,
@@ -236,7 +237,6 @@ const retryOptimisticMutation = async (
   return result
 }
 
-/** A name nobody has to type: "New folder", then "New folder 2", and so on. */
 /**
  * A name nobody has to type: "New folder", then "New folder 2", and so on.
  *
@@ -256,6 +256,27 @@ const freeFolderName = (
   }
   return `${base} ${Date.now()}`
 }
+
+/**
+ * The lowercased names a new Local folder must not repeat: its siblings on the same surface.
+ *
+ * Only siblings, to match the server: Local allows the same name under different parents, so a
+ * "New folder" at the top used to push a fresh child of an unrelated folder to "New folder 2".
+ */
+export const takenLocalFolderNames = (
+  folders: readonly LocalFolder[],
+  parentId: string | null,
+  surface: TemplateSurface,
+): Set<string> =>
+  new Set(
+    folders
+      .filter(
+        (folder) =>
+          folder.parentId === parentId &&
+          sameTemplateSurface(folder.surface ?? WORLD_TEMPLATE_SURFACE, surface),
+      )
+      .map((folder) => folder.name.toLowerCase()),
+  )
 
 /** `local:<id>` is a template; `local`, `server:<url>` and `node:<id>` are containers. */
 const localTemplateId = (target: TreeTarget): string | null =>
@@ -1642,13 +1663,7 @@ export const createFolder = async (
     // Nested under whichever Local folder was clicked, or at the top when it was Local itself.
     const parentId = localFolderIdOf(target)
     expandForNewChild(target.key)
-    const taken = new Set(
-      getState()
-        .localFolders.filter((folder) =>
-          sameTemplateSurface(folder.surface ?? WORLD_TEMPLATE_SURFACE, surface),
-        )
-        .map((folder) => folder.name.toLowerCase()),
-    )
+    const taken = takenLocalFolderNames(getState().localFolders, parentId, surface)
     const folder = createLocalFolder(parentId, freeFolderName(taken), surface)
     if (folder === null) {
       toast(
