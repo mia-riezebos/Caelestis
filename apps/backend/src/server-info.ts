@@ -14,6 +14,7 @@ export const mergeServerInfo = (
     ...(base.liveSyncMax === undefined ? {} : { liveSyncMax: base.liveSyncMax }),
     ...(base.liveTileOffers === undefined ? {} : { liveTileOffers: base.liveTileOffers }),
     ...(base.presence === undefined ? {} : { presence: base.presence }),
+    ...(base.livePaintParts === undefined ? {} : { livePaintParts: base.livePaintParts }),
   }
   return description === undefined || description === null ? resolved : { ...resolved, description }
 }

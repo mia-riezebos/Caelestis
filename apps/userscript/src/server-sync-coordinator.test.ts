@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 
-import { seconds } from '@caelestis/shared'
+import {
+  type LivePaintPartMessage,
+  MAX_LIVE_MESSAGE_BYTES,
+  type PaintEvent,
+  seconds,
+  uuidV7,
+} from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -134,6 +140,78 @@ const setOnline = (value: boolean): void => {
 }
 
 describe('server sync coordinator', () => {
+  const largePaint = (): PaintEvent => ({
+    eventId: uuidV7(),
+    wplaceUserId: 2714778,
+    displayName: '💜\\"'.repeat(60),
+    season: 0,
+    ts: seconds(1_800_000_000),
+    painted: 100000,
+    tiles: [
+      {
+        x: 0,
+        y: 0,
+        pixels: {
+          x: Array.from({ length: 100000 }, (_, i) => i % 1000),
+          y: Array.from({ length: 100000 }, (_, i) => 100 + Math.floor(i / 1000)),
+          colors: Array.from({ length: 100000 }, () => 31),
+        },
+      },
+    ],
+  })
+
+  const paintConnection = async (parts = true) => {
+    const liveServer = {
+      ...server,
+      info: {
+        ...server.info,
+        liveSync: 1 as const,
+        liveSyncMax: 2 as const,
+        ...(parts ? { livePaintParts: 1 as const } : {}),
+      },
+    }
+    state.current = { servers: [liveServer] }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const api = await import('./server-sync-coordinator.js')
+    api.installServerSyncCoordinator()
+    const socket = FakeWebSocket.instances[0]
+    if (socket === undefined) throw new Error('live socket was not created')
+    socket.open()
+    reconcileSocket(socket, 0, 'correction', [])
+    socket.sent.length = 0
+    return { ...api, liveServer, socket }
+  }
+
+  const acknowledgeParts = async (socket: FakeWebSocket): Promise<string> => {
+    const chunks: string[] = []
+    for (let index = 0; ; index++) {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(socket.sent).toHaveLength(index + 1)
+      const encoded = socket.sent[index] ?? ''
+      expect(new TextEncoder().encode(encoded).byteLength).toBeLessThanOrEqual(
+        MAX_LIVE_MESSAGE_BYTES,
+      )
+      const part = JSON.parse(encoded) as LivePaintPartMessage
+      expect(part.type).toBe('paint-part')
+      expect(part.index).toBe(index)
+      chunks.push(part.chunk)
+      if (index === part.total - 1) {
+        socket.receive({
+          type: 'paint-result',
+          requestId: part.requestId,
+          eventId: part.eventId,
+          result: 'recorded',
+        })
+        return chunks.join('')
+      }
+      socket.receive({
+        type: 'paint-part-result',
+        requestId: part.requestId,
+        eventId: part.eventId,
+        index,
+      })
+    }
+  }
   beforeEach(() => {
     vi.resetModules()
     vi.useFakeTimers()
@@ -156,6 +234,73 @@ describe('server sync coordinator', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('sends 100k pixels with receipt backpressure and queues the next paint', async () => {
+    const f = await paintConnection()
+    const event = largePaint()
+    const pending = f.requestLivePaint(f.liveServer, event)
+    const nextEvent = { ...event, eventId: uuidV7(), tiles: [], painted: 0 }
+    const next = f.requestLivePaint(f.liveServer, nextEvent)
+    expect(f.socket.sent).toHaveLength(1)
+    expect(JSON.parse(await acknowledgeParts(f.socket))).toEqual(event)
+    await expect(pending).resolves.toMatchObject({ result: 'recorded', eventId: event.eventId })
+    await vi.advanceTimersByTimeAsync(0)
+    const command = JSON.parse(f.socket.sent.at(-1) ?? '{}') as { type: string; requestId: string }
+    expect(command.type).toBe('paint-report')
+    f.socket.receive({
+      type: 'paint-result',
+      requestId: command.requestId,
+      eventId: nextEvent.eventId,
+      result: 'recorded',
+    })
+    await expect(next).resolves.toMatchObject({ result: 'recorded' })
+  })
+
+  it('rejects large reports explicitly on older v2 servers without sending or closing', async () => {
+    const f = await paintConnection(false)
+    await expect(f.requestLivePaint(f.liveServer, largePaint())).resolves.toMatchObject({
+      error: 'unsupported',
+    })
+    expect(f.socket.sent).toEqual([])
+    expect(f.socket.readyState).toBe(1)
+  })
+
+  it('restarts a disconnected report with the same event ID and a new transfer', async () => {
+    const f = await paintConnection()
+    const event = largePaint()
+    const first = f.requestLivePaint(f.liveServer, event)
+    const original = JSON.parse(f.socket.sent[0] ?? '{}') as LivePaintPartMessage
+    f.socket.close()
+    await vi.advanceTimersByTimeAsync(5000)
+    await expect(first).resolves.toBeNull()
+    const recovered = FakeWebSocket.instances.at(-1)
+    if (recovered === undefined || recovered === f.socket) throw new Error('no reconnected socket')
+    recovered.open()
+    reconcileSocket(recovered, 0, 'correction', [])
+    recovered.sent.length = 0
+    const retry = f.requestLivePaint(f.liveServer, event)
+    const restarted = JSON.parse(recovered.sent[0] ?? '{}') as LivePaintPartMessage
+    expect(restarted.eventId).toBe(original.eventId)
+    expect(restarted.transferId).not.toBe(original.transferId)
+    expect(restarted.index).toBe(0)
+    expect(JSON.parse(await acknowledgeParts(recovered))).toEqual(event)
+    await expect(retry).resolves.toMatchObject({ result: 'recorded' })
+  })
+
+  it('does not mistake a wrong part receipt for a successful paint', async () => {
+    const f = await paintConnection()
+    const event = largePaint()
+    const pending = f.requestLivePaint(f.liveServer, event)
+    const part = JSON.parse(f.socket.sent[0] ?? '{}') as LivePaintPartMessage
+    f.socket.receive({
+      type: 'paint-part-result',
+      requestId: part.requestId,
+      eventId: event.eventId,
+      index: part.index + 1,
+    })
+    await expect(pending).resolves.toMatchObject({ error: 'invalid' })
+    expect(f.socket.sent).toHaveLength(1)
   })
 
   it('backs an unchanged compatibility resource off to at least five minutes', async () => {

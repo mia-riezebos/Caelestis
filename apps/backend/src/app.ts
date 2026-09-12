@@ -89,7 +89,12 @@ export const createApp = (context: BackendContext, options: AppOptions = {}) => 
     ...(options.connectPresence === undefined ? {} : { presence: 1 as const }),
     ...(options.connectStatusLive === undefined
       ? {}
-      : { liveSync: 1 as const, liveSyncMax: 2 as const, liveTileOffers: 1 as const }),
+      : {
+          liveSync: 1 as const,
+          liveSyncMax: 2 as const,
+          liveTileOffers: 1 as const,
+          livePaintParts: 1 as const,
+        }),
   } as const
   const server: ServerInfo =
     options.serverDescription === undefined

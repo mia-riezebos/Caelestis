@@ -43,6 +43,8 @@ export interface ServerInfo {
   readonly liveTileOffers?: 1
   /** Present when `/telemetry/presence` accepts the live painter presence protocol. */
   readonly presence?: 1
+  /** Accepts bounded paint-part transfers on live protocol v2. */
+  readonly livePaintParts?: 1
 }
 
 /**

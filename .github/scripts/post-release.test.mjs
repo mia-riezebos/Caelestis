@@ -66,7 +66,7 @@ describe('release announcement', () => {
         type: 2,
         style: 5,
         label: 'Open dashboard',
-        url: 'https://caelestis.mia.cx',
+        url: 'https://caelest.is',
       },
       {
         type: 2,
