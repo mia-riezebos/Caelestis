@@ -798,6 +798,79 @@ describe('claim editor', () => {
     expect(harness.removed).toEqual(['r2', 'r2'])
   })
 
+  it('ignores keys while a save is in flight', async () => {
+    let finish: (value: string | null) => void = () => undefined
+    const hostWithSlowSave = {
+      ...host(),
+      save: () =>
+        new Promise<string | null>((resolve) => {
+          finish = resolve
+        }),
+    }
+    const editor = await import('./claim-editor.js')
+    editor.installClaimEditor(hostWithSlowSave)
+    editor.startClaimMode('rectangle')
+    drag(0, 0, 9, 9)
+    key('Enter')
+    expect(editor.claimModeModel().pending).toBe(true)
+    // Delete and tool keys are consumed but change nothing while the save runs.
+    expect(key('Delete').defaultPrevented).toBe(true)
+    key('v')
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorTool()).toBe('rectangle')
+    finish(null)
+    await vi.waitFor(() => expect(editor.isClaimModeActive()).toBe(false))
+  })
+
+  it('renumbers duplicate item ids across loaded claims and refuses to save past the item cap', async () => {
+    const box = (x: number) => ({ kind: 'rectangle' as const, x, y: 0, w: 4, h: 4 })
+    harness.regions = [
+      { id: 'r1', document: { items: [{ id: 'same', op: 'add', shape: box(0) }] } },
+      { id: 'r2', document: { items: [{ id: 'same', op: 'add', shape: box(10) }] } },
+    ]
+    const editor = await setup('select')
+    click(2, 2)
+    key('Delete')
+    // Only the clicked one went; the other kept its pixels despite the shared id.
+    expect(editor.claimModeModel().items).toBe(1)
+    expect(editor.claimEditorPixels()?.rect).toEqual({ x: 10, y: 0, w: 4, h: 4 })
+    editor.handleClaimModeIntent({ type: 'cancel' })
+
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: Array.from({ length: 40 }, (_, i) => ({
+            id: `a${i}`,
+            op: 'add' as const,
+            shape: box(i * 5),
+          })),
+        },
+      },
+      {
+        id: 'r2',
+        document: {
+          items: Array.from({ length: 30 }, (_, i) => ({
+            id: `b${i}`,
+            op: 'add' as const,
+            shape: box(300 + i * 5),
+          })),
+        },
+      },
+    ]
+    const again = await setup('select')
+    expect(again.claimModeModel().message).toMatch(/at most 64/)
+    // Removing one shape leaves 69: still too many, so Save says how many more must go.
+    click(2, 2)
+    key('Delete')
+    expect(again.claimModeModel().items).toBe(69)
+    key('Enter')
+    await Promise.resolve()
+    expect(harness.saved).toHaveLength(0)
+    expect(again.isClaimModeActive()).toBe(true)
+    expect(again.claimModeModel().message).toMatch(/remove 5/)
+  })
+
   it('cancels without saving', async () => {
     const editor = await setup('rectangle')
     drag(0, 0, 3, 3)

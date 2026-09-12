@@ -1587,6 +1587,11 @@ const isTyping = (target: EventTarget | null): boolean => {
 
 const onKeydown = (event: KeyboardEvent): void => {
   if (!active || isTyping(event.target) || event.metaKey || event.ctrlKey || event.altKey) return
+  if (pending) {
+    // A save is in flight with a snapshot of the document; an edit now would be lost with it.
+    consume(event)
+    return
+  }
   const key = event.key.toLowerCase()
   if (key === ' ') {
     // Holding space is a temporary hand, as in Illustrator; the tool comes back on release.
@@ -1713,6 +1718,11 @@ const confirm = async (): Promise<void> => {
   if (pen !== null) commitPen(false)
   if (!dirty) {
     stopClaimMode()
+    return
+  }
+  if (items.length > MAX_REGION_ITEMS) {
+    message = `A claim holds at most ${MAX_REGION_ITEMS} shapes; remove ${items.length - MAX_REGION_ITEMS} before saving.`
+    notify()
     return
   }
   const document: RegionDocument = { items }
@@ -2141,7 +2151,20 @@ export const startClaimMode = (initialTool?: ClaimTool): void => {
   // Whatever pixel Wplace had selected is stale now that clicks belong to the editor.
   dismissWplacePixelCard()
   const saved = host.myRegions()
-  items = saved.flatMap((region) => region.document.items)
+  // Claims saved separately may reuse item ids; every item needs its own here, or a later
+  // edit could address the wrong one and the merged document would be refused.
+  const seen = new Set<string>()
+  items = saved
+    .flatMap((region) => region.document.items)
+    .map((item) => {
+      if (!seen.has(item.id)) {
+        seen.add(item.id)
+        return item
+      }
+      const fresh = { ...item, id: nextItemId() }
+      seen.add(fresh.id)
+      return fresh
+    })
   editingIds = saved.map((region) => region.id)
   select([])
   marquee = null
@@ -2158,6 +2181,8 @@ export const startClaimMode = (initialTool?: ClaimTool): void => {
   drawing = null
   pending = false
   message = undefined
+  if (items.length > MAX_REGION_ITEMS)
+    message = `Your claims hold ${items.length} shapes together; a claim holds at most ${MAX_REGION_ITEMS}. Remove some before saving.`
   bump()
   setCursor(toolCursor())
   notify()

@@ -433,13 +433,12 @@ const elect = (): void => {
       ({ connection }) =>
         connections.get(serverConnectionIdentity(connection.server)) === connection,
     )
-    // Servers came or went while the probes were out: this snapshot may be stale, so run again.
-    if (electionWanted || alive.length !== probed.length) {
+    // Servers came or went while the probes were out: this snapshot is stale, so run again
+    // over the current candidates rather than electing from it.
+    if (electionWanted || alive.length !== probed.length || connections.size !== probed.length) {
       electionWanted = false
-      if (alive.length === 0 || alive.length !== probed.length) {
-        elect()
-        return
-      }
+      elect()
+      return
     }
     alive.sort(
       (left, right) =>

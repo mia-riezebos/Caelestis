@@ -26,9 +26,20 @@ export class PixelSet {
   private bottom = Number.NEGATIVE_INFINITY
 
   static readonly STRIDE = 1 << 22
+  /** Set once a stamp would grow the box past what a raster may hold; nothing more is stamped. */
+  tooLarge = false
 
   get size(): number {
     return this.held.size
+  }
+
+  /** Whether stamping a tip at a pixel keeps the bounding box within the raster limit. */
+  private fits(x: number, y: number, reach: number): boolean {
+    const left = Math.min(this.left, x - reach)
+    const top = Math.min(this.top, y - reach)
+    const right = Math.max(this.right, x + reach)
+    const bottom = Math.max(this.bottom, y + reach)
+    return (right - left + 1) * (bottom - top + 1) <= MAX_RASTER_BITS
   }
 
   has(x: number, y: number): boolean {
@@ -47,12 +58,20 @@ export class PixelSet {
 
   /** Stamp a round tip of `width` pixels centred on a pixel. Width one is the pixel itself. */
   stamp(x: number, y: number, width: number): void {
+    // The box is checked before the tip is stamped, so a long stroke with a wide tip stops
+    // doing work the moment it would no longer fit, instead of stamping millions of pixels
+    // that a raster could never hold.
+    if (this.tooLarge) return
+    const radius = width / 2
+    const reach = width <= 1 ? 0 : Math.ceil(radius)
+    if (!this.fits(x, y, reach)) {
+      this.tooLarge = true
+      return
+    }
     if (width <= 1) {
       this.add(x, y)
       return
     }
-    const radius = width / 2
-    const reach = Math.ceil(radius)
     for (let dy = -reach; dy <= reach; dy++) {
       for (let dx = -reach; dx <= reach; dx++) {
         // Pixel-centre membership, like the shared rasteriser: the disc is measured from centres.
@@ -63,6 +82,7 @@ export class PixelSet {
 
   /** Stamp along the straight line between two pixels, every pixel of the way. */
   line(from: Point, to: Point, width: number): void {
+    if (this.tooLarge) return
     const x0 = Math.floor(from.x)
     const y0 = Math.floor(from.y)
     const x1 = Math.floor(to.x)
@@ -87,7 +107,7 @@ export class PixelSet {
   /** The set as shared pixels over its bounding box, or null when empty or too large to hold. */
   pixels(): RegionShapePixels | null {
     const rect = this.bounds()
-    if (rect === null) return null
+    if (rect === null || this.tooLarge) return null
     // A long diagonal stroke has a huge box for few pixels; refuse before allocating it.
     if (rect.w * rect.h > MAX_RASTER_BITS) return null
     const mask = new Uint8Array(rect.w * rect.h)

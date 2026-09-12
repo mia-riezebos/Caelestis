@@ -514,6 +514,28 @@ describe('presence client', () => {
     expect(FakeWebSocket.instances[0]?.url.startsWith('wss://other.test')).toBe(true)
   })
 
+  it('probes a server added while an election is out before choosing', async () => {
+    let release: () => void = () => undefined
+    harness.onlineGate = new Promise((resolve) => {
+      release = resolve
+    })
+    harness.online = new Map([[server.url, 30]])
+    const client = await import('./presence-client.js')
+    client.installPresence()
+    await settle()
+    // A quieter server joins while the first probe is pending.
+    const quiet = { ...server, url: 'https://quiet.test', info: { ...server.info, id: 'quiet' } }
+    harness.online.set(quiet.url, 0)
+    harness.state.servers = [server, quiet]
+    harness.listener?.()
+    harness.onlineGate = null
+    release()
+    await settle()
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]?.url.startsWith('wss://quiet.test')).toBe(true)
+  })
+
   it('sends region claims over HTTP with the bearer token', async () => {
     const { client } = await connect()
     const error = await client.claimRegion(server, '0192e7c0-0000-7000-8000-000000000002', {

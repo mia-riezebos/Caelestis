@@ -35,6 +35,13 @@ describe('pixel sets', () => {
     diagonal.add(1_000, 1_000)
     expect(diagonal.pixels()).toBeNull()
     expect(diagonal.shape()).toBeNull()
+    // A wide tip along a long line stops stamping as soon as the box would not fit.
+    const wide = new PixelSet()
+    const started = performance.now()
+    wide.line({ x: 0, y: 0 }, { x: 5_000, y: 5_000 }, 200)
+    expect(wide.tooLarge).toBe(true)
+    expect(wide.shape()).toBeNull()
+    expect(performance.now() - started).toBeLessThan(2_000)
   })
 
   it('merges two rasters and erases from one', () => {
