@@ -76,12 +76,15 @@ export interface PresencePeer {
 /**
  * A persisted region claim. Coordinates are canvas pixels, like templates. `rect` is the shape's
  * bounding box, derived by the server, so interest checks and older readers need only rects.
+ *
+ * A claim stands on its own anywhere on the canvas. `templateId` is a hint that the claim was drawn
+ * over that template, nothing more: it is never required and never enforced.
  */
 export interface RegionClaim {
   readonly id: string
   readonly season: number
   readonly surface: TemplateSurface
-  readonly templateId: string
+  readonly templateId: string | null
   readonly claimant: PainterIdentity
   readonly shape: RegionShape
   readonly rect: PresenceRect
@@ -106,7 +109,8 @@ export type PresenceServerEvent =
   | { readonly type: 'regions'; readonly regions: readonly RegionClaim[] }
 
 export interface RegionClaimRequest {
-  readonly templateId: string
+  /** The template the shape was drawn over, if any. Optional and unenforced. */
+  readonly templateId?: string | null
   readonly shape: RegionShape
   readonly label: string
   readonly actor: PainterIdentity
