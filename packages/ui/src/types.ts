@@ -131,6 +131,7 @@ export interface PresenceSummaryModel {
 export type ClaimTool =
   | 'select'
   | 'direct'
+  | 'lasso'
   | 'pen'
   | 'pencil'
   | 'brush'
@@ -138,12 +139,25 @@ export type ClaimTool =
   | 'ellipse'
   | 'polygon'
   | 'star'
+  | 'hand'
+
+/** Tools sit in groups, Illustrator-style: one drawer button per group with a flyout to switch. */
+export type ClaimToolGroupId = 'selection' | 'pen' | 'pencil' | 'shape' | 'navigate'
 
 export interface ClaimToolEntry {
   readonly tool: ClaimTool
+  readonly group: ClaimToolGroupId
   readonly label: string
   readonly key: string
   readonly icon: IconName
+}
+
+export interface ClaimToolGroup {
+  readonly id: ClaimToolGroupId
+  readonly label: string
+  readonly tools: readonly ClaimToolEntry[]
+  /** The tool the group's button shows: the one last used from it. */
+  readonly shown: ClaimTool
 }
 
 /** Options for the tool in hand; only the ones that apply are set. */
@@ -163,12 +177,14 @@ export interface ClaimToolOptions {
 export interface ClaimModeModel {
   readonly tool: ClaimTool
   readonly tools: readonly ClaimToolEntry[]
+  readonly groups: readonly ClaimToolGroup[]
   readonly options: ClaimToolOptions
   /** Whether the next shape drawn cuts out of the claim instead of adding to it. */
   readonly subtract: boolean
-  /** Items in the document, and which one is selected. */
+  /** Items in the document, and how many are selected. */
   readonly items: number
   readonly selected: boolean
+  readonly selectedCount: number
   /** True while editing a saved claim rather than a new one. */
   readonly editing: boolean
   /** The template the claim overlaps, or null. Shown for context; a claim needs no template. */

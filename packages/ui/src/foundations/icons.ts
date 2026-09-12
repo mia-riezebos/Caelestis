@@ -38,6 +38,7 @@ import inkPen from '@iconify-icons/material-symbols/ink-pen'
 import keyboardArrowDown from '@iconify-icons/material-symbols/keyboard-arrow-down'
 import keyboardArrowUp from '@iconify-icons/material-symbols/keyboard-arrow-up'
 import labelOutline from '@iconify-icons/material-symbols/label-outline'
+import lassoSelect from '@iconify-icons/material-symbols/lasso-select'
 import lightMode from '@iconify-icons/material-symbols/light-mode'
 import moreVert from '@iconify-icons/material-symbols/more-vert'
 import nearMe from '@iconify-icons/material-symbols/near-me'
@@ -45,6 +46,7 @@ import notifications from '@iconify-icons/material-symbols/notifications-outline
 import openInNew from '@iconify-icons/material-symbols/open-in-new'
 import openWith from '@iconify-icons/material-symbols/open-with'
 import palette from '@iconify-icons/material-symbols/palette'
+import panTool from '@iconify-icons/material-symbols/pan-tool'
 import pause from '@iconify-icons/material-symbols/pause'
 import pentagonGlyph from '@iconify-icons/material-symbols/pentagon'
 import playArrow from '@iconify-icons/material-symbols/play-arrow'
@@ -113,6 +115,8 @@ export const ICONS = define({
   shapes: shapesGlyph,
   toolSelect: arrowSelectorTool,
   toolDirect: nearMe,
+  toolLasso: lassoSelect,
+  toolHand: panTool,
   toolPen: inkPen,
   toolPencil: editGlyph,
   toolBrush: brushGlyph,

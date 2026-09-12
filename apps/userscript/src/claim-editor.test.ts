@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
   saveError: null as string | null,
   template: 'Mural' as string | null,
   map: null as HTMLElement | null,
+  panned: [] as [number, number][],
 }))
 
 vi.mock('./main.js', () => ({
@@ -20,6 +21,9 @@ vi.mock('./main.js', () => ({
     pixelsPerCanvasPixel: { x: harness.scale, y: harness.scale },
   }),
   isMapInteractionTarget: (target: EventTarget | null) => target === harness.map,
+}))
+vi.mock('./map-handle.js', () => ({
+  getMap: () => ({ panBy: (offset: [number, number]) => harness.panned.push(offset) }),
 }))
 vi.mock('./debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('./ui/theme.js', () => ({ applyWplaceTheme: vi.fn() }))
@@ -127,12 +131,96 @@ describe('claim editor', () => {
     expect(editor.claimEditorPixels()?.rect).toEqual({ x: 10, y: 20, w: 5, h: 3 })
   })
 
-  it('never consumes the wheel, and leaves empty-canvas presses to the map with the selection tool', async () => {
+  it('turns a plain wheel into a pan and leaves a modified wheel to the map to zoom', async () => {
     await setup('select')
-    const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 })
-    map().dispatchEvent(wheel)
-    expect(wheel.defaultPrevented).toBe(false)
-    expect(click(5, 5).defaultPrevented).toBe(false)
+    harness.panned = []
+    // happy-dom's WheelEvent drops modifier flags, so they are pinned on by hand.
+    const wheel = (deltaY: number, modifier?: 'shiftKey' | 'altKey' | 'ctrlKey' | 'metaKey') => {
+      const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY })
+      for (const flag of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey'] as const)
+        Object.defineProperty(event, flag, { value: flag === modifier })
+      map().dispatchEvent(event)
+      return event
+    }
+    expect(wheel(120).defaultPrevented).toBe(true)
+    expect(wheel(40, 'shiftKey').defaultPrevented).toBe(true)
+    expect(harness.panned).toEqual([
+      [0, 120],
+      [40, 0],
+    ])
+    for (const modifier of ['altKey', 'ctrlKey', 'metaKey'] as const)
+      expect(wheel(120, modifier).defaultPrevented).toBe(false)
+    expect(harness.panned).toHaveLength(2)
+  })
+
+  it('only the hand tool leaves a press to the map, and Space is a temporary hand', async () => {
+    const editor = await setup('select')
+    drag(50, 50, 59, 59)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'hand' })
+    expect(click(55, 55).defaultPrevented).toBe(false)
+    expect(map().style.cursor).toBe('grab')
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    expect(map().style.cursor).toBe('default')
+    key(' ')
+    expect(editor.claimEditorTool()).toBe('hand')
+    document.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }))
+    expect(editor.claimEditorTool()).toBe('select')
+  })
+
+  it('drags a marquee over empty canvas with the selection tool, lighting what it catches', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 19, 19)
+    drag(40, 10, 49, 19)
+    drag(80, 80, 89, 89)
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
+    click(200, 200)
+    expect(editor.claimModeModel().selectedCount).toBe(0)
+    // The press on empty canvas is consumed, so the map does not pan under the marquee.
+    expect(pointer('pointerdown', 5, 5).defaultPrevented).toBe(true)
+    pointer('pointermove', 55, 25)
+    expect(
+      document.querySelector('#caelestis-claim-overlay [data-gesture="marquee"]'),
+    ).not.toBeNull()
+    expect(editor.claimModeModel().selectedCount).toBe(2)
+    pointer('pointerup', 55, 25)
+    expect(document.querySelector('#caelestis-claim-overlay [data-gesture="marquee"]')).toBeNull()
+    expect(editor.claimModeModel().selectedCount).toBe(2)
+    // Shift-click adds the third; Delete removes all three.
+    const down = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 85,
+      clientY: 85,
+      button: 0,
+      pointerId: 1,
+      shiftKey: true,
+    })
+    map().dispatchEvent(down)
+    pointer('pointerup', 85, 85)
+    expect(editor.claimModeModel().selectedCount).toBe(3)
+    key('Delete')
+    expect(editor.claimModeModel().items).toBe(0)
+  })
+
+  it('selects with the lasso whatever its loop encloses, and moves a multi-selection together', async () => {
+    const editor = await setup('rectangle')
+    drag(10, 10, 19, 19)
+    drag(40, 10, 49, 19)
+    drag(80, 80, 89, 89)
+    key('q')
+    expect(editor.claimEditorTool()).toBe('lasso')
+    expect(pointer('pointerdown', 0, 0).defaultPrevented).toBe(true)
+    pointer('pointermove', 60, 0)
+    pointer('pointermove', 60, 30)
+    pointer('pointermove', 0, 30)
+    expect(document.querySelector('#caelestis-claim-overlay [data-gesture="lasso"]')).not.toBeNull()
+    pointer('pointerup', 0, 30)
+    expect(editor.claimModeModel().selectedCount).toBe(2)
+    key('v')
+    drag(15, 15, 25, 15)
+    const bounds = editor.claimEditorBounds()
+    // Both caught shapes moved right by ten; the third stayed put.
+    expect(bounds).toEqual({ x: 20, y: 10, w: 70, h: 80 })
   })
 
   it('subtracts a second shape and rasterises the difference', async () => {

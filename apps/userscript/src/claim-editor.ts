@@ -25,9 +25,11 @@ import {
   type ClaimModeModel,
   type ClaimTool,
   type ClaimToolEntry,
+  type ClaimToolGroupId,
 } from '@caelestis/ui/elements'
 import { warn } from './debug.js'
 import { canvasPixelAt, isMapInteractionTarget, screenProjection } from './main.js'
+import { getMap } from './map-handle.js'
 import type { TileFrame } from './tile-transform.js'
 import { applyWplaceTheme } from './ui/theme.js'
 
@@ -38,13 +40,14 @@ import { applyWplaceTheme } from './ui/theme.js'
  * shape stays editable. The drawer on the left holds the tools; the bar at the top holds the
  * options and the cancel or confirm buttons. Nothing sits over the map: pointer events are
  * watched at the window in the capture phase and consumed only when the tool in hand wants
- * them, so the wheel zooms and empty canvas pans throughout. Outside claim mode nothing here
- * listens at all.
+ * them. Outside claim mode nothing here listens at all.
  *
- * Tools, Illustrator-style: selection (click, drag to move, handles to resize or rotate), direct
- * selection (anchors and bezier handles of a path), pen (click for corners, drag for curves, click
- * the first anchor to close), pencil and brush (freehand strokes), and rectangle, ellipse,
- * polygon, and star. Everything the tools produce is whole pixels once rasterised, because the
+ * Tools and keys follow Illustrator: selection (V: click, Shift-click to add, drag to move, drag
+ * empty canvas for a marquee, handles to resize or rotate), direct selection (A: anchors and
+ * bezier handles of a path), lasso (Q), pen (P: click for corners, drag for curves, click the
+ * first anchor to close), pencil (N) and paintbrush (B), rectangle (M), ellipse (L), polygon and
+ * star, and the hand (H, or hold Space) which is the one tool that lets a drag pan the map. The
+ * wheel pans, Shift+wheel pans sideways, and Alt/Option or Ctrl/Cmd+wheel zooms. Everything the tools produce is whole pixels once rasterised, because the
  * shared rasteriser decides membership by pixel centre.
  */
 
@@ -57,29 +60,63 @@ const STROKE_STEP_PX = 2
 const DEFAULT_INNER = 50
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
+/** Illustrator's keys where it has them: V, A, Q, P, N, B, M, L. */
 export const CLAIM_TOOLS: readonly ClaimToolEntry[] = [
-  { tool: 'select', label: 'Selection', key: 'V', icon: 'toolSelect' },
-  { tool: 'direct', label: 'Direct selection', key: 'A', icon: 'toolDirect' },
-  { tool: 'pen', label: 'Pen', key: 'P', icon: 'toolPen' },
-  { tool: 'pencil', label: 'Pencil', key: 'N', icon: 'toolPencil' },
-  { tool: 'brush', label: 'Brush', key: 'B', icon: 'toolBrush' },
-  { tool: 'rectangle', label: 'Rectangle', key: 'M', icon: 'toolRectangle' },
-  { tool: 'ellipse', label: 'Ellipse', key: 'L', icon: 'toolEllipse' },
-  { tool: 'polygon', label: 'Polygon', key: '', icon: 'toolPolygon' },
-  { tool: 'star', label: 'Star', key: '', icon: 'toolStar' },
+  { tool: 'select', group: 'selection', label: 'Selection', key: 'V', icon: 'toolSelect' },
+  { tool: 'direct', group: 'selection', label: 'Direct selection', key: 'A', icon: 'toolDirect' },
+  { tool: 'lasso', group: 'selection', label: 'Lasso', key: 'Q', icon: 'toolLasso' },
+  { tool: 'pen', group: 'pen', label: 'Pen', key: 'P', icon: 'toolPen' },
+  { tool: 'pencil', group: 'pencil', label: 'Pencil', key: 'N', icon: 'toolPencil' },
+  { tool: 'brush', group: 'pencil', label: 'Paintbrush', key: 'B', icon: 'toolBrush' },
+  { tool: 'rectangle', group: 'shape', label: 'Rectangle', key: 'M', icon: 'toolRectangle' },
+  { tool: 'ellipse', group: 'shape', label: 'Ellipse', key: 'L', icon: 'toolEllipse' },
+  { tool: 'polygon', group: 'shape', label: 'Polygon', key: '', icon: 'toolPolygon' },
+  { tool: 'star', group: 'shape', label: 'Star', key: '', icon: 'toolStar' },
+  { tool: 'hand', group: 'navigate', label: 'Hand', key: 'H', icon: 'toolHand' },
+]
+
+const GROUPS: readonly { readonly id: ClaimToolGroupId; readonly label: string }[] = [
+  { id: 'selection', label: 'Selection tools' },
+  { id: 'pen', label: 'Pen tools' },
+  { id: 'pencil', label: 'Drawing tools' },
+  { id: 'shape', label: 'Shape tools' },
+  { id: 'navigate', label: 'Navigation tools' },
 ]
 
 const TOOL_KEYS: Record<string, ClaimTool> = {
   v: 'select',
   a: 'direct',
+  q: 'lasso',
   p: 'pen',
   n: 'pencil',
   b: 'brush',
   m: 'rectangle',
   l: 'ellipse',
+  h: 'hand',
 }
 
-type DragKind = 'draw' | 'move' | 'corner' | 'outer' | 'inner' | 'node' | 'stroke' | 'pen'
+const groupOf = (of: ClaimTool): ClaimToolGroupId =>
+  CLAIM_TOOLS.find((entry) => entry.tool === of)?.group ?? 'selection'
+
+const defaultShown = (): Record<ClaimToolGroupId, ClaimTool> => ({
+  selection: 'select',
+  pen: 'pen',
+  pencil: 'pencil',
+  shape: 'rectangle',
+  navigate: 'hand',
+})
+
+type DragKind =
+  | 'draw'
+  | 'move'
+  | 'corner'
+  | 'outer'
+  | 'inner'
+  | 'node'
+  | 'stroke'
+  | 'pen'
+  | 'marquee'
+  | 'lasso'
 
 interface Drag {
   readonly kind: DragKind
@@ -90,6 +127,8 @@ interface Drag {
   readonly clientY: number
   /** The item as it was when the gesture began. */
   readonly base: RegionItem | null
+  /** For move drags: every selected item as it was, so they travel together. */
+  readonly group: readonly RegionItem[]
   /** For corner drags: which corner (0 tl, 1 tr, 2 br, 3 bl). For node drags: node index. */
   readonly index: number
   /** For node drags: which part of the node. */
@@ -119,7 +158,17 @@ let inner = DEFAULT_INNER
 let width = 8
 let subtract = false
 let items: RegionItem[] = []
-let selectedId: string | null = null
+/** Selected item ids, in selection order. Handles appear only for a selection of one. */
+let selectedIds: readonly string[] = []
+/** The tool each drawer group shows: the one last used from it. */
+let shown: Record<ClaimToolGroupId, ClaimTool> = defaultShown()
+/** A marquee being dragged, in canvas pixels, and a lasso being drawn. */
+let marquee: { x0: number; y0: number; x1: number; y1: number } | null = null
+let lasso: Point[] | null = null
+/** What was selected before a Shift-marquee or Shift-lasso began, to add to. */
+let baseSelection: readonly string[] = []
+/** The tool to return to when the space bar, held for a temporary hand, is released. */
+let handHeldFrom: ClaimTool | null = null
 /** The saved claim being edited, or null for a new one. */
 let editingId: string | null = null
 let drag: Drag | null = null
@@ -224,6 +273,12 @@ export const claimEditorPixels = (): RegionShapePixels | null => {
 export const claimModeModel = (): ClaimModeModel => ({
   tool,
   tools: CLAIM_TOOLS,
+  groups: GROUPS.map((group) => ({
+    id: group.id,
+    label: group.label,
+    tools: CLAIM_TOOLS.filter((entry) => entry.group === group.id),
+    shown: shown[group.id],
+  })),
   options: {
     ...(tool === 'polygon' ? { sides } : {}),
     ...(tool === 'star' ? { points, inner } : {}),
@@ -236,7 +291,8 @@ export const claimModeModel = (): ClaimModeModel => ({
   },
   subtract,
   items: items.length,
-  selected: selectedId !== null,
+  selected: selectedIds.length > 0,
+  selectedCount: selectedIds.length,
   editing: editingId !== null,
   template: items.length === 0 ? null : (host?.templateFor({ items }) ?? null),
   pixels: claimEditorPixels()?.count ?? 0,
@@ -244,7 +300,50 @@ export const claimModeModel = (): ClaimModeModel => ({
   ...(message === undefined ? {} : { message }),
 })
 
-const selectedItem = (): RegionItem | null => items.find((item) => item.id === selectedId) ?? null
+const isSelected = (id: string): boolean => selectedIds.includes(id)
+
+/** The one selected item, when exactly one is: what handles and option edits apply to. */
+const selectedItem = (): RegionItem | null =>
+  selectedIds.length === 1 ? (items.find((item) => item.id === selectedIds[0]) ?? null) : null
+
+const selectedItems = (): RegionItem[] => items.filter((item) => isSelected(item.id))
+
+const select = (ids: readonly string[]): void => {
+  selectedIds = [...new Set(ids)]
+}
+
+/** Whether a shape is inside a marquee: its bounding box touches the box, as in Illustrator. */
+const inMarquee = (
+  shape: RegionShape,
+  box: { x0: number; y0: number; x1: number; y1: number },
+): boolean => {
+  const bounds = regionShapeBounds(shape)
+  const left = Math.min(box.x0, box.x1)
+  const right = Math.max(box.x0, box.x1)
+  const top = Math.min(box.y0, box.y1)
+  const bottom = Math.max(box.y0, box.y1)
+  return (
+    bounds.x <= right &&
+    bounds.x + bounds.w >= left &&
+    bounds.y <= bottom &&
+    bounds.y + bounds.h >= top
+  )
+}
+
+const insidePolygon = (ring: readonly Point[], x: number, y: number): boolean => {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i] as Point
+    const b = ring[j] as Point
+    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
+}
+
+/** Whether a shape is caught by a lasso: any point of its outline lies inside the loop. */
+const inLasso = (shape: RegionShape, ring: readonly Point[]): boolean =>
+  ring.length >= 3 &&
+  regionShapeOutline(shape).some((point) => insidePolygon(ring, point.x, point.y))
 
 const replaceItem = (id: string, shape: RegionShape): void => {
   items = items.map((item) => (item.id === id ? { ...item, shape } : item))
@@ -258,7 +357,7 @@ const addItem = (shape: RegionShape): void => {
   }
   const item: RegionItem = { id: nextItemId(), shape, op: subtract ? 'subtract' : 'add' }
   items = [...items, item]
-  selectedId = item.id
+  select([item.id])
   touch()
 }
 
@@ -282,7 +381,7 @@ const loadClaim = (region: { readonly id: string; readonly document: RegionDocum
   }
   editingId = region.id
   items = [...region.document.items]
-  selectedId = null
+  select([])
   dirty = false
   bump()
   return true
@@ -421,7 +520,15 @@ const setCursor = (value: string): void => {
 }
 
 const toolCursor = (): string =>
-  tool === 'select' || tool === 'direct' ? '' : tool === 'pen' ? 'copy' : 'crosshair'
+  tool === 'select' || tool === 'direct'
+    ? 'default'
+    : tool === 'hand'
+      ? 'grab'
+      : tool === 'pen'
+        ? 'copy'
+        : 'crosshair'
+
+const isSelectionTool = (of: ClaimTool): boolean => of === 'select' || of === 'direct'
 
 const startDrag = (
   kind: DragKind,
@@ -439,6 +546,7 @@ const startDrag = (
     clientX: event.clientX,
     clientY: event.clientY,
     base,
+    group: kind === 'move' ? selectedItems() : [],
     index,
     part,
     moved: false,
@@ -502,18 +610,40 @@ const onPointerDown = (event: PointerEvent): void => {
           notify()
           return
         }
-        if (selectedId !== null) {
-          selectedId = null
-          notify()
-        }
+        // Empty canvas: drag out a marquee. Shift adds to what is selected, as in Illustrator.
+        consume(event)
+        baseSelection = event.shiftKey ? selectedIds : []
+        select(baseSelection)
+        marquee = { x0: point.x, y0: point.y, x1: point.x, y1: point.y }
+        startDrag('marquee', event, { x: px, y: py }, null)
+        notify()
         return
       }
       consume(event)
-      selectedId = hit.id
-      if (tool === 'select') startDrag('move', event, { x: px, y: py }, hit)
+      // Shift toggles membership; a press on an already selected shape keeps the whole selection
+      // so the drag moves all of it; anything else selects just this shape.
+      if (event.shiftKey)
+        select(
+          isSelected(hit.id) ? selectedIds.filter((id) => id !== hit.id) : [...selectedIds, hit.id],
+        )
+      else if (!isSelected(hit.id) || tool === 'direct') select([hit.id])
+      if (tool === 'select' && isSelected(hit.id)) startDrag('move', event, { x: px, y: py }, hit)
       notify()
       return
     }
+    case 'lasso': {
+      // The lasso owns the press: the map does not pan under it.
+      consume(event)
+      baseSelection = event.shiftKey ? selectedIds : []
+      select(baseSelection)
+      lasso = [{ x: point.x, y: point.y }]
+      startDrag('lasso', event, { x: px, y: py }, null)
+      notify()
+      return
+    }
+    case 'hand':
+      // The one tool that leaves the press to the map, so dragging pans.
+      return
     case 'pen': {
       consume(event)
       const start = penStartClient()
@@ -541,7 +671,7 @@ const onPointerDown = (event: PointerEvent): void => {
     case 'pencil':
     case 'brush':
       consume(event)
-      selectedId = null
+      select([])
       stroke = [{ x: px + 0.5, y: py + 0.5 }]
       startDrag('stroke', event, { x: px, y: py }, null)
       bump()
@@ -549,7 +679,7 @@ const onPointerDown = (event: PointerEvent): void => {
       return
     default:
       consume(event)
-      selectedId = null
+      select([])
       drawing = shapeFrom(px, py, px, py)
       startDrag('draw', event, { x: px, y: py }, null)
       bump()
@@ -598,13 +728,13 @@ const onPointerMove = (event: PointerEvent): void => {
       setCursor('')
       return
     }
-    if (tool === 'select' || tool === 'direct') {
+    if (isSelectionTool(tool)) {
       const point = canvasPixelAt(event.clientX, event.clientY)
       const px = point === null ? -1 : pixel(point.x)
       const py = point === null ? -1 : pixel(point.y)
       const overItem = point !== null && itemAt(px, py) !== null
       const overSaved = !overItem && point !== null && savedClaimAt(px, py) !== null
-      setCursor(overItem ? 'move' : overSaved ? 'pointer' : '')
+      setCursor(overItem ? 'move' : overSaved ? 'pointer' : 'default')
     } else setCursor(toolCursor())
     return
   }
@@ -624,11 +754,41 @@ const onPointerMove = (event: PointerEvent): void => {
       drawing = shapeFrom(drag.originX, drag.originY, px, py)
       bump()
       break
-    case 'move':
+    case 'move': {
       if (base === null || !drag.moved) return
-      replaceItem(base.id, translateRegionShape(base.shape, px - drag.originX, py - drag.originY))
+      // Every selected shape travels by the same whole-pixel offset.
+      const dx = px - drag.originX
+      const dy = py - drag.originY
+      const moved = new Map(drag.group.map((item) => [item.id, item] as const))
+      items = items.map((item) => {
+        const was = moved.get(item.id)
+        return was === undefined
+          ? item
+          : { ...item, shape: translateRegionShape(was.shape, dx, dy) }
+      })
+      touch()
       setCursor('grabbing')
       break
+    }
+    case 'marquee': {
+      if (marquee === null) return
+      marquee = { ...marquee, x1: point.x, y1: point.y }
+      const caught = items.filter((item) =>
+        inMarquee(item.shape, marquee as NonNullable<typeof marquee>),
+      )
+      select([...baseSelection, ...caught.map((item) => item.id)])
+      break
+    }
+    case 'lasso': {
+      if (lasso === null) return
+      const last = lasso[lasso.length - 1] as Point
+      if (Math.hypot(point.x - last.x, point.y - last.y) >= 1)
+        lasso = [...lasso, { x: point.x, y: point.y }]
+      const ring = lasso
+      const caught = items.filter((item) => inLasso(item.shape, ring))
+      select([...baseSelection, ...caught.map((item) => item.id)])
+      break
+    }
     case 'corner': {
       if (base === null || (base.shape.kind !== 'rectangle' && base.shape.kind !== 'ellipse'))
         return
@@ -709,6 +869,13 @@ const onPointerEnd = (event: PointerEvent): void => {
     case 'stroke':
       finishStroke()
       return
+    case 'marquee':
+    case 'lasso':
+      // A click with no drag on empty canvas clears the selection, like Illustrator.
+      if (!ended.moved && !event.shiftKey) select([])
+      marquee = null
+      lasso = null
+      break
     default:
       break
   }
@@ -727,14 +894,24 @@ const isTyping = (target: EventTarget | null): boolean => {
 const onKeydown = (event: KeyboardEvent): void => {
   if (!active || isTyping(event.target) || event.metaKey || event.ctrlKey || event.altKey) return
   const key = event.key.toLowerCase()
+  if (key === ' ') {
+    // Holding space is a temporary hand, as in Illustrator; the tool comes back on release.
+    consume(event)
+    if (handHeldFrom === null && tool !== 'hand' && drag === null) {
+      handHeldFrom = tool
+      setTool('hand')
+      notify()
+    }
+    return
+  }
   if (key === 'escape') {
     consume(event)
     if (pen !== null) {
       pen = null
       bump()
       notify()
-    } else if (selectedId !== null) {
-      selectedId = null
+    } else if (selectedIds.length > 0) {
+      select([])
       notify()
     } else stopClaimMode()
     return
@@ -757,10 +934,43 @@ const onKeydown = (event: KeyboardEvent): void => {
   }
 }
 
+const onKeyup = (event: KeyboardEvent): void => {
+  if (!active || event.key !== ' ' || handHeldFrom === null) return
+  const back = handHeldFrom
+  handHeldFrom = null
+  setTool(back)
+  notify()
+}
+
+/**
+ * The wheel in claim mode, Illustrator-style: scroll pans, Shift+scroll pans sideways, and a
+ * zoom needs Alt/Option or Ctrl/Cmd. Plain wheels are consumed and turned into a pan so the map
+ * never zooms under a stray scroll; modified ones pass through to the map's own zoom.
+ */
+const onWheel = (event: WheelEvent): void => {
+  if (!active || event.altKey || event.ctrlKey || event.metaKey) return
+  const target = event.target
+  if (!(target instanceof Element) || !isMapInteractionTarget(target)) return
+  const map = getMap() as {
+    panBy?: (offset: [number, number], options?: unknown) => unknown
+  } | null
+  if (map?.panBy === undefined) return
+  consume(event)
+  const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1
+  let dx = event.deltaX * scale
+  let dy = event.deltaY * scale
+  if (event.shiftKey && dx === 0) {
+    dx = dy
+    dy = 0
+  }
+  if (dx === 0 && dy === 0) return
+  map.panBy([dx, dy], { animate: false })
+}
+
 const deleteSelected = (): void => {
-  if (selectedId === null) return
-  items = items.filter((item) => item.id !== selectedId)
-  selectedId = null
+  if (selectedIds.length === 0) return
+  items = items.filter((item) => !isSelected(item.id))
+  select([])
   touch()
   notify()
 }
@@ -768,6 +978,10 @@ const deleteSelected = (): void => {
 const setTool = (next: ClaimTool): void => {
   if (pen !== null && next !== 'pen') commitPen(false)
   tool = next
+  shown = { ...shown, [groupOf(next)]: next }
+  if (next !== 'hand') handHeldFrom = null
+  marquee = null
+  lasso = null
   setCursor(toolCursor())
   notify()
 }
@@ -839,10 +1053,9 @@ export const handleClaimModeIntent = (intent: ClaimModeIntent): void => {
     }
     case 'set-subtract': {
       subtract = intent.subtract
-      const selected = selectedItem()
-      if (selected !== null) {
+      if (selectedIds.length > 0) {
         items = items.map((item) =>
-          item.id === selected.id ? { ...item, op: subtract ? 'subtract' : 'add' } : item,
+          isSelected(item.id) ? { ...item, op: subtract ? 'subtract' : 'add' } : item,
         )
         touch()
       }
@@ -953,8 +1166,9 @@ const syncOverlay = (): void => {
     ;(circle as SVGElement).style.cursor = 'grab'
     root.appendChild(circle)
   }
+  const single = selectedIds.length === 1
   for (const item of items) {
-    const selected = item.id === selectedId
+    const selected = isSelected(item.id)
     const outline = regionShapeOutline(item.shape).map(project)
     const closed = item.shape.kind !== 'path' || item.shape.closed
     root.appendChild(
@@ -966,7 +1180,7 @@ const syncOverlay = (): void => {
         'stroke-dasharray': item.op === 'subtract' ? '4 3' : '0',
       }),
     )
-    if (!selected) continue
+    if (!selected || !single) continue
     const shape = item.shape
     if (tool === 'select') {
       if (shape.kind === 'rectangle' || shape.kind === 'ellipse') {
@@ -1008,6 +1222,36 @@ const syncOverlay = (): void => {
         handle(anchor, `node:${index}:anchor`, accent)
       })
     }
+  }
+  // Selection gestures show what they cover: a dashed box or loop, with the caught shapes lit.
+  if (marquee !== null) {
+    const a = project({ x: Math.min(marquee.x0, marquee.x1), y: Math.min(marquee.y0, marquee.y1) })
+    const b = project({ x: Math.max(marquee.x0, marquee.x1), y: Math.max(marquee.y0, marquee.y1) })
+    root.appendChild(
+      svg('rect', {
+        x: a.x,
+        y: a.y,
+        width: Math.max(0, b.x - a.x),
+        height: Math.max(0, b.y - a.y),
+        fill: 'rgb(30 144 255 / 0.12)',
+        stroke: accent,
+        'stroke-width': 1,
+        'stroke-dasharray': '4 3',
+        'data-gesture': 'marquee',
+      }),
+    )
+  }
+  if (lasso !== null && lasso.length > 1) {
+    root.appendChild(
+      svg('path', {
+        d: pathData(lasso.map(project), true),
+        fill: 'rgb(30 144 255 / 0.12)',
+        stroke: accent,
+        'stroke-width': 1,
+        'stroke-dasharray': '4 3',
+        'data-gesture': 'lasso',
+      }),
+    )
   }
   // What is mid-gesture gets an outline too, so a shape is visible while it is being dragged out.
   if (drawing !== null) {
@@ -1063,6 +1307,8 @@ export const installClaimEditor = (editorHost: ClaimEditorHost): void => {
   window.addEventListener('pointerup', onPointerEnd, true)
   window.addEventListener('pointercancel', onPointerEnd, true)
   window.addEventListener('keydown', onKeydown, true)
+  window.addEventListener('keyup', onKeyup, true)
+  window.addEventListener('wheel', onWheel, { capture: true, passive: false })
 }
 
 /** Enter claim mode with a tool in hand, optionally editing a saved claim. */
@@ -1077,9 +1323,12 @@ export const startClaimMode = (
   }
   active = true
   tool = initialTool ?? 'select'
+  shown = { ...defaultShown(), [groupOf(tool)]: tool }
   items = existing === undefined ? [] : [...existing.document.items]
   editingId = existing?.id ?? null
-  selectedId = null
+  select([])
+  marquee = null
+  lasso = null
   dirty = false
   drag = null
   pen = null
@@ -1097,7 +1346,10 @@ export const stopClaimMode = (): void => {
   if (!active) return
   active = false
   items = []
-  selectedId = null
+  select([])
+  marquee = null
+  lasso = null
+  handHeldFrom = null
   editingId = null
   drag = null
   pen = null
@@ -1127,11 +1379,14 @@ export const resetClaimEditor = (): void => {
     window.removeEventListener('pointerup', onPointerEnd, true)
     window.removeEventListener('pointercancel', onPointerEnd, true)
     window.removeEventListener('keydown', onKeydown, true)
+    window.removeEventListener('keyup', onKeyup, true)
+    window.removeEventListener('wheel', onWheel, true)
     installed = false
   }
   host = null
   listeners.length = 0
   tool = 'select'
+  shown = defaultShown()
   sides = 6
   points = 5
   inner = DEFAULT_INNER
