@@ -11,6 +11,7 @@ import {
   PRESENCE_TICK_MS,
   type PresenceServerEvent,
   type RegionClaim,
+  type RegionDocument,
   type RegionShape,
   regionShapeBounds,
   uuidV7,
@@ -287,7 +288,7 @@ describe('presence room', () => {
       surface: WORLD_TEMPLATE_SURFACE,
       templateId: uuidV7(),
       claimant: { wplaceUserId: 1, displayName: 'Mia' },
-      shape,
+      document: { items: [{ id: 'star', shape, op: 'add' }] },
       rect: regionShapeBounds(shape),
       label: '',
       createdAt: Date.now(),
@@ -300,10 +301,13 @@ describe('presence room', () => {
     update(b, { viewport: rect(0) })
     tick()
     const nextShape: RegionShape = { kind: 'ellipse', x: 0, y: 0, w: 8, h: 8 }
-    const updated = await sql.regions.updateRegion(region.id, nextShape, 'Updated')
+    const nextDocument: RegionDocument = {
+      items: [{ id: 'ellipse', shape: nextShape, op: 'add' }],
+    }
+    const updated = await sql.regions.updateRegion(region.id, nextDocument, 'Updated')
     await object.publishRegions(0, WORLD_TEMPLATE_SURFACE)
     expect(b.events().at(-1)).toEqual({ type: 'regions', regions: [updated] })
-    expect(updated).toEqual({ ...region, shape: nextShape, rect: rect(0), label: 'Updated' })
+    expect(updated).toEqual({ ...region, document: nextDocument, rect: rect(0), label: 'Updated' })
     object.webSocketError(asWebSocket(a))
     tick()
     expect(b.events().at(-1)).toMatchObject({ online: 1, remove: [expect.any(String)] })

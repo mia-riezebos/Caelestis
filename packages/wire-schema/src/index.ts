@@ -1,15 +1,21 @@
 import type * as Shared from '@caelestis/shared'
 import {
   isPresenceDraft,
+  isRegionDocument,
+  isRegionItem,
+  isRegionShape,
   MAX_LIVE_PROJECTIONS,
   MAX_LIVE_TEMPLATE_IDS,
+  MAX_PATH_NODES,
   MAX_PRESENCE_PEERS,
   MAX_PRESENCE_REGION_LABEL,
   MAX_PRESENCE_REGION_PIXELS,
   MAX_PRESENCE_REGIONS,
   MAX_PRESENCE_SUBSCRIBERS,
+  MAX_REGION_ITEMS,
   MAX_REGION_SHAPE_CORNERS,
   MAX_REGION_SHAPE_EXTENT,
+  MAX_STROKE_WIDTH,
   MAX_TILE_OFFERS,
   MIN_REGION_SHAPE_CORNERS,
   PALETTE_SIZE,
@@ -219,7 +225,23 @@ const RegionRadial = {
 }
 const RegionCorners = integerBetween(MIN_REGION_SHAPE_CORNERS, MAX_REGION_SHAPE_CORNERS)
 
-/** Whole-pixel shapes with the same structural limits as the shared contract. */
+const MAX_REGION_COORDINATE = 4_000_000
+const RegionCoordinate = Schema.Number.check(
+  booleanFilter(
+    (value) => Number.isFinite(value) && Math.abs(value) <= MAX_REGION_COORDINATE,
+    'invalid path coordinate',
+  ),
+)
+
+export const Point = Schema.Struct({ x: RegionCoordinate, y: RegionCoordinate })
+export const PathNode = Schema.Struct({
+  x: RegionCoordinate,
+  y: RegionCoordinate,
+  in: Schema.optionalKey(Point),
+  out: Schema.optionalKey(Point),
+})
+
+/** Editable shapes with the same structural limits as the shared contract. */
 export const RegionShape = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('rectangle'), ...RegionBox }),
   Schema.Struct({ kind: Schema.Literal('ellipse'), ...RegionBox }),
@@ -232,7 +254,28 @@ export const RegionShape = Schema.Union([
   }).check(
     booleanFilter((shape) => shape.inner < shape.r, 'inner radius must be less than radius'),
   ),
-])
+  Schema.Struct({
+    kind: Schema.Literal('path'),
+    nodes: boundedArray(PathNode, MAX_PATH_NODES),
+    closed: Schema.Boolean,
+    width: Schema.Number.check(
+      booleanFilter(
+        (width) => Number.isFinite(width) && width >= 0 && width <= MAX_STROKE_WIDTH,
+        'invalid stroke width',
+      ),
+    ),
+  }),
+]).check(booleanFilter(isRegionShape, 'invalid region shape'))
+
+export const RegionItem = Schema.Struct({
+  id: boundedString(MAX_IDENTIFIER_LENGTH),
+  shape: RegionShape,
+  op: Schema.Literals(['add', 'subtract']),
+}).check(booleanFilter(isRegionItem, 'invalid region item'))
+
+export const RegionDocument = Schema.Struct({
+  items: boundedArray(RegionItem, MAX_REGION_ITEMS),
+}).check(booleanFilter(isRegionDocument, 'invalid region document'))
 
 export const RegionClaim = Schema.Struct({
   id: Identifier,
@@ -240,7 +283,7 @@ export const RegionClaim = Schema.Struct({
   surface: TemplateSurface,
   templateId: Schema.NullOr(Identifier),
   claimant: PresenceIdentity,
-  shape: RegionShape,
+  document: RegionDocument,
   rect: RegionRect,
   label: RegionLabel,
   createdAt: integerBetween(0, Number.MAX_SAFE_INTEGER),
@@ -248,7 +291,7 @@ export const RegionClaim = Schema.Struct({
 
 export const RegionClaimRequest = Schema.Struct({
   templateId: Schema.optionalKey(Schema.NullOr(Identifier)),
-  shape: RegionShape,
+  document: RegionDocument,
   label: RegionLabel,
   actor: PresenceIdentity,
 })
@@ -1288,6 +1331,14 @@ assertExact<Exact<Schema.Codec.Encoded<typeof PresenceClientEvent>, Shared.Prese
 assertExact<Exact<Schema.Schema.Type<typeof PresencePeer>, Shared.PresencePeer>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof PresencePeer>, Shared.PresencePeer>>()
 assertExact<Exact<Schema.Schema.Type<typeof RegionShape>, Shared.RegionShape>>()
+assertExact<Exact<Schema.Schema.Type<typeof Point>, Shared.Point>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof Point>, Shared.Point>>()
+assertExact<Exact<Schema.Schema.Type<typeof PathNode>, Shared.PathNode>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PathNode>, Shared.PathNode>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionItem>, Shared.RegionItem>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionItem>, Shared.RegionItem>>()
+assertExact<Exact<Schema.Schema.Type<typeof RegionDocument>, Shared.RegionDocument>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof RegionDocument>, Shared.RegionDocument>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof RegionShape>, Shared.RegionShape>>()
 assertExact<Exact<Schema.Schema.Type<typeof RegionClaim>, Shared.RegionClaim>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof RegionClaim>, Shared.RegionClaim>>()

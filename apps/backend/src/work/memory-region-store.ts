@@ -1,8 +1,8 @@
 import {
   MAX_PRESENCE_REGIONS,
   type RegionClaim,
-  type RegionShape,
-  regionShapeBounds,
+  type RegionDocument,
+  regionDocumentBounds,
   sameTemplateSurface,
   type TemplateSurface,
 } from '@caelestis/shared'
@@ -31,6 +31,8 @@ export class MemoryRegionStore implements RegionStore {
     return this.records.get(id) ?? null
   }
   async createRegion(region: RegionClaim): Promise<boolean> {
+    const rect = regionDocumentBounds(region.document)
+    if (rect === null) throw new Error('Region document must contain an added shape')
     const count = [...this.records.values()].filter(
       (held) => held.season === region.season && sameTemplateSurface(held.surface, region.surface),
     ).length
@@ -40,15 +42,21 @@ export class MemoryRegionStore implements RegionStore {
       structuredClone({
         ...region,
         templateId: region.templateId ?? null,
-        rect: regionShapeBounds(region.shape),
+        rect,
       }),
     )
     return true
   }
-  async updateRegion(id: string, shape: RegionShape, label: string): Promise<RegionClaim | null> {
+  async updateRegion(
+    id: string,
+    document: RegionDocument,
+    label: string,
+  ): Promise<RegionClaim | null> {
     const current = this.records.get(id)
     if (current === undefined) return null
-    const region = structuredClone({ ...current, shape, rect: regionShapeBounds(shape), label })
+    const rect = regionDocumentBounds(document)
+    if (rect === null) throw new Error('Region document must contain an added shape')
+    const region = structuredClone({ ...current, document, rect, label })
     this.records.set(id, region)
     return region
   }

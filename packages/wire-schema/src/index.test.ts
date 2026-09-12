@@ -1,7 +1,12 @@
 import {
+  isRegionDocument,
+  isRegionItem,
   isRegionShape,
+  MAX_PATH_NODES,
+  MAX_REGION_ITEMS,
   MAX_REGION_SHAPE_CORNERS,
   MAX_REGION_SHAPE_EXTENT,
+  MAX_STROKE_WIDTH,
   MIN_REGION_SHAPE_CORNERS,
   millis,
   tileKey,
@@ -32,6 +37,8 @@ import {
   PresenceRect,
   PresenceServerEvent,
   RegionClaimRequest,
+  RegionDocument,
+  RegionItem,
   RegionShape,
   ServerInfo,
   StatusDelta,
@@ -50,7 +57,9 @@ describe('presence schemas', () => {
   it.each([{}, { templateId: null }])('decodes a claim request with template hint %j', (hint) => {
     const request = {
       ...hint,
-      shape: { kind: 'rectangle', x: 0, y: 0, w: 8, h: 8 },
+      document: {
+        items: [{ id: 'box', shape: { kind: 'rectangle', x: 0, y: 0, w: 8, h: 8 }, op: 'add' }],
+      },
       label: '',
       actor: { wplaceUserId: 1, displayName: 'Mia' },
     }
@@ -68,6 +77,25 @@ describe('presence schemas', () => {
       inner: 1,
       points: MAX_REGION_SHAPE_CORNERS,
       rotation: 359,
+    },
+    {
+      kind: 'path',
+      nodes: [
+        { x: -0.5, y: 1.25, out: { x: -4_000_000, y: 4_000_000 } },
+        { x: 20, y: 30, in: { x: 10.5, y: 25.75 } },
+      ],
+      closed: false,
+      width: 0.5,
+    },
+    {
+      kind: 'path',
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 5, y: 10 },
+      ],
+      closed: true,
+      width: 0,
     },
   ]
   it.each(shapes)('round-trips a valid $kind', (shape) => {
@@ -123,6 +151,74 @@ describe('presence schemas', () => {
       }),
     ).toThrow()
   })
+  it('matches shared validation for path nodes, handles, counts, and stroke limits', () => {
+    const point = { x: 1.5, y: -2.25 }
+    const path = { kind: 'path', nodes: [point, point], closed: false, width: 1 }
+    const candidates: unknown[] = []
+    for (const closed of [false, true]) {
+      for (const length of [0, 1, 2, 3, MAX_PATH_NODES, MAX_PATH_NODES + 1])
+        for (const width of [-1, 0, 0.5, MAX_STROKE_WIDTH, MAX_STROKE_WIDTH + 1, Infinity, NaN])
+          candidates.push({ ...path, closed, width, nodes: Array.from({ length }, () => point) })
+    }
+    for (const node of [
+      null,
+      {},
+      { ...point, x: '1' },
+      { ...point, x: 4_000_000.1 },
+      { ...point, y: -4_000_000.1 },
+      { ...point, x: Infinity },
+      { ...point, y: NaN },
+      { ...point, in: null },
+      { ...point, out: { x: 0 } },
+      { ...point, in: { x: 0, y: Infinity } },
+      { ...point, out: { x: -4_000_000, y: 4_000_000 } },
+    ])
+      candidates.push({ ...path, nodes: [point, node] })
+    for (const candidate of candidates) {
+      if (isRegionShape(candidate))
+        expect(Schema.decodeUnknownSync(RegionShape)(candidate)).toEqual(candidate)
+      else expect(() => Schema.decodeUnknownSync(RegionShape)(candidate)).toThrow()
+    }
+  })
+  it('matches shared item and document validation and preserves item order', () => {
+    const item = {
+      id: 'box',
+      shape: { kind: 'rectangle', x: 0, y: 0, w: 8, h: 8 },
+      op: 'add',
+    }
+    for (const candidate of [
+      item,
+      null,
+      {},
+      { ...item, id: '' },
+      { ...item, id: 'a'.repeat(64) },
+      { ...item, id: 'a'.repeat(65) },
+      { ...item, op: 'subtract' },
+      { ...item, op: 'replace' },
+      { ...item, shape: null },
+    ]) {
+      if (isRegionItem(candidate))
+        expect(Schema.decodeUnknownSync(RegionItem)(candidate)).toEqual(candidate)
+      else expect(() => Schema.decodeUnknownSync(RegionItem)(candidate)).toThrow()
+    }
+    for (const candidate of [
+      null,
+      {},
+      { items: [] },
+      { items: [null] },
+      { items: [item, item] },
+      { items: [item, { ...item, id: 'cutout', op: 'subtract' }] },
+      ...[1, MAX_REGION_ITEMS, MAX_REGION_ITEMS + 1].map((length) => ({
+        items: Array.from({ length }, (_, index) => ({ ...item, id: String(index) })),
+      })),
+    ]) {
+      if (isRegionDocument(candidate)) {
+        const decoded = Schema.decodeUnknownSync(RegionDocument)(candidate)
+        expect(decoded).toEqual(candidate)
+        expect(Schema.encodeSync(RegionDocument)(decoded)).toEqual(candidate)
+      } else expect(() => Schema.decodeUnknownSync(RegionDocument)(candidate)).toThrow()
+    }
+  })
   it('accepts safe rects and the shared bounded draft mask format', () => {
     const rect = { x: 0, y: 8, w: 8, h: 1 }
     expect(Schema.decodeUnknownSync(PresenceRect)(rect)).toEqual(rect)
@@ -156,7 +252,9 @@ describe('presence schemas', () => {
     expect(() =>
       Schema.decodeUnknownSync(RegionClaimRequest)({
         templateId: 'not-a-uuid',
-        shape: { kind: 'rectangle', ...rect },
+        document: {
+          items: [{ id: 'box', shape: { kind: 'rectangle', ...rect }, op: 'add' }],
+        },
         label: '',
         actor: { wplaceUserId: 1, displayName: 'Mia' },
       }),

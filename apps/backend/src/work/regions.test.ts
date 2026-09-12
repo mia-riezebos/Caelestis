@@ -2,8 +2,9 @@ import {
   MAX_PRESENCE_REGIONS,
   millis,
   type RegionClaim,
+  type RegionDocument,
   type RegionShape,
-  regionShapeBounds,
+  regionDocumentBounds,
   uuidV7,
   WORLD_PIXELS,
   WORLD_TEMPLATE_SURFACE,
@@ -23,6 +24,33 @@ import { makeBackendContext } from '../runtime/backend-runtime.js'
 const actor = { wplaceUserId: 1, displayName: 'Mia' }
 const other = { wplaceUserId: 2, displayName: 'Dawn' }
 const star: RegionShape = { kind: 'star', cx: 30, cy: 40, r: 20, inner: 8, points: 5, rotation: 90 }
+const rectangle: RegionShape = { kind: 'rectangle', x: 0, y: 0, w: 8, h: 8 }
+const documentOf = (shape: RegionShape): RegionDocument => ({
+  items: [{ id: 'shape', shape, op: 'add' }],
+})
+const document: RegionDocument = {
+  items: [
+    { id: 'star', shape: star, op: 'add' },
+    {
+      id: 'cutout',
+      shape: { kind: 'rectangle', x: 1_000, y: 1_000, w: 8, h: 8 },
+      op: 'subtract',
+    },
+    {
+      id: 'stroke',
+      shape: {
+        kind: 'path',
+        nodes: [
+          { x: 60.5, y: 70.25, out: { x: 90.75, y: 80 } },
+          { x: 100, y: 110, in: { x: 95, y: 120.5 } },
+        ],
+        closed: false,
+        width: 3.5,
+      },
+      op: 'add',
+    },
+  ],
+}
 let database: SqliteD1Database | undefined
 afterEach(() => {
   database?.close()
@@ -72,7 +100,7 @@ const setup = async (adapter: 'memory' | 'd1') => {
   const body = {
     templateId,
     actor,
-    shape: { kind: 'rectangle' as const, x: 0, y: 0, w: 8, h: 8 },
+    document: documentOf(rectangle),
     label: '',
   }
   const call = (method: string, id: string, body: unknown, token = 'report', query = 'season=0') =>
@@ -97,8 +125,8 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
       surface: WORLD_TEMPLATE_SURFACE,
       templateId: h.body.templateId,
       claimant: actor,
-      shape: h.body.shape,
-      rect: regionShapeBounds(h.body.shape),
+      document: h.body.document,
+      rect: regionDocumentBounds(h.body.document),
       label: '',
     })
     const replay = await h.call('PUT', id, h.body)
@@ -132,13 +160,13 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
       const response = await h.call(
         'PUT',
         id,
-        { ...hint, actor, shape: star, label: 'Canvas claim' },
+        { ...hint, actor, document, label: 'Canvas claim' },
         'report',
         'season=1',
       )
       expect(response.status).toBe(200)
       const region = Schema.decodeUnknownSync(RegionClaimSchema)(await response.json())
-      expect(region).toMatchObject({ id, season: 1, templateId: null, shape: star })
+      expect(region).toMatchObject({ id, season: 1, templateId: null, document })
       expect(await h.sql.regions.readRegion(id)).toEqual(region)
       const list = await h.app.request('/work/regions?season=1', {
         headers: { authorization: 'Bearer read' },
@@ -170,24 +198,24 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     expect(h.publishRegions).not.toHaveBeenCalled()
   })
 
-  it('stores a star with derived bounds and reads its shape back', async () => {
+  it('round-trips a star, subtraction, and stroked path with derived bounds', async () => {
     const h = await setup(adapter)
     const id = uuidV7()
-    const response = await h.call('PUT', id, { ...h.body, shape: star })
+    const response = await h.call('PUT', id, { ...h.body, document })
     expect(response.status).toBe(200)
     const region = Schema.decodeUnknownSync(RegionClaimSchema)(await response.json())
-    expect(region).toMatchObject({ shape: star, rect: regionShapeBounds(star) })
+    expect(region).toMatchObject({ document, rect: regionDocumentBounds(document) })
     expect(await h.sql.regions.readRegion(id)).toEqual(region)
     expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([region])
     if (database !== undefined) {
       expect(
         database.sqlite.prepare('SELECT shape, x, y, w, h FROM work_regions WHERE id = ?').get(id),
-      ).toEqual({ shape: JSON.stringify(region.shape), ...regionShapeBounds(star) })
+      ).toEqual({ shape: JSON.stringify(region.document), ...regionDocumentBounds(document) })
     }
   })
 
   it.each(['report', 'admin'])(
-    'updates shape and label in place as %s and broadcasts',
+    'updates document and label in place as %s and broadcasts',
     async (token) => {
       const h = await setup(adapter)
       const id = uuidV7()
@@ -204,7 +232,7 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
         {
           ...h.body,
           actor: token === 'admin' ? other : { ...actor, displayName: 'New name' },
-          shape: star,
+          document,
           label: 'Star work',
         },
         token,
@@ -212,8 +240,8 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
       expect(response.status).toBe(200)
       const updated = {
         ...original,
-        shape: star,
-        rect: regionShapeBounds(star),
+        document,
+        rect: regionDocumentBounds(document),
         label: 'Star work',
       }
       expect(await response.json()).toEqual(updated)
@@ -227,11 +255,14 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     const h = await setup(adapter)
     const outside = await h.call('PUT', uuidV7(), {
       ...h.body,
-      shape: { kind: 'ellipse', x: WORLD_PIXELS - 1, y: 0, w: 8, h: 8 },
+      document: documentOf({ kind: 'ellipse', x: WORLD_PIXELS - 1, y: 0, w: 8, h: 8 }),
     })
     expect(outside.status).toBe(400)
     expect(await outside.json()).toEqual({ error: 'Region is outside the drawing surface' })
-    const invalid = await h.call('PUT', uuidV7(), { ...h.body, shape: { ...star, r: 1_001 } })
+    const invalid = await h.call('PUT', uuidV7(), {
+      ...h.body,
+      document: documentOf({ ...star, r: 1_001 }),
+    })
     expect(invalid.status).toBe(400)
     expect(await invalid.json()).toEqual({ error: 'Invalid region request' })
     expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([])
@@ -242,9 +273,9 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     const h = await setup(adapter)
     expect((await h.call('PUT', uuidV7(), h.body, 'read')).status).toBe(403)
     for (const body of [
-      { ...h.body, shape: { ...h.body.shape, x: WORLD_PIXELS } },
-      { ...h.body, shape: { ...h.body.shape, w: 2_001, h: 2_000 } },
-      { ...h.body, shape: { ...h.body.shape, x: -1 } },
+      { ...h.body, document: documentOf({ ...rectangle, x: WORLD_PIXELS }) },
+      { ...h.body, document: documentOf({ ...rectangle, w: 2_001, h: 2_000 }) },
+      { ...h.body, document: documentOf({ ...rectangle, x: -1 }) },
       { ...h.body, label: 'x'.repeat(65) },
       { ...h.body, actor: { ...actor, displayName: '' } },
       { ...h.body, templateId: 'bad' },
@@ -287,16 +318,75 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     expect((await h.call('DELETE', id, { actor: region.claimant })).status).toBe(200)
     expect((await h.call('PUT', uuidV7(), h.body)).status).toBe(200)
   })
+
+  it('rejects documents containing only subtractions without changing an existing claim', async () => {
+    const h = await setup(adapter)
+    const id = uuidV7()
+    const original = Schema.decodeUnknownSync(RegionClaimSchema)(
+      await (await h.call('PUT', id, h.body)).json(),
+    )
+    for (const target of [id, uuidV7()]) {
+      const response = await h.call('PUT', target, {
+        ...h.body,
+        document: { items: [{ id: 'cutout', shape: star, op: 'subtract' }] },
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: 'Region document must contain an added shape',
+      })
+    }
+    expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([original])
+    expect(h.publishRegions).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a document whose added shapes span more than the region area limit', async () => {
+    const h = await setup(adapter)
+    const response = await h.call('PUT', uuidV7(), {
+      ...h.body,
+      document: {
+        items: [
+          { id: 'first', shape: rectangle, op: 'add' },
+          { id: 'second', shape: { ...rectangle, x: 2_000, y: 2_000 }, op: 'add' },
+        ],
+      },
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'Region area exceeds limit' })
+    expect(h.publishRegions).not.toHaveBeenCalled()
+  })
 })
 
-it.each([null, '{', 'null', JSON.stringify({ ...star, inner: star.r })])(
+it.each([null, '{', 'null', JSON.stringify({ ...star, inner: star.r }), '{"items":[]}'])(
   'reads a legacy rectangle when stored shape is %s',
   async (shape) => {
     const h = await setup('d1')
     const id = uuidV7()
-    const region = await (await h.call('PUT', id, h.body)).json()
+    const original = Schema.decodeUnknownSync(RegionClaimSchema)(
+      await (await h.call('PUT', id, h.body)).json(),
+    )
     database?.sqlite.prepare('UPDATE work_regions SET shape = ? WHERE id = ?').run(shape, id)
+    const region = {
+      ...original,
+      document: { items: [{ id: 'legacy', shape: rectangle, op: 'add' }] },
+    }
     expect(await h.sql.regions.readRegion(id)).toEqual(region)
     expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([region])
   },
 )
+
+it('wraps a legacy single-shape row in a document', async () => {
+  const h = await setup('d1')
+  const id = uuidV7()
+  const original = Schema.decodeUnknownSync(RegionClaimSchema)(
+    await (await h.call('PUT', id, { ...h.body, document: documentOf(star) })).json(),
+  )
+  database?.sqlite
+    .prepare('UPDATE work_regions SET shape = ? WHERE id = ?')
+    .run(JSON.stringify(star), id)
+  const region = {
+    ...original,
+    document: { items: [{ id: 'legacy', shape: star, op: 'add' }] },
+  }
+  expect(await h.sql.regions.readRegion(id)).toEqual(region)
+  expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([region])
+})

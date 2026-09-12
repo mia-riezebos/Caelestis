@@ -1,9 +1,10 @@
 import {
+  isRegionDocument,
   isRegionShape,
   MAX_PRESENCE_REGIONS,
   type RegionClaim,
-  type RegionShape,
-  regionShapeBounds,
+  type RegionDocument,
+  regionDocumentBounds,
   type TemplateSurface,
   templateSurface,
 } from '@caelestis/shared'
@@ -21,7 +22,7 @@ const fromRow = (row: typeof workRegions.$inferSelect): RegionClaim => {
     try {
       shape = JSON.parse(row.shape)
     } catch {
-      // Legacy or malformed shape data falls back to the stored rectangle.
+      // Malformed document data falls back to the stored rectangle.
     }
   }
   return {
@@ -30,7 +31,17 @@ const fromRow = (row: typeof workRegions.$inferSelect): RegionClaim => {
     surface,
     templateId: row.templateId,
     claimant: { wplaceUserId: row.claimantUserId, displayName: row.claimantName },
-    shape: isRegionShape(shape) ? shape : { kind: 'rectangle', ...rect },
+    document: isRegionDocument(shape)
+      ? shape
+      : {
+          items: [
+            {
+              id: 'legacy',
+              shape: isRegionShape(shape) ? shape : { kind: 'rectangle', ...rect },
+              op: 'add',
+            },
+          ],
+        },
     rect,
     label: row.label,
     createdAt: row.createdAt,
@@ -73,8 +84,9 @@ export class D1RegionStore implements RegionStore {
   }
 
   async createRegion(region: RegionClaim): Promise<boolean> {
-    const { surface, shape, claimant } = region
-    const rect = regionShapeBounds(shape)
+    const { surface, document, claimant } = region
+    const rect = regionDocumentBounds(document)
+    if (rect === null) throw new Error('Region document must contain an added shape')
     const result = await this.client
       .prepare(`INSERT INTO work_regions
       (id, season, surface_kind, alliance_id, template_id, claimant_user_id, claimant_name, x, y, w, h, label, created_at, shape)
@@ -95,7 +107,7 @@ export class D1RegionStore implements RegionStore {
         rect.h,
         region.label,
         region.createdAt,
-        JSON.stringify(shape),
+        JSON.stringify(document),
         region.season,
         surface.kind,
         surface.allianceId,
@@ -109,10 +121,16 @@ export class D1RegionStore implements RegionStore {
     await this.db.delete(workRegions).where(eq(workRegions.id, id))
   }
 
-  async updateRegion(id: string, shape: RegionShape, label: string): Promise<RegionClaim | null> {
+  async updateRegion(
+    id: string,
+    document: RegionDocument,
+    label: string,
+  ): Promise<RegionClaim | null> {
+    const rect = regionDocumentBounds(document)
+    if (rect === null) throw new Error('Region document must contain an added shape')
     const [row] = await this.db
       .update(workRegions)
-      .set({ shape: JSON.stringify(shape), ...regionShapeBounds(shape), label })
+      .set({ shape: JSON.stringify(document), ...rect, label })
       .where(eq(workRegions.id, id))
       .returning()
     return row === undefined ? null : fromRow(row)

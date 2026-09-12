@@ -1,10 +1,10 @@
 import {
-  isRegionShape,
+  isRegionDocument,
   MAX_PRESENCE_REGION_PIXELS,
   type PainterIdentity,
   type RegionClaim,
   type RegionClaimRequest,
-  regionShapeBounds,
+  regionDocumentBounds,
   sameTemplateSurface,
   type TemplateSurface,
 } from '@caelestis/shared'
@@ -33,7 +33,7 @@ export const listRegions = (season: number, surface: TemplateSurface, templateId
     return yield* storage(() => sql.regions.listRegions(season, surface, templateId))
   })
 
-/** Create a claim or update its shape and label as its claimant or an administrator. */
+/** Create a claim or update its document and label as its claimant or an administrator. */
 export const putRegion = (
   id: string,
   season: number,
@@ -46,9 +46,13 @@ export const putRegion = (
       return yield* Effect.fail(new ForbiddenError({ message: 'forbidden' }))
     const sql = yield* SqlStoreService
     const live = yield* PresenceService
-    if (!isRegionShape(request.shape))
-      return yield* Effect.fail(new RequestValidationError({ message: 'Invalid region shape' }))
-    const rect = regionShapeBounds(request.shape)
+    if (!isRegionDocument(request.document))
+      return yield* Effect.fail(new RequestValidationError({ message: 'Invalid region document' }))
+    const rect = regionDocumentBounds(request.document)
+    if (rect === null)
+      return yield* Effect.fail(
+        new RequestValidationError({ message: 'Region document must contain an added shape' }),
+      )
     if (!presenceRectWithinSurface(rect, surface))
       return yield* Effect.fail(
         new RequestValidationError({ message: 'Region is outside the drawing surface' }),
@@ -80,7 +84,7 @@ export const putRegion = (
         surface,
         templateId,
         claimant: request.actor,
-        shape: request.shape,
+        document: request.document,
         rect,
         label: request.label,
         createdAt: Date.now(),
@@ -97,7 +101,7 @@ export const putRegion = (
     )
       return yield* Effect.fail(new ResourceConflictError({ message: 'Region is already claimed' }))
     if (!inserted)
-      region = yield* storage(() => sql.regions.updateRegion(id, request.shape, request.label))
+      region = yield* storage(() => sql.regions.updateRegion(id, request.document, request.label))
     if (region === null)
       return yield* Effect.fail(new ResourceConflictError({ message: 'Region no longer exists' }))
     yield* storage(() => live.publishRegions(season, surface))
