@@ -13,8 +13,11 @@ import type {
 import {
   decodeLiveTileUpload,
   encodeLiveServerEvent,
+  LivePaintAssembler,
+  LivePaintAssemblyError,
   MAX_LIVE_BINARY_HEADER_BYTES,
   MAX_LIVE_BINARY_PAYLOAD_BYTES,
+  MAX_LIVE_MESSAGE_BYTES,
   parseTileKey,
   seconds,
   sha256Hex,
@@ -25,6 +28,7 @@ import {
 import {
   LiveSyncClientEvent as LiveSyncClientEventSchema,
   LiveTileUpload as LiveTileUploadSchema,
+  PaintEvent as PaintEventSchema,
 } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
@@ -479,6 +483,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
   private boundSeason: number | null = null
   private readonly sql: D1SqlStore
   private readonly liveSessions = createLiveSessionFence()
+  private readonly paints = new LivePaintAssembler()
   private readonly tileGenerations = createTileGenerationCache()
   private tileGenerationCoverageRevision = 0
   private readonly requestMetrics: AnalyticsEngineDataset | undefined
@@ -617,6 +622,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
       liveSync: 1,
       liveSyncMax: 2,
       liveTileOffers: 1,
+      livePaintParts: 1,
     }
   }
 
@@ -1014,6 +1020,54 @@ export class StatusReadModelObject extends DurableObject<Env> {
     }
   }
 
+  private async handlePaintPart(
+    socket: WebSocket,
+    attachment: LiveSubscriberAttachment | null,
+    part: Extract<LiveSyncClientEvent, { readonly type: 'paint-part' }>,
+  ): Promise<void> {
+    const reject = (error: 'forbidden' | 'invalid' | 'unavailable') => {
+      this.paints.discard(socket)
+      this.send(socket, {
+        type: 'paint-result',
+        requestId: part.requestId,
+        eventId: part.eventId,
+        result: 'duplicate',
+        error,
+      })
+    }
+    if (!this.canReport(attachment, part.season)) return reject('forbidden')
+    let encoded: string | null
+    try {
+      encoded = this.paints.push(socket, part)
+    } catch (error) {
+      if (error instanceof LivePaintAssemblyError) return reject(error.code)
+      throw error
+    }
+    if (encoded === null) {
+      this.send(socket, {
+        type: 'paint-part-result',
+        requestId: part.requestId,
+        eventId: part.eventId,
+        index: part.index,
+      })
+      return
+    }
+    const event = (() => {
+      try {
+        return Schema.decodeUnknownSync(PaintEventSchema)(JSON.parse(encoded))
+      } catch {
+        return null
+      }
+    })()
+    if (event === null || event.eventId !== part.eventId || event.season !== part.season)
+      return reject('invalid')
+    await this.handlePaintReport(socket, attachment, {
+      type: 'paint-report',
+      requestId: part.requestId,
+      event,
+    })
+  }
+
   private async handleTileOffer(
     socket: WebSocket,
     attachment: LiveSubscriberAttachment | null,
@@ -1354,6 +1408,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     const startedAt = performance.now()
     const attachment = socket.deserializeAttachment() as LiveSubscriberAttachment | null
     if (attachment?.revoked === true) {
+      this.paints.discard(socket)
       socket.close(1008, 'credential revoked')
       return
     }
@@ -1369,18 +1424,53 @@ export class StatusReadModelObject extends DurableObject<Env> {
       await this.handleTileUpload(socket, attachment, message)
       return
     }
-    if (message.length > MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS) {
+    if (
+      message.length > MAX_LIVE_CLIENT_MESSAGE_CODE_UNITS ||
+      new TextEncoder().encode(message).byteLength > MAX_LIVE_MESSAGE_BYTES
+    ) {
+      this.paints.discard(socket)
       socket.close(1009, 'live message too large')
       return
     }
-    const event: LiveSyncClientEvent | null = (() => {
+    const raw: unknown = (() => {
       try {
-        return Schema.decodeUnknownSync(LiveSyncClientEventSchema)(JSON.parse(message))
+        return JSON.parse(message)
       } catch {
         return null
       }
     })()
-    if (event === null) return
+    const event: LiveSyncClientEvent | null = (() => {
+      try {
+        return Schema.decodeUnknownSync(LiveSyncClientEventSchema)(raw)
+      } catch {
+        return null
+      }
+    })()
+    if (event === null) {
+      if (typeof raw === 'object' && raw !== null && 'type' in raw && raw.type === 'paint-part') {
+        this.paints.discard(socket)
+        if (
+          'requestId' in raw &&
+          typeof raw.requestId === 'string' &&
+          raw.requestId.length <= 64 &&
+          'eventId' in raw &&
+          typeof raw.eventId === 'string' &&
+          raw.eventId.length <= 64
+        )
+          this.send(socket, {
+            type: 'paint-result',
+            requestId: raw.requestId,
+            eventId: raw.eventId,
+            result: 'duplicate',
+            error: 'invalid',
+          })
+      }
+      return
+    }
+    if (event.type === 'paint-part') {
+      await this.handlePaintPart(socket, attachment, event)
+      return
+    }
     if (event.type === 'state-vector') {
       if (
         attachment === null ||
@@ -1491,6 +1581,7 @@ export class StatusReadModelObject extends DurableObject<Env> {
     reason: string,
     wasClean: boolean,
   ): void {
+    this.paints.discard(socket)
     try {
       socket.close(code, reason)
     } catch {
