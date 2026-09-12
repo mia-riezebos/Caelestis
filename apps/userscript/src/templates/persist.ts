@@ -1,5 +1,6 @@
 import {
   type TemplateSurface,
+  type TemplateTag,
   templateSurface,
   templateSurfaceBounds,
   WORLD_PIXELS,
@@ -66,6 +67,8 @@ const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
 }
 
 export interface StoredTemplate extends ImportedTemplate {
+  /** Last mirrored tag assignments; owned by the tag transaction, not artwork edits. */
+  readonly nativeTags?: readonly TemplateTag[]
   /** Native identity and last derived snapshot. Pending records are resumable migration journals. */
   readonly native?: {
     readonly id: string
@@ -323,6 +326,13 @@ export const saveTemplate = async (
     template.id,
     expectedRevision,
     (templates, revision, current) => {
+      const savedMetadata = {
+        ...metadata,
+        nativeTags:
+          typeof current === 'object' && current !== null && 'nativeTags' in current
+            ? current.nativeTags
+            : metadata.nativeTags,
+      }
       // IndexedDB can inspect a Blob's size without first allocating an equally large typed array.
       // Legacy Uint8Array records remain readable; all new writes use this bounded representation.
       const currentIndices =
@@ -342,7 +352,11 @@ export const saveTemplate = async (
         // Metadata-only mutations keep the already-cloned durable value. Re-wrapping a multi-MB
         // ArrayBuffer in a Blob copies it and makes every move/toggle/appearance change rewrite all
         // pixels even though this PR has no pixel-editing mutation.
-        const record: Record<string, unknown> = { ...metadata, revision, indices: currentIndices }
+        const record: Record<string, unknown> = {
+          ...savedMetadata,
+          revision,
+          indices: currentIndices,
+        }
         delete record.paletteMigration
         if (typeof current === 'object' && current !== null && 'paletteMigration' in current) {
           record.paletteMigration = current.paletteMigration
@@ -353,7 +367,9 @@ export const saveTemplate = async (
           indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
             ? (indices.buffer as ArrayBuffer)
             : indices.slice().buffer
-        templates.put(markCurrentPalette({ ...metadata, revision, indices: new Blob([bytes]) }))
+        templates.put(
+          markCurrentPalette({ ...savedMetadata, revision, indices: new Blob([bytes]) }),
+        )
       }
     },
     true,

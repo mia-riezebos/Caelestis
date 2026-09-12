@@ -29,6 +29,8 @@ export interface NativeTemplate {
   readonly useLegacyColors?: boolean
   readonly colorPaletteMode?: 'all' | 'free' | 'template' | 'unlocked'
   readonly templateColorIdxs?: readonly number[] | undefined
+  readonly tags?: readonly string[]
+  readonly tagColorIdxs?: readonly number[]
   readonly serverManaged?: boolean
 }
 
@@ -49,12 +51,14 @@ export interface NativeAllianceApi {
 /** The deployed singleton, obtained from Wplace's already-loaded module graph. */
 export interface NativeMetadataStore {
   readonly templates: readonly NativeTemplate[]
+  readonly tagCatalog?: readonly { readonly name: string; readonly colorIdx: number }[]
   readonly placementSession: boolean
   readonly suppressPersist?: boolean
   getById(id: string): NativeTemplate | undefined
   add(template: NativeTemplate): void
   update(id: string, patch: Partial<NativeTemplate>): void
   remove(id: string): void
+  deleteTag?(name: string): boolean
   persist(): void
   commitPendingChanges(): void
   subscribeChange(listener: (change: NativeChange) => void): () => void
@@ -151,18 +155,28 @@ const metadataToken = (template: NativeTemplate | undefined): string | undefined
 /** Wrap the native APIs without changing their limits or ownership rules. */
 export class NativeTemplates {
   private persisted: string | null | undefined
+  private persistedTags: string | null | undefined
+  private tagsPending = false
 
   constructor(
     readonly metadata: NativeMetadataStore,
     private readonly images: NativeImageStore,
     readonly alliance?: NativeAllianceApi,
     private readonly readPersisted?: () => string | null,
+    private readonly readPersistedTags?: () => string | null,
   ) {
     this.persisted = readPersisted?.()
+    this.persistedTags = readPersistedTags?.()
   }
 
   // Wplace does not refresh its singleton across tabs. Never persist a stale tab over newer metadata.
   private assertFresh(): void {
+    const tags = this.readPersistedTags?.()
+    if (tags !== this.persistedTags) {
+      if (tags !== JSON.stringify(this.metadata.tagCatalog))
+        throw new Error('Wplace tags changed in another tab. Reload Wplace before editing.')
+      this.persistedTags = tags
+    }
     const persisted = this.readPersisted?.()
     if (persisted === this.persisted) return
     if (persisted !== JSON.stringify(this.metadata.templates.filter((row) => !row.serverManaged)))
@@ -173,6 +187,37 @@ export class NativeTemplates {
   ids(): readonly string[] {
     this.assertFresh()
     return this.metadata.templates.filter((template) => !template.serverManaged).map(({ id }) => id)
+  }
+
+  /** Reconcile labels synchronously inside the local tag transaction. */
+  reconcileTags(
+    id: string,
+    reconcile: (
+      template: NativeTemplate,
+      catalog: NonNullable<NativeMetadataStore['tagCatalog']>,
+    ) => Pick<NativeTemplate, 'tags' | 'tagColorIdxs'>,
+    retiredNames: readonly string[] = [],
+  ): boolean {
+    this.assertFresh()
+    const current = this.metadata.getById(id)
+    if (current === undefined || current.serverManaged) throw new NativeConflict()
+    if (this.metadata.tagCatalog === undefined) throw new Error('Wplace tags are unavailable')
+    const retired = this.metadata.deleteTag === undefined ? [] : retiredNames
+    const patch = reconcile(
+      current,
+      this.metadata.tagCatalog.filter((tag) => !retired.includes(tag.name)),
+    )
+    const unchanged =
+      JSON.stringify(current.tags ?? []) === JSON.stringify(patch.tags ?? []) &&
+      JSON.stringify(current.tagColorIdxs ?? []) === JSON.stringify(patch.tagColorIdxs ?? [])
+    if (unchanged && !this.tagsPending && retired.length === 0) return false
+    if (this.metadata.placementSession || this.metadata.suppressPersist) throw new NativeConflict()
+    this.tagsPending = true
+    for (const name of retired) this.metadata.deleteTag?.(name)
+    if (!unchanged) this.metadata.update(id, patch)
+    this.metadata.commitPendingChanges()
+    this.tagsPending = false
+    return true
   }
 
   async read(id: string): Promise<NativeSnapshot | null> {
@@ -515,5 +560,6 @@ export const connectNativeTemplates = async (): Promise<NativeTemplates> => {
     },
     alliance,
     () => page.localStorage.getItem('template-overlays'),
+    () => page.localStorage.getItem('overlay-tag-catalog'),
   )
 }

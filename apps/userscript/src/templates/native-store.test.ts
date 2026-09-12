@@ -225,4 +225,23 @@ describe('native personal templates', () => {
     expect(metadata.getById('one')?.name).toBe('This tab')
     expect(images.save).toHaveBeenCalledTimes(1)
   })
+
+  it('refuses stale writes when only the native tag catalog changed in another tab', async () => {
+    const { create, metadata, images } = fixture()
+    await create()
+    let catalog = '[]'
+    const guarded = new NativeTemplates(
+      { ...metadata, tagCatalog: [] },
+      images,
+      undefined,
+      undefined,
+      () => catalog,
+    )
+    const before = await guarded.read('one')
+    catalog = JSON.stringify([{ name: 'Another-tab', colorIdx: 19 }])
+    await expect(guarded.save('one', { name: 'Stale edit' }, before)).rejects.toThrow(
+      'tags changed in another tab',
+    )
+    expect(metadata.getById('one')?.name).toBe(local.name)
+  })
 })

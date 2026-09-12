@@ -23,6 +23,11 @@ Synchronize world templates bidirectionally with Wplace's normal personal galler
 
 ## Notes
 
+- Follow-up: mirror personal world-template tag assignments in both directions. Keep names beyond Wplace's normalization/24-character bound, assignments beyond eight, and tags beyond its 64-entry catalog in Caelestis. Mia explicitly chose retaining extras locally.
+- Tag reconciliation keeps a durable assignment baseline alongside the local template. Tag assignments and this baseline commit in one transaction; artwork edits preserve it. Native catalog-only cross-tab edits also fence stale writes.
+- Native tag deletion removes unused mirrored local labels but preserves HQ/folder assignments. Local rename/delete retires an unused native label only when no other native template uses it, including server-managed rows.
+- Tag follow-up validation: 1,362 userscript tests, workspace typechecks, lint, userscript build, and 37 release checks pass. Actual deployed Wplace APIs pass round-trip/reload, native tag lifecycle, eight-assignment and 64-catalog overflow, HQ separation, and unused catalog cleanup. Native colours and unrelated/server-managed templates survive. Evidence is in `/tmp/caelestis-native-tags-qa/observed.json`; the isolated context was disposed.
+
 - The supplied worktree and branch `t3code/issue-355` were clean at task start.
 - Live inspection on 2026-09-11 found native metadata in `localStorage['template-overlays']`.
 - Native PNG sources live in IndexedDB `wplace-templates`, version 3, store `images`. The same database contains `editor-drafts` and `editor-documents`.

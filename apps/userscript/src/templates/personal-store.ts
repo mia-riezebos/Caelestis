@@ -12,6 +12,7 @@ import {
 } from './native-store.js'
 import type { SaveResult, StoredTemplate } from './persist.js'
 import * as disk from './persist.js'
+import { connectLocalTagSync, synchronizeLocalTemplateTags } from './tags.js'
 
 export type {
   SaveResult,
@@ -56,9 +57,15 @@ const samePixels = (a: StoredTemplate, b: StoredTemplate): boolean =>
 
 const project = async (
   api: NativeTemplates,
-  snapshot: NativeSnapshot,
+  incoming: NativeSnapshot,
   previous: StoredTemplate | null,
 ): Promise<StoredTemplate> => {
+  let snapshot = incoming
+  if (previous !== null && (await synchronizeLocalTemplateTags(previous.id, api))) {
+    const current = await api.read(incoming.template.id)
+    if (current === null) throw new NativeConflict()
+    snapshot = current
+  }
   if (previous?.native?.token === snapshot.token) return previous
   const pixels = await api.pixels(snapshot)
   const nativeOpacityChanged =
@@ -94,6 +101,7 @@ const project = async (
   const revision = cacheResult(
     await disk.saveTemplate(template, previous?.revision ?? null, artworkChanged),
   )
+  if (previous === null) await synchronizeLocalTemplateTags(template.id, api)
   return { ...template, revision }
 }
 
@@ -150,6 +158,10 @@ const synchronizeOne = async (
 export const connectPersonalStore = (api: NativeTemplates, observer?: () => void): void => {
   native = api
   onMutation = observer
+  connectLocalTagSync(async () => {
+    await synchronizePersonalTemplates()
+    onMutation?.()
+  })
 }
 
 /** Refresh derived records, preserving individual failures for retry rather than treating them as deletions. */

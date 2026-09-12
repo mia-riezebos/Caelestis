@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import type { ConnectedServer } from '../state.js'
 
 const contents = vi.hoisted(() => new Set<(server: ConnectedServer) => void>())
+const localContents = vi.hoisted(() => new Set<() => void>())
 
 vi.mock('@caelestis/ui/elements', () => ({ TAG_MANAGER_TAG: 'caelestis-tag-manager' }))
 vi.mock('../alliance-server-sync.js', () => ({ refreshAllianceManifest: vi.fn() }))
@@ -17,17 +18,43 @@ vi.mock('../state.js', () => ({
     return () => contents.delete(listener)
   },
 }))
-vi.mock('../templates/tags.js', () => ({}))
+vi.mock('../templates/tags.js', () => ({
+  readLocalTags: vi.fn(async () => []),
+  onLocalTags: (listener: () => void) => {
+    localContents.add(listener)
+    return () => localContents.delete(listener)
+  },
+}))
 vi.mock('./theme.js', () => ({ applyWplaceTheme: vi.fn() }))
 
 import { refreshAllianceManifest } from '../alliance-server-sync.js'
 import { refreshServerSnapshot } from '../application/tree-server-state.js'
 import { listServerTags, mutateServerTag } from '../state.js'
+import { readLocalTags } from '../templates/tags.js'
 import { openTagManager } from './tags.js'
 
 beforeEach(() => {
   vi.resetAllMocks()
   contents.clear()
+  localContents.clear()
+})
+
+it('refreshes an open local tag manager after native assignments change', async () => {
+  vi.mocked(readLocalTags).mockResolvedValue([])
+  openTagManager({ key: 'local:art', name: 'Artwork', server: null, nodeId: null }, vi.fn())
+  const manager = document.querySelector('caelestis-tag-manager') as HTMLElement & {
+    model: TagManagerModel
+  }
+  await vi.waitFor(() => expect(manager.model.ready).toBe(true))
+  const latest = [{ id: 'tag', name: 'Native', templateIds: ['art'] }]
+  vi.mocked(readLocalTags).mockResolvedValue(latest)
+  for (const listener of localContents) listener()
+  await vi.waitFor(() => expect(manager.model.selected).toEqual(['tag']))
+  expect(manager.model.tags).toEqual(latest)
+  manager.dispatchEvent(
+    new CustomEvent('caelestis-tag-manager-intent', { detail: { type: 'close' } }),
+  )
+  expect(localContents.size).toBe(0)
 })
 
 it.each(['folder', 'template'])(

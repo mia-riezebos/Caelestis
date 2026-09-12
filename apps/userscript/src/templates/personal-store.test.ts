@@ -36,21 +36,51 @@ const local = (overrides: Partial<StoredTemplate> = {}): StoredTemplate => ({
 const fixture = async () => {
   const rows = new Map<string, NativeTemplate>()
   const blobs = new Map<string, Blob>()
+  let catalog: { name: string; colorIdx: number }[] = []
+  const retainTags = (row: NativeTemplate): void => {
+    for (const [index, name] of (row.tags ?? []).entries()) {
+      if (!catalog.some((tag) => tag.name.toLowerCase() === name.toLowerCase()))
+        catalog.push({ name, colorIdx: row.tagColorIdxs?.[index] ?? 7 })
+    }
+  }
   const metadata: NativeMetadataStore = {
+    get tagCatalog() {
+      return catalog
+    },
     get templates() {
       return [...rows.values()]
     },
     placementSession: false,
     getById: (id) => rows.get(id),
     add: (row) => {
+      retainTags(row)
       rows.set(row.id, row)
     },
     update: (id, patch) => {
       const before = rows.get(id)
-      if (before) rows.set(id, { ...before, ...patch })
+      if (before) {
+        const next = { ...before, ...patch }
+        retainTags(next)
+        rows.set(id, next)
+      }
     },
     remove: (id) => {
       rows.delete(id)
+    },
+    deleteTag: (name) => {
+      catalog = catalog.filter((tag) => tag.name !== name)
+      for (const row of rows.values()) {
+        if (row.serverManaged) continue
+        const tags = row.tags ?? []
+        rows.set(row.id, {
+          ...row,
+          tags: tags.filter((tag) => tag !== name),
+          tagColorIdxs: tags.flatMap((tag, index) =>
+            tag === name ? [] : [row.tagColorIdxs?.[index] ?? 7],
+          ),
+        })
+      }
+      return true
     },
     persist: vi.fn(),
     commitPendingChanges: vi.fn(),
@@ -94,6 +124,124 @@ const fixture = async () => {
 }
 
 describe('personal template ownership', () => {
+  it('mirrors tag assignment, rename, and deletion in both directions while preserving native colours', async () => {
+    const { seed, api, metadata, personal, disk, read } = await fixture()
+    const tags = await import('./tags.js')
+    const linked = await seed()
+    const id = linked.native?.id ?? ''
+    metadata.update(id, { tags: ['Repair'], tagColorIdxs: [19] })
+    await personal.synchronizePersonalTemplates()
+    const repair = tags.localTemplateTags(linked.id)[0]
+    expect(repair?.name).toBe('Repair')
+    const tagId = repair?.id ?? ''
+    await tags.mutateLocalTag({ type: 'rename', id: tagId, name: 'Priority' })
+    expect(api.metadata.getById(id)?.tags).toEqual(['Priority'])
+    expect(api.metadata.tagCatalog?.some((tag) => tag.name === 'Repair')).toBe(false)
+    expect(api.metadata.getById(id)?.tagColorIdxs).toEqual([19])
+    metadata.update(id, { tags: ['Native'], tagColorIdxs: [21] })
+    await personal.synchronizePersonalTemplates()
+    expect(tags.localTemplateTags(linked.id).map((tag) => tag.name)).toEqual(['Native'])
+    const nativeTag = tags.localTemplateTags(linked.id)[0]
+    await tags.mutateLocalTag({ type: 'assign', id: tagId, templateId: linked.id, attached: true })
+    expect(api.metadata.getById(id)?.tags).toEqual(['Native', 'Priority'])
+    expect(api.metadata.getById(id)?.tagColorIdxs?.[0]).toBe(21)
+    // An older artwork model must not overwrite the tag baseline saved by the tag transaction.
+    const current = await read()
+    const baseline = current.nativeTags
+    const { nativeTags: _baseline, ...staleModel } = current
+    await disk.saveTemplate({ ...staleModel, name: 'Renamed artwork' }, current.revision)
+    expect((await read()).nativeTags).toEqual(baseline)
+    await tags.mutateLocalTag({ type: 'delete', id: nativeTag?.id ?? '' })
+    expect(api.metadata.getById(id)?.tags).toEqual(['Priority'])
+    metadata.update(id, { tags: [], tagColorIdxs: [] })
+    await personal.synchronizePersonalTemplates()
+    expect(tags.localTemplateTags(linked.id)).toEqual([])
+    await tags.mutateLocalTag({ type: 'assign', id: tagId, templateId: linked.id, attached: true })
+    metadata.deleteTag?.('Priority')
+    await personal.synchronizePersonalTemplates()
+    expect(tags.localTagCatalog().some((tag) => tag.id === tagId)).toBe(false)
+  })
+
+  it('migrates fitting tags and keeps overflow, long names, and alliance assignments local', async () => {
+    const { disk, personal, api, read } = await fixture()
+    const tags = await import('./tags.js')
+    await disk.saveTemplate(local(), null)
+    const hq = local({ id: 'hq', surface: { kind: 'alliance-headquarters', allianceId: 1 } })
+    await disk.saveTemplate(hq, null)
+    // Simulate existing labels before the native owner is connected.
+    tags.connectLocalTagSync(async () => {})
+    const names = [
+      ...Array.from({ length: 10 }, (_, index) => `Tag${index}`),
+      'Has spaces',
+      'x'.repeat(25),
+    ]
+    for (const name of names) {
+      const created = await tags.mutateLocalTag({ type: 'create', name })
+      const id = created.find((tag) => tag.name === name)?.id ?? ''
+      await tags.mutateLocalTag({ type: 'assign', id, templateId: 'local-art', attached: true })
+      await tags.mutateLocalTag({ type: 'assign', id, templateId: 'hq', attached: true })
+    }
+    await personal.synchronizePersonalTemplates()
+    const nativeId = (await read()).native?.id ?? ''
+    expect(api.metadata.getById(nativeId)?.tags).toEqual(names.slice(0, 8))
+    expect(tags.localTemplateTags('local-art').map((tag) => tag.name)).toEqual(names)
+    expect(tags.localTemplateTags('hq').map((tag) => tag.name)).toEqual(names)
+    expect(api.ids()).toHaveLength(1)
+    const current = api.metadata.getById(nativeId)
+    if (current === undefined) throw new Error('Missing native template')
+    api.metadata.update(nativeId, {
+      tags: current.tags?.slice(1) ?? [],
+      tagColorIdxs: current.tagColorIdxs?.slice(1) ?? [],
+    })
+    await personal.synchronizePersonalTemplates()
+    expect(tags.localTemplateTags('local-art').map((tag) => tag.name)).toEqual(names.slice(1))
+    expect(api.metadata.getById(nativeId)?.tags).toEqual(names.slice(1, 9))
+    expect(tags.localTemplateTags('hq').map((tag) => tag.name)).toEqual(names)
+  })
+
+  it('retries durable local tag edits after native persistence fails without resurrecting removed tags', async () => {
+    const { seed, api, personal, metadata } = await fixture()
+    const tags = await import('./tags.js')
+    const linked = await seed()
+    const id = linked.native?.id ?? ''
+    metadata.update(id, { tags: ['Before'], tagColorIdxs: [19] })
+    await personal.synchronizePersonalTemplates()
+    const tag = tags.localTemplateTags(linked.id)[0]
+    vi.mocked(metadata.commitPendingChanges).mockImplementationOnce(() => {
+      throw new Error('quota')
+    })
+    await tags.mutateLocalTag({ type: 'rename', id: tag?.id ?? '', name: 'After' })
+    await personal.synchronizePersonalTemplates()
+    expect(api.metadata.getById(id)?.tags).toEqual(['After'])
+    expect(tags.localTemplateTags(linked.id).map((tag) => tag.name)).toEqual(['After'])
+    expect(metadata.commitPendingChanges).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps new tags local when the native catalog is full and mirrors them once space is available', async () => {
+    const { seed, metadata, personal } = await fixture()
+    const tags = await import('./tags.js')
+    const linked = await seed()
+    const catalog = Array.from({ length: 64 }, (_, index) => ({
+      name: `Existing${index}`,
+      colorIdx: 19,
+    }))
+    const catalogRead = vi.spyOn(metadata, 'tagCatalog', 'get').mockReturnValue(catalog)
+    for (const name of ['Extra', 'Existing0']) {
+      const created = await tags.mutateLocalTag({ type: 'create', name })
+      await tags.mutateLocalTag({
+        type: 'assign',
+        id: created.find((tag) => tag.name === name)?.id ?? '',
+        templateId: linked.id,
+        attached: true,
+      })
+    }
+    expect(metadata.getById(linked.native?.id ?? '')?.tags).toEqual(['Existing0'])
+    expect(tags.localTemplateTags(linked.id).map((tag) => tag.name)).toEqual(['Extra', 'Existing0'])
+    catalogRead.mockReturnValue(catalog.slice(0, 63))
+    await personal.synchronizePersonalTemplates()
+    expect(metadata.getById(linked.native?.id ?? '')?.tags).toEqual(['Existing0', 'Extra'])
+  })
+
   it('migrates without changing local identity, artwork, placement, or Caelestis metadata', async () => {
     const { seed, read, api, personal } = await fixture()
     const migrated = await seed()
