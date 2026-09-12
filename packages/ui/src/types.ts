@@ -106,7 +106,7 @@ export interface PanelModel {
   readonly settings?: SettingsModel
 }
 
-/** One persisted region claim as the In progress drawer lists it. */
+/** One persisted region claim as the Painters drawer lists it. */
 export interface RegionClaimRowModel {
   readonly id: string
   readonly label: string
@@ -140,7 +140,7 @@ export interface ClaimToolModel {
   readonly drawn: boolean
   /** True while the shape is a saved claim being edited rather than a new one. */
   readonly editing: boolean
-  /** The template the shape lands on, or null when it touches none. */
+  /** The template the shape overlaps, or null. Shown for context; a claim needs no template. */
   readonly template: string | null
   /** Pixels the shape covers. */
   readonly pixels: number
@@ -284,6 +284,7 @@ export type RailControlId =
   | 'alliance-panel'
   | 'colour'
   | 'mismatch'
+  | 'claim'
   | 'overlay-menu'
   | 'overlay-finished'
   | 'overlay-frozen'

@@ -45,6 +45,7 @@ import refresh from '@iconify-icons/material-symbols/refresh'
 import remove from '@iconify-icons/material-symbols/remove'
 import search from '@iconify-icons/material-symbols/search'
 import settings from '@iconify-icons/material-symbols/settings'
+import shapesGlyph from '@iconify-icons/material-symbols/shapes'
 import share from '@iconify-icons/material-symbols/share'
 import sortByAlphaRounded from '@iconify-icons/material-symbols/sort-by-alpha-rounded'
 import taskAlt from '@iconify-icons/material-symbols/task-alt'
@@ -100,6 +101,7 @@ export const ICONS = define({
   kebab: moreVert,
   lightMode,
   move: openWith,
+  shapes: shapesGlyph,
   palette,
   pause,
   play: playArrow,

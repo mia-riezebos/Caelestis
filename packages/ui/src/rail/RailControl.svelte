@@ -9,6 +9,7 @@
     'alliance-panel': 'extension',
     colour: 'palette',
     mismatch: 'bug',
+    claim: 'shapes',
     'overlay-menu': 'kebab',
     'overlay-finished': 'check',
     'overlay-frozen': 'snowflake',

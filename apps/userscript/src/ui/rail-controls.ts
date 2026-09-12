@@ -1,9 +1,51 @@
 import type { CaelestisRailControl, RailControlIntent } from '@caelestis/ui/elements'
+import { isClaimToolActive, stopClaimTool } from '../claim-tool.js'
 import { redraw } from '../main.js'
+import { presenceView } from '../presence-client.js'
 import { getState, setState } from '../state.js'
+import { openClaimTool } from './presence-actions.js'
 import { applyWplaceTheme } from './theme.js'
 
 export const MISMATCH_MODE_ID = 'caelestis-mismatch-mode'
+export const CLAIM_TOOL_ID = 'caelestis-claim-tool-mode'
+
+export const syncClaimToolState = (): void => {
+  const button = document.getElementById(CLAIM_TOOL_ID) as CaelestisRailControl | null
+  if (button === null) return
+  const active = isClaimToolActive()
+  const view = presenceView()
+  const ready = view.connected && view.me !== null
+  button.model = {
+    id: 'claim',
+    label: active ? 'Close the region claim tool (Esc)' : 'Claim a region (M)',
+    title:
+      ready || active
+        ? active
+          ? 'Close the region claim tool (Esc)'
+          : 'Claim a region: draw a rectangle, ellipse, polygon, or star (M or L)'
+        : 'Claim a region. Needs a connected server with painter presence and a Wplace sign-in.',
+    pressed: active,
+    ...(ready || active ? {} : { disabled: true }),
+  }
+}
+
+/** The always-reachable way into the region claim tool, beside the panel and marker switches. */
+export const claimToolButton = (): CaelestisRailControl => {
+  const existing = document.getElementById(CLAIM_TOOL_ID)
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
+  button.id = CLAIM_TOOL_ID
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id !== 'claim') return
+    if (isClaimToolActive()) stopClaimTool()
+    else openClaimTool()
+    syncClaimToolState()
+  })
+  syncClaimToolState()
+  return button
+}
 
 export const syncMismatchModeState = (): void => {
   const button = document.getElementById(MISMATCH_MODE_ID) as CaelestisRailControl | null

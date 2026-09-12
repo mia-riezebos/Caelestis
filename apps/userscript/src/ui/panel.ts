@@ -53,10 +53,12 @@ import {
   serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
 import { onCanvasWrite } from '../canvas-write.js'
+import { onClaimToolChange } from '../claim-tool.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { onArtboardPixelsChange } from '../gl/artboard-pixels.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
+import { onPresenceChange } from '../presence-client.js'
 import {
   isProfileEnabled,
   profileReport,
@@ -123,7 +125,12 @@ import {
   type PanelView,
 } from './panel-scope.js'
 import { openClaimTool, presenceSummaryModel, releasePresenceRegion } from './presence-actions.js'
-import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
+import {
+  claimToolButton,
+  mismatchModeButton,
+  syncClaimToolState,
+  syncMismatchModeState,
+} from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID, toast } from './toast.js'
@@ -1486,16 +1493,24 @@ export const installPanel = (): void => {
   void refreshStoredServers(refreshView)
   installServerConnectionRetry(refreshView)
   const rail = railContainer()
-  rail.append(railButton(), colourModeButton(), mismatchModeButton())
+  rail.append(railButton(), colourModeButton(), mismatchModeButton(), claimToolButton())
   syncRailButtonState()
   syncColourModeState()
   syncMismatchModeState()
+  syncClaimToolState()
+  onClaimToolChange(syncClaimToolState)
+  onPresenceChange(syncClaimToolState)
   positionRail()
   log('install', 'rail installed beside wplace’s')
 
   const sync = (): void => {
     // Their re-render may have taken our buttons if anything ever moves them; put them back cheaply.
-    for (const button of [railButton(), colourModeButton(), mismatchModeButton()]) {
+    for (const button of [
+      railButton(),
+      colourModeButton(),
+      mismatchModeButton(),
+      claimToolButton(),
+    ]) {
       if (!rail.contains(button)) rail.appendChild(button)
     }
     positionRail()
