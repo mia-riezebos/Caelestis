@@ -1,5 +1,6 @@
 import {
   decodePresenceDraftMask,
+  PRESENCE_VIEWPORT_MIN_MS,
   type PresenceRect,
   type RegionDocument,
   type RegionShapePixels,
@@ -196,13 +197,13 @@ interface Motion {
   readonly since: number
 }
 
-/** How long a rect takes to glide to a new position. */
-export const PRESENCE_MOTION_MS = 300
+/** A glide lasts exactly one publish interval, so a steadily panning peer never quite stops. */
+export const PRESENCE_MOTION_MS = PRESENCE_VIEWPORT_MIN_MS
 
 const motionProgress = (elapsed: number): number => {
   const t = Math.min(1, Math.max(0, elapsed / PRESENCE_MOTION_MS))
-  // Ease out: quick to leave, gentle to arrive, so successive updates chain smoothly.
-  return 1 - (1 - t) * (1 - t)
+  // Cubic ease-out: quick to leave, gentle to arrive, so successive updates chain smoothly.
+  return 1 - (1 - t) * (1 - t) * (1 - t)
 }
 
 const lerpRect = (from: PresenceRect, to: PresenceRect, t: number): PresenceRect => ({

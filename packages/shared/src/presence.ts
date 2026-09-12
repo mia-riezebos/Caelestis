@@ -23,12 +23,15 @@ import type { TemplateSurface } from './template-surface.js'
 
 export const PRESENCE_PROTOCOL_V1 = 'caelestis.presence.v1'
 
-/** Four viewports a second while panning; the last one lands when the movement stops. */
-export const PRESENCE_VIEWPORT_MIN_MS = 250
+/**
+ * How often a moving viewport is sent; the last one lands when the movement stops. Peers glide
+ * to each update over the same span, so a steady pan reads as continuous motion.
+ */
+export const PRESENCE_VIEWPORT_MIN_MS = 300
 export const PRESENCE_DRAFT_MIN_MS = 1_000
 export const PRESENCE_HEARTBEAT_MS = 30_000
 /** The server batches at the same cadence as a moving viewport, so a pan is relayed as it goes. */
-export const PRESENCE_TICK_MS = 250
+export const PRESENCE_TICK_MS = 300
 /** A peer whose heartbeat is older than this is dropped even if its socket has not closed yet. */
 export const PRESENCE_STALE_MS = 90_000
 export const PRESENCE_RECT_GRID = 8
@@ -40,8 +43,9 @@ export const MAX_PRESENCE_MESSAGE_CODE_UNITS = 16 * 1024
 export const MAX_PRESENCE_SUBSCRIBERS = 2_048
 export const MAX_PRESENCE_SUBSCRIBERS_PER_CLIENT = 4
 /**
- * Incoming messages per socket per second before the server closes it: four viewports and one
- * draft a second is the honest maximum, with room for a heartbeat landing in the same second.
+ * Incoming messages per socket per second before the server closes it: four viewports (at 300 ms
+ * a boundary can land four in a second) and one draft is the honest maximum, with room for a
+ * heartbeat landing in the same second.
  */
 export const MAX_PRESENCE_MESSAGES_PER_SECOND = 8
 export const MAX_PRESENCE_REGIONS = 500

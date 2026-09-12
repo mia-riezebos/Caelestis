@@ -51,7 +51,7 @@ import { accountIdentity, loadAccount } from './wplace-account.js'
  *
  * Everything that leaves this module is throttled, because the socket's cost on the server is
  * counted per incoming message. Nothing is sent on a schedule but the heartbeat: a viewport goes
- * only when a pan or zoom changed it, at most four times a second while moving and once more
+ * only when a pan or zoom changed it, at most every 300 ms while moving and once more
  * when the movement stops; a draft at most once a second; a quiet tab one heartbeat every thirty. What arrives is already
  * filtered to the peers near this viewport, so the layer only has to draw what it is given.
  *

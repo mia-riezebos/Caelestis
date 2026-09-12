@@ -291,7 +291,7 @@ describe('presence client', () => {
     expect(socket.readyState).toBe(1)
   })
 
-  it('publishes the first viewport at once, then at most every quarter second while moving, and the last one after', async () => {
+  it('publishes the first viewport at once, then at most every 300 ms while moving, and the last one after', async () => {
     const { client, socket } = await connect()
     client.observePresenceFrame(frame([tileAt(10, 20)]))
     await vi.advanceTimersByTimeAsync(0)
