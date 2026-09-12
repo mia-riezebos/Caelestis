@@ -11,7 +11,12 @@ import {
   WORLD_TEMPLATE_SURFACE,
 } from '@caelestis/shared'
 import type { PresenceSummaryModel } from '@caelestis/ui/elements'
-import { type ClaimToolHost, isClaimToolActive, startClaimTool } from '../claim-tool.js'
+import {
+  type ClaimToolHost,
+  claimToolMode,
+  installClaimTool,
+  startClaimTool,
+} from '../claim-tool.js'
 import {
   claimRegion,
   presenceRegionServer,
@@ -107,7 +112,7 @@ export const presenceSummaryModel = (): PresenceSummaryModel | undefined => {
     online: view.online,
     connected: view.connected,
     regions,
-    canClaim: me !== null && view.connected && !isClaimToolActive(),
+    canClaim: me !== null && view.connected && claimToolMode() !== 'draw',
     ...(pending ? { pending: true } : {}),
     ...(message === undefined ? {} : { message }),
   }
@@ -124,14 +129,21 @@ const host = (): ClaimToolHost => ({
   save: async (id, shape) => {
     const me = accountIdentity()
     if (me === null) return 'Wplace identity unavailable. Sign in, then retry.'
-    // A claim lives on a server, not on a template. An overlapping template only decides which
-    // server gets it when several are connected, and is recorded as a hint.
+    // A claim lives on a presence-connected server, not on a template. An overlapping template
+    // only picks between connected servers, and is recorded as a hint when it lives on the one
+    // chosen; a template from a server without presence is not a reason to send it there.
+    const connected = presenceServers()
     const target = targetFor(regionShapeBounds(shape))
     const server =
-      (id === null ? null : presenceRegionServer(id)) ?? target?.server ?? presenceServers()[0]
+      (id === null ? null : presenceRegionServer(id)) ??
+      (target === null
+        ? undefined
+        : connected.find((candidate) => candidate.url === target.server.url)) ??
+      connected[0]
     if (server === undefined) return 'Presence is not connected to any server.'
+    const hint = target !== null && target.server.url === server.url ? target.template.id : null
     const error = await claimRegion(server, id ?? uuidV7(), {
-      templateId: target?.template.id ?? null,
+      templateId: hint,
       shape,
       label: '',
       actor: me,
@@ -156,7 +168,12 @@ const host = (): ClaimToolHost => ({
   changed: () => rerenderPanel?.(),
 })
 
-/** Open the claim tool, from the drawer button or the M and L keys. */
+/** Wire the tool to this module once, so saved claims are editable with no tool selected. */
+export const installClaimToolHost = (): void => {
+  installClaimTool(host())
+}
+
+/** Select a shape to draw, from the rail button, the drawer, or the M and L keys. */
 export const openClaimTool = (kind?: RegionShapeKind, rerender?: () => void): boolean => {
   if (rerender !== undefined) rerenderPanel = rerender
   const view = presenceView()
@@ -170,7 +187,8 @@ export const openClaimTool = (kind?: RegionShapeKind, rerender?: () => void): bo
     return false
   }
   message = undefined
-  startClaimTool(host(), kind)
+  installClaimTool(host())
+  startClaimTool(kind)
   return true
 }
 

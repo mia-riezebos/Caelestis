@@ -1,5 +1,5 @@
 import type { CaelestisRailControl, RailControlIntent } from '@caelestis/ui/elements'
-import { isClaimToolActive, stopClaimTool } from '../claim-tool.js'
+import { claimToolMode, stopClaimTool } from '../claim-tool.js'
 import { redraw } from '../main.js'
 import { presenceView } from '../presence-client.js'
 import { getState, setState } from '../state.js'
@@ -12,7 +12,7 @@ export const CLAIM_TOOL_ID = 'caelestis-claim-tool-mode'
 export const syncClaimToolState = (): void => {
   const button = document.getElementById(CLAIM_TOOL_ID) as CaelestisRailControl | null
   if (button === null) return
-  const active = isClaimToolActive()
+  const active = claimToolMode() === 'draw'
   const view = presenceView()
   const ready = view.connected && view.me !== null
   button.model = {
@@ -39,7 +39,7 @@ export const claimToolButton = (): CaelestisRailControl => {
   button.addEventListener('caelestis-rail-intent', (event) => {
     const intent = (event as CustomEvent<RailControlIntent>).detail
     if (intent.id !== 'claim') return
-    if (isClaimToolActive()) stopClaimTool()
+    if (claimToolMode() === 'draw') stopClaimTool()
     else openClaimTool()
     syncClaimToolState()
   })

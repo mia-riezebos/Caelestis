@@ -3,7 +3,13 @@ import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { installAlarmNotifications } from './alarms.js'
 import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
 import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
-import { onClaimToolChange, syncClaimToolFrame } from './claim-tool.js'
+import {
+  claimToolMode,
+  onClaimToolChange,
+  startClaimTool,
+  stopClaimTool,
+  syncClaimToolFrame,
+} from './claim-tool.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -79,6 +85,7 @@ import {
 } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel, refreshTemplateTreeFocus } from './ui/panel.js'
+import { installClaimToolHost } from './ui/presence-actions.js'
 import { installUserscriptUpdateCheck } from './userscript-update.js'
 import { loadAccount } from './wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
@@ -285,6 +292,12 @@ const main = (): void => {
       map: () => getMap(),
       /** Wplace's captured global state object, whose setters drive theme and dialogs. */
       wplaceState: () => getWplaceState(),
+      /** The region claim tool, openable here without a presence server for pointer testing. */
+      claimTool: {
+        mode: () => claimToolMode(),
+        start: (kind?: 'rectangle' | 'ellipse' | 'polygon' | 'star') => startClaimTool(kind),
+        stop: () => stopClaimTool(),
+      },
       /** Each template's own switch beside the renderer's effective visibility decision. */
       templates: () =>
         localTemplates().map((template) => ({
@@ -401,6 +414,8 @@ const main = (): void => {
       repaint()
     })
     onClaimToolChange(repaintPresence)
+    // Your saved claims are editable with no tool selected, so the tool is wired from the start.
+    installClaimToolHost()
     onFrame(observePresenceFrame, 'Presence viewport')
     onFrame(syncClaimToolFrame, 'Claim tool handles')
     onFrame((frame) => {

@@ -13,10 +13,10 @@
   ]
   const hint = $derived(
     model.drawn
-      ? 'Drag the handles to resize or rotate. Hold ⌘ or Ctrl and drag to move. Enter saves, Delete removes, Escape leaves.'
+      ? 'Drag the handles to resize or rotate, drag the shape to move it. Enter saves, Delete removes, Escape leaves.'
       : model.kind === 'rectangle' || model.kind === 'ellipse'
-        ? 'Drag corner to corner. Click a claim of yours to edit it.'
-        : 'Drag from the centre outward. Click a claim of yours to edit it.',
+        ? 'Drag corner to corner. The map still pans and zooms as usual.'
+        : 'Drag from the centre outward. The map still pans and zooms as usual.',
   )
   const clamp = (value: number): number =>
     Math.min(model.maxCorners, Math.max(model.minCorners, Math.round(value)))
