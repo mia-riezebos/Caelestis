@@ -359,6 +359,11 @@ describe('tile and template schemas', () => {
     expectRejected(ServerInfo, { ...server, liveSync: 2, liveSyncMax: 1 })
     expectRejected(ServerInfo, { ...server, liveTileOffers: true })
     expectRejected(ServerInfo, { ...server, liveTileOffers: 2 })
+    expect(
+      Schema.decodeUnknownSync(ServerInfo)({ ...server, liveSyncMax: 2, livePaintParts: 1 }),
+    ).toMatchObject({ livePaintParts: 1 })
+    expectRejected(ServerInfo, { ...server, livePaintParts: true })
+    expectRejected(ServerInfo, { ...server, livePaintParts: 2 })
   })
 })
 

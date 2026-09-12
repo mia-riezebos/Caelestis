@@ -66,6 +66,12 @@ describe('server manifest template lifecycle', () => {
     }
   })
   it('accepts only the explicit live-sync capability versions', () => {
+    expect(
+      parseServerInfo({ ...server, liveSync: 1, liveSyncMax: 2, livePaintParts: 1 })
+        ?.livePaintParts,
+    ).toBe(1)
+    expect(parseServerInfo({ ...server, livePaintParts: true })).toBeNull()
+    expect(parseServerInfo({ ...server, livePaintParts: 2 })).toBeNull()
     expect(parseServerInfo({ ...server, liveSync: 1, liveTileOffers: 1 })).toEqual({
       ...server,
       liveSync: 1,

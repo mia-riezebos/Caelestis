@@ -1,15 +1,14 @@
 import {
+  encodeLivePaintParts,
   encodeLiveTileUpload,
   LIVE_PROTOCOL_V1,
   LIVE_PROTOCOL_V2,
-  type LiveMutationError,
   type LiveProjectionResource,
   type LiveProjectionState,
   LiveSnapshotAssembler,
   type LiveSyncServerEvent,
   type LiveTileOfferBatch,
   type LiveTileOfferCacheResponse,
-  type LiveTileOfferResponse,
   type LiveTileUpload,
   MAX_LIVE_MESSAGE_BYTES,
   MAX_LIVE_PROJECTIONS,
@@ -148,24 +147,14 @@ interface LiveConnection {
   >
 }
 
-type LiveCommandResponse =
-  | {
-      readonly type: 'paint-result'
-      readonly eventId: string
-      readonly result: 'recorded' | 'partial' | 'duplicate'
-      readonly error?: LiveMutationError
-    }
-  | {
-      readonly type: 'tile-offer-result'
-      readonly response: LiveTileOfferResponse
-      readonly error?: LiveMutationError
-    }
-  | {
-      readonly type: 'tile-upload-result'
-      readonly deliveryId: string
-      readonly accepted: boolean
-      readonly error?: LiveMutationError
-    }
+type LiveCommandResponse = Extract<
+  LiveSyncServerEvent,
+  {
+    readonly type: 'paint-result' | 'paint-part-result' | 'tile-offer-result' | 'tile-upload-result'
+  }
+>
+
+const paintDeliveries = new WeakMap<object, Promise<void>>()
 
 const resources = new Map<string, ServerSyncResource>()
 const schedules = new Map<string, Schedule>()
@@ -674,6 +663,7 @@ export const parseLiveServerEvent = (data: unknown): ParsedLiveEvent | null => {
     candidate.type === 'alarms-snapshot' ||
     candidate.type === 'dashboard-snapshot' ||
     candidate.type === 'paint-result' ||
+    candidate.type === 'paint-part-result' ||
     candidate.type === 'tile-offer-result' ||
     candidate.type === 'tile-upload-result'
   )
@@ -822,6 +812,7 @@ const handleLiveEvent = async (server: ConnectedServer, raw: unknown): Promise<v
   }
   if (
     event.type === 'paint-result' ||
+    event.type === 'paint-part-result' ||
     event.type === 'tile-offer-result' ||
     event.type === 'tile-upload-result'
   ) {
@@ -1199,14 +1190,73 @@ const requestLiveCommand = (
   })
 }
 
-export const requestLivePaint = async (
+const sendLivePaint = async (
   server: ConnectedServer,
   event: PaintEvent,
 ): Promise<Extract<LiveCommandResponse, { readonly type: 'paint-result' }> | null> => {
-  const response = await requestLiveCommand(server, (socket, requestId) =>
-    socket.send(JSON.stringify({ type: 'paint-report', requestId, event })),
+  if (activeLiveProtocolVersion(server) !== 2) return null
+  const transferId = uuidV7()
+  const invalid = (
+    error: 'invalid' | 'unsupported' | 'too-large' = 'invalid',
+  ): Extract<LiveCommandResponse, { readonly type: 'paint-result' }> => ({
+    type: 'paint-result',
+    requestId: transferId,
+    eventId: event.eventId,
+    result: 'duplicate',
+    error,
+  })
+  const encoded = JSON.stringify({ type: 'paint-report', requestId: transferId, event })
+  if (new TextEncoder().encode(encoded).byteLength <= MAX_LIVE_MESSAGE_BYTES) {
+    const response = await requestLiveCommand(server, (socket, requestId) =>
+      socket.send(JSON.stringify({ type: 'paint-report', requestId, event })),
+    )
+    return response?.type === 'paint-result' && response.eventId === event.eventId ? response : null
+  }
+  if (server.info?.livePaintParts !== 1) return invalid('unsupported')
+  let parts: ReturnType<typeof encodeLivePaintParts>
+  try {
+    parts = encodeLivePaintParts(event, transferId)
+  } catch (error) {
+    if (error instanceof RangeError) return invalid('too-large')
+    throw error
+  }
+  for (const part of parts) {
+    const response = await requestLiveCommand(server, (socket, requestId) =>
+      socket.send(JSON.stringify({ type: 'paint-part', requestId, ...part })),
+    )
+    if (response === null) return null
+    if (response.type !== 'paint-part-result' && response.type !== 'paint-result') return invalid()
+    if (response.eventId !== event.eventId) return invalid()
+    if (response.type === 'paint-result') {
+      if (response.error !== undefined || part.index === part.total - 1) return response
+      return invalid()
+    }
+    if (response.index !== part.index || part.index === part.total - 1) return invalid()
+  }
+  return invalid()
+}
+
+/** Serialize paint transfers per server; receipt of every part provides backpressure. */
+export const requestLivePaint = (
+  server: ConnectedServer,
+  event: PaintEvent,
+): ReturnType<typeof sendLivePaint> => {
+  const owner = serverConnectionIdentity(server)
+  const previous = paintDeliveries.get(owner)
+  const pending =
+    previous === undefined
+      ? sendLivePaint(server, event)
+      : previous.then(() => sendLivePaint(server, event))
+  // Callers still receive errors. The queue remains usable after a failed delivery.
+  const settled = pending.then(
+    () => undefined,
+    () => undefined,
   )
-  return response?.type === 'paint-result' ? response : null
+  paintDeliveries.set(owner, settled)
+  void settled.then(() => {
+    if (paintDeliveries.get(owner) === settled) paintDeliveries.delete(owner)
+  })
+  return pending
 }
 
 export const requestLiveTileOffer = async (

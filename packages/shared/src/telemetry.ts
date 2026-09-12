@@ -256,7 +256,7 @@ export type LiveSyncServerEvent =
       readonly requestId: string
       readonly eventId: string
       readonly result: 'recorded' | 'partial' | 'duplicate'
-      readonly error?: LiveMutationError
+      readonly error?: LiveMutationError | 'unsupported' | 'too-large'
     }
   | {
       readonly type: 'paint-part-result'

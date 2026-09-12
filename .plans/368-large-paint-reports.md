@@ -17,8 +17,8 @@ Frame large paint reports over the live WebSocket, reassemble before accounting,
 
 - [x] Add the shared paint framing contract, bounded assembler, and boundary tests.
 - [x] Accept negotiated paint parts in the backend and verify accounting/retry behavior.
-- [~] Send large reports with acknowledgement backpressure and verify client compatibility/recovery.
-- [ ] Verify 100k-pixel delivery in Workers, run repository checks, document results, and file the PR.
+- [x] Send large reports with acknowledgement backpressure and verify client compatibility/recovery.
+- [~] Verify 100k-pixel delivery in Workers, run repository checks, document results, and file the PR.
 
 ## Notes
 
@@ -30,3 +30,4 @@ Frame large paint reports over the live WebSocket, reassemble before accounting,
 - Production, live databases, and daily-driver channels are outside implementation validation scope.
 - Shared framing validation: 12 tests pass, including 100k-pixel Unicode/escaping round trips, conflicting/repeated parts, expiry, owner isolation, and global memory limits. Shared typecheck and 178 wire-schema tests pass.
 - Backend validation: new handler tests failed before implementation, then all 42 focused live tests and backend typecheck passed. 100k pixels across two templates credit 50k each; retrying the event does not increment either total. Missing assemblies after eviction return a retryable error.
+- Client validation: 88 focused coordinator/manifest/telemetry tests and userscript typecheck pass. The sender serializes transfers per server, waits for each receipt, restarts disconnected events with unchanged event IDs, and rejects unsupported older v2 peers before sending oversized messages. Terminal errors reach existing debug logging.
