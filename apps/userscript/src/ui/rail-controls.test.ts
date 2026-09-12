@@ -13,9 +13,9 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('../main.js', () => ({ redraw: harness.redraw }))
-vi.mock('../claim-tool.js', () => ({
-  claimToolMode: () => (harness.toolActive ? 'draw' : 'off'),
-  stopClaimTool: harness.stopClaimTool,
+vi.mock('../claim-editor.js', () => ({
+  isClaimModeActive: () => harness.toolActive,
+  stopClaimMode: harness.stopClaimTool,
 }))
 vi.mock('../presence-client.js', () => ({
   presenceView: () => ({

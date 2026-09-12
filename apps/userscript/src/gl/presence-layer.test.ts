@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({ map: null as object | null }))
 
 vi.mock('../map-handle.js', () => ({ getMap: () => harness.map }))
-vi.mock('../claim-tool.js', () => ({
-  claimToolShape: () => null,
-  claimToolEditingId: () => null,
-  isClaimToolActive: () => false,
+vi.mock('../claim-editor.js', () => ({
+  claimEditorPixels: () => null,
+  claimEditorEditingId: () => null,
+  isClaimModeActive: () => false,
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../presence-client.js', () => ({

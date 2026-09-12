@@ -1,12 +1,13 @@
 import {
   decodePresenceDraftMask,
   type PresenceRect,
-  type RegionShape,
+  type RegionDocument,
+  type RegionShapePixels,
   rectsIntersect,
-  regionShapePixels,
+  regionDocumentPixels,
   TILE_SIZE,
 } from '@caelestis/shared'
-import { claimToolEditingId, claimToolShape, isClaimToolActive } from '../claim-tool.js'
+import { claimEditorEditingId, claimEditorPixels, isClaimModeActive } from '../claim-editor.js'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { presenceView } from '../presence-client.js'
@@ -117,21 +118,36 @@ interface Item {
   readonly kind: Kind
   readonly rect: PresenceRect
   readonly colour: readonly [number, number, number]
-  /** A draft's base64 bitmask, or a claim's shape; either becomes a nearest-sampled texture. */
-  readonly mask: string | RegionShape | null
+  /** A draft's base64 bitmask, or a claim's pixels; either becomes a nearest-sampled texture. */
+  readonly mask: string | RegionShapePixels | null
   readonly mine: boolean
 }
 
 interface MaskTexture {
-  readonly source: string | RegionShape
+  readonly source: string | RegionShapePixels
   readonly texture: WebGLTexture
 }
 
-/** Paint a shape's pixels as texel levels, marking pixels whose 4-neighbour is outside as edge. */
-const shapeTexels = (
-  shape: RegionShape,
-): { readonly rect: PresenceRect; readonly texels: Uint8Array } => {
-  const { rect, mask } = regionShapePixels(shape)
+/** Rasterised claim documents, kept per region so a redraw does not rasterise again. */
+const documentPixels = new Map<string, { document: RegionDocument; pixels: RegionShapePixels }>()
+
+const pixelsFor = (id: string, document: RegionDocument): RegionShapePixels | null => {
+  const held = documentPixels.get(id)
+  if (held?.document === document) return held.pixels
+  const pixels = regionDocumentPixels(document)
+  if (pixels === null) {
+    documentPixels.delete(id)
+    return null
+  }
+  documentPixels.set(id, { document, pixels })
+  return pixels
+}
+
+/** Paint pixels as texel levels, marking pixels whose 4-neighbour is outside as edge. */
+const shapeTexels = ({
+  rect,
+  mask,
+}: RegionShapePixels): { readonly rect: PresenceRect; readonly texels: Uint8Array } => {
   const texels = new Uint8Array(mask.length)
   const { w, h } = rect
   for (let y = 0; y < h; y++) {
@@ -180,28 +196,32 @@ const currentItems = (): Item[] => {
       })
     }
   }
-  const editing = claimToolEditingId()
+  const editing = claimEditorEditingId()
+  const seen = new Set<string>()
   for (const region of view.regions) {
-    // The claim being edited is drawn by the tool instead, so its stored copy steps aside.
+    seen.add(region.id)
+    // The claim being edited is drawn by the editor instead, so its stored copy steps aside.
     if (region.id === editing) continue
+    const pixels = pixelsFor(region.id, region.document)
+    if (pixels === null) continue
     items.push({
       key: `region:${region.id}`,
       kind: 'region',
-      rect: region.rect,
+      rect: pixels.rect,
       colour: presenceRgb(region.claimant.wplaceUserId),
-      mask: region.shape,
+      mask: pixels,
       mine: view.me?.wplaceUserId === region.claimant.wplaceUserId,
     })
   }
-  const tool = claimToolShape()
-  if (tool !== null) {
-    const { rect } = regionShapePixels(tool)
+  for (const id of documentPixels.keys()) if (!seen.has(id)) documentPixels.delete(id)
+  const editorPixels = claimEditorPixels()
+  if (editorPixels !== null) {
     items.push({
       key: TOOL_KEY,
       kind: 'tool',
-      rect,
+      rect: editorPixels.rect,
       colour: view.me === null ? [1, 1, 1] : presenceRgb(view.me.wplaceUserId),
-      mask: tool,
+      mask: editorPixels,
       mine: true,
     })
   }
@@ -417,7 +437,7 @@ class PresenceLayer {
         const bufferWidth = gl.drawingBufferWidth
         const bufferHeight = gl.drawingBufferHeight
         const deviceScale = Math.max(1, window.devicePixelRatio || 1)
-        const toolOpen = isClaimToolActive()
+        const toolOpen = isClaimModeActive()
         gl.useProgram(program)
         gl.bindVertexArray(vao)
         gl.bindBuffer(gl.ARRAY_BUFFER, quad)

@@ -1,5 +1,5 @@
 import type { CaelestisRailControl, RailControlIntent } from '@caelestis/ui/elements'
-import { claimToolMode, stopClaimTool } from '../claim-tool.js'
+import { isClaimModeActive, stopClaimMode } from '../claim-editor.js'
 import { redraw } from '../main.js'
 import { presenceView } from '../presence-client.js'
 import { getState, setState } from '../state.js'
@@ -12,17 +12,17 @@ export const CLAIM_TOOL_ID = 'caelestis-claim-tool-mode'
 export const syncClaimToolState = (): void => {
   const button = document.getElementById(CLAIM_TOOL_ID) as CaelestisRailControl | null
   if (button === null) return
-  const active = claimToolMode() === 'draw'
+  const active = isClaimModeActive()
   const view = presenceView()
   const ready = view.connected && view.me !== null
   button.model = {
     id: 'claim',
-    label: active ? 'Close the region claim tool (Esc)' : 'Claim a region (M)',
+    label: active ? 'Leave claim mode (Esc)' : 'Claim a region (M)',
     title:
       ready || active
         ? active
-          ? 'Close the region claim tool (Esc)'
-          : 'Claim a region: draw a rectangle, ellipse, polygon, or star (M or L)'
+          ? 'Leave claim mode without saving (Esc)'
+          : 'Claim a region: draw shapes, paths, and strokes over the map (M or L)'
         : 'Claim a region. Needs a connected server with painter presence and a Wplace sign-in.',
     pressed: active,
     ...(ready || active ? {} : { disabled: true }),
@@ -39,7 +39,7 @@ export const claimToolButton = (): CaelestisRailControl => {
   button.addEventListener('caelestis-rail-intent', (event) => {
     const intent = (event as CustomEvent<RailControlIntent>).detail
     if (intent.id !== 'claim') return
-    if (claimToolMode() === 'draw') stopClaimTool()
+    if (isClaimModeActive()) stopClaimMode()
     else openClaimTool()
     syncClaimToolState()
   })

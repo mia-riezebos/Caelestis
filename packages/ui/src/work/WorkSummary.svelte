@@ -12,6 +12,7 @@
     showOtherClaims = false,
     onshowothers,
     onclaimregion,
+    oneditregion,
     onreleaseregion,
   }: {
     model: NonNullable<PanelModel['work']>
@@ -20,6 +21,7 @@
     showOtherClaims?: boolean
     onshowothers: (show: boolean) => void
     onclaimregion?: () => void
+    oneditregion?: (id: string) => void
     onreleaseregion?: (id: string) => void
   } = $props()
   const count = $derived(model.tree.entries.length)
@@ -101,7 +103,10 @@
                 {region.label === '' ? 'claimed' : region.label} · {region.size}
               </span>
               {#if region.mine}
-                <Button label="Release" size="compact" kind="ghost" disabled={presence.pending === true} onclick={() => onreleaseregion?.(region.id)} />
+                <span class="region-actions">
+                  <Button label="Edit" size="compact" kind="ghost" disabled={presence.pending === true || !presence.canClaim} onclick={() => oneditregion?.(region.id)} />
+                  <Button label="Release" size="compact" kind="ghost" disabled={presence.pending === true} onclick={() => onreleaseregion?.(region.id)} />
+                </span>
               {/if}
             </div>
           {/each}
@@ -179,6 +184,11 @@
     gap: 0.5rem;
     min-block-size: 1.75rem;
     font-size: 0.75rem;
+  }
+  .region-actions {
+    display: flex;
+    gap: 0.15rem;
+    flex: 0 0 auto;
   }
   .region-text {
     min-inline-size: 0;

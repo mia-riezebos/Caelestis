@@ -53,7 +53,7 @@ import {
   serverTemplateTreeKey,
 } from '../application/tree-server-state.js'
 import { onCanvasWrite } from '../canvas-write.js'
-import { onClaimToolChange } from '../claim-tool.js'
+import { onClaimEditorChange } from '../claim-editor.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { onArtboardPixelsChange } from '../gl/artboard-pixels.js'
 import { redraw } from '../main.js'
@@ -124,7 +124,12 @@ import {
   PanelSessions,
   type PanelView,
 } from './panel-scope.js'
-import { openClaimTool, presenceSummaryModel, releasePresenceRegion } from './presence-actions.js'
+import {
+  openClaimEditor,
+  openClaimTool,
+  presenceSummaryModel,
+  releasePresenceRegion,
+} from './presence-actions.js'
 import {
   claimToolButton,
   mismatchModeButton,
@@ -1099,6 +1104,9 @@ const buildSveltePanel = (): CaelestisPanel => {
       case 'region-claim':
         openClaimTool(undefined, rerenderTree)
         break
+      case 'region-edit':
+        openClaimEditor(intent.id, rerenderTree)
+        break
       case 'region-release':
         releasePresenceRegion(intent.id, rerenderTree)
         break
@@ -1498,7 +1506,7 @@ export const installPanel = (): void => {
   syncColourModeState()
   syncMismatchModeState()
   syncClaimToolState()
-  onClaimToolChange(syncClaimToolState)
+  onClaimEditorChange(syncClaimToolState)
   onPresenceChange(syncClaimToolState)
   positionRail()
   log('install', 'rail installed beside wplace’s')

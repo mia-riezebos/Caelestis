@@ -1,7 +1,7 @@
 import {
   isPresenceDraft,
   isPresenceRect,
-  isRegionShape,
+  isRegionDocument,
   isWorkIdentity,
   MAX_PRESENCE_REGIONS,
   type PainterIdentity,
@@ -140,7 +140,7 @@ const isRegion = (value: unknown): value is RegionClaim => {
     (region.templateId === null ||
       (typeof region.templateId === 'string' && region.templateId.length <= 128)) &&
     isWorkIdentity(region.claimant) &&
-    isRegionShape(region.shape) &&
+    isRegionDocument(region.document) &&
     isPresenceRect(region.rect) &&
     typeof region.label === 'string' &&
     region.label.length <= 64 &&

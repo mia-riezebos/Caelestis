@@ -4,12 +4,13 @@ import { installAlarmNotifications } from './alarms.js'
 import { installAllianceServerSync, selectedAllianceManifestScope } from './alliance-server-sync.js'
 import { activeAllianceSurface, installAllianceSurfaceObserver } from './alliance-surface.js'
 import {
-  claimToolMode,
-  onClaimToolChange,
-  startClaimTool,
-  stopClaimTool,
-  syncClaimToolFrame,
-} from './claim-tool.js'
+  claimEditorTool,
+  isClaimModeActive,
+  onClaimEditorChange,
+  startClaimMode,
+  stopClaimMode,
+  syncClaimEditorFrame,
+} from './claim-editor.js'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -292,11 +293,12 @@ const main = (): void => {
       map: () => getMap(),
       /** Wplace's captured global state object, whose setters drive theme and dialogs. */
       wplaceState: () => getWplaceState(),
-      /** The region claim tool, openable here without a presence server for pointer testing. */
+      /** Claim mode, openable here without a presence server for pointer testing. */
       claimTool: {
-        mode: () => claimToolMode(),
-        start: (kind?: 'rectangle' | 'ellipse' | 'polygon' | 'star') => startClaimTool(kind),
-        stop: () => stopClaimTool(),
+        active: () => isClaimModeActive(),
+        tool: () => claimEditorTool(),
+        start: (tool?: Parameters<typeof startClaimMode>[0]) => startClaimMode(tool),
+        stop: () => stopClaimMode(),
       },
       /** Each template's own switch beside the renderer's effective visibility decision. */
       templates: () =>
@@ -413,11 +415,10 @@ const main = (): void => {
       repaintPresence()
       repaint()
     })
-    onClaimToolChange(repaintPresence)
-    // Your saved claims are editable with no tool selected, so the tool is wired from the start.
+    onClaimEditorChange(repaintPresence)
     installClaimToolHost()
     onFrame(observePresenceFrame, 'Presence viewport')
-    onFrame(syncClaimToolFrame, 'Claim tool handles')
+    onFrame(syncClaimEditorFrame, 'Claim editor overlay')
     onFrame((frame) => {
       if (activeAllianceSurface() === null) renderPresenceLabels(frame)
     }, 'Presence labels')

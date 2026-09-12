@@ -127,39 +127,76 @@ export interface PresenceSummaryModel {
   readonly message?: string
 }
 
-export type ClaimShapeKind = 'rectangle' | 'ellipse' | 'polygon' | 'star'
+/** The tools of claim mode, in drawer order. */
+export type ClaimTool =
+  | 'select'
+  | 'direct'
+  | 'pen'
+  | 'pencil'
+  | 'brush'
+  | 'rectangle'
+  | 'ellipse'
+  | 'polygon'
+  | 'star'
 
-/** The floating claim tool: pick a shape, draw it on the map, claim it; or edit a saved claim. */
-export interface ClaimToolModel {
-  readonly kind: ClaimShapeKind
-  readonly sides: number
-  readonly points: number
+export interface ClaimToolEntry {
+  readonly tool: ClaimTool
+  readonly label: string
+  readonly key: string
+  readonly icon: IconName
+}
+
+/** Options for the tool in hand; only the ones that apply are set. */
+export interface ClaimToolOptions {
+  readonly sides?: number
+  readonly points?: number
+  /** Inner radius as a percentage of the outer radius. */
+  readonly inner?: number
+  /** Stroke width in pixels, for pen, pencil, and brush. */
+  readonly width?: number
   readonly minCorners: number
   readonly maxCorners: number
-  /** True once a shape has been drawn or selected and can be saved. */
-  readonly drawn: boolean
-  /** True while the shape is a saved claim being edited rather than a new one. */
+  readonly maxWidth: number
+}
+
+/** Claim mode: a tool drawer on the left, a cancel-or-confirm bar at the top. */
+export interface ClaimModeModel {
+  readonly tool: ClaimTool
+  readonly tools: readonly ClaimToolEntry[]
+  readonly options: ClaimToolOptions
+  /** Whether the next shape drawn cuts out of the claim instead of adding to it. */
+  readonly subtract: boolean
+  /** Items in the document, and which one is selected. */
+  readonly items: number
+  readonly selected: boolean
+  /** True while editing a saved claim rather than a new one. */
   readonly editing: boolean
-  /** The template the shape overlaps, or null. Shown for context; a claim needs no template. */
+  /** The template the claim overlaps, or null. Shown for context; a claim needs no template. */
   readonly template: string | null
-  /** Pixels the shape covers. */
+  /** Pixels the claim covers. */
   readonly pixels: number
   readonly pending: boolean
   readonly message?: string
 }
 
-export type ClaimToolIntent =
-  | { readonly type: 'set-kind'; readonly kind: ClaimShapeKind }
-  | { readonly type: 'set-sides'; readonly sides: number }
-  | { readonly type: 'set-points'; readonly points: number }
-  | { readonly type: 'claim' }
-  | { readonly type: 'delete' }
+export type ClaimModeIntent =
+  | { readonly type: 'set-tool'; readonly tool: ClaimTool }
+  | {
+      readonly type: 'set-option'
+      readonly option: 'sides' | 'points' | 'inner' | 'width'
+      readonly value: number
+    }
+  | { readonly type: 'set-subtract'; readonly subtract: boolean }
+  | { readonly type: 'delete-item' }
+  | { readonly type: 'delete-claim' }
+  | { readonly type: 'confirm' }
   | { readonly type: 'cancel' }
 
 export type PanelIntent =
   | { readonly type: 'work-retry' }
   | { readonly type: 'work-visibility'; readonly showOtherClaims: boolean }
   | { readonly type: 'region-claim' }
+  | { readonly type: 'region-edit'; readonly id: string }
   | { readonly type: 'region-release'; readonly id: string }
   | { readonly type: 'work-tree'; readonly intent: TemplateTreeIntent }
   | { readonly type: 'navigate'; readonly view: PanelView }

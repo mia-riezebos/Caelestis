@@ -171,9 +171,9 @@
         rows: [{ key: 'N', label: 'Light / dark theme' }], keyboardKeys: ['KeyN'],
       },
       {
-        id: 'claim', category: 'Overlay', title: 'Claim a region',
-        description: 'M opens the claim tool with a rectangle, L with an ellipse. Drag to draw, click one of your claims to edit it, Enter saves, Delete removes, Escape leaves.',
-        rows: [{ key: 'M', label: 'Rectangle claim' }, { key: 'L', label: 'Ellipse claim' }], keyboardKeys: ['KeyM', 'KeyL'],
+        id: 'claim', category: 'Overlay', title: 'Claim mode',
+        description: 'M enters claim mode with the rectangle tool, L with the ellipse. Inside, V selects, A edits path anchors, P is the pen, N the pencil, B the brush; Enter confirms, Delete removes a shape, Escape leaves.',
+        rows: [{ key: 'M', label: 'Claim mode, rectangle' }, { key: 'L', label: 'Claim mode, ellipse' }], keyboardKeys: ['KeyM', 'KeyL'],
       },
       {
         id: 'rings', category: 'Overlay', title: 'Toggle contrast rings',

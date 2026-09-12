@@ -74,7 +74,7 @@ vi.mock('./paint-palette.js', () => ({
   navigateFocusedSelectedColour: harness.navigateColour,
 }))
 vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: harness.setPeek }))
-vi.mock('./claim-tool.js', () => ({ isClaimToolActive: () => false }))
+vi.mock('./claim-editor.js', () => ({ isClaimModeActive: () => false }))
 vi.mock('./ui/presence-actions.js', () => ({ openClaimTool: vi.fn(() => true) }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: harness.appearance, onlySelectedColour: false }),

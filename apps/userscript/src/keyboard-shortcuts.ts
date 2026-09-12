@@ -1,6 +1,6 @@
 import { WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { activeAllianceEditorStage, activeAllianceSurface } from './alliance-surface.js'
-import { isClaimToolActive } from './claim-tool.js'
+import { isClaimModeActive } from './claim-editor.js'
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
@@ -149,12 +149,8 @@ export const installKeyboardShortcuts = (
     // Placement owns its confirm/cancel keys. This listener runs in capture so Wplace's alliance
     // modal cannot swallow shortcuts before they reach the shared key map.
     if (isMoving() && (event.key === 'Escape' || event.key === 'Enter')) return
-    // The claim tool answers its own keys while open: confirm, cancel, delete, and shape switches.
-    if (
-      isClaimToolActive() &&
-      ['Escape', 'Enter', 'Delete', 'Backspace', 'm', 'M', 'l', 'L'].includes(event.key)
-    )
-      return
+    // Claim mode is its own keyboard world: tool letters, confirm, cancel, delete all belong to it.
+    if (isClaimModeActive()) return
     const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
     const alliance = activeAllianceSurface()
