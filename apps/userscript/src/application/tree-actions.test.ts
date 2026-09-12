@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
-import { type Alarm, millis } from '@caelestis/shared'
+import { type Alarm, millis, WORLD_TEMPLATE_SURFACE } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ServerTemplate } from '../server-cache.js'
-import type { ConnectedServer } from '../state.js'
+import type { ConnectedServer, LocalFolder } from '../state.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import type { TreeTarget } from '../ui/tree.js'
@@ -79,6 +79,7 @@ import {
   handleTreeActionPresentationIntent,
   importTemplate,
   openContextMenu,
+  takenLocalFolderNames,
   treeActionPresentation,
 } from './tree-actions.js'
 
@@ -96,6 +97,41 @@ const target: TreeTarget = {
 }
 const template = (published: boolean): ServerTemplate =>
   ({ id: 'template', nodeId: 'root', published }) as ServerTemplate
+
+describe('takenLocalFolderNames', () => {
+  const world = WORLD_TEMPLATE_SURFACE
+  const alliance = { kind: 'alliance-headquarters', allianceId: 12 } as const
+  const folder = (
+    id: string,
+    parentId: string | null,
+    name: string,
+    surface: LocalFolder['surface'] = world,
+  ): LocalFolder => ({ id, parentId, name, visible: true, surface })
+
+  it('only counts siblings under the same parent', () => {
+    const folders = [
+      folder('a', null, 'New folder'),
+      folder('b', 'a', 'Nested'),
+      folder('c', 'b', 'New Folder'),
+    ]
+
+    expect(takenLocalFolderNames(folders, null, world)).toEqual(new Set(['new folder']))
+    expect(takenLocalFolderNames(folders, 'a', world)).toEqual(new Set(['nested']))
+    expect(takenLocalFolderNames(folders, 'b', world)).toEqual(new Set(['new folder']))
+  })
+
+  it('keeps surfaces apart and treats legacy records as world-scoped', () => {
+    const folders = [
+      folder('a', null, 'Shared'),
+      folder('b', null, 'Legacy', undefined),
+      folder('c', null, 'Shared', alliance),
+      folder('d', null, 'HQ', alliance),
+    ]
+
+    expect(takenLocalFolderNames(folders, null, world)).toEqual(new Set(['shared', 'legacy']))
+    expect(takenLocalFolderNames(folders, null, alliance)).toEqual(new Set(['shared', 'hq']))
+  })
+})
 
 afterEach(() => {
   alarmState.current = null
