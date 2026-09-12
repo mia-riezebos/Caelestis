@@ -20,7 +20,7 @@ vi.mock('./presence-client.js', () => ({
     me: null,
   }),
 }))
-vi.mock('./claim-editor.js', () => ({ claimEditorEditingId: () => null }))
+vi.mock('./claim-editor.js', () => ({ claimEditorEditingIds: () => [] }))
 vi.mock('./gl/presence-layer.js', () => ({
   displayedPresenceRect: (key: string) => harness.displayed.get(key) ?? null,
   regionPixelsFor: (_id: string, document: Parameters<typeof regionDocumentPixels>[0]) =>

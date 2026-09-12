@@ -13,7 +13,6 @@
     onshowothers,
     onclaimregion,
     oneditregion,
-    onreleaseregion,
   }: {
     model: NonNullable<PanelModel['work']>
     onIntent: (intent: TemplateTreeIntent) => void
@@ -22,7 +21,6 @@
     onshowothers: (show: boolean) => void
     onclaimregion?: () => void
     oneditregion?: (id: string) => void
-    onreleaseregion?: (id: string) => void
   } = $props()
   const count = $derived(model.tree.entries.length)
   const presence = $derived(model.presence)
@@ -105,7 +103,6 @@
               {#if region.mine}
                 <span class="region-actions">
                   <Button label="Edit" size="compact" kind="ghost" disabled={presence.pending === true || !presence.canClaim} onclick={() => oneditregion?.(region.id)} />
-                  <Button label="Release" size="compact" kind="ghost" disabled={presence.pending === true} onclick={() => onreleaseregion?.(region.id)} />
                 </span>
               {/if}
             </div>

@@ -185,8 +185,8 @@ export interface ClaimModeModel {
   readonly items: number
   readonly selected: boolean
   readonly selectedCount: number
-  /** True while editing a saved claim rather than a new one. */
-  readonly editing: boolean
+  /** Whether anything differs from what is saved: what Save writes and Cancel discards. */
+  readonly dirty: boolean
   /** The template the claim overlaps, or null. Shown for context; a claim needs no template. */
   readonly template: string | null
   /** Pixels the claim covers. */
@@ -204,7 +204,6 @@ export type ClaimModeIntent =
     }
   | { readonly type: 'set-subtract'; readonly subtract: boolean }
   | { readonly type: 'delete-item' }
-  | { readonly type: 'delete-claim' }
   | { readonly type: 'confirm' }
   | { readonly type: 'cancel' }
 
@@ -213,7 +212,6 @@ export type PanelIntent =
   | { readonly type: 'work-visibility'; readonly showOtherClaims: boolean }
   | { readonly type: 'region-claim' }
   | { readonly type: 'region-edit'; readonly id: string }
-  | { readonly type: 'region-release'; readonly id: string }
   | { readonly type: 'work-tree'; readonly intent: TemplateTreeIntent }
   | { readonly type: 'navigate'; readonly view: PanelView }
   | { readonly type: 'close' }

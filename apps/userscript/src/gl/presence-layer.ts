@@ -9,7 +9,7 @@ import {
   sameRect,
   TILE_SIZE,
 } from '@caelestis/shared'
-import { claimEditorEditingId, claimEditorPixels } from '../claim-editor.js'
+import { claimEditorEditingIds, claimEditorPixels } from '../claim-editor.js'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { presenceView } from '../presence-client.js'
@@ -263,12 +263,12 @@ const currentItems = (): Item[] => {
       })
     }
   }
-  const editing = claimEditorEditingId()
+  const editing = new Set(claimEditorEditingIds())
   const seen = new Set<string>()
   for (const region of view.regions) {
     seen.add(region.id)
     // The claim being edited is drawn by the editor instead, so its stored copy steps aside.
-    if (region.id === editing) continue
+    if (editing.has(region.id)) continue
     const pixels = regionPixelsFor(region.id, region.document)
     if (pixels === null) continue
     items.push({

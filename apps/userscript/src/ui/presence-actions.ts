@@ -19,6 +19,7 @@ import {
 } from '../claim-editor.js'
 import {
   claimRegion,
+  presenceLiveServer,
   presenceRegionServer,
   presenceServers,
   presenceView,
@@ -41,7 +42,7 @@ interface ClaimTarget {
   readonly server: ConnectedServer
 }
 
-let pending = false
+const pending = false
 let message: string | undefined
 let rerenderPanel: (() => void) | null = null
 
@@ -77,6 +78,12 @@ const targetFor = (rect: PresenceRect | null): ClaimTarget | null => {
 
 const serverFor = (region: RegionClaim): ConnectedServer | undefined =>
   presenceRegionServer(region.id) ?? undefined
+
+/**
+ * The one server claim mode edits: the one carrying the presence socket, else the first that
+ * supports claims. Your regions there load together and are saved back as one claim.
+ */
+const claimServer = (): ConnectedServer | undefined => presenceLiveServer() ?? presenceServers()[0]
 
 /** A short description of a document for lists and toasts. */
 export const documentName = (document: RegionDocument): string => {
@@ -119,25 +126,24 @@ const host = (): ClaimEditorHost => ({
   templateFor: (document) => targetFor(regionDocumentBounds(document))?.template.name ?? null,
   myRegions: () => {
     const view = presenceView()
+    const server = claimServer()
     return view.regions
-      .filter((region) => region.claimant.wplaceUserId === view.me?.wplaceUserId)
+      .filter(
+        (region) =>
+          region.claimant.wplaceUserId === view.me?.wplaceUserId &&
+          server !== undefined &&
+          serverFor(region)?.url === server.url,
+      )
       .map((region) => ({ id: region.id, document: region.document }))
   },
   save: async (id, document) => {
     const me = accountIdentity()
     if (me === null) return 'Wplace identity unavailable. Sign in, then retry.'
-    // A claim lives on a presence-connected server, not on a template. An overlapping template
-    // only picks between connected servers, and is recorded as a hint when it lives on the one
-    // chosen; a template from a server without presence is not a reason to send it there.
-    const connected = presenceServers()
-    const target = targetFor(regionDocumentBounds(document))
-    const server =
-      (id === null ? null : presenceRegionServer(id)) ??
-      (target === null
-        ? undefined
-        : connected.find((candidate) => candidate.url === target.server.url)) ??
-      connected[0]
+    // Your regions live on the claim server. An overlapping template is only a hint, and only
+    // when it lives on that same server.
+    const server = (id === null ? null : presenceRegionServer(id)) ?? claimServer()
     if (server === undefined) return 'Presence is not connected to any server.'
+    const target = targetFor(regionDocumentBounds(document))
     const hint = target !== null && target.server.url === server.url ? target.template.id : null
     const error = await claimRegion(server, id ?? uuidV7(), {
       templateId: hint,
@@ -145,10 +151,7 @@ const host = (): ClaimEditorHost => ({
       label: '',
       actor: me,
     })
-    if (error === null)
-      toast(
-        `${id === null ? 'Claimed' : 'Updated'} ${documentName(document)}${target === null ? '' : ` on ${target.template.name}`}.`,
-      )
+    if (error === null) toast(`Saved your regions: ${documentName(document)}.`)
     return error
   },
   remove: async (id) => {
@@ -158,9 +161,7 @@ const host = (): ClaimEditorHost => ({
     if (region === undefined) return 'That claim is gone already.'
     const server = serverFor(region)
     if (server === undefined) return 'That claim belongs to a server that is no longer connected.'
-    const error = await releaseRegion(server, id, me)
-    if (error === null) toast('Region released.')
-    return error
+    return releaseRegion(server, id, me)
   },
   changed: () => rerenderPanel?.(),
 })
@@ -192,39 +193,6 @@ export const openClaimTool = (tool?: ClaimTool, rerender?: () => void): boolean 
   return true
 }
 
-/** Enter claim mode with one of your saved claims loaded for editing. */
-export const openClaimEditor = (id: string, rerender?: () => void): boolean => {
-  if (rerender !== undefined) rerenderPanel = rerender
-  if (!ready()) return false
-  const view = presenceView()
-  const region = view.regions.find(
-    (held) => held.id === id && held.claimant.wplaceUserId === view.me?.wplaceUserId,
-  )
-  if (region === undefined) return false
-  message = undefined
-  installClaimEditor(host())
-  startClaimMode('select', { id: region.id, document: region.document })
-  return true
-}
-
-export const releasePresenceRegion = (id: string, rerender: () => void): void => {
-  const me = accountIdentity()
-  if (me === null || pending) return
-  const region = presenceView().regions.find((held) => held.id === id)
-  if (region === undefined) return
-  const server = serverFor(region)
-  if (server === undefined) {
-    message = 'That claim belongs to a server that is no longer connected.'
-    rerender()
-    return
-  }
-  pending = true
-  message = undefined
-  rerender()
-  void releaseRegion(server, id, me).then((error) => {
-    pending = false
-    message = error ?? undefined
-    if (error === null) toast('Region released.')
-    rerender()
-  })
-}
+/** Enter claim mode from the drawer's Edit: every one of your regions loads, so the id is moot. */
+export const openClaimEditor = (_id: string, rerender?: () => void): boolean =>
+  openClaimTool('select', rerender)

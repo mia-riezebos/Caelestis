@@ -124,12 +124,7 @@ import {
   PanelSessions,
   type PanelView,
 } from './panel-scope.js'
-import {
-  openClaimEditor,
-  openClaimTool,
-  presenceSummaryModel,
-  releasePresenceRegion,
-} from './presence-actions.js'
+import { openClaimEditor, openClaimTool, presenceSummaryModel } from './presence-actions.js'
 import {
   claimToolButton,
   mismatchModeButton,
@@ -1106,9 +1101,6 @@ const buildSveltePanel = (): CaelestisPanel => {
         break
       case 'region-edit':
         openClaimEditor(intent.id, rerenderTree)
-        break
-      case 'region-release':
-        releasePresenceRegion(intent.id, rerenderTree)
         break
       case 'navigate':
         if (panelSurface.kind !== 'world' && intent.view === 'settings') break

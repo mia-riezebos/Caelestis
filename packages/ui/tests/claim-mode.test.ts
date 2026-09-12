@@ -53,7 +53,7 @@ const model = (tool: ClaimModeModel['tool'] = 'select'): ClaimModeModel => ({
   items: 2,
   selected: true,
   selectedCount: 2,
-  editing: false,
+  dirty: true,
   template: null,
   pixels: 40,
   pending: false,

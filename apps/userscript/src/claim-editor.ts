@@ -12,7 +12,6 @@ import {
   type RegionItem,
   type RegionShape,
   type RegionShapePixels,
-  regionDocumentContainsPixel,
   regionDocumentPixels,
   regionShapeBounds,
   regionShapeCentre,
@@ -155,9 +154,12 @@ interface Drag {
 export interface ClaimEditorHost {
   /** The template the claim overlaps, by name, or null. Information only; never a gate. */
   readonly templateFor: (document: RegionDocument) => string | null
-  /** This painter's saved claims, loadable for editing by clicking them in claim mode. */
+  /**
+   * This painter's saved claims on the server claim mode edits. They all load together: claim
+   * mode is where every one of your regions is edited, and Save writes the whole set back.
+   */
   readonly myRegions: () => readonly { readonly id: string; readonly document: RegionDocument }[]
-  /** Persist a new or edited claim. Resolves to an error message, or null on success. */
+  /** Persist the set as one claim, new when `id` is null. Resolves to an error, or null. */
   readonly save: (id: string | null, document: RegionDocument) => Promise<string | null>
   /** Remove a saved claim. Resolves to an error message, or null on success. */
   readonly remove: (id: string) => Promise<string | null>
@@ -185,8 +187,8 @@ let lasso: Point[] | null = null
 let baseSelection: readonly string[] = []
 /** The tool to return to when the space bar, held for a temporary hand, is released. */
 let handHeldFrom: ClaimTool | null = null
-/** The saved claim being edited, or null for a new one. */
-let editingId: string | null = null
+/** The saved claims loaded into the editor; Save merges them into the first and releases the rest. */
+let editingIds: readonly string[] = []
 let drag: Drag | null = null
 /** The pen path under construction. */
 let pen: PathNode[] | null = null
@@ -247,8 +249,8 @@ export const isClaimModeActive = (): boolean => active
 
 export const claimEditorTool = (): ClaimTool => tool
 
-/** The saved claim loaded into the editor, so its stored copy can step aside in the layer. */
-export const claimEditorEditingId = (): string | null => (active ? editingId : null)
+/** The saved claims loaded into the editor, so their stored copies step aside in the layer. */
+export const claimEditorEditingIds = (): readonly string[] => (active ? editingIds : [])
 
 /** The shape being drawn right now, as a temporary item, so previews rasterise like the rest. */
 const previewItem = (): RegionItem | null => {
@@ -309,7 +311,7 @@ export const claimModeModel = (): ClaimModeModel => ({
   items: items.length,
   selected: selectedIds.length > 0,
   selectedCount: selectedIds.length,
-  editing: editingId !== null,
+  dirty,
   template: items.length === 0 ? null : (host?.templateFor({ items }) ?? null),
   pixels: claimEditorPixels()?.count ?? 0,
   pending,
@@ -375,32 +377,6 @@ const addItem = (shape: RegionShape): void => {
   items = [...items, item]
   select([item.id])
   touch()
-}
-
-/** One of your saved claims under a canvas pixel, other than the one already loaded. */
-const savedClaimAt = (
-  px: number,
-  py: number,
-): { readonly id: string; readonly document: RegionDocument } | null => {
-  for (const region of host?.myRegions() ?? []) {
-    if (region.id !== editingId && regionDocumentContainsPixel(region.document, px, py))
-      return region
-  }
-  return null
-}
-
-/** Load a saved claim into the editor, unless unsaved work would be lost. */
-const loadClaim = (region: { readonly id: string; readonly document: RegionDocument }): boolean => {
-  if (items.length > 0 && dirty) {
-    message = 'Confirm or cancel the current claim before editing another.'
-    return false
-  }
-  editingId = region.id
-  items = [...region.document.items]
-  select([])
-  dirty = false
-  bump()
-  return true
 }
 
 /** A box from two pixels, inclusive of both, capped at the largest allowed side. */
@@ -661,7 +637,7 @@ const cornersOnScreen = (
  */
 const inRotateZone = (clientX: number, clientY: number): boolean => {
   const item = selectedItem()
-  if (item === null || tool !== 'direct') return false
+  if (item === null || tool !== 'select') return false
   const screen = cornersOnScreen(item.shape)
   if (screen === null) return false
   const [a, , c] = screen.corners
@@ -740,14 +716,6 @@ const onPointerDown = (event: PointerEvent): void => {
     case 'direct': {
       const hit = itemAt(px, py)
       if (hit === null) {
-        // One of your saved claims: load it for editing. Otherwise deselect and let the map pan.
-        const saved = savedClaimAt(px, py)
-        if (saved !== null) {
-          consume(event)
-          loadClaim(saved)
-          notify()
-          return
-        }
         // Empty canvas: drag out a marquee. Shift adds to what is selected, as in Illustrator.
         consume(event)
         baseSelection = event.shiftKey ? selectedIds : []
@@ -871,15 +839,8 @@ const onPointerMove = (event: PointerEvent): void => {
       const px = point === null ? -1 : pixel(point.x)
       const py = point === null ? -1 : pixel(point.y)
       const overItem = point !== null && itemAt(px, py) !== null
-      const overSaved = !overItem && point !== null && savedClaimAt(px, py) !== null
       setCursor(
-        inRotateZone(event.clientX, event.clientY)
-          ? ROTATE_CURSOR
-          : overItem
-            ? 'move'
-            : overSaved
-              ? 'pointer'
-              : 'default',
+        inRotateZone(event.clientX, event.clientY) ? ROTATE_CURSOR : overItem ? 'move' : 'default',
       )
     } else setCursor(toolCursor())
     return
@@ -1146,30 +1107,31 @@ const setTool = (next: ClaimTool): void => {
   notify()
 }
 
+/**
+ * Save writes your whole set of regions back: everything on screen becomes one claim, saved
+ * under the first loaded id (or a new one), and any other loaded claims are released since
+ * their shapes now live in that one. An empty set releases everything. Removed shapes are
+ * simply absent from what is written.
+ */
 const confirm = async (): Promise<void> => {
-  if (!active || pending || host === null || items.length === 0) return
+  if (!active || pending || host === null) return
   if (pen !== null) commitPen(false)
-  const document: RegionDocument = { items }
-  const id = editingId
-  pending = true
-  message = undefined
-  notify()
-  const error = await host.save(id, document)
-  pending = false
-  if (!isClaimModeActive()) return
-  if (error === null) stopClaimMode()
-  else {
-    message = error
-    notify()
+  if (!dirty) {
+    stopClaimMode()
+    return
   }
-}
-
-const deleteClaim = async (): Promise<void> => {
-  if (!active || pending || host === null || editingId === null) return
+  const document: RegionDocument = { items }
+  const [primary, ...others] = editingIds
   pending = true
   message = undefined
   notify()
-  const error = await host.remove(editingId)
+  let error: string | null = null
+  if (items.length > 0) error = await host.save(primary ?? null, document)
+  else if (primary !== undefined) error = await host.remove(primary)
+  for (const id of others) {
+    if (error !== null) break
+    error = await host.remove(id)
+  }
   pending = false
   if (!isClaimModeActive()) return
   if (error === null) stopClaimMode()
@@ -1223,9 +1185,6 @@ export const handleClaimModeIntent = (intent: ClaimModeIntent): void => {
     }
     case 'delete-item':
       deleteSelected()
-      return
-    case 'delete-claim':
-      void deleteClaim()
       return
     case 'confirm':
       void confirm()
@@ -1360,7 +1319,7 @@ const syncOverlay = (): void => {
           handle(project(ring[1]), 'inner:0', 'rgb(255 160 40)')
       }
     }
-    if (tool === 'direct') {
+    if (tool === 'select') {
       // A rotate handle floats above the box; the zones just outside its corners rotate too.
       const box = regionShapeBounds(shape)
       const top = project({ x: box.x + box.w / 2, y: box.y })
@@ -1495,11 +1454,8 @@ export const installClaimEditor = (editorHost: ClaimEditorHost): void => {
   window.addEventListener('wheel', onWheel, { capture: true, passive: false })
 }
 
-/** Enter claim mode with a tool in hand, optionally editing a saved claim. */
-export const startClaimMode = (
-  initialTool?: ClaimTool,
-  existing?: { readonly id: string; readonly document: RegionDocument },
-): void => {
+/** Enter claim mode with a tool in hand. Every one of your saved regions loads for editing. */
+export const startClaimMode = (initialTool?: ClaimTool): void => {
   if (host === null) return
   if (active) {
     if (initialTool !== undefined) setTool(initialTool)
@@ -1508,8 +1464,9 @@ export const startClaimMode = (
   active = true
   tool = initialTool ?? 'select'
   shown = { ...defaultShown(), [groupOf(tool)]: tool }
-  items = existing === undefined ? [] : [...existing.document.items]
-  editingId = existing?.id ?? null
+  const saved = host.myRegions()
+  items = saved.flatMap((region) => region.document.items)
+  editingIds = saved.map((region) => region.id)
   select([])
   marquee = null
   lasso = null
@@ -1534,7 +1491,7 @@ export const stopClaimMode = (): void => {
   marquee = null
   lasso = null
   handHeldFrom = null
-  editingId = null
+  editingIds = []
   drag = null
   pen = null
   stroke = null

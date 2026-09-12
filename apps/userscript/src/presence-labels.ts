@@ -5,7 +5,7 @@ import {
   type RegionShapePixels,
   regionPixelComponents,
 } from '@caelestis/shared'
-import { claimEditorEditingId } from './claim-editor.js'
+import { claimEditorEditingIds } from './claim-editor.js'
 import { displayedPresenceRect, regionPixelsFor } from './gl/presence-layer.js'
 import { presenceView } from './presence-client.js'
 import { presenceCss } from './presence-colour.js'
@@ -249,11 +249,11 @@ export const presenceTagsAt = (
     else if (viewportRect !== null && contains(viewportRect, at.x, at.y))
       tags.push({ key: viewportKey, text, colour, rect: viewportRect })
   }
-  const editing = claimEditorEditingId()
+  const editing = new Set(claimEditorEditingIds())
   const seen = new Set<string>()
   for (const region of view.regions) {
     seen.add(region.id)
-    if (region.id === editing) continue
+    if (editing.has(region.id)) continue
     const held = piecesFor(region.id, region.document)
     if (held === null || !contains(held.pixels.rect, at.x, at.y)) continue
     const index = (at.y - held.pixels.rect.y) * held.pixels.rect.w + (at.x - held.pixels.rect.x)
@@ -278,10 +278,10 @@ export const presenceTagsAt = (
  */
 export const otherClaimPieces = (except: string): PresenceRect[] => {
   const view = presenceView()
-  const editing = claimEditorEditingId()
+  const editing = new Set(claimEditorEditingIds())
   const boxes: PresenceRect[] = []
   for (const region of view.regions) {
-    if (region.id === except || region.id === editing) continue
+    if (region.id === except || editing.has(region.id)) continue
     const held = piecesFor(region.id, region.document)
     if (held !== null) boxes.push(...held.components.boxes)
   }

@@ -16,9 +16,9 @@
     if (model.message) return model.message
     switch (model.tool) {
       case 'select':
-        return 'Click a shape to select it, Shift-click to add, drag to move, drag empty canvas for a marquee. Handles resize or rotate.'
+        return 'Click a shape to select it, Shift-click to add, drag to move, drag empty canvas for a marquee. Corner handles resize; the grip above, or just outside a corner, rotates (Shift snaps to 15°). Delete removes the selection.'
       case 'direct':
-        return 'Click a shape, then drag any anchor; a rectangle, ellipse, polygon, or star becomes a path as you do. Drag the green grip, or just outside a corner, to rotate; Shift snaps to 15°.'
+        return 'Click a shape, then drag any anchor or bezier handle; a rectangle, ellipse, polygon, or star becomes a path as you do.'
       case 'lasso':
         return 'Draw a loop around shapes to select them. Shift adds to the selection.'
       case 'hand':
@@ -141,9 +141,9 @@
     {/each}
   </nav>
 
-  <div class="bar" role="toolbar" aria-label="Claim">
+  <div class="bar" role="toolbar" aria-label="Claims">
     <div class="row">
-      <strong class="title">{model.editing ? 'Edit claim' : 'New claim'}</strong>
+      <strong class="title">Claims</strong>
       {#if hasCorners}
         <label class="option">
           {model.tool === 'polygon' ? 'Corners' : 'Points'}
@@ -173,16 +173,13 @@
         <Toggle label="Subtract" compact checked={model.subtract} onChange={(subtract) => onIntent({ type: 'set-subtract', subtract })} />
         Subtract
       </label>
-      <span class="stats">{model.items} {model.items === 1 ? 'shape' : 'shapes'} · {model.pixels.toLocaleString()} px{#if model.template} · on {model.template}{/if}</span>
+      <span class="stats">{model.items} {model.items === 1 ? 'shape' : 'shapes'} · {model.pixels.toLocaleString()} px{#if model.template} · on {model.template}{/if}{#if model.dirty} · unsaved{/if}</span>
       <div class="actions">
         {#if model.selected}
           <Button label={deleteLabel} size="compact" kind="ghost" disabled={model.pending} onclick={() => onIntent({ type: 'delete-item' })} />
         {/if}
-        {#if model.editing}
-          <Button label="Delete claim" size="compact" kind="danger-ghost" disabled={model.pending} onclick={() => onIntent({ type: 'delete-claim' })} />
-        {/if}
         <Button label="Cancel" size="compact" kind="ghost" disabled={model.pending} onclick={() => onIntent({ type: 'cancel' })} />
-        <Button label={model.editing ? 'Save' : 'Confirm'} size="compact" kind="primary" disabled={model.items === 0 || model.pending} onclick={() => onIntent({ type: 'confirm' })} />
+        <Button label="Save claims" size="compact" kind="primary" disabled={model.pending || !model.dirty} onclick={() => onIntent({ type: 'confirm' })} />
       </div>
     </div>
     <p class="hint" role="status">{hint}</p>

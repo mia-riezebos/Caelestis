@@ -307,7 +307,7 @@ describe('claim editor', () => {
   it('rotates a polygon from the grip in whole degrees, and a rectangle from a corner zone', async () => {
     const editor = await setup('polygon')
     drag(100, 100, 140, 100)
-    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
     click(100, 100)
     const grip = handle('rotate:0')
     // A quarter turn clockwise around the centre (100, 100): from straight above to the right.
@@ -324,7 +324,7 @@ describe('claim editor', () => {
 
     const again = await setup('rectangle')
     drag(200, 200, 239, 219)
-    again.handleClaimModeIntent({ type: 'set-tool', tool: 'direct' })
+    again.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
     click(210, 210)
     // Just outside the bottom-right corner (240, 220) is a rotate zone, not a marquee start.
     expect(map().style.cursor).toBe('default')
@@ -400,22 +400,7 @@ describe('claim editor', () => {
     expect(document.getElementById('caelestis-claim-mode')).toBeNull()
   })
 
-  it('loads a saved claim for editing and saves it under the same id', async () => {
-    const editor = await import('./claim-editor.js')
-    editor.installClaimEditor(host())
-    editor.startClaimMode('select', {
-      id: 'r1',
-      document: {
-        items: [{ id: 'a', op: 'add', shape: { kind: 'rectangle', x: 5, y: 5, w: 4, h: 4 } }],
-      },
-    })
-    expect(editor.claimEditorEditingId()).toBe('r1')
-    expect(editor.claimModeModel()).toMatchObject({ editing: true, items: 1 })
-    editor.handleClaimModeIntent({ type: 'confirm' })
-    await vi.waitFor(() => expect(harness.saved[0]?.id).toBe('r1'))
-  })
-
-  it('loads one of my saved claims by clicking it in claim mode, unless work would be lost', async () => {
+  it('loads every saved region together and saves them back as one claim', async () => {
     harness.regions = [
       {
         id: 'r1',
@@ -423,25 +408,47 @@ describe('claim editor', () => {
           items: [{ id: 'a', op: 'add', shape: { kind: 'ellipse', x: 40, y: 40, w: 20, h: 20 } }],
         },
       },
+      {
+        id: 'r2',
+        document: {
+          items: [{ id: 'b', op: 'add', shape: { kind: 'rectangle', x: 100, y: 100, w: 5, h: 5 } }],
+        },
+      },
     ]
     const editor = await setup('select')
-    expect(click(50, 50).defaultPrevented).toBe(true)
-    expect(editor.claimEditorEditingId()).toBe('r1')
-    expect(editor.claimModeModel()).toMatchObject({ editing: true, items: 1 })
-    // Draw something new on top: now the loaded claim has unsaved work, so another claim
-    // cannot replace it.
-    harness.regions.push({
-      id: 'r2',
-      document: {
-        items: [{ id: 'b', op: 'add', shape: { kind: 'rectangle', x: 100, y: 100, w: 5, h: 5 } }],
-      },
-    })
-    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'rectangle' })
+    expect(editor.claimEditorEditingIds()).toEqual(['r1', 'r2'])
+    expect(editor.claimModeModel()).toMatchObject({ items: 2, dirty: false })
+    // Nothing changed: Save just leaves.
+    editor.handleClaimModeIntent({ type: 'confirm' })
+    await vi.waitFor(() => expect(editor.isClaimModeActive()).toBe(false))
+    expect(harness.saved).toHaveLength(0)
+    // Add a shape: the whole set goes under the first id and the second is released.
+    editor.startClaimMode('rectangle')
     drag(70, 70, 72, 72)
-    editor.handleClaimModeIntent({ type: 'set-tool', tool: 'select' })
-    click(102, 102)
-    expect(editor.claimEditorEditingId()).toBe('r1')
-    expect(editor.claimModeModel().message).toMatch(/Confirm or cancel/)
+    expect(editor.claimModeModel()).toMatchObject({ items: 3, dirty: true })
+    key('Enter')
+    await vi.waitFor(() => expect(harness.saved).toHaveLength(1))
+    expect(harness.saved[0]?.id).toBe('r1')
+    expect(harness.saved[0]?.document.items).toHaveLength(3)
+    expect(harness.removed).toEqual(['r2'])
+  })
+
+  it('releases everything when the last region is deleted and saved', async () => {
+    harness.regions = [
+      {
+        id: 'r1',
+        document: {
+          items: [{ id: 'a', op: 'add', shape: { kind: 'rectangle', x: 40, y: 40, w: 20, h: 20 } }],
+        },
+      },
+    ]
+    const editor = await setup('select')
+    click(50, 50)
+    key('Delete')
+    expect(editor.claimModeModel()).toMatchObject({ items: 0, dirty: true })
+    key('Enter')
+    await vi.waitFor(() => expect(harness.removed).toEqual(['r1']))
+    expect(harness.saved).toHaveLength(0)
   })
 
   it('cancels without saving', async () => {

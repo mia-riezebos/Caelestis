@@ -5,7 +5,7 @@ const harness = vi.hoisted(() => ({ map: null as object | null }))
 vi.mock('../map-handle.js', () => ({ getMap: () => harness.map }))
 vi.mock('../claim-editor.js', () => ({
   claimEditorPixels: () => null,
-  claimEditorEditingId: () => null,
+  claimEditorEditingIds: () => [],
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../presence-client.js', () => ({
