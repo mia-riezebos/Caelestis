@@ -57,17 +57,20 @@ export const putRegion = (
       return yield* Effect.fail(
         new RequestValidationError({ message: 'Region area exceeds limit' }),
       )
-    const template = yield* storage(() => sql.readTemplate(request.templateId))
-    if (
-      template === null ||
-      template.season !== season ||
-      !sameTemplateSurface(template.surface, surface)
-    )
-      return yield* Effect.fail(
-        new RequestValidationError({
-          message: 'Template is missing or belongs to another drawing surface',
-        }),
+    const templateId = request.templateId ?? null
+    if (typeof templateId === 'string') {
+      const template = yield* storage(() => sql.readTemplate(templateId))
+      if (
+        template === null ||
+        template.season !== season ||
+        !sameTemplateSurface(template.surface, surface)
       )
+        return yield* Effect.fail(
+          new RequestValidationError({
+            message: 'Template is missing or belongs to another drawing surface',
+          }),
+        )
+    }
     let region = yield* storage(() => sql.regions.readRegion(id))
     let inserted = false
     if (region === null) {
@@ -75,7 +78,7 @@ export const putRegion = (
         id,
         season,
         surface,
-        templateId: request.templateId,
+        templateId,
         claimant: request.actor,
         shape: request.shape,
         rect,

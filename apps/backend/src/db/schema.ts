@@ -23,7 +23,7 @@ export const workRegions = sqliteTable(
     season: integer('season').notNull(),
     surfaceKind: text('surface_kind').$type<TemplateSurfaceKind>().notNull(),
     allianceId: integer('alliance_id'),
-    templateId: text('template_id').notNull(),
+    templateId: text('template_id'),
     claimantUserId: integer('claimant_user_id').notNull(),
     claimantName: text('claimant_name').notNull(),
     shape: text('shape'),

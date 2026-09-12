@@ -37,7 +37,11 @@ export class MemoryRegionStore implements RegionStore {
     if (this.records.has(region.id) || count >= MAX_PRESENCE_REGIONS) return false
     this.records.set(
       region.id,
-      structuredClone({ ...region, rect: regionShapeBounds(region.shape) }),
+      structuredClone({
+        ...region,
+        templateId: region.templateId ?? null,
+        rect: regionShapeBounds(region.shape),
+      }),
     )
     return true
   }

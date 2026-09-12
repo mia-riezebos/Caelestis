@@ -47,6 +47,15 @@ import {
 const HASH = 'a'.repeat(64)
 
 describe('presence schemas', () => {
+  it.each([{}, { templateId: null }])('decodes a claim request with template hint %j', (hint) => {
+    const request = {
+      ...hint,
+      shape: { kind: 'rectangle', x: 0, y: 0, w: 8, h: 8 },
+      label: '',
+      actor: { wplaceUserId: 1, displayName: 'Mia' },
+    }
+    expect(Schema.decodeUnknownSync(RegionClaimRequest)(request)).toEqual(request)
+  })
   const shapes = [
     { kind: 'rectangle', x: 0, y: 1, w: 1, h: MAX_REGION_SHAPE_EXTENT },
     { kind: 'ellipse', x: 1, y: 0, w: MAX_REGION_SHAPE_EXTENT, h: 1 },

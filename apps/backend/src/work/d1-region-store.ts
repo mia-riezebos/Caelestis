@@ -86,7 +86,7 @@ export class D1RegionStore implements RegionStore {
         region.season,
         surface.kind,
         surface.allianceId,
-        region.templateId,
+        region.templateId ?? null,
         claimant.wplaceUserId,
         claimant.displayName,
         rect.x,

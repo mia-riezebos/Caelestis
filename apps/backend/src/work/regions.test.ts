@@ -95,6 +95,7 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
       id,
       season: 0,
       surface: WORLD_TEMPLATE_SURFACE,
+      templateId: h.body.templateId,
       claimant: actor,
       shape: h.body.shape,
       rect: regionShapeBounds(h.body.shape),
@@ -117,6 +118,56 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
     expect((await h.call('DELETE', id, { actor })).status).toBe(404)
     expect(h.publishRegions).toHaveBeenCalledTimes(3)
     expect(h.publishRegions).toHaveBeenLastCalledWith(0, WORLD_TEMPLATE_SURFACE)
+  })
+
+  it.each([{}, { templateId: null }])(
+    'creates, lists, reads, and broadcasts a standalone claim with hint %j',
+    async (hint) => {
+      const h = await setup(adapter)
+      const id = uuidV7()
+      const publications: unknown[] = []
+      h.publishRegions.mockImplementation(async () => {
+        publications.push(await h.sql.regions.listRegions(1, WORLD_TEMPLATE_SURFACE))
+      })
+      const response = await h.call(
+        'PUT',
+        id,
+        { ...hint, actor, shape: star, label: 'Canvas claim' },
+        'report',
+        'season=1',
+      )
+      expect(response.status).toBe(200)
+      const region = Schema.decodeUnknownSync(RegionClaimSchema)(await response.json())
+      expect(region).toMatchObject({ id, season: 1, templateId: null, shape: star })
+      expect(await h.sql.regions.readRegion(id)).toEqual(region)
+      const list = await h.app.request('/work/regions?season=1', {
+        headers: { authorization: 'Bearer read' },
+      })
+      expect(list.status).toBe(200)
+      expect(await list.json()).toEqual({ regions: [region] })
+      const filtered = await h.app.request(
+        `/work/regions?season=1&templateId=${h.body.templateId}`,
+        { headers: { authorization: 'Bearer read' } },
+      )
+      expect(await filtered.json()).toEqual({ regions: [] })
+      expect(publications).toEqual([[region]])
+      expect(h.publishRegions).toHaveBeenCalledExactlyOnceWith(1, WORLD_TEMPLATE_SURFACE)
+      if (database !== undefined)
+        expect(
+          database.sqlite.prepare('SELECT template_id FROM work_regions WHERE id = ?').get(id),
+        ).toEqual({ template_id: null })
+    },
+  )
+
+  it('rejects a hint for a missing template', async () => {
+    const h = await setup(adapter)
+    const response = await h.call('PUT', uuidV7(), { ...h.body, templateId: uuidV7() })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: 'Template is missing or belongs to another drawing surface',
+    })
+    expect(await h.sql.regions.listRegions(0, WORLD_TEMPLATE_SURFACE)).toEqual([])
+    expect(h.publishRegions).not.toHaveBeenCalled()
   })
 
   it('stores a star with derived bounds and reads its shape back', async () => {
@@ -196,7 +247,6 @@ describe.each(['memory', 'd1'] as const)('region routes on %s', (adapter) => {
       { ...h.body, shape: { ...h.body.shape, x: -1 } },
       { ...h.body, label: 'x'.repeat(65) },
       { ...h.body, actor: { ...actor, displayName: '' } },
-      { ...h.body, templateId: uuidV7() },
       { ...h.body, templateId: 'bad' },
     ])
       expect((await h.call('PUT', uuidV7(), body)).status).toBe(400)

@@ -162,6 +162,13 @@
       "when": 1789140288358,
       "tag": "0022_yielding_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1789236199521,
+      "tag": "0023_aspiring_thunderbolts",
+      "breakpoints": true
     }
   ]
 }

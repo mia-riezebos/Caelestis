@@ -238,7 +238,7 @@ export const RegionClaim = Schema.Struct({
   id: Identifier,
   season: Season,
   surface: TemplateSurface,
-  templateId: Identifier,
+  templateId: Schema.NullOr(Identifier),
   claimant: PresenceIdentity,
   shape: RegionShape,
   rect: RegionRect,
@@ -247,7 +247,7 @@ export const RegionClaim = Schema.Struct({
 })
 
 export const RegionClaimRequest = Schema.Struct({
-  templateId: Identifier,
+  templateId: Schema.optionalKey(Schema.NullOr(Identifier)),
   shape: RegionShape,
   label: RegionLabel,
   actor: PresenceIdentity,
