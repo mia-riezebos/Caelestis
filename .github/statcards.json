@@ -1,0 +1,13 @@
+{
+  "badges": [
+    {
+      "id": "userscript-downloads",
+      "repo": "mia-riezebos/Caelestis",
+      "assets": ["caelestis.user.js"],
+      "label": "userscript downloads",
+      "color": "6d28d9",
+      "style": "flat",
+      "includePrereleases": false
+    }
+  ]
+}
