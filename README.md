@@ -1,5 +1,11 @@
 # Caelestis
 
+[![Install userscript](https://img.shields.io/badge/Install-userscript-6d28d9)](https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js)
+[![Userscript downloads](https://img.shields.io/github/downloads/mia-riezebos/Caelestis/caelestis.user.js?label=userscript%20downloads)](https://github.com/mia-riezebos/Caelestis/releases)
+[![Discord server](https://img.shields.io/discord/1157300973618872411?label=Discord&logo=discord&logoColor=white)](https://discord.gg/b7gQFHhQkk)
+[![Latest release](https://img.shields.io/github/v/release/mia-riezebos/Caelestis?label=latest%20release)](https://github.com/mia-riezebos/Caelestis/releases/latest)
+[![Userscript CI](https://github.com/mia-riezebos/Caelestis/actions/workflows/userscript-ci.yml/badge.svg)](https://github.com/mia-riezebos/Caelestis/actions/workflows/userscript-ci.yml)
+
 https://github.com/user-attachments/assets/3cf4473d-d0cc-4b05-a60d-8f0f7f8d8ab1
 
 Caelestis is a fast, customisable template overlay for [wplace.live](https://wplace.live). It gives
