@@ -1347,7 +1347,8 @@ export const importTemplate = async (
 ): Promise<void> => {
   const picker = document.createElement('input')
   picker.type = 'file'
-  picker.accept = surface.kind === 'world' ? '.wplace,.json,image/png,image/*' : 'image/png,image/*'
+  // iOS disables custom extensions such as .wplace when an accept filter is present.
+  if (surface.kind !== 'world') picker.accept = 'image/png,image/*'
   picker.addEventListener('change', () => {
     void (async () => {
       const file = picker.files?.[0]

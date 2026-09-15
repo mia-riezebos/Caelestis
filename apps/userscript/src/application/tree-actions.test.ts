@@ -485,6 +485,20 @@ describe('alliance surface actions', () => {
   })
 })
 
+describe('world surface actions', () => {
+  it('leaves imports unrestricted so mobile pickers expose .wplace files', async () => {
+    await importTemplate(
+      { server: null, nodeId: null, key: 'local', name: 'Local' },
+      vi.fn(),
+      WORLD_TEMPLATE_SURFACE,
+    )
+    const picker = document.querySelector<HTMLInputElement>('input[type="file"]')
+
+    expect(picker?.accept).toBe('')
+    picker?.remove()
+  })
+})
+
 describe('alliance server template transfers', () => {
   const surface = { kind: 'alliance-headquarters', allianceId: 535_245 } as const
   const manifestTemplate = {
