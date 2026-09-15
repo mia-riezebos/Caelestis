@@ -12,7 +12,6 @@ import {
   headquartersPixels,
   onHeadquartersPixelsChange,
   refreshHeadquartersPixels,
-  resetHeadquartersPixelCache,
 } from './headquarters-pixels.js'
 
 export interface ArtboardPixelGeometry {
@@ -506,9 +505,6 @@ export const refreshArtboardPixels = (
   if (active.surface.kind !== 'alliance-headquarters') return Promise.resolve()
   return refreshHeadquartersPixels(active.surface.allianceId, geometry)
 }
-
-/** Test-only reset for the retained bounded snapshot. */
-export const resetArtboardPixelCache = resetHeadquartersPixelCache
 
 /** Read Wplace's committed and draft art canvases without compositing Caelestis or feedback. */
 export const readArtboardPixels = (

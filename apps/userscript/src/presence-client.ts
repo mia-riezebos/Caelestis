@@ -93,7 +93,7 @@ const receivedOrder = new WeakMap<PresencePeer, number>()
 let receivedSequence = 0
 let installed = false
 let identityRequested = false
-let publisherId = uuidV7()
+const publisherId = uuidV7()
 let hiddenTab = false
 let pendingViewport: PresenceRect | null = null
 let pendingDraft: PresenceDraft | null = null
@@ -806,19 +806,4 @@ export const installPresence = (): void => {
     })
   }
   reconcile()
-}
-
-/** Test seam: drop every connection and forget module state. */
-export const resetPresence = (): void => {
-  for (const connection of connections.values()) closeConnection(connection)
-  connections.clear()
-  listeners.length = 0
-  claimListeners.length = 0
-  installed = false
-  identityRequested = false
-  publisherId = uuidV7()
-  hiddenTab = false
-  pendingViewport = null
-  pendingDraft = null
-  draftCheckedAt = Number.NEGATIVE_INFINITY
 }

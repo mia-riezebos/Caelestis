@@ -279,9 +279,3 @@ export const headquartersPixels = (
     },
   ]
 }
-
-/** Test-only reset for the retained headquarters snapshot. */
-export const resetHeadquartersPixelCache = (): void => {
-  retained = null
-  listeners.clear()
-}

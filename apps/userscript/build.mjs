@@ -44,7 +44,7 @@ const metadata = `// ==UserScript==
 `
 
 const options = {
-  entryPoints: ['src/main.ts'],
+  entryPoints: ['src/entry.ts'],
   outfile: 'dist/wplace-template-server.user.js',
   bundle: true,
   format: 'iife',

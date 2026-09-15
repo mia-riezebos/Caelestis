@@ -42,8 +42,7 @@ const NOISY: ReadonlySet<Category> = new Set(['frame', 'draw', 'quad'])
 
 let enabled = false
 let ring: Entry[] = []
-/** Exported for tests: this is module state, and a test needs to start from a known one. */
-export const counters = new Map<string, number>()
+const counters = new Map<string, number>()
 const lastNoisy = new Map<Category, string>()
 const started = Date.now()
 

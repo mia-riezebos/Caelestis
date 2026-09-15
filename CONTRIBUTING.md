@@ -29,6 +29,9 @@ pnpm --filter @caelestis/frontend dev
 
 ## Checks
 
+Read [TESTING.md](TESTING.md) when adding or reviewing tests. Each case must protect a meaningful
+contract and earn its runtime and maintenance cost.
+
 Run focused tests while you work. Before opening a pull request, run every full check affected by
 the change:
 
@@ -38,6 +41,29 @@ pnpm check
 pnpm test
 pnpm build
 ```
+
+`pnpm test` includes tooling, real local persistence, and package interaction contracts. It needs no
+database service or browser. Use a package filter and test filename for focused work.
+
+Run these separate checks when the change affects their boundary:
+
+| Command | Boundary and prerequisites |
+| --- | --- |
+| `pnpm test:shuffle` | Repeat the default suite with shuffled Vitest cases and files. |
+| `pnpm test:coverage` | Package line, branch, and function diagnostics in `test-results/coverage/`; no percentage gate. |
+| `pnpm test:browser` | Production worker and canvas behavior in disposable debug Chromium; Chromium must be installed. |
+| `pnpm test:runtime` | Real HTTP/WebSocket lifecycle with temporary SQLite in Node and Bun; Bun must be installed. |
+| `pnpm test:worker` | Worker host configuration and a migrated local D1 binding. |
+| `pnpm test:databases` | Shared PostgreSQL/MariaDB contracts in disposable Docker containers, under Node and Bun. |
+| `pnpm test:services` | PostgreSQL, MariaDB, and S3 contracts against explicitly supplied disposable endpoints. |
+
+The service command requires `CAELESTIS_TEST_POSTGRES_URL`, `CAELESTIS_TEST_MARIADB_URL`, and
+`CAELESTIS_TEST_S3_ENDPOINT`. Each database invocation owns a temporary schema/database.
+S3 uses the test credentials and bucket lifecycle in `packages/storage/src/test/contract.test.ts`.
+Use `node scripts/test-services.mjs --bun` to repeat those contracts under Bun.
+
+Deployment and load validation remain separate. See [stack testing](docs/stack-testing.md).
+The [suite map](docs/testing/README.md) records the chosen contracts and exclusions.
 
 ## Release notes
 

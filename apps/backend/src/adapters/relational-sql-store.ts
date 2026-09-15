@@ -630,9 +630,6 @@ export class RelationalSqlStore implements SqlStore {
     // The destination is composed from the node's live parent for the same reason. A concurrent move
     // can change `parentId` after the guard read; carrying the old id into this batch leaves the new
     // parent pointer paired with a path under the old parent.
-    //
-    // The D1 test seam stages a move immediately before this batch, which pins the live-parent rule
-    // without seeding a hierarchy the store itself would otherwise refuse to create.
     const liveParentId = sql`(select parent_id from nodes where id = ${nodeId})`
     const parentPath = sql`coalesce((select path from nodes where id = ${liveParentId}), '')`
     const destination = sql`${parentPath} || '/' || ${segment}`

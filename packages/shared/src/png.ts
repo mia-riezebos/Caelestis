@@ -197,14 +197,19 @@ const parsePng = (bytes: Uint8Array): ParsedPng => {
   let palette: Uint8Array | null = null
   let alphas: Uint8Array | null = null
   const idat: Uint8Array[] = []
+  let ended = false
 
   while (offset + 8 <= bytes.length) {
     const length = view.getUint32(offset)
     const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
-    const data = bytes.subarray(offset + 8, offset + 8 + length)
-    offset += 12 + length
+    const dataAt = offset + 8
+    const end = dataAt + length + 4
+    if (end > bytes.length) throw new PngError(`truncated ${type} chunk`)
+    const data = bytes.subarray(dataAt, dataAt + length)
+    offset = end
 
     if (type === 'IHDR') {
+      if (length !== 13) throw new PngError('IHDR must be 13 bytes')
       const depth = data[8] ?? 0
       const colourType = data[9] ?? 0
       if (depth !== 8) throw new PngError(`unsupported bit depth ${depth}; only 8 is accepted`)
@@ -213,18 +218,23 @@ const parsePng = (bytes: Uint8Array): ParsedPng => {
       }
       if (data[12] !== 0) throw new PngError('interlaced PNGs are not accepted')
       header = {
-        width: view.getUint32(offset - 12 - length + 8),
-        height: view.getUint32(offset - 12 - length + 12),
+        width: view.getUint32(dataAt),
+        height: view.getUint32(dataAt + 4),
         colourType,
       }
     } else if (type === 'PLTE') palette = data
     else if (type === 'tRNS') alphas = data
     else if (type === 'IDAT') idat.push(data)
-    else if (type === 'IEND') break
+    else if (type === 'IEND') {
+      if (length !== 0) throw new PngError('IEND must be empty')
+      ended = true
+      break
+    }
   }
 
   if (header === null) throw new PngError('missing IHDR')
   if (idat.length === 0) throw new PngError('missing IDAT')
+  if (!ended) throw new PngError('missing IEND')
   if (header.width === 0 || header.height === 0) throw new PngError('image has no pixels')
   return { ...header, palette, alphas, idat }
 }

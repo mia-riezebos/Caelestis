@@ -152,12 +152,7 @@ export const installMapCapture = (realm: Window & typeof globalThis = pageWindow
 
 export const getMap = (): MapLike | null => captured
 
-/**
- * Remove the traps and forget the map.
- *
- * A test seam, and the honest name for what `removeTraps` already does: this module owns global
- * state, and a test that cannot put it back cannot run twice.
- */
+/** Remove the capture traps and release a disconnected map before capturing its replacement. */
 export const releaseMapCapture = (): void => {
   removeTraps()
   captured = null
