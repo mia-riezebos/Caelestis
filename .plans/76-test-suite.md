@@ -20,7 +20,7 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - [x] Record the agreed testing policy and production-derived coverage map.
 - [x] Fix the truncated PNG chunk acceptance found by fresh decoder contracts.
 - [x] Replace shared, wire-schema, and storage tests; validate their contract suites.
-- [ ] Replace backend tests; validate routes, persistence parity, and runtime boundaries.
+- [x] Replace backend tests; validate routes, persistence parity, and runtime boundaries.
 - [x] Replace userscript tests; validate state, synchronization, placement, and browser boundaries.
 - [x] Replace frontend and UI tests; validate data boundaries and observable interactions.
 - [x] Replace tooling tests and integrate fast, extended, shuffled, and coverage commands.
@@ -44,3 +44,4 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - Fresh PNG fixtures exposed accepted files with incomplete IEND CRC bytes. The parser now bounds every chunk and requires a complete IEND. Supported formats, neighbor-dependent filters, truncation, inflation bounds, and cancellation pass in the fresh shared suite.
 - Tooling contracts cover actual release bytes, metadata, API races, progress counts, resource accounting, and ownership-safe cleanup. The diagnostic coverage command completed for all seven packages. Browser and Node/Bun runtime commands passed; service wrappers passed against disposable PostgreSQL, MariaDB, and S3 under both runtimes.
 - Userscript validation passes 19 cases plus real Chromium worker/canvas contracts. Local-folder transfer connects to the actual backend; saved image import restores exact IndexedDB pixels. Retired credentials/connections, refused transfers, revision gaps, draft removal, and rendering colour ownership have focused contracts. The build entrypoint owns startup; unused test reset exports are removed.
+- Backend validation passes 32 default cases, host configuration, actual D1, Node/Bun listeners, and disposable PostgreSQL/MariaDB contracts. The shared node/template scenario runs on memory, SQLite, and D1. Archive resume and incomplete history, protected blob reservations, upload classification, work revisions, and failed telemetry flushes have focused contracts. Check passes after removing unused test seams.

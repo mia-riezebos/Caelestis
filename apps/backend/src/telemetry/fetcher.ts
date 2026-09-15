@@ -100,14 +100,11 @@ export const fetchCanvasTiles = async (
     readonly now?: Seconds
     readonly fetchImpl?: typeof fetch
     readonly alarmIdFactory?: () => string
-    /** Test seam; production always uses the Worker-safe batch ceiling. */
-    readonly maxTiles?: number
   },
 ): Promise<FetchReport> => {
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
   const fetchImpl = options.fetchImpl ?? fetch
   const alarmIdFactory = options.alarmIdFactory ?? uuidV7
-  const maxTiles = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
   const { season } = options
   const statusReadModel = ports.statusReadModel ?? new DirectStatusReadModel(ports.sql)
   const runtime = createBackendRuntime(
@@ -172,7 +169,7 @@ export const fetchCanvasTiles = async (
   let fetched = 0
   let unchanged = 0
   let failed = 0
-  const budgeted = work.slice(0, maxTiles)
+  const budgeted = work.slice(0, MAX_FETCH_TILES_PER_RUN)
   const attemptedTemplateTiles = new Set<string>(
     budgeted.filter(({ template }) => template).map(({ tile }) => tileKey(tile)),
   )
@@ -267,7 +264,7 @@ export const fetchCanvasTiles = async (
   }
   const alarmSnapshot = await ports.sql.readAlarmStatusSnapshot(season)
   const statusesById = new Map(alarmSnapshot.templates.map((status) => [status.templateId, status]))
-  const scanCycleBatches = Math.max(1, Math.ceil(templateTiles.size / maxTiles))
+  const scanCycleBatches = Math.max(1, Math.ceil(templateTiles.size / MAX_FETCH_TILES_PER_RUN))
   const freshnessCutoff =
     (now - scanCycleBatches * ALARM_SCAN_INTERVAL_SECONDS - ALARM_SCAN_JITTER_SECONDS) * 1_000
   let followUpScheduled = false
@@ -322,10 +319,6 @@ export const fetchAlarmFollowUps = async (
   options: {
     readonly now?: Seconds
     readonly fetchImpl?: typeof fetch
-    /** Test seam; production always uses the Worker-safe batch ceiling. */
-    readonly maxTiles?: number
-    /** Test seam; production caps query-only probes as well as tile fetches. */
-    readonly maxProbes?: number
   } = {},
 ): Promise<AlarmFollowUpReport> => {
   const now = options.now ?? seconds(Math.floor(Date.now() / 1_000))
@@ -340,10 +333,9 @@ export const fetchAlarmFollowUps = async (
   let evaluated = 0
   let failed = 0
   const evaluatedSeasons = new Set<number>()
-  const maxProbes = Math.max(1, options.maxProbes ?? MAX_ALARM_PROBES_PER_RUN)
-  const selectedProbes = probes.slice(0, maxProbes)
+  const selectedProbes = probes.slice(0, MAX_ALARM_PROBES_PER_RUN)
   let pending = probes.length - selectedProbes.length
-  let remaining = Math.max(1, options.maxTiles ?? MAX_FETCH_TILES_PER_RUN)
+  let remaining = MAX_FETCH_TILES_PER_RUN
 
   try {
     for (const probe of selectedProbes) {

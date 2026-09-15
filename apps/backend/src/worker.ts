@@ -50,7 +50,7 @@ const requestAtBasePath = (
     return url.hostname === rootHost ? request : null
   }
   url.pathname = url.pathname.slice(configured.length) || '/'
-  return new Request(url, request)
+  return new Request(url.href, request)
 }
 
 const tileBlobGcMode = (value: string | undefined): TileBlobGcMode => {

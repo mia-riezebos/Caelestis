@@ -4,7 +4,8 @@ This is a fresh map for issue #76. It was made from backend production code, pub
 
 ## Suite shape
 
-Keep `pnpm --filter @caelestis/backend test` as the fast default Vitest suite. It should use real in-memory ports for application and route contracts, deterministic clocks/UUIDs/fetches, and no network, Worker emulator, or running database.
+`pnpm --filter @caelestis/backend test` uses memory ports and temporary SQLite for application and
+persistence contracts. It needs no network service or Worker emulator.
 
 Add small named contract suites which every adapter opts into:
 
@@ -14,6 +15,21 @@ Add small named contract suites which every adapter opts into:
 4. **Worker binding smoke contract:** Miniflare/Wrangler or a deployed preview only when Worker bindings, Durable Object hibernation, R2, D1, or WebSocket upgrade wiring changes. This is separate from the fast suite.
 
 Coverage is diagnostic only. Each proposed case below names an observable failure rather than a percentage target.
+
+## Implementation evidence
+
+Fresh backend contracts are implemented in `apps/backend/tests/`:
+
+- **Covered by the fast suite:** application mounting/health, public versus protected server routes, scope refusal and revoked credentials, idempotent paint reporting, memory blob copy/pagination and delete-retry fencing, counter-delta bounds/idempotency, durable coordinator flush/retry/idempotency against real SQLite coordinator state, tile-GC dry-run/delete behavior, tile-generation commit fencing, SQLite migrations/token ordering/rollback, the shared memory/SQLite node/template/tag/token/observation/paint/claim contract, real memory/SQLite work-item create/claim/stale-revision/completion lifecycles, and SQLite HTTP template upload → publish → manifest/ETag. The template contract includes root placement, cross-season destination refusal, metadata/version guards, and guarded deletion.
+- **Covered by separate host checks:** portable host configuration refusal in `test:worker`; `test:runtime` opens a migrated temporary SQLite runtime in both Node and Bun, then verifies HTTP authentication, authenticated presence upgrade, revocation closure, live event delivery, and shutdown cleanup on real ephemeral listeners.
+- **Covered by the D1 contract:** `tests/worker/d1.test.ts` bundles the real `D1SqlStore` into a module Worker, migrates the local D1 binding through Worker requests, and verifies stable token ordering, sparse server-setting writes, node path rewrites, and cycle refusal through the adapter. This is selected by `test:d1`.
+- **Covered by disposable services:** `test:integration:docker` creates task-owned PostgreSQL 17 and MariaDB 11.8 containers with pinned CI image digests, dynamic loopback ports, unique databases, and `finally` cleanup. Each integration invocation owns and drops a fresh PostgreSQL schema or MariaDB database, so Node and Bun repeat the same token, hierarchy, template scope, and region ownership contract against one service endpoint without collisions. `test:integration` remains available for one explicitly selected disposable service URL and fails clearly when none is selected.
+- **Ingest and alarm evidence:** real PNG upload and persisted artwork produce correct/wrong/blank counts and matching classification bytes. A false content hash cannot change those counts. Alarm episodes retain their high-water mark through partial recovery, ignore stale follow-ups, and clear on recovery.
+- **Archive and blob lifecycle:** archive import resumes persisted work without reading or crediting completed tiles again. It records unavailable tiles as incomplete and respects cancellation. Memory and SQLite reservations protect blob bytes during GC; release permits reclamation.
+
+The inherited-suite audit retained template placement, stale deletion, and manifest publication risks.
+The Worker request now passes `url.href`, which matches the Cloudflare request type after removal of
+ambient test DOM types. See [final evidence](evidence.md) for validation and deliberate exclusions.
 
 ## Behavior matrix
 
@@ -70,15 +86,19 @@ These are execution exclusions, not claims that the behavior is unimportant:
 - **No migration snapshot or generated-schema assertion tests.** Migrations are exercised by fresh-database integration; snapshot-format tests duplicate Drizzle rather than a backend contract.
 - **No test of private helpers solely for branch coverage.** Extracted parsers/algorithms are tested only where their input/output is itself a meaningful protocol boundary.
 
-## Commands to add in phase 2
+## Commands
 
-The package currently exposes only `test: vitest run`; no Vitest config is present. Keep that command fast and add names rather than hidden environment switches:
+Each environment has a separate Vitest configuration:
 
 ```sh
 pnpm --filter @caelestis/backend test
 pnpm --filter @caelestis/backend test:integration
+pnpm --filter @caelestis/backend test:integration:docker
+pnpm --filter @caelestis/backend test:d1
+pnpm --filter @caelestis/backend test:runtime
 pnpm --filter @caelestis/backend test:worker
 pnpm --filter @caelestis/backend check
 ```
 
-`test:integration` should fail clearly when its disposable database service is absent. `test:worker` should own any Wrangler/Miniflare setup and run only binding/host cases. A coverage command may be added as a report (`vitest run --coverage` if its provider is installed) but must not gate the suite.
+`test:integration` fails when no disposable service is selected. `test:d1` owns its Miniflare runtime.
+Root `test:worker` includes host configuration and D1 checks. Root `test:coverage` reports diagnostics.
