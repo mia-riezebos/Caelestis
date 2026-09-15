@@ -9,7 +9,9 @@ import { makeBackendContext } from '../../src/runtime/backend-runtime.js'
 
 export const adminToken = 'ADMIN-TEST-TOKEN'
 
-export const createTestBackend = async (options: { openAccess?: boolean; sql?: SqlStore } = {}) => {
+export const createTestBackend = async (
+  options: { openAccess?: boolean; sql?: SqlStore; bootstrapAdminToken?: string } = {},
+) => {
   const sql = options.sql ?? new MemorySqlStore()
   const blobs = new MemoryBlobStore()
   const counters = new MemoryCounterStore(sql)
@@ -26,6 +28,7 @@ export const createTestBackend = async (options: { openAccess?: boolean; sql?: S
     serverName: 'Test server',
     currentSeason: 3,
     openAccess: options.openAccess,
+    bootstrapAdminToken: options.bootstrapAdminToken,
   })
   return { app, sql, blobs, counters }
 }
