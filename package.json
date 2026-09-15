@@ -10,13 +10,19 @@
     "build": "turbo build",
     "dev": "turbo run dev",
     "check": "turbo check",
-    "test": "pnpm test:fixtures && pnpm test:capacity && pnpm test:social && pnpm test:progress && pnpm test:live-paints && turbo test",
-    "test:progress": "pnpm --filter @caelestis/shared build && node --test scripts/recount-progress.test.mjs",
-    "test:live-paints": "pnpm --filter @caelestis/shared build && pnpm --filter @caelestis/wire-schema build && pnpm --filter @caelestis/backend build && node --test scripts/live-paint-runtime.test.mjs",
-    "test:social": "pnpm --filter @caelestis/shared build && node --test scripts/social-images.test.mjs",
+    "test": "pnpm test:tooling && turbo test",
+    "test:tooling": "turbo build --filter=@caelestis/shared && node --test .github/scripts/*.test.mjs scripts/*.test.mjs scripts/stack-tests/*.test.mjs scripts/runtime-benchmark/*.test.mjs",
+    "test:progress": "turbo build --filter=@caelestis/shared && node --test scripts/progress-contract.test.mjs",
+    "test:social": "turbo build --filter=@caelestis/shared && pnpm --filter @caelestis/frontend test src/tests/raster-contracts.test.ts",
+    "test:shuffle": "pnpm test:tooling && turbo test --force -- --sequence.shuffle --sequence.seed=76",
+    "test:coverage": "node scripts/test-coverage.mjs",
+    "test:worker": "pnpm --filter @caelestis/backend test:worker && pnpm --filter @caelestis/backend test:d1",
+    "test:services": "node scripts/test-services.mjs",
+    "test:browser": "pnpm --filter @caelestis/userscript test:browser",
+    "test:runtime": "pnpm --filter @caelestis/backend test:runtime",
+    "test:databases": "pnpm --filter @caelestis/backend test:integration:docker",
     "capacity:report": "node scripts/sync-capacity.mjs",
-    "test:capacity": "node --test scripts/sync-capacity.test.mjs",
-    "test:fixtures": "node --test fixtures/berrycamp/fixtures.test.mjs",
+    "test:capacity": "node --test scripts/capacity-contract.test.mjs",
     "lint": "biome check .",
     "format": "biome check --write .",
     "clean": "turbo clean && rm -rf node_modules",
@@ -30,8 +36,10 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",
     "@changesets/cli": "3.0.1",
+    "@vitest/coverage-v8": "4.1.10",
     "sharp": "^0.35.4",
     "turbo": "^2.5.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "4.1.10"
   }
 }

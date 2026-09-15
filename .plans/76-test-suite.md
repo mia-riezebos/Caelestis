@@ -23,7 +23,7 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - [ ] Replace backend tests; validate routes, persistence parity, and runtime boundaries.
 - [ ] Replace userscript tests; validate state, synchronization, placement, and browser boundaries.
 - [x] Replace frontend and UI tests; validate data boundaries and observable interactions.
-- [ ] Replace tooling tests and integrate fast, extended, shuffled, and coverage commands.
+- [x] Replace tooling tests and integrate fast, extended, shuffled, and coverage commands.
 - [ ] Audit regression gaps, run final validation, and file the implementation PR.
 
 ## Ownership
@@ -42,3 +42,4 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - Issue #76's mandatory percentage thresholds yield to the user's later diagnostic-only policy.
 - Parallel work may finish in a different order; the parent stages and commits each completed TODO separately.
 - Fresh PNG fixtures exposed accepted files with incomplete IEND CRC bytes. The parser now bounds every chunk and requires a complete IEND. Supported formats, neighbor-dependent filters, truncation, inflation bounds, and cancellation pass in the fresh shared suite.
+- Tooling contracts cover actual release bytes, metadata, API races, progress counts, resource accounting, and ownership-safe cleanup. The diagnostic coverage command completed for all seven packages. Browser and Node/Bun runtime commands passed; service wrappers passed against disposable PostgreSQL, MariaDB, and S3 under both runtimes.
