@@ -22,7 +22,7 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - [x] Replace shared, wire-schema, and storage tests; validate their contract suites.
 - [ ] Replace backend tests; validate routes, persistence parity, and runtime boundaries.
 - [ ] Replace userscript tests; validate state, synchronization, placement, and browser boundaries.
-- [ ] Replace frontend and UI tests; validate data boundaries and observable interactions.
+- [x] Replace frontend and UI tests; validate data boundaries and observable interactions.
 - [ ] Replace tooling tests and integrate fast, extended, shuffled, and coverage commands.
 - [ ] Audit regression gaps, run final validation, and file the implementation PR.
 

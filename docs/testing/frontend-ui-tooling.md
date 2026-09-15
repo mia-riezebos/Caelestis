@@ -10,6 +10,21 @@ Paths are relative to the repository root. Integration includes DOM interactions
 - Tooling release artifacts/identity/notes and resource ownership, plus real raster recount/social output.
 - Extended checks for portable runtimes, database/storage services, browser layout/GPU, and stack/load behavior.
 
+## Replacement evidence
+
+The fresh frontend suite has 24 cases across four contract files. It exercises the real client against
+the backend package, stale credentials and late responses, history/progress calculations, and server
+proxy/SSR/storage routes. Raster cases decode actual GIF output with Sharp and compare visible frames
+and playback duration. The shared PNG codec supplies real saved artwork to the rendering pipeline.
+
+The UI suite mounts real Svelte components and its registered custom element. Its ten cases cover
+tree keyboard/rename/menu intents, appearance ownership, claims/work pending and refusal states,
+settings resets, notifications, and panel resizing. See [UI evidence](ui-evidence.md).
+
+The inventory below records the initial candidates. Thin presentation wrappers use composed component
+tests and Svelte checks. Layout, native browser input synthesis, and GPU behavior belong to the
+separate [Chromium boundary checks](browser-evidence.md); there are no CSS-class or icon snapshots.
+
 ## Module inventory
 
 | Module | Boundary | Contract or exclusion reason |

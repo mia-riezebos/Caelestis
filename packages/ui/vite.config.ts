@@ -3,6 +3,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  test: { environment: 'happy-dom' },
   resolve: {
     conditions: process.env.VITEST === 'true' ? ['browser'] : undefined,
   },
