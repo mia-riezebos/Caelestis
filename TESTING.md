@@ -30,6 +30,23 @@ Use shared contract suites for adapters that promise the same behavior.
 A memory adapter cannot prove a database adapter's guarantees.
 Prefer one meaningful test through collaborating code over many mocked unit tests.
 
+### Priority override: application API boundaries
+
+The backend API and its frontend and userscript clients get the strongest, widest coverage.
+This takes priority over the general preference for fewer tests. Broad contract coverage here has
+lasting value because independently changing apps must continue to agree.
+
+Connect each client's real request construction and response handling to the real backend routes.
+Cover every supported API operation and distinct contract outcome: success, permissions, validation,
+missing resources, conflicts, retry/idempotency, and version compatibility where applicable.
+Verify response semantics and resulting client or persisted state, including populated responses.
+Test both clients when they implement the same operation; one cannot prove the other's behavior.
+
+Mock transport and external services as needed; keep both sides of our API real. Share setup and
+adapter contracts to control cost. Keep these checks in the fast suite when they need no browser or
+external service. This override expands breadth without relaxing determinism or permitting assertions
+about private implementation details. Record missing operations explicitly in the API coverage map.
+
 ### 3. Mock external dependencies
 
 Keep the application logic under test real. Replace external dependencies when a test needs controlled

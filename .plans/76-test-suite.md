@@ -46,3 +46,12 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - Userscript validation passes 19 cases plus real Chromium worker/canvas contracts. Local-folder transfer connects to the actual backend; saved image import restores exact IndexedDB pixels. Retired credentials/connections, refused transfers, revision gaps, draft removal, and rendering colour ownership have focused contracts. The build entrypoint owns startup; unused test reset exports are removed.
 - Backend validation passes 32 default cases, host configuration, actual D1, Node/Bun listeners, and disposable PostgreSQL/MariaDB contracts. The shared node/template scenario runs on memory, SQLite, and D1. Archive resume and incomplete history, protected blob reservations, upload classification, work revisions, and failed telemetry flushes have focused contracts. Check passes after removing unused test seams.
 - Final evidence is in docs/testing/evidence.md. All 159 default cases pass with uncached tasks in 14.3 seconds; shuffled execution passes in 13.9 seconds. Check/build/lint, diagnostic coverage, browser, runtime, D1, service contracts, and frozen install pass. The branch is ready for the address-issue PR step.
+
+## API boundary follow-up
+
+- [x] Record Mia's explicit priority override for wide backend/frontend/userscript API coverage.
+- [ ] Expand backend trust-boundary contracts and both real clients' API integration coverage.
+- [ ] Record operation/outcome coverage and remaining gaps, validate, and update PR #412.
+
+Parent owns TESTING.md, backend API contracts, and the central coverage map. Terra agents own
+frontend and userscript API tests and their evidence files separately.
