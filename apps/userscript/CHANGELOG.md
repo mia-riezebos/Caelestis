@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.12.2
+
+### Patch Changes
+
+- 04134d3: Prevent text selection from interfering with template context menus on iOS.
+
 ## 0.12.1
 
 ### Patch Changes
