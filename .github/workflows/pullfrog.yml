@@ -22,7 +22,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -38,7 +38,7 @@ jobs:
           PULLFROG_PRIMARY_PROJECT_URL: ${{ vars.PULLFROG_PRIMARY_PROJECT_URL }}
       - name: Run agent
         id: agent
-        uses: pullfrog/pullfrog@fbed9ad5c88a46639ebe199dd91f8b67633b8fad # v0
+        uses: pullfrog/pullfrog@a86b83b9a671a9fdb156f386cbcc28d665a6b36b # v0
         with:
           prompt: ${{ inputs.prompt }}
           output_schema: ${{ steps.route.outputs.schema }}
@@ -81,7 +81,7 @@ jobs:
       - name: Checkout trusted project writer
         id: project-writer
         if: ${{ !cancelled() && steps.route.outputs.triage == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: .pullfrog-project-bridge
