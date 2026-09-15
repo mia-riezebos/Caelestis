@@ -51,7 +51,7 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 
 - [x] Record Mia's explicit priority override for wide backend/frontend/userscript API coverage.
 - [x] Expand backend trust-boundary contracts and both real clients' API integration coverage.
-- [ ] Record operation/outcome coverage and remaining gaps, validate, and update PR #412.
+- [x] Record operation/outcome coverage and remaining gaps, validate, and update PR #412.
 
 Parent owns TESTING.md, backend API contracts, and the central coverage map. Terra agents own
 frontend and userscript API tests and their evidence files separately.
@@ -60,3 +60,5 @@ The expanded suite passes 180 default cases in 13.1 seconds and shuffled executi
 Real client contracts cover populated telemetry/alarms/archive reads, administration, legacy URLs,
 stale destructive guards, work/region claims, and observed Wplace tiles/paints with retry deduplication.
 Check/build/lint pass, as do the nine new backend contracts under Bun.
+Diagnostic coverage passes for all seven packages. The API maps record client-specific socket,
+work, alliance, and backfill gaps. PR #412 includes the priority override and expanded evidence.

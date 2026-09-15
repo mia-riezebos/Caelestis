@@ -18,6 +18,9 @@ Separate browser and service checks must identify their prerequisites and actual
 
 ## Cross-package contracts
 
+The [application API coverage map](api-boundaries.md) takes priority when reviewing backend,
+frontend, or userscript API changes. Mia explicitly permits wider coverage at these boundaries.
+
 | Contract | Required proof |
 | --- | --- |
 | Import and upload | Real indexed PNG encoding, backend persistence, manifest decoding, and userscript admission agree on dimensions, palette, chunks, and template identity. |

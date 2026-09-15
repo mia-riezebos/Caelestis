@@ -53,7 +53,7 @@ Available commands and prerequisites are in [CONTRIBUTING.md](../../CONTRIBUTING
 Coverage emits line, branch, function, and statement diagnostics for all seven packages under
 `test-results/coverage/`. Browser, runtime, D1, and service checks run outside the default command.
 
-Validated locally on 2026-09-15 with Node 22.23.2 and pnpm 12.3.4:
+Initial rewrite validated at `7a5bab32` on 2026-09-15 with Node 22.23.2 and pnpm 12.3.4:
 
 | Command | Result |
 | --- | --- |
@@ -72,3 +72,6 @@ builds, exclude dependency installation, and are specific to this machine.
 
 Test containers and Chromium profiles were removed. The two hung D1 diagnostic processes used while
 developing the fixture were terminated. The final D1 fixture uses Worker requests and disposes normally.
+
+The subsequent [API boundary follow-up](api-boundaries.md) applies Mia's explicit priority override
+and records its own operation coverage and validation. The timings above describe the initial rewrite.
