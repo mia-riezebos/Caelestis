@@ -7,13 +7,13 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 
 ## Acceptance criteria
 
-- [ ] Replace all 277 inherited `*.test.ts` and `*.test.mjs` files from blank files; remove unused helpers.
-- [ ] Account for every production module in the behavior matrix before writing replacement tests.
-- [ ] Exercise meaningful adapter and cross-package contracts with real collaborating code.
-- [ ] Keep expensive runtime, browser, and deployment checks separately runnable.
-- [ ] Provide diagnostic coverage reports without percentage gates, per Mia's explicit testing policy.
-- [ ] Verify repeated/shuffled execution, relevant full checks, and absence of leaked resources.
-- [ ] Compare the finished map with issue #75 and inherited tests for missing meaningful regressions.
+- [x] Replace all 277 inherited `*.test.ts` and `*.test.mjs` files from blank files; remove unused helpers.
+- [x] Account for every production module in the behavior matrix before writing replacement tests.
+- [x] Exercise meaningful adapter and cross-package contracts with real collaborating code.
+- [x] Keep expensive runtime, browser, and deployment checks separately runnable.
+- [x] Provide diagnostic coverage reports without percentage gates, per Mia's explicit testing policy.
+- [x] Verify repeated/shuffled execution, relevant full checks, and absence of leaked resources.
+- [x] Compare the finished map with issue #75 and inherited tests for missing meaningful regressions.
 
 ## TODOs
 
@@ -24,7 +24,7 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - [x] Replace userscript tests; validate state, synchronization, placement, and browser boundaries.
 - [x] Replace frontend and UI tests; validate data boundaries and observable interactions.
 - [x] Replace tooling tests and integrate fast, extended, shuffled, and coverage commands.
-- [ ] Audit regression gaps, run final validation, and file the implementation PR.
+- [x] Audit regression gaps, run final validation, and file the implementation PR.
 
 ## Ownership
 
@@ -45,3 +45,4 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - Tooling contracts cover actual release bytes, metadata, API races, progress counts, resource accounting, and ownership-safe cleanup. The diagnostic coverage command completed for all seven packages. Browser and Node/Bun runtime commands passed; service wrappers passed against disposable PostgreSQL, MariaDB, and S3 under both runtimes.
 - Userscript validation passes 19 cases plus real Chromium worker/canvas contracts. Local-folder transfer connects to the actual backend; saved image import restores exact IndexedDB pixels. Retired credentials/connections, refused transfers, revision gaps, draft removal, and rendering colour ownership have focused contracts. The build entrypoint owns startup; unused test reset exports are removed.
 - Backend validation passes 32 default cases, host configuration, actual D1, Node/Bun listeners, and disposable PostgreSQL/MariaDB contracts. The shared node/template scenario runs on memory, SQLite, and D1. Archive resume and incomplete history, protected blob reservations, upload classification, work revisions, and failed telemetry flushes have focused contracts. Check passes after removing unused test seams.
+- Final evidence is in docs/testing/evidence.md. All 159 default cases pass with uncached tasks in 14.3 seconds; shuffled execution passes in 13.9 seconds. Check/build/lint, diagnostic coverage, browser, runtime, D1, service contracts, and frozen install pass. The branch is ready for the address-issue PR step.

@@ -11,7 +11,8 @@ That revision contains 277 inherited `*.test.ts` and `*.test.mjs` files.
 - [Userscript, local persistence, and Wplace integration](userscript.md)
 - [Frontend, UI, and tooling](frontend-ui-tooling.md)
 
-Map entries initially describe planned coverage. Each owner records execution evidence as tests land.
+Map entries describe candidate coverage. [Final evidence](evidence.md) records selected contracts,
+validation, and deliberate exclusions.
 Type declarations, exports, and vendored presentation wrappers rely on build/check and consuming tests.
 Separate browser and service checks must identify their prerequisites and actual validation status.
 

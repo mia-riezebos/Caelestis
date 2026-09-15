@@ -152,6 +152,9 @@ keeps representative contracts with distinct failure modes. It omits exhaustive 
 palette snapshots, internal adapter command spies, and repeated checks of type-only exports.
 Real filesystem/R2/S3 semantics replace adapter implementation assertions.
 
+The final [wire protocol contracts](wire-evidence.md) bring the wire suite to 12 cases, including
+valid v1/v2 messages, binary framing, null/optional compatibility, and collection limits.
+
 Review strengthened filter fixtures to use two rows and neighboring pixels. PNG fixtures have real
 CRCs from Node's independent implementation. Wire rejection fixtures now start from valid values and
 change one constraint. Multipart paint reports cross actual frame boundaries and verify reservations,
