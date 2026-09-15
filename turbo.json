@@ -24,6 +24,12 @@
     "@caelestis/userscript#test": {
       "dependsOn": ["^build", "@caelestis/backend#build"]
     },
+    "@caelestis/frontend#check": {
+      "dependsOn": ["^build", "@caelestis/backend#build"]
+    },
+    "@caelestis/userscript#check": {
+      "dependsOn": ["^build", "@caelestis/backend#build"]
+    },
     "clean": {
       "cache": false
     }

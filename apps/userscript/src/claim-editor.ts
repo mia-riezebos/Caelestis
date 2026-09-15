@@ -2250,35 +2250,6 @@ export const syncClaimEditorFrame = (_frame: TileFrame): void => {
   if (active) syncOverlay()
 }
 
-/** Test seam. */
-export const resetClaimEditor = (): void => {
-  stopClaimMode()
-  if (installed) {
-    window.removeEventListener('pointerdown', onPointerDown, true)
-    window.removeEventListener('pointermove', onPointerMove, true)
-    window.removeEventListener('pointerup', onPointerEnd, true)
-    window.removeEventListener('pointercancel', onPointerCancel, true)
-    window.removeEventListener('keydown', onKeydown, true)
-    window.removeEventListener('keyup', onKeyup, true)
-    window.removeEventListener('wheel', onWheel, true)
-    installed = false
-  }
-  host = null
-  listeners.length = 0
-  tool = 'select'
-  shown = defaultShown()
-  sides = 6
-  points = 5
-  inner = DEFAULT_INNER
-  width = 8
-  pencilWidth = 1
-  eraserWidth = 8
-  subtract = false
-  pixelCache = null
-  overlay?.remove()
-  overlay = null
-}
-
 /** Exported for the layer: the bounding box of what is being edited, when anything is. */
 export const claimEditorBounds = () => {
   const pixels = claimEditorPixels()

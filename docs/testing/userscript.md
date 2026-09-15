@@ -75,3 +75,36 @@ sides of a package boundary.
 2. Put reusable test-only storage, server, socket, clock, and Wplace fixture code under `apps/userscript/test/`.
 3. Keep browser cases in `apps/userscript/browser-tests/` and run them only through debug Chromium with focus emulation enabled.
 4. Add one changeset only when the finished rewrite changes user-visible behavior. A test-only rewrite needs none.
+
+## Replacement evidence
+
+Fresh tests exercise saved credentials, real server probing, connection retirement, manifest
+admission, IndexedDB compare-and-swap persistence, local move/deletion, operation exclusion,
+cross-server transfer success/refusal, and cancellation after credential replacement.
+Local-folder transfer sends real requests to the built backend, admits its manifest, and removes
+the source only after successful admission.
+
+Transfer checks invoke `moveServerTemplateToServer`, decode the uploaded PNG, admit a canonical
+manifest, and verify source deletion only after successful admission. Refused admission preserves
+the source and reports the provisional destination. The installed coordinator's external socket
+contract covers negotiation, reconnect, retired frames, and divergent resource recovery.
+See [socket evidence](userscript-lifecycle.md).
+
+[Browser contracts](browser-evidence.md) execute the production mismatch worker and canvas hooks.
+They use an isolated Chromium profile and a dynamic CDP port. They keep focus emulation active and
+remove the profile after execution.
+
+The Node test environment uses one coherent Blob/FormData/Request/Response family. This permits
+actual blob persistence through fake-indexeddb and actual multipart PNG uploads. The build entrypoint
+starts the application; importing transfer collaborators no longer starts the whole userscript.
+`src/entry.ts` delegates startup to `startUserscript` and needs build validation rather than its own test.
+
+[Import evidence](import-evidence.md) covers the real saved Blue Marble fixture through persisted
+palette pixels. [Pixel evidence](pixel-evidence.md) covers visible mismatch filters, draft removal,
+committed artwork, and per-template palette ownership.
+
+The initial map above lists candidate boundaries. It is not an instruction to restore every old
+case. The rewrite excludes per-installer smoke tests, exact icon/style/shader assertions, profiling
+implementation details, and repeated checks of delegated helpers. Browser Wplace account discovery,
+full MapLibre/WebGL interactions, and deployment/load acceptance stay outside the fast command.
+Coverage is available through the root diagnostic command without percentage gates.

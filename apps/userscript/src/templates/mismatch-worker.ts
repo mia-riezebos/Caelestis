@@ -70,14 +70,8 @@ interface Reply {
   readonly progressByColour?: Uint32Array
 }
 
-/**
- * The whole worker, as text.
- *
- * Exported so it can be run without a browser: this is the one part of the design where something
- * that compiles perfectly well can still fail to *parse* on the other side, and a check that never
- * opens a page is the only kind that catches it before the page does.
- */
-export const workerSource = (): string => `const scanTile = ${scanTile.toString()}\n${WORKER_GLUE}`
+/** Build the Blob worker from the same scan implementation used by the inline fallback. */
+const workerSource = (): string => `const scanTile = ${scanTile.toString()}\n${WORKER_GLUE}`
 
 let worker: Worker | null = null
 let tried = false
