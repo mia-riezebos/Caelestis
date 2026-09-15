@@ -18,6 +18,7 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 ## TODOs
 
 - [x] Record the agreed testing policy and production-derived coverage map.
+- [x] Fix the truncated PNG chunk acceptance found by fresh decoder contracts.
 - [ ] Replace shared, wire-schema, and storage tests; validate their contract suites.
 - [ ] Replace backend tests; validate routes, persistence parity, and runtime boundaries.
 - [ ] Replace userscript tests; validate state, synchronization, placement, and browser boundaries.
@@ -40,3 +41,4 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 - Keep this harness worktree and branch. No production or daily-driver preview changes.
 - Issue #76's mandatory percentage thresholds yield to the user's later diagnostic-only policy.
 - Parallel work may finish in a different order; the parent stages and commits each completed TODO separately.
+- Fresh PNG fixtures exposed accepted files with incomplete IEND CRC bytes. The parser now bounds every chunk and requires a complete IEND. Supported formats, neighbor-dependent filters, truncation, inflation bounds, and cancellation pass in the fresh shared suite.
