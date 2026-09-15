@@ -19,7 +19,7 @@ The agreed TESTING.md policy governs scope, speed, and test value.
 
 - [x] Record the agreed testing policy and production-derived coverage map.
 - [x] Fix the truncated PNG chunk acceptance found by fresh decoder contracts.
-- [ ] Replace shared, wire-schema, and storage tests; validate their contract suites.
+- [x] Replace shared, wire-schema, and storage tests; validate their contract suites.
 - [ ] Replace backend tests; validate routes, persistence parity, and runtime boundaries.
 - [ ] Replace userscript tests; validate state, synchronization, placement, and browser boundaries.
 - [ ] Replace frontend and UI tests; validate data boundaries and observable interactions.

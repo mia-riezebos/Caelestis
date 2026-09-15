@@ -88,7 +88,7 @@ Separate, opt-in checks:
 
 ```sh
 CAELESTIS_TEST_S3_ENDPOINT=http://127.0.0.1:9000 \
-  pnpm --filter @caelestis/storage test -- --project s3-integration
+  pnpm --filter @caelestis/storage test:s3
 pnpm test
 ```
 
@@ -116,3 +116,44 @@ pnpm test
   `packages/storage/src/test/`; no production exports or shared global test state.
 - Add a storage Vitest project/config only if needed to keep the opt-in S3 integration test out of
   the default command. The existing package scripts already provide the fast command surface.
+
+## Implemented first batch (2026-09-15)
+
+- Fresh grouped suites now live in `packages/shared/src/test/`,
+  `packages/wire-schema/src/test/`, and `packages/storage/src/test/`; inherited package tests were
+  removed. Storage runs its shared object contract against a real temporary filesystem and a real
+  ephemeral Miniflare R2 bucket. `test:s3` runs that contract against an explicit endpoint and
+  fails immediately when `CAELESTIS_TEST_S3_ENDPOINT` is absent.
+- PNG coverage now exercises each supported colour type and filter branch, transparency chunks,
+  canonical indexed round trips, invalid input classes, and both decode entry points on truncated
+  chunks. The parser now rejects incomplete chunks, non-empty IEND, missing IEND, and short IHDR.
+- Evidence: shared tests and checks pass (36 tests),
+  `pnpm --filter @caelestis/wire-schema test/check` passed (7 tests), and
+  storage tests and checks pass (7 tests). The deliberate no-endpoint
+  invocation of `pnpm --filter @caelestis/storage test:s3` failed with the required endpoint
+  message.
+
+### Second batch
+
+- Live tests now cover tile framing, paint partitioning, ordered assembly, conflicting/expired
+  transfer restart, completion reservation, snapshot pass-through, and snapshot reset.
+- Presence covers draft mask encoding, intersection and grid quantisation; region covers raster
+  subtraction, components, ellipse pixels, and path flattening. Shortcut tests cover recorded
+  editable keys and displacement. `work-client` covers scoped reads, authoritative mutation
+  replacement, refusal, and mismatched-response rejection. Optimistic collection state itself is
+  owned by the frontend, not this stateless shared HTTP client.
+- Wire tests reject invalid paint-part order, duplicate live projections, and malformed draft masks
+  at the same public decoder boundary used by those producers.
+
+### Final review choices
+
+The first map lists candidate edge cases, not a test-per-branch requirement. The replacement suite
+keeps representative contracts with distinct failure modes. It omits exhaustive formatting tables,
+palette snapshots, internal adapter command spies, and repeated checks of type-only exports.
+Real filesystem/R2/S3 semantics replace adapter implementation assertions.
+
+Review strengthened filter fixtures to use two rows and neighboring pixels. PNG fixtures have real
+CRCs from Node's independent implementation. Wire rejection fixtures now start from valid values and
+change one constraint. Multipart paint reports cross actual frame boundaries and verify reservations,
+duplicate delivery, conflicting delivery, and release. Storage exercises concurrent creation and
+replacement metadata. UUIDs remain ordered across same-millisecond writes and a backward clock.
