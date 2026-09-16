@@ -51,6 +51,7 @@ jobs:
         image: mariadb:11.8@sha256:2d2f4095530294735a857cfe22bb101e19b0849b416911c796ec4aa81b164a62
         env:
           MARIADB_ROOT_PASSWORD: portable-test
+          MARIADB_DATABASE: caelestis
         ports: ['3306:3306']
         options: --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 5s --health-timeout 5s --health-retries 20
       postgres:
@@ -62,7 +63,7 @@ jobs:
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       CAELESTIS_TEST_POSTGRES_URL: postgresql://postgres:portable-test@127.0.0.1:5432/caelestis
-      CAELESTIS_TEST_MARIADB_URL: mariadb://root:portable-test@127.0.0.1:3306
+      CAELESTIS_TEST_MARIADB_URL: mariadb://root:portable-test@127.0.0.1:3306/caelestis
       CAELESTIS_TEST_S3_ENDPOINT: http://127.0.0.1:9000
       CAELESTIS_TEST_FRONTEND_HANDLER: ${{ github.workspace }}/apps/frontend/build/handler.js
     steps:
@@ -90,10 +91,12 @@ jobs:
           test -n "$CAELESTIS_TEST_MARIADB_URL"
           test -n "$CAELESTIS_TEST_S3_ENDPOINT"
           pnpm --filter @caelestis/backend --filter @caelestis/frontend --filter @caelestis/storage exec vitest run --maxWorkers=1 --testTimeout=30000 --hookTimeout=30000
+          pnpm test:services
+          pnpm test:worker
           pnpm test:social
           pnpm test:release
           node --test scripts/stack-tests/*.test.mjs
-          node --test scripts/runtime-benchmark/kubernetes.test.mjs
+          node --test scripts/runtime-benchmark/resources.test.mjs
       - name: Test backend and storage contracts under the pinned Bun runtime
         run: |
           docker create --name bun-runtime oven/bun:1.4.2-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73
@@ -103,7 +106,9 @@ jobs:
           export PATH="$RUNNER_TEMP:$PATH"
           test "$(bun --version)" = 1.4.2
           pnpm --filter @caelestis/backend --filter @caelestis/storage exec bun --bun node_modules/vitest/vitest.mjs run --maxWorkers=1 --testTimeout=30000 --hookTimeout=30000
-          bun test ./scripts/social-images.test.mjs
+          node scripts/test-services.mjs --bun
+          pnpm test:runtime
+          pnpm --filter @caelestis/frontend exec bun --bun node_modules/vitest/vitest.mjs run src/tests/raster-contracts.test.ts
       - name: Build the Cloudflare deployment
         run: |
           pnpm --filter @caelestis/frontend build

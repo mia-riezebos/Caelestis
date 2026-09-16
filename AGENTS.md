@@ -1,3 +1,7 @@
+# Testing
+
+Read [TESTING.md](TESTING.md) when adding, changing, or reviewing tests, or choosing validation for a change.
+
 # Browser development
 
 Wplace does not work in the T3 Code browser. Use `Chromium.app` in debug mode for all Wplace

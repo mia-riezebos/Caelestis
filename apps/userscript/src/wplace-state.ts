@@ -91,9 +91,3 @@ export const installWplaceStateCapture = (
 }
 
 export const getWplaceState = (): WplaceState | null => captured
-
-/** Test seam: disarm and forget. */
-export const releaseWplaceStateCapture = (): void => {
-  remove()
-  captured = null
-}

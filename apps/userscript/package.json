@@ -10,6 +10,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist .turbo",
     "test": "vitest run",
+    "test:browser": "node browser-tests/run.mjs",
     "inject": "node dev-inject.mjs",
     "inject:watch": "node dev-inject.mjs --watch",
     "browser": "node chromium.mjs",
@@ -26,6 +27,7 @@
     "fake-indexeddb": "^6.2.5",
     "happy-dom": "^20.11.2",
     "typescript": "^5.7.0",
+    "undici": "7.29.0",
     "vitest": "^4.1.10"
   }
 }

@@ -1,0 +1,104 @@
+# Backend test map
+
+This is a fresh map for issue #76. It was made from backend production code, public ports, package scripts, runtime configuration, and migrations only. Existing tests, helpers, and prior test plans are intentionally out of scope.
+
+## Suite shape
+
+`pnpm --filter @caelestis/backend test` uses memory ports and temporary SQLite for application and
+persistence contracts. It needs no network service or Worker emulator.
+
+Add small named contract suites which every adapter opts into:
+
+1. **Port laws:** `BlobStore`, `CounterStore`, `SqlStore` validation/folding and the status-read-model port. Run against memory implementations in the default suite.
+2. **Relational contract:** run the same persistence/order/race cases against temporary SQLite. This is the default database proof because SQLite is already a supported runtime and needs no service.
+3. **Service adapter contract:** MariaDB and PostgreSQL migrations plus the relational cases against disposable services. Keep these behind an explicit script such as `test:integration`; do not make credentials or containers a prerequisite for `test`.
+4. **Worker binding smoke contract:** Miniflare/Wrangler or a deployed preview only when Worker bindings, Durable Object hibernation, R2, D1, or WebSocket upgrade wiring changes. This is separate from the fast suite.
+
+Coverage is diagnostic only. Each proposed case below names an observable failure rather than a percentage target.
+
+## Implementation evidence
+
+Fresh backend contracts are implemented in `apps/backend/tests/`:
+
+- **Covered by the fast suite:** application mounting/health, public versus protected server routes, scope refusal and revoked credentials, idempotent paint reporting, memory blob copy/pagination and delete-retry fencing, counter-delta bounds/idempotency, durable coordinator flush/retry/idempotency against real SQLite coordinator state, tile-GC dry-run/delete behavior, tile-generation commit fencing, SQLite migrations/token ordering/rollback, the shared memory/SQLite node/template/tag/token/observation/paint/claim contract, real memory/SQLite work-item create/claim/stale-revision/completion lifecycles, and SQLite HTTP template upload → publish → manifest/ETag. The template contract includes root placement, cross-season destination refusal, metadata/version guards, and guarded deletion.
+- **Covered by separate host checks:** portable host configuration refusal in `test:worker`; `test:runtime` opens a migrated temporary SQLite runtime in both Node and Bun, then verifies HTTP authentication, authenticated presence upgrade, revocation closure, live event delivery, and shutdown cleanup on real ephemeral listeners.
+- **Covered by the D1 contract:** `tests/worker/d1.test.ts` bundles the real `D1SqlStore` into a module Worker, migrates the local D1 binding through Worker requests, and verifies stable token ordering, sparse server-setting writes, node path rewrites, and cycle refusal through the adapter. This is selected by `test:d1`.
+- **Covered by disposable services:** `test:integration:docker` creates task-owned PostgreSQL 17 and MariaDB 11.8 containers with pinned CI image digests, dynamic loopback ports, unique databases, and `finally` cleanup. Each integration invocation owns and drops a fresh PostgreSQL schema or MariaDB database, so Node and Bun repeat the same token, hierarchy, template scope, and region ownership contract against one service endpoint without collisions. `test:integration` remains available for one explicitly selected disposable service URL and fails clearly when none is selected.
+- **Ingest and alarm evidence:** real PNG upload and persisted artwork produce correct/wrong/blank counts and matching classification bytes. A false content hash cannot change those counts. Alarm episodes retain their high-water mark through partial recovery, ignore stale follow-ups, and clear on recovery.
+- **Archive and blob lifecycle:** archive import resumes persisted work without reading or crediting completed tiles again. It records unavailable tiles as incomplete and respects cancellation. Memory and SQLite reservations protect blob bytes during GC; release permits reclamation.
+
+The inherited-suite audit retained template placement, stale deletion, and manifest publication risks.
+The Worker request now passes `url.href`, which matches the Cloudflare request type after removal of
+ambient test DOM types. See [final evidence](evidence.md) for validation and deliberate exclusions.
+
+## Behavior matrix
+
+| Production module path | Observable contract | Coverage boundary |
+| --- | --- | --- |
+| `src/app.ts` | Builds `/health`; mounts equivalent root and `/v1` APIs; emits CORS/ETag policy; validates server configuration; advertises optional presence/live capabilities. | Fast app request contract: aliases, health, invalid config, CORS preflight, optional capability flags. |
+| `src/runtime/backend-runtime.ts`, `src/runtime/hono.ts`, `src/runtime/errors.ts` | Provides Effect services and maps typed failures to 400/401/403/404/409/428/500 without exposing storage causes. | Unit/route boundary cases for each error mapping and successful dependency injection. |
+| `src/auth/tokens.ts`, `src/auth/middleware.ts`, `src/auth/use-cases.ts` | Mints/hash tokens; recognizes only Bearer credentials; supports bootstrap/open access; enforces scope hierarchy; revocation closes live credentials. | Fast auth contract: malformed/missing/revoked token, scope refusal, bootstrap, anonymous read, mint/list cursor/revoke. |
+| `src/routes/server.ts`, `src/server-info.ts` | Serves server metadata and allows admin settings updates with validation. | Route contract: public read; admin-only patch; malformed settings; persisted response. |
+| `src/routes/manifest.ts`, `src/manifest/assemble.ts`, `src/manifest/source.ts`, `src/manifest/use-cases.ts` | Serves deterministic, scoped season manifests with ETag/304; caps manifest size and does not expose unpublished data to read scope. | Fast app/assembly cases with shuffled store results, public/admin visibility, `If-None-Match`, empty/oversized limits. |
+| `src/manifest/read-model.ts` | Caches bounded scoped projections; serializes refreshes; invalidates tile coverage when requested; preserves cache when metadata-only changes allow it. | Unit state-machine cases with fake source/persistence/clock: hit, stale refresh, size/count eviction, concurrent reads and invalidation ordering. |
+| `src/routes/tokens.ts` | Admin token CRUD validates cursor/labels/scopes and never returns raw credential after mint response. | Route contract and auth reuse. |
+| `src/routes/nodes.ts`, `src/nodes/use-cases.ts` | Admin node tree CRUD validates IDs and paths, reports subtree counts, and distinguishes empty deletion from cascade. | Route + SQLite contract: root/child creation, cross-surface scope, path/parent conflict, subtree race and both delete modes. |
+| `src/routes/templates.ts`, `src/templates/store.ts`, `src/templates/use-cases.ts` | Admin creates/replaces/patches/deletes template versions; quantises/stores chunks; reads chunks; protects destructive version changes with revision preconditions; updates manifest/live projection. | Fast blob+memory app cases for validation and public blob visibility; SQLite contract for revision conflict, delete ordering, blob references, and notification failure after authoritative commit. |
+| `src/routes/tags.ts`, `src/tags/store.ts`, `src/tags/use-cases.ts` | Admin tag CRUD and template/folder assignments enforce current-season ownership and conflict semantics. | Route + SQLite cases: exclusive query selector, invalid UUID/name, duplicate assignments, detach/delete cleanup. |
+| `src/routes/work.ts`, `src/work/store.ts`, `src/work/use-cases.ts`, `src/work/regions.ts` | Read work/history and report mutations; region claims bind token and painter ownership, validate bounded body/shapes, and publish presence after mutation. | Fast route/use-case validation; SQLite shared region/store contract for ownership refusal, expiration, activity ordering, write conflict, and publish only after commit. |
+| `src/work/memory-store.ts`, `src/work/memory-region-store.ts` | Supplies deterministic portable work/claim semantics. | Port-law suite; no duplicate route assertions. |
+| `src/work/relational-store.ts`, `src/work/relational-region-store.ts`, `src/work/d1-store.ts`, `src/work/d1-region-store.ts` | Implements durable work and region ownership on relational/D1 SQL. | SQLite relational contract, including transaction rollback and concurrent owner attempts. |
+| `src/routes/backfill.ts`, `src/backfill/port.ts` | Gates admin archive job control and read archive retrieval; converts importer failures into stable replies. | Route contract with typed fake backfill client: absent client, invalid IDs/body, success/error mapping. |
+| `src/backfill/eralyon.ts` | Parses archive snapshot HTML, bounds fetch bytes, decompresses/decodes full and diff tiles, and rejects malformed source data. | Pure parser/decoder tests plus mocked Fetch response/body errors. |
+| `src/backfill/import.ts`, `src/template-backfill-object.ts` | Serializes one template's import job; starts/cancels/resumes alarm-driven steps, writes archive artifacts and history without corrupting partial work. | Deterministic importer state-machine with fake DO storage/archive/blob/SQL; Worker object wrapper smoke only for `blockConcurrencyWhile`/alarm delegation. |
+| `src/routes/telemetry.ts` | Validates bounded JSON/binary requests and query ranges; provides reads, tile offers/upload, paint reporting, presence, and live upgrade protocol/scope handling. | Route contract with real use cases and faked external live connectors: boundary sizes, bad schemas/ranges, scopes, season/surface, v1/v2 credential negotiation, HTTP refusal statuses. |
+| `src/telemetry/ingest.ts` | Decodes/quantises canvas tiles, classifies template chunks, commits observations/events idempotently, updates status projection and derived artifacts, and offers current tile generations. | Focused real-memory/blob tests: correct/wrong/blank classification including world-wrap, hash/body mismatch, out-of-order observations, idempotent paint delivery, projection repair failure does not roll back DB commit. |
+| `src/telemetry/queries.ts`, `src/telemetry/progress-history.ts` | Selects retained history resolution, coalesces/folds buckets, reads scoped status/alarms/canvas/leaderboards/contributions. | Pure time-boundary selection and query contract with fake clock/SQL rows: cutoffs, gap filling, deterministic ordering, public filtering. |
+| `src/telemetry/alarm-policy.ts`, `src/alarm-watcher-cycle.ts`, `src/alarm-watcher.ts` | Chooses due probe/batch retry schedule and persists alarm evaluation transitions, while object lifecycle schedules future work. | Deterministic policy/cycle tests; fake coordinator storage for retry, empty queue, failure and next-alarm selection. Worker wrapper smoke only. |
+| `src/telemetry/fetcher.ts` | Fetches scheduled canvas targets, bounds network/content failures, and submits observations. | Mocked Fetch integration: target expansion/deduplication, partial failures, continuation after one tile failure. |
+| `src/telemetry/tile-blobs.ts` | Reserves registered or legacy blobs, fences deletion, restores a new generation, performs bounded dry-run/delete GC and resumes interrupted deletion. | High-priority fake SQL+blob race suite: reservation versus GC, missing bytes release, deleting-hash recovery, invalid keys, delete failure/retry, cursor sweep. |
+| `src/telemetry/derived-classification.ts`, `src/telemetry/decoded-pixel-cache.ts` | Writes/reads reconstructible mismatch artifacts and bounds decoded pixel cache by key/size. | Pure/cache tests: cache hit/eviction/rejected loader; artifact absence/corruption fallback. |
+| `src/ports/blob-store.ts`, `src/ports/counter-store.ts`, `src/ports/counter-delta.ts`, `src/ports/index.ts` | Defines blob namespaces/paging and telemetry bucket, retention, idempotency and counter-delta validity laws shared by every adapter. | Pure boundary cases for timestamp skew, integer/length limits, accumulation overflow, bucket windows and exported port shape; adapter behavior belongs to the shared port-law suites. |
+| `src/coordination/telemetry.ts`, `src/telemetry-shard.ts`, `src/adapters/cloudflare/do-counter-store.ts` | Batches counter deltas in minute buckets, de-duplicates delivery keys, drops late data, retries flush with bounded backoff, and exposes pending counters. | Deterministic coordinator contract with fake alarm/database/SQL; DO RPC wrapper smoke. Test flush retry, order-independent batches, expiry, idempotency, and alarm recovery. |
+| `src/coordination/scheduler.ts`, `src/coordination/database.ts`, `src/adapters/cloudflare/coordinator-database.ts`, `src/adapters/node/coordinator-database.ts`, `src/adapters/node/coordinator-storage.ts` | Serializes durable jobs/state, schedules/retries alarms, and persists coordinator key/value state across hosts. | Fake-clock coordinator contract; SQLite persistence/transaction contract. |
+| `src/status-read-model/model.ts`, `src/status-read-model/port.ts`, `src/status-read-model/tile-generation-cache.ts` | Maintains revisioned public/admin snapshots; serializes reconciliation; publishes deltas; prepares/finishes tile-generation commits; uses TTL coverage offers. | High-priority deterministic state-machine suite: stale reconciliation cannot overwrite newer commit, scope filtering, revision conflict/reconcile, subscriber attachment, pending commit expiry/loser cleanup/cache token. |
+| `src/status-coordinator.ts`, `src/status-read-model-object.ts`, `src/adapters/coordinated-status-read-model.ts`, `src/adapters/cloudflare/do-status-read-model.ts` | Coordinates status live sockets, snapshot/manifest cache, backpressure and credential fences; measures delegated D1/cache outcomes. | Fake LiveHost socket protocol suite: admission/auth attachment, revision delivery ordering, close/revoke, slow client handling, reconnect snapshot. Worker object binding smoke separately. |
+| `src/presence/geometry.ts`, `src/presence/port.ts`, `src/presence-coordinator.ts`, `src/presence-object.ts` | Validates presence rectangles; upgrades authenticated sessions; scopes nearby peers; quantises draft masks; rate-limits messages; renews/expires owned region claims. | Fake-clock LiveHost+SQLite contract: invalid/out-of-surface rectangles, peer interest/order, mask repacking, rate refusal, stale expiry, anonymous claim refusal, credential close. Worker wrapper smoke separately. |
+| `src/adapters/memory/memory-blob-store.ts`, `src/adapters/memory/memory-counter-store.ts`, `src/adapters/memory/memory-sql-store.ts`, `src/adapters/memory/index.ts` | Portable implementations of blob, counter, and full SQL ports. | Shared port-law suite; use as fast application fixture. Do not pretend it proves relational locking. |
+| `src/adapters/object-blob-store.ts`, `src/adapters/cloudflare/r2-blob-store.ts` | Maps namespace/key operations to object storage/R2, including paged lists and batched delete. | Shared blob adapter contract with in-process object fake; Worker R2 emulator smoke on binding changes. |
+| `src/adapters/relational-sql-store.ts`, `src/adapters/relational-database.ts`, `src/adapters/sql-connection.ts`, `src/adapters/sql-dialect.ts`, `src/db/schema.ts`, `src/ports/sql-store.ts` | Defines and implements authoritative relational persistence: templates/nodes/tags/tokens, telemetry folds, observations, blob states, alarms, work and region claims. | SQLite contract suite organized by public `SqlStore` methods: validation, ordering, pagination, transactional rollback, unique/conflict mapping, fold boundaries, revision preconditions, and blob lifecycle fences. |
+| `src/adapters/cloudflare/d1-sql-store.ts` | Binds relational store to D1 dialect. | D1 emulator integration only. |
+| `src/adapters/node/sqlite-driver.ts`, `src/adapters/node/sqlite-connection.ts`, `src/adapters/node/sqlite-ownership.ts`, `src/bun/sqlite-driver.ts` | Opens SQLite, enforces WAL/foreign keys/serialized transactions and single-process database ownership; adapts Bun binding values. | Temporary-file SQLite contract: rollback, serialized async transaction, foreign key behavior, ownership release. Bun-specific driver test only under Bun. |
+| `src/adapters/node/postgres-connection.ts`, `src/adapters/node/mariadb-connection.ts`, `src/adapters/node/mariadb-sql.ts` | Converts placeholders/values, migrates, claims a single active owner, and retries PostgreSQL serialization failures. | Disposable PostgreSQL/MariaDB integration: migrations, placeholder conversion, ownership loss, retry/rollback. Exclude from default. |
+| `src/metrics/request-metrics.ts` | Normalizes route/client identity, accumulates D1/cache/tile offer measurements, and writes analytics records without affecting response behavior. | Unit tests for normalization and measured aggregation; fake Analytics Engine for emitted shape. |
+| `src/node/config.ts` | Validates Node/Bun configuration, storage adapter choice, TLS settings, replica/shard policy and bounds. | Pure environment table: accepted defaults and every rejected configuration family. |
+| `src/node/database.ts`, `src/node/http.ts`, `src/node/live.ts`, `src/node/server.ts`, `src/node/runtime.ts`, `src/node/main.ts`, `src/node/social-worker.ts`, `src/bun/server.ts` | Opens/migrates the portable runtime, owns database process lock, creates adapters/DO-like coordinators, bridges HTTP/WebSocket hosts, starts schedules and closes safely. | Node integration with temp SQLite/object fake: bootstrap token, migration/open/close and HTTP/live upgrade bridge. Bun adapter smoke only under Bun; main/social worker process launch excluded from default. |
+| `src/worker.ts`, `src/worker-configuration.d.ts`, `src/env.d.ts`, `wrangler.toml` | Cloudflare entry validates mount/season/GC config, caches prepared app objects, wires R2/D1/DO/metrics, and runs cron fetch/GC/region expiry through `waitUntil`. | Worker emulator/preview smoke: base-path/root-host routing, invalid config, app reuse per env, all scheduled promises registered. Keep external Cloudflare deployment check separate. |
+
+## Explicit exclusions
+
+These are execution exclusions, not claims that the behavior is unimportant:
+
+- **No production Cloudflare account, R2 bucket, D1 database, Analytics Engine dataset, or deployed Worker** in automated tests. The Worker emulator covers binding wiring where it changes; deployment verification belongs to release validation.
+- **No real Eralyon or Wplace HTTP calls.** Archive/canvas protocols use recorded, bounded fixtures and mocked `fetch`, so failures are attributable and repeatable.
+- **No PostgreSQL/MariaDB service in `pnpm --filter @caelestis/backend test`.** Their adapters require a disposable service and migration lifecycle; run this relational proof explicitly in `test:integration` when adapter/migration/SQL-dialect work changes.
+- **No live long-running cron, WebSocket soak, browser, load, or multi-process replica test by default.** Fake clocks and LiveHosts prove ordering, backpressure, fences, and cleanup deterministically. Run a targeted Worker/Node/Bun smoke when host wiring changes.
+- **No migration snapshot or generated-schema assertion tests.** Migrations are exercised by fresh-database integration; snapshot-format tests duplicate Drizzle rather than a backend contract.
+- **No test of private helpers solely for branch coverage.** Extracted parsers/algorithms are tested only where their input/output is itself a meaningful protocol boundary.
+
+## Commands
+
+Each environment has a separate Vitest configuration:
+
+```sh
+pnpm --filter @caelestis/backend test
+pnpm --filter @caelestis/backend test:integration
+pnpm --filter @caelestis/backend test:integration:docker
+pnpm --filter @caelestis/backend test:d1
+pnpm --filter @caelestis/backend test:runtime
+pnpm --filter @caelestis/backend test:worker
+pnpm --filter @caelestis/backend check
+```
+
+`test:integration` fails when no disposable service is selected. `test:d1` owns its Miniflare runtime.
+Root `test:worker` includes host configuration and D1 checks. Root `test:coverage` reports diagnostics.

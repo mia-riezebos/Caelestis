@@ -7,11 +7,16 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.bun.json",
     "start:node": "cd ../.. && node apps/backend/dist/node/main.js",
     "start:bun": "cd ../.. && bun apps/backend/dist/node/main.js",
-    "check": "tsc -p tsconfig.check.json && tsc -p tsconfig.bun.json --noEmit",
+    "check": "tsc -p tsconfig.check.json && tsc -p tsconfig.bun.json --noEmit && tsc -p tsconfig.test.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "dev": "pnpm db:migrate:local && node dev.mjs",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:integration:docker": "node scripts/test-integration-docker.mjs",
+    "test:runtime": "vitest run --config vitest.runtime.config.ts && bun --bun node_modules/vitest/vitest.mjs run --config vitest.runtime.config.ts",
+    "test:d1": "vitest run --config vitest.d1.config.ts",
+    "test:worker": "vitest run --config vitest.worker.config.ts",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
@@ -34,6 +39,8 @@
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.1",
     "drizzle-kit": "0.31.10",
+    "esbuild": "0.24.2",
+    "miniflare": "4.20260730.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.131.0"

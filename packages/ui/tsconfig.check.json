@@ -6,6 +6,6 @@
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["src"],
+  "include": ["src", "tests"],
   "exclude": []
 }

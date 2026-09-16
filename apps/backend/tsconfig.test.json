@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.check.json",
+  "compilerOptions": {
+    "rootDir": "."
+  },
+  "include": [
+    "src",
+    "tests",
+    "vitest.config.ts",
+    "vitest.d1.config.ts",
+    "vitest.integration.config.ts",
+    "vitest.runtime.config.ts",
+    "vitest.worker.config.ts"
+  ],
+  "exclude": ["src/bun"]
+}

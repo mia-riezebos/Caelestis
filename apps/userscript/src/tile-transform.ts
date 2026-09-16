@@ -175,8 +175,8 @@ export const enqueueBySize = (bytes: number, tile: TileCoord, now = Date.now()):
   tilesByByteLength.set(bytes, queue)
 }
 
-/** The oldest tile still queued at this size, removed. Exported for tests. */
-export const takeBySize = (bytes: number, now = Date.now()): TileCoord | undefined => {
+/** The oldest tile still queued at this size, removed. */
+const takeBySize = (bytes: number, now = Date.now()): TileCoord | undefined => {
   expireQueues(now)
   const queue = tilesByByteLength.get(bytes)
   const entry = queue?.shift()
@@ -199,8 +199,6 @@ export const takeBySizeForBitmap = (
   return takeBySize(bytes, now)
 }
 
-/** Test seam: the queue is module state, and a test needs to start from a known one. */
-export const resetQueues = (): void => tilesByByteLength.clear()
 const tileOfBitmap = new WeakMap<ImageBitmap, TileCoord>()
 
 /**
@@ -561,14 +559,6 @@ const flush = (): void => {
  */
 export const onTileFrame = (listener: FrameListener): void => {
   listeners.push(listener)
-}
-
-/** Clear module-owned listeners between isolated installs. Exported for tests. */
-export const resetTileFrameListeners = (): void => {
-  listeners.length = 0
-  fetchedTileListeners.clear()
-  acceptedPaintListeners.clear()
-  paintSubmissionListeners.clear()
 }
 
 export interface AcceptedPaint {
