@@ -21,17 +21,36 @@ export class SqlCoordinatorStorage implements CoordinatorStorage {
     const schema = await database.one<{ version: number }>(
       'SELECT version FROM runtime_schema WHERE id = 1',
     )
-    if (schema?.version !== 1)
+    if (schema?.version !== 1 && schema?.version !== 2)
       throw new Error(`Unsupported coordinator schema version: ${schema?.version}`)
     await database.run(
       'CREATE TABLE IF NOT EXISTS runtime_values (actor TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (actor, key))',
     )
     await database.run(
-      'CREATE TABLE IF NOT EXISTS runtime_alarms (actor TEXT PRIMARY KEY, due_at BIGINT NOT NULL, generation TEXT NOT NULL)',
+      'CREATE TABLE IF NOT EXISTS runtime_alarms (actor TEXT PRIMARY KEY, due_at BIGINT NOT NULL, generation TEXT NOT NULL, claimed_by TEXT, claimed_until BIGINT)',
     )
     await database.run(
       'CREATE INDEX IF NOT EXISTS runtime_alarms_due_idx ON runtime_alarms (due_at)',
     )
+    if (schema.version === 1) await SqlCoordinatorStorage.migrateToClaims(database)
+  }
+
+  /**
+   * Version 2 adds fenced job claims. MariaDB commits DDL immediately, so each column is added
+   * idempotently and the version bump is the last step.
+   */
+  private static async migrateToClaims(database: CoordinatorDatabase): Promise<void> {
+    for (const column of ['claimed_by TEXT', 'claimed_until BIGINT']) {
+      if (database.dialect === 'sqlite') {
+        try {
+          await database.run(`ALTER TABLE runtime_alarms ADD COLUMN ${column}`)
+        } catch (error) {
+          if (!/duplicate column/i.test(error instanceof Error ? error.message : String(error)))
+            throw error
+        }
+      } else await database.run(`ALTER TABLE runtime_alarms ADD COLUMN IF NOT EXISTS ${column}`)
+    }
+    await database.run('UPDATE runtime_schema SET version = 2 WHERE id = 1 AND version = 1')
   }
 
   async get<T>(key: string): Promise<T | undefined> {

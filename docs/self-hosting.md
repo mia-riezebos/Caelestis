@@ -18,6 +18,7 @@ Use a direct connection or session pooling. Transaction-pooling proxies cannot r
 SQLite holds a kernel-managed lock in a sibling `.owner` file. Process exit releases the lock, including a crash.
 Use a local filesystem or block-backed persistent volume with working POSIX locks. Network filesystems are unsupported for SQLite.
 The chart rejects multiple replicas and uses `Recreate` updates. Horizontal application scaling requires a future coordination adapter.
+Durable jobs already claim a fenced, renewable lease in `runtime_alarms` before they run, so processes that later share one database run each job once. A crashed owner's claim expires after 30 seconds.
 
 ## Choose Node or Bun
 
