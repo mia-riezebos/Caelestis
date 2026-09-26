@@ -2,7 +2,7 @@
   "badges": [
     {
       "id": "userscript-downloads",
-      "repo": "mia-riezebos/Caelestis",
+      "repo": "mia-cx/Caelestis",
       "assets": ["caelestis.user.js"],
       "label": "userscript downloads",
       "color": "6d28d9",

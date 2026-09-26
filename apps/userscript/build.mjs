@@ -33,14 +33,14 @@ const metadata = `// ==UserScript==
 // @description  Shared pixel-art templates for wplace.live, overlaid from one or more alliance servers
 // @author       mia-riezebos
 // @copyright    2026, Mia Riezebos (https://mia.cx)
-// @license      https://github.com/mia-riezebos/Caelestis/blob/main/LICENSE
+// @license      https://github.com/mia-cx/Caelestis/blob/main/LICENSE
 // @compatible   chrome Tampermonkey, Violentmonkey, or another userscript manager
 // @compatible   firefox Tampermonkey, Violentmonkey, or another userscript manager
 // @compatible   edge Tampermonkey, Violentmonkey, or another userscript manager
-// @homepageURL  https://github.com/mia-riezebos/Caelestis
-// @supportURL   https://github.com/mia-riezebos/Caelestis/issues
-// @downloadURL  https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js
-// @updateURL    https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js
+// @homepageURL  https://github.com/mia-cx/Caelestis
+// @supportURL   https://github.com/mia-cx/Caelestis/issues
+// @downloadURL  https://github.com/mia-cx/Caelestis/releases/latest/download/caelestis.user.js
+// @updateURL    https://github.com/mia-cx/Caelestis/releases/latest/download/caelestis.user.js
 // @match        https://wplace.live/*
 // @run-at       document-start
 // @inject-into  page

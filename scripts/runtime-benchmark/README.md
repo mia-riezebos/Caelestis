@@ -2,7 +2,7 @@
 
 ## Production Node/Bun images on k3s
 
-Issue [#390](https://github.com/mia-riezebos/Caelestis/issues/390) uses the same corrected 256-user trace against production images.
+Issue [#390](https://github.com/mia-cx/Caelestis/issues/390) uses the same corrected 256-user trace against production images.
 Import matching Node/Bun backend images and the Node frontend with `scripts/stack-tests/k3s-images.mjs` first.
 Use an explicitly authorized test cluster with CNPG, Longhorn, Traefik, and a dedicated HTTPS hostname.
 
@@ -51,7 +51,7 @@ Remove imported image references afterward with `k3s-images.mjs remove` and thei
 
 ## Historical local exploration
 
-Tracks [#385](https://github.com/mia-riezebos/Caelestis/issues/385), with code and findings in PR #351.
+Tracks [#385](https://github.com/mia-cx/Caelestis/issues/385), with code and findings in PR #351.
 
 Run from the repository root on Linux with Docker, cgroup v2 and `taskset` available:
 

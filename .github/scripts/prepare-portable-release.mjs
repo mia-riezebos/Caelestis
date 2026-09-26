@@ -90,7 +90,7 @@ if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
     throw new Error('GITHUB_SHA must identify the release commit')
   mkdirSync(values['output-dir'], { recursive: true })
   // biome-ignore lint/suspicious/noUndeclaredEnvVars: This release CLI does not run through Turbo.
-  const githubRepository = process.env.GITHUB_REPOSITORY ?? 'mia-riezebos/Caelestis'
+  const githubRepository = process.env.GITHUB_REPOSITORY ?? 'mia-cx/Caelestis'
   const images = portableImages(identity, githubRepository)
   const migrations = (directory) =>
     readdirSync(resolve(root, directory))
@@ -115,7 +115,7 @@ if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
   const tags = (image) => [...image.aliases.immutable, ...image.aliases.moving].join('`, `')
   writeFileSync(
     resolve(values['output-dir'], 'notes.md'),
-    `Caelestis server with backend ${identity.backend} and frontend ${identity.frontend}.\n\nThe default Bun backend uses paired tag \`${identity.imageTag}\` and semantic tags \`${tags(images[0])}\`. Explicit Bun tags use \`${identity.bunImageTag}\`, \`${tags(images[2])}\`; Node tags use \`${identity.nodeImageTag}\`, \`${tags(images[1])}\`. The Node frontend uses paired tag \`${identity.imageTag}\` and semantic tags \`${tags(images[3])}\`. Runtime versions are recorded in versions.json and each image's labels.\n\nImages are published to Docker Hub (\`${backendRepositories.dockerhub}\`, \`${frontendRepositories.dockerhub}\`) and GHCR (\`${backendRepositories.ghcr}\`, \`${frontendRepositories.ghcr}\`). Registry-specific digest references are attached as \`*-dockerhub-image.txt\` and \`*-ghcr-image.txt\`.\n\nChart version: \`${identity.chartVersion}\`. The chart defaults to Bun and the separate Node frontend from Docker Hub.\n\nSee [self-hosting instructions](https://github.com/mia-riezebos/Caelestis/blob/${sha}/docs/self-hosting.md) for runtime selection, migrations, and backups.\n`,
+    `Caelestis server with backend ${identity.backend} and frontend ${identity.frontend}.\n\nThe default Bun backend uses paired tag \`${identity.imageTag}\` and semantic tags \`${tags(images[0])}\`. Explicit Bun tags use \`${identity.bunImageTag}\`, \`${tags(images[2])}\`; Node tags use \`${identity.nodeImageTag}\`, \`${tags(images[1])}\`. The Node frontend uses paired tag \`${identity.imageTag}\` and semantic tags \`${tags(images[3])}\`. Runtime versions are recorded in versions.json and each image's labels.\n\nImages are published to Docker Hub (\`${backendRepositories.dockerhub}\`, \`${frontendRepositories.dockerhub}\`) and GHCR (\`${backendRepositories.ghcr}\`, \`${frontendRepositories.ghcr}\`). Registry-specific digest references are attached as \`*-dockerhub-image.txt\` and \`*-ghcr-image.txt\`.\n\nChart version: \`${identity.chartVersion}\`. The chart defaults to Bun and the separate Node frontend from Docker Hub.\n\nSee [self-hosting instructions](https://github.com/${githubRepository}/blob/${sha}/docs/self-hosting.md) for runtime selection, migrations, and backups.\n`,
   )
   if (values['github-output'])
     appendFileSync(

@@ -3,9 +3,9 @@ import { getState } from './state.js'
 import { showAmbientToast } from './ui/notification-host.js'
 
 export const USERSCRIPT_INSTALLER_URL =
-  'https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js'
+  'https://github.com/mia-cx/Caelestis/releases/latest/download/caelestis.user.js'
 
-const LATEST_RELEASE_URL = 'https://api.github.com/repos/mia-riezebos/Caelestis/releases/latest'
+const LATEST_RELEASE_URL = 'https://api.github.com/repos/mia-cx/Caelestis/releases/latest'
 const UPDATE_CHECK_DELAY_MS = 5_000
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const RELEASE_TAG = /^userscript-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/

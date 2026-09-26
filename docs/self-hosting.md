@@ -42,7 +42,7 @@ Each release publishes the same tested tags to both registries:
 | Registry | Backend | Frontend |
 | --- | --- | --- |
 | Docker Hub | `docker.io/miacx/caelestis-backend` | `docker.io/miacx/caelestis-frontend` |
-| GHCR | `ghcr.io/mia-riezebos/caelestis-backend` | `ghcr.io/mia-riezebos/caelestis-frontend` |
+| GHCR | `ghcr.io/mia-cx/caelestis-backend` | `ghcr.io/mia-cx/caelestis-frontend` |
 
 Bun uses native HTTP, WebSockets, and SQLite statements behind the portable adapters.
 Routes, authentication, claims, coordination, migrations, and transaction rules have one shared implementation.
@@ -67,7 +67,7 @@ Published Helm charts pin the default Bun backend and Node frontend digests. To 
 `image.digest` with the release's `backend-node-image.txt` digest. To select by tag instead, clear that digest:
 
 ```sh
-helm upgrade --install caelestis oci://ghcr.io/mia-riezebos/caelestis/charts/caelestis \
+helm upgrade --install caelestis oci://ghcr.io/mia-cx/caelestis/charts/caelestis \
   --version YOUR_CHART_VERSION -f your-values.yaml \
   --set-string image.tag=YOUR_IMAGE_TAG-node --set-string image.digest= \
   --wait --timeout 10m
@@ -364,7 +364,7 @@ Portable admin export/import across providers is tracked separately and is not p
 Approved app releases publish `linux/amd64` and `linux/arm64` images to Docker Hub and GHCR.
 They use immutable patch and tested app-version pair tags, for example `1.2.3` and `backend-1.2.3-frontend-4.5.6`.
 Latest, major, and minor aliases move when the corresponding app version changes.
-Its Helm version is `1.2.3+frontend.4.5.6`, stored at `oci://ghcr.io/mia-riezebos/caelestis/charts/caelestis`.
+Its Helm version is `1.2.3+frontend.4.5.6`, stored at `oci://ghcr.io/mia-cx/caelestis/charts/caelestis`.
 OCI represents the chart version's `+` as `_`. Pass the original version to Helm.
 Published charts pin both image digests. Pin chart versions when upgrading.
 Server GitHub Releases contain the chart, registry-specific Node/Bun backend and frontend digests, runtime and app versions,

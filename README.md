@@ -1,10 +1,10 @@
 # Caelestis
 
-[![Install userscript](https://img.shields.io/badge/Install-userscript-6d28d9)](https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js)
-[![Userscript downloads](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mia-riezebos/Caelestis/main/badges/userscript-downloads.json)](https://github.com/mia-riezebos/Caelestis/releases)
+[![Install userscript](https://img.shields.io/badge/Install-userscript-6d28d9)](https://github.com/mia-cx/Caelestis/releases/latest/download/caelestis.user.js)
+[![Userscript downloads](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mia-cx/Caelestis/main/badges/userscript-downloads.json)](https://github.com/mia-cx/Caelestis/releases)
 [![Discord server](https://img.shields.io/discord/1157300973618872411?label=Discord&logo=discord&logoColor=white)](https://discord.gg/thequilt)
-[![Latest release](https://img.shields.io/github/v/release/mia-riezebos/Caelestis?label=latest%20release)](https://github.com/mia-riezebos/Caelestis/releases/latest)
-[![Userscript CI](https://github.com/mia-riezebos/Caelestis/actions/workflows/userscript-ci.yml/badge.svg)](https://github.com/mia-riezebos/Caelestis/actions/workflows/userscript-ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/mia-cx/Caelestis?label=latest%20release)](https://github.com/mia-cx/Caelestis/releases/latest)
+[![Userscript CI](https://github.com/mia-cx/Caelestis/actions/workflows/userscript-ci.yml/badge.svg)](https://github.com/mia-cx/Caelestis/actions/workflows/userscript-ci.yml)
 
 https://github.com/user-attachments/assets/3cf4473d-d0cc-4b05-a60d-8f0f7f8d8ab1
 
@@ -17,11 +17,11 @@ Its web dashboard shows templates, contributions, and timelapses outside Wplace.
 ## Install
 
 1. Install [Violentmonkey](https://violentmonkey.github.io/get-it/) or [Tampermonkey](https://www.tampermonkey.net/).
-2. Open [the Caelestis installer](https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js) and confirm **Install** in your userscript manager.
+2. Open [the Caelestis installer](https://github.com/mia-cx/Caelestis/releases/latest/download/caelestis.user.js) and confirm **Install** in your userscript manager.
 3. Open or reload [Wplace](https://wplace.live). Click the Caelestis map button to open the template panel.
 
-The [installation guide](https://github.com/mia-riezebos/Caelestis/wiki/Install-the-userscript) includes browser settings and screenshots.
-Then follow [Getting started](https://github.com/mia-riezebos/Caelestis/wiki/Getting-started) to import and place your first template.
+The [installation guide](https://github.com/mia-cx/Caelestis/wiki/Install-the-userscript) includes browser settings and screenshots.
+Then follow [Getting started](https://github.com/mia-cx/Caelestis/wiki/Getting-started) to import and place your first template.
 
 ## Templates
 
@@ -55,32 +55,32 @@ The dashboard shows recorded progress, painting pace, contributions, and timelap
 ## Run your own server
 
 The backend stores shared artwork and progress. The frontend serves the dashboard.
-Run both with [Docker](https://github.com/mia-riezebos/Caelestis/wiki/Run-with-Docker)
-or [Cloudflare](https://github.com/mia-riezebos/Caelestis/wiki/Deploy-on-Cloudflare).
+Run both with [Docker](https://github.com/mia-cx/Caelestis/wiki/Run-with-Docker)
+or [Cloudflare](https://github.com/mia-cx/Caelestis/wiki/Deploy-on-Cloudflare).
 
-Docker uses SQLite and filesystem storage by default. The [self-hosting guides](https://github.com/mia-riezebos/Caelestis/wiki/Self-hosting)
+Docker uses SQLite and filesystem storage by default. The [self-hosting guides](https://github.com/mia-cx/Caelestis/wiki/Self-hosting)
 also cover PostgreSQL, MariaDB, CNPG, S3, and Kubernetes.
 
 ## Guides
 
 | Task | Guide |
 | --- | --- |
-| Import and organise artwork | [Templates](https://github.com/mia-riezebos/Caelestis/wiki/Templates) |
-| Adjust pixels, outlines, and markers | [Overlay and painting](https://github.com/mia-riezebos/Caelestis/wiki/Overlay-and-painting) |
-| Join a group's server | [Connect to a server](https://github.com/mia-riezebos/Caelestis/wiki/Connect-to-a-server) |
-| Change sharing or keyboard bindings | [Settings and shortcuts](https://github.com/mia-riezebos/Caelestis/wiki/Settings-and-shortcuts) |
-| Fix a problem | [Troubleshooting](https://github.com/mia-riezebos/Caelestis/wiki/Troubleshooting) |
+| Import and organise artwork | [Templates](https://github.com/mia-cx/Caelestis/wiki/Templates) |
+| Adjust pixels, outlines, and markers | [Overlay and painting](https://github.com/mia-cx/Caelestis/wiki/Overlay-and-painting) |
+| Join a group's server | [Connect to a server](https://github.com/mia-cx/Caelestis/wiki/Connect-to-a-server) |
+| Change sharing or keyboard bindings | [Settings and shortcuts](https://github.com/mia-cx/Caelestis/wiki/Settings-and-shortcuts) |
+| Fix a problem | [Troubleshooting](https://github.com/mia-cx/Caelestis/wiki/Troubleshooting) |
 
 ## Project links
 
-- [Wiki](https://github.com/mia-riezebos/Caelestis/wiki)
+- [Wiki](https://github.com/mia-cx/Caelestis/wiki)
 - [Dashboard](https://caelestis.mia.cx)
-- [Releases](https://github.com/mia-riezebos/Caelestis/releases)
+- [Releases](https://github.com/mia-cx/Caelestis/releases)
 - [The Quilt Discord](https://discord.gg/thequilt)
-- [Issue tracker](https://github.com/mia-riezebos/Caelestis/issues)
+- [Issue tracker](https://github.com/mia-cx/Caelestis/issues)
 
 ## Contribute
 
 Read the [contribution guide](CONTRIBUTING.md) before opening a pull request. Use the
-[issue forms](https://github.com/mia-riezebos/Caelestis/issues/new/choose) for bugs and feature
+[issue forms](https://github.com/mia-cx/Caelestis/issues/new/choose) for bugs and feature
 ideas. Report vulnerabilities through the [security process](SECURITY.md), not a public issue.

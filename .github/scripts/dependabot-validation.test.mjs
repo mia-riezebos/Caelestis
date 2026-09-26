@@ -7,7 +7,7 @@ import { describe, it } from 'node:test'
 import { approveDependabotHead, validationState } from './dependabot-validation.mjs'
 
 const sha = 'a'.repeat(40)
-const repository = 'mia-riezebos/Caelestis'
+const repository = 'mia-cx/Caelestis'
 const approval = {
   repository,
   number: '508',

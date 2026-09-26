@@ -152,7 +152,7 @@ If You make Covered Software available for Network Use, such activity constitute
 
 (b) include a copyright notice and acknowledgment of the Contributors; and
 
-(c) indicate that the Covered Software is licensed under this License, with a link or reference to the full license text (https://github.com/mia-riezebos/Caelestis/blob/main/LICENSE).
+(c) indicate that the Covered Software is licensed under this License, with a link or reference to the full license text (https://github.com/mia-cx/Caelestis/blob/main/LICENSE).
 
 The attribution must be visible to users of the Network Use service—for example, in an "About" page, footer, API documentation, or similar location reasonably accessible to users. This requirement applies regardless of whether You distribute the Covered Software in Source Code Form or Executable Form; Network Use alone triggers this obligation.
 
@@ -203,7 +203,7 @@ If You choose to distribute Source Code Form that is Incompatible With Secondary
 ## Exhibit A - Source Code Form License Notice
 
 This Source Code Form is subject to the terms of the MCX License (mia.cx), v. 1.0.
-If a copy of the MCX License was not distributed with this file, You can obtain one at https://github.com/mia-riezebos/Caelestis/blob/main/LICENSE.
+If a copy of the MCX License was not distributed with this file, You can obtain one at https://github.com/mia-cx/Caelestis/blob/main/LICENSE.
 
 This license is derived from the Mozilla Public License, v. 2.0, with modifications.
 It differs from the MPL in that it treats Network Use (SaaS) as distribution requiring attribution.

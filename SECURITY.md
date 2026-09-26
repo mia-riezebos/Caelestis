@@ -13,4 +13,4 @@ investigate before details become public. If the private form is unavailable, em
 Include the affected component and version, the impact, reproduction steps, and any known
 workaround. Remove credentials and personal data from screenshots and logs.
 
-[report]: https://github.com/mia-riezebos/Caelestis/security/advisories/new
+[report]: https://github.com/mia-cx/Caelestis/security/advisories/new

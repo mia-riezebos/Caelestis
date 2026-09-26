@@ -9,7 +9,7 @@ export const MAP_CACHE_MS = 7 * 24 * 60 * 60 * 1000
 export const fetchMapTile: ReadMapTile = async (z, x, y) => {
   const response = await fetch(`https://tile.openstreetmap.org/${z}/${x}/${y}.png`, {
     headers: {
-      'User-Agent': 'CaelestisShareImages/1.0 (+https://github.com/mia-riezebos/Caelestis)',
+      'User-Agent': 'CaelestisShareImages/1.0 (+https://github.com/mia-cx/Caelestis)',
     },
     signal: AbortSignal.timeout(15_000),
   })

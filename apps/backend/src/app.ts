@@ -22,7 +22,7 @@ import { runBackendHttp } from './runtime/hono.js'
  * Entry points adapt this app to a runtime; the app itself stays portable and only depends on the
  * use-case-shaped ports.
  *
- * @see https://github.com/mia-riezebos/wplace-template-server/issues/12
+ * @see https://github.com/mia-cx/Caelestis/issues/12
  */
 export interface AppOptions {
   readonly connectPresence?: ConnectPresence

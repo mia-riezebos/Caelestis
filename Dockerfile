@@ -25,7 +25,7 @@ RUN cp -R apps/frontend/build /output/apps/frontend/build
 
 FROM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS runtime
 ARG CAELESTIS_BUILD_ID=development
-LABEL org.opencontainers.image.source="https://github.com/mia-riezebos/Caelestis" \
+LABEL org.opencontainers.image.source="https://github.com/mia-cx/Caelestis" \
       org.opencontainers.image.revision=$CAELESTIS_BUILD_ID \
       cx.mia.caelestis.runtime="node" \
       cx.mia.caelestis.runtime.version="24.20.0"

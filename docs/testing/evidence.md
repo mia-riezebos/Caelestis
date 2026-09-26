@@ -22,7 +22,7 @@ records current contracts and retained-test decisions. The version-apps branch r
 - Chromium CDP contracts pass with focus emulation, an owned tab, real PNG/canvas decoding, refresh recovery, and worker lifecycle.
 - Classification performance gates pass under Node and Bun. No production deployment or live Wplace write was performed.
 - Linux CI passes Node/Bun runtime checks without the macOS SQLite override. Userscript CI now uses Turbo's existing backend fixture prerequisite.
-- [Full disposable validation](https://github.com/mia-riezebos/Caelestis/actions/runs/35943208081) passes all 44 jobs at `950aa239`, including AMD64/ARM64 images, Compose, Helm, scans, and runtime checks. Later commits change tests, their runner wiring, and evidence only.
+- [Full disposable validation](https://github.com/mia-cx/Caelestis/actions/runs/35943208081) passes all 44 jobs at `950aa239`, including AMD64/ARM64 images, Compose, Helm, scans, and runtime checks. Later commits change tests, their runner wiring, and evidence only.
 
 The earlier validation sections below describe the original rewrite and are historical.
 

@@ -9,7 +9,7 @@ import { run } from './process.mjs'
 const firstBaseline = '6884c40704b63c75e8ed0549860df348db325600'
 const [arch] = process.argv.slice(2)
 assert.ok(['amd64', 'arm64'].includes(arch), 'Usage: prepare-baseline.mjs amd64|arm64')
-const repository = process.env.GITHUB_REPOSITORY ?? 'mia-riezebos/Caelestis'
+const repository = process.env.GITHUB_REPOSITORY ?? 'mia-cx/Caelestis'
 const version = (app) => JSON.parse(readFileSync(`apps/${app}/package.json`, 'utf8')).version
 const candidate = `server-backend-${version('backend')}-frontend-${version('frontend')}`
 const releases = JSON.parse(

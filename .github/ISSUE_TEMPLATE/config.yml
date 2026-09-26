@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/mia-riezebos/Caelestis/security/advisories/new
+    url: https://github.com/mia-cx/Caelestis/security/advisories/new
     about: Send a private report to the maintainers.

@@ -20,7 +20,7 @@ import { provideApp } from '$lib/state/app.svelte'
 import '../app.css'
 import type { LayoutProps } from './$types'
 
-const REPO_URL = 'https://github.com/mia-riezebos/Caelestis'
+const REPO_URL = 'https://github.com/mia-cx/Caelestis'
 
 let { children, data }: LayoutProps = $props()
 
